@@ -1,0 +1,6 @@
+openai-whisper==20250625
+psycopg[binary]==3.3.4
+pgvector==0.4.2
+python-dotenv==1.2.2
+requests==2.34.2
+youtube-transcript-api==1.2.3

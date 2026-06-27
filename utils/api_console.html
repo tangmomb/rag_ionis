@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Console API YouTube</title>
+    <link rel="stylesheet" href="api_console.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="request-nav" aria-label="Requetes disponibles">
+        <div class="brand">
+          <span class="brand-mark">YT</span>
+          <div>
+            <h1>Console API</h1>
+            <p>IONIS-STM</p>
+          </div>
+        </div>
+        <nav id="requestList" class="request-list"></nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="chapterLabel">Chapitre</p>
+            <h2 id="requestTitle">Requete</h2>
+          </div>
+          <button id="sendButton" class="primary-button" type="button">
+            <span aria-hidden="true">▶</span>
+            Envoyer
+          </button>
+        </header>
+
+        <section class="panel settings-panel">
+          <label class="field field-wide">
+            <span>Cle API YouTube</span>
+            <input id="apiKey" type="password" autocomplete="off" placeholder="AIza..." />
+          </label>
+          <button id="toggleKey" class="icon-button" type="button" title="Afficher ou masquer la cle">
+            ◐
+          </button>
+        </section>
+
+        <section class="grid">
+          <section class="panel">
+            <div class="panel-heading">
+              <h3>Parametres</h3>
+              <span id="methodBadge" class="badge">GET</span>
+            </div>
+            <p id="requestPurpose" class="muted"></p>
+            <div id="fields" class="fields"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h3>URL</h3>
+              <button id="copyUrl" class="small-button" type="button">Copier</button>
+            </div>
+            <pre id="urlPreview" class="code-block"></pre>
+            <div id="notes" class="notes"></div>
+          </section>
+        </section>
+
+        <section class="panel response-panel">
+          <div class="panel-heading">
+            <h3>Reponse</h3>
+            <span id="statusBadge" class="badge badge-muted">En attente</span>
+          </div>
+          <pre id="responseOutput" class="response-output"></pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="api_console.js"></script>
+  </body>
+</html>

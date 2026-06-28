@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -6,7 +7,10 @@ from urllib.parse import urlencode
 
 import psycopg
 import requests
+import whisper
+import yt_dlp
 from dotenv import load_dotenv
+from imageio_ffmpeg import get_ffmpeg_exe
 from psycopg.types.json import Jsonb
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import IpBlocked, YouTubeTranscriptApiException
@@ -14,8 +18,10 @@ from youtube_transcript_api._errors import IpBlocked, YouTubeTranscriptApiExcept
 
 API = "https://www.googleapis.com/youtube/v3"
 CHANNEL = "https://www.youtube.com/@IONIS-STM/videos"
-OUTPUT_DIR = Path("data/youtube")
 TRANSCRIPT_LANGUAGES = ("fr", "en")
+DOWNLOAD_DIR = Path("downloads/youtube")
+BIN_DIR = Path("downloads/bin")
+WHISPER_MODEL = None
 
 
 def youtube(endpoint, ignore_403=False, **params):
@@ -228,14 +234,114 @@ def fetch_transcript_with_retries(youtube_video_id):
             time.sleep(retry_seconds * (attempt + 1))
 
 
+def ffmpeg_exe():
+    source = Path(get_ffmpeg_exe())
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    target = BIN_DIR / "ffmpeg.exe"
+    if not target.exists():
+        shutil.copy2(source, target)
+    os.environ["PATH"] = f"{target.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    return target
+
+
+def whisper_model():
+    global WHISPER_MODEL
+    if WHISPER_MODEL is None:
+        model_name = os.getenv("WHISPER_MODEL", "small")
+        WHISPER_MODEL = whisper.load_model(model_name)
+    return WHISPER_MODEL
+
+
+def download_video_360p(youtube_video_id):
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    existing = sorted(
+        path
+        for path in DOWNLOAD_DIR.glob(f"{youtube_video_id}.*")
+        if path.is_file() and path.suffix not in {".part", ".ytdl"}
+    )
+    if existing:
+        return existing[0]
+
+    url = f"https://www.youtube.com/watch?v={youtube_video_id}"
+    output_template = str(DOWNLOAD_DIR / "%(id)s.%(ext)s")
+    options = {
+        "format": os.getenv(
+            "YTDLP_FORMAT",
+            "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
+        ),
+        "merge_output_format": os.getenv("YTDLP_MERGE_FORMAT", "mp4"),
+        "outtmpl": output_template,
+        "ffmpeg_location": str(ffmpeg_exe()),
+        "quiet": False,
+        "noplaylist": True,
+    }
+
+    with yt_dlp.YoutubeDL(options) as downloader:
+        downloader.extract_info(url, download=True)
+
+    downloaded = sorted(
+        path
+        for path in DOWNLOAD_DIR.glob(f"{youtube_video_id}.*")
+        if path.is_file() and path.suffix not in {".part", ".ytdl"}
+    )
+    if not downloaded:
+        raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")
+    return downloaded[0]
+
+
+def transcribe_with_whisper(youtube_video_id):
+    ffmpeg_exe()
+    video_path = download_video_360p(youtube_video_id)
+    language = os.getenv("WHISPER_LANGUAGE", "fr") or None
+    result = whisper_model().transcribe(str(video_path), language=language)
+    segments = [
+        {
+            "text": segment["text"].strip(),
+            "start": segment["start"],
+            "duration": segment["end"] - segment["start"],
+        }
+        for segment in result.get("segments", [])
+    ]
+    text = "\n".join(segment["text"] for segment in segments).strip()
+
+    return {
+        "language_code": result.get("language") or language or "unknown",
+        "language_name": f"Whisper {result.get('language') or language or 'unknown'}",
+        "is_generated": True,
+        "text": text,
+        "segments": segments,
+    }
+
+
+def fetch_transcript_from_config(youtube_video_id):
+    source = os.getenv("TRANSCRIPT_SOURCE", "whisper").lower()
+    if source == "whisper":
+        return transcribe_with_whisper(youtube_video_id)
+    if source == "youtube":
+        return fetch_transcript_with_retries(youtube_video_id)
+    if source == "auto":
+        try:
+            return fetch_transcript_with_retries(youtube_video_id)
+        except IpBlocked:
+            print(f"IP bloquee pour les transcriptions YouTube, fallback Whisper pour {youtube_video_id}")
+            return transcribe_with_whisper(youtube_video_id)
+        except YouTubeTranscriptApiException:
+            print(f"Transcription YouTube indisponible pour {youtube_video_id}, fallback Whisper")
+            return transcribe_with_whisper(youtube_video_id)
+    raise ValueError(f"TRANSCRIPT_SOURCE invalide: {source}")
+
+
 def upsert_transcript(cursor, video_db_id, youtube_video_id):
     try:
-        transcript = fetch_transcript_with_retries(youtube_video_id)
+        transcript = fetch_transcript_from_config(youtube_video_id)
     except IpBlocked:
-        print(f"IP bloquee pour les transcriptions a partir de {youtube_video_id}")
-        return False
+        print(f"IP bloquee pour la transcription YouTube de {youtube_video_id}")
+        return True
     except YouTubeTranscriptApiException as error:
-        print(f"Transcription indisponible pour {youtube_video_id}: {error.__class__.__name__}")
+        print(f"Transcription YouTube indisponible pour {youtube_video_id}: {error.__class__.__name__}")
+        return True
+    except Exception as error:
+        print(f"Transcription Whisper indisponible pour {youtube_video_id}: {error.__class__.__name__} - {error}")
         return True
 
     cursor.execute(
@@ -365,33 +471,19 @@ def import_comments(cursor, video_db_id, youtube_video_id):
             return
 
 
-def save_titles_file(videos):
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output = OUTPUT_DIR / f"{datetime.now():%Y-%m-%d_%H%M%S}.txt"
-    output.write_text(
-        "\n".join(video["snippet"]["title"].strip() for video in videos) + "\n",
-        encoding="utf-8",
-    )
-    return output
-
-
 def main():
     load_dotenv()
     videos = fetch_videos(CHANNEL)
-    output = save_titles_file(videos)
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:
-            import_transcripts = True
             for video in videos:
                 video_db_id = upsert_video(cursor, video)
                 upsert_daily_stats(cursor, video_db_id, video)
-                if import_transcripts:
-                    import_transcripts = upsert_transcript(cursor, video_db_id, video["id"])
+                upsert_transcript(cursor, video_db_id, video["id"])
                 import_comments(cursor, video_db_id, video["id"])
 
     print(f"{len(videos)} videos importees en base")
-    print(f"Titres ecrits dans {output}")
 
 
 if __name__ == "__main__":

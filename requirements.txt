@@ -1,6 +1,9 @@
+imageio-ffmpeg==0.6.0
+openai==2.44.0
 openai-whisper==20250625
 psycopg[binary]==3.3.4
 pgvector==0.4.2
 python-dotenv==1.2.2
 requests==2.34.2
 youtube-transcript-api==1.2.3
+yt-dlp==2026.6.9

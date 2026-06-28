@@ -69,19 +69,26 @@ def latest_video_dir(parent_dir):
     candidates = sorted(
         path
         for path in parent_dir.iterdir()
-        if path.is_dir() and (path / "images").is_dir()
+        if path.is_dir() and any(image_video_dirs(path))
     )
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier avec images trouve dans {parent_dir}")
     return candidates[-1]
 
 
-def image_video_dirs(images_root):
-    return sorted(
-        path
-        for path in images_root.iterdir()
-        if path.is_dir() and path.name != "analyse" and any(image_files(path))
-    )
+def image_video_dirs(video_dir):
+    candidates = []
+
+    if (video_dir / "images").is_dir() and any(image_files(video_dir / "images")):
+        candidates.append(video_dir)
+
+    for child in sorted(video_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if (child / "images").is_dir() and any(image_files(child / "images")):
+            candidates.append(child)
+
+    return candidates
 
 
 def chunks(items, size):
@@ -271,37 +278,35 @@ def main():
     client = OpenAI()
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    images_root = video_dir / "images"
-    analyse_dir = images_root / "analyse"
-    analyse_dir.mkdir(parents=True, exist_ok=True)
-
-    dirs = image_video_dirs(images_root)
+    dirs = image_video_dirs(video_dir)
     if args.limit_videos is not None:
         dirs = dirs[: args.limit_videos]
     if not dirs:
-        print(f"Aucun dossier image trouve dans {images_root}")
+        print(f"Aucun dossier image trouve dans {video_dir}")
         return
 
-    print(f"Dossier images: {images_root}")
-    print(f"Dossier analyse: {analyse_dir}")
+    print(f"Dossier videos: {video_dir}")
     print(f"Modele: {args.model}")
 
-    for video_images_dir in dirs:
-        json_path = analyse_dir / f"{video_images_dir.name}_image_text.json"
+    for current_video_dir in dirs:
+        images_dir = current_video_dir / "images"
+        analyse_dir = current_video_dir / "analyse"
+        analyse_dir.mkdir(parents=True, exist_ok=True)
+        json_path = analyse_dir / f"{current_video_dir.name}_image_text.json"
         if json_path.exists() and not args.force:
-            print(f"[skip] {video_images_dir.name}: analyse existe deja")
+            print(f"[skip] {current_video_dir.name}: analyse existe deja")
             continue
 
-        images = image_files(video_images_dir)
+        images = image_files(images_dir)
         if args.limit_images is not None:
             images = images[: args.limit_images]
-        print(f"[analyse] {video_images_dir.name}: {len(images)} images")
+        print(f"[analyse] {current_video_dir.name}: {len(images)} images")
 
         results = []
         for batch in chunks(images, args.batch_size):
             results.append(analyze_batch(client, args.model, batch, args.detail))
 
-        write_outputs(analyse_dir, video_images_dir.name, merge_results(results))
+        write_outputs(analyse_dir, current_video_dir.name, merge_results(results))
 
 
 if __name__ == "__main__":

@@ -19,9 +19,21 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 def video_files(video_dir):
+    direct_videos = []
     for path in sorted(video_dir.iterdir()):
         if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            yield path
+            direct_videos.append(path)
+
+    if direct_videos:
+        yield from direct_videos
+        return
+
+    for child in sorted(video_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        for path in sorted(child.iterdir()):
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+                yield path
 
 
 def latest_video_dir(parent_dir):
@@ -86,14 +98,16 @@ def parse_args():
 def main():
     args = parse_args()
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    transcript_dir = video_dir / "transcript"
-    inputs = sorted(transcript_dir.glob(f"*{TIMECODED_SUFFIX}"))
+    transcript_dirs = sorted({video_path.parent / "transcript" for video_path in video_files(video_dir)})
+    inputs = []
+    for transcript_dir in transcript_dirs:
+        inputs.extend(sorted(transcript_dir.glob(f"*{TIMECODED_SUFFIX}")))
 
     if not inputs:
-        print(f"Aucun fichier *{TIMECODED_SUFFIX} trouve dans {transcript_dir}")
+        print(f"Aucun fichier *{TIMECODED_SUFFIX} trouve dans {video_dir}")
         return
 
-    print(f"Dossier transcriptions: {transcript_dir}")
+    print(f"Dossier videos: {video_dir}")
     done = 0
     for input_path in inputs:
         convert_file(input_path, force=args.force)

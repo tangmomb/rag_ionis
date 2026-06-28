@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 import time
@@ -82,7 +83,7 @@ def parse_duration(duration):
     return total
 
 
-def playlist_video_ids(channel):
+def playlist_video_ids(channel, limit=None):
     playlist_id = uploads_playlist_id(channel)
     video_ids = []
     page_token = None
@@ -96,6 +97,8 @@ def playlist_video_ids(channel):
             pageToken=page_token or "",
         )
         video_ids += [item["contentDetails"]["videoId"] for item in page["items"]]
+        if limit is not None and len(video_ids) >= limit:
+            return video_ids[:limit]
 
         page_token = page.get("nextPageToken")
         if not page_token:
@@ -107,9 +110,9 @@ def chunks(items, size):
         yield items[index : index + size]
 
 
-def fetch_videos(channel):
+def fetch_videos(channel, limit=None):
     videos = []
-    for video_ids in chunks(playlist_video_ids(channel), 50):
+    for video_ids in chunks(playlist_video_ids(channel, limit=limit), 50):
         data = youtube(
             "videos",
             part="snippet,contentDetails,statistics",
@@ -117,7 +120,7 @@ def fetch_videos(channel):
             maxResults=50,
         )
         videos += data["items"]
-    return videos
+    return videos[:limit] if limit is not None else videos
 
 
 def upsert_video(cursor, video):
@@ -212,8 +215,6 @@ def fetch_transcript(youtube_video_id):
 
     return {
         "language_code": transcript.language_code,
-        "language_name": transcript.language,
-        "is_generated": transcript.is_generated,
         "text": text,
         "segments": segments,
     }
@@ -306,8 +307,6 @@ def transcribe_with_whisper(youtube_video_id):
 
     return {
         "language_code": result.get("language") or language or "unknown",
-        "language_name": f"Whisper {result.get('language') or language or 'unknown'}",
-        "is_generated": True,
         "text": text,
         "segments": segments,
     }
@@ -349,27 +348,18 @@ def upsert_transcript(cursor, video_db_id, youtube_video_id):
         INSERT INTO video_transcripts (
             video_id,
             language_code,
-            language_name,
-            is_generated,
-            text,
-            segments,
+            transcript,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, now())
+        VALUES (%s, %s, %s, now())
         ON CONFLICT (video_id, language_code) DO UPDATE SET
-            language_name = EXCLUDED.language_name,
-            is_generated = EXCLUDED.is_generated,
-            text = EXCLUDED.text,
-            segments = EXCLUDED.segments,
+            transcript = EXCLUDED.transcript,
             updated_at = now()
         """,
         (
             video_db_id,
             transcript["language_code"],
-            transcript["language_name"],
-            transcript["is_generated"],
             transcript["text"],
-            Jsonb(transcript["segments"]),
         ),
     )
     time.sleep(int(os.getenv("TRANSCRIPT_SLEEP_SECONDS", "5")))
@@ -385,25 +375,19 @@ def upsert_comment(cursor, video_db_id, comment, parent_db_id=None):
             parent_comment_id,
             youtube_comment_id,
             author_name,
-            author_channel_id,
             text,
             like_count,
             published_at,
-            updated_at_youtube,
-            raw_json,
-            updated_at
+            raw_json
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (youtube_comment_id) DO UPDATE SET
             parent_comment_id = EXCLUDED.parent_comment_id,
             author_name = EXCLUDED.author_name,
-            author_channel_id = EXCLUDED.author_channel_id,
             text = EXCLUDED.text,
             like_count = EXCLUDED.like_count,
             published_at = EXCLUDED.published_at,
-            updated_at_youtube = EXCLUDED.updated_at_youtube,
-            raw_json = EXCLUDED.raw_json,
-            updated_at = now()
+            raw_json = EXCLUDED.raw_json
         RETURNING id
         """,
         (
@@ -411,11 +395,9 @@ def upsert_comment(cursor, video_db_id, comment, parent_db_id=None):
             parent_db_id,
             comment["id"],
             snippet.get("authorDisplayName"),
-            snippet.get("authorChannelId", {}).get("value"),
             snippet.get("textOriginal") or snippet.get("textDisplay") or "",
             snippet.get("likeCount"),
             parse_datetime(snippet.get("publishedAt")),
-            parse_datetime(snippet.get("updatedAt")),
             Jsonb(comment),
         ),
     )
@@ -471,16 +453,35 @@ def import_comments(cursor, video_db_id, youtube_video_id):
             return
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Importe les donnees YouTube de la chaine en base SQL."
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Nombre maximum de videos a importer.",
+    )
+    parser.add_argument(
+        "--skip-transcripts",
+        action="store_true",
+        help="N'importe pas les transcripts dans cette step.",
+    )
+    return parser.parse_args()
+
+
 def main():
     load_dotenv()
-    videos = fetch_videos(CHANNEL)
+    args = parse_args()
+    videos = fetch_videos(CHANNEL, limit=args.limit)
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:
             for video in videos:
                 video_db_id = upsert_video(cursor, video)
                 upsert_daily_stats(cursor, video_db_id, video)
-                upsert_transcript(cursor, video_db_id, video["id"])
+                if not args.skip_transcripts:
+                    upsert_transcript(cursor, video_db_id, video["id"])
                 import_comments(cursor, video_db_id, video["id"])
 
     print(f"{len(videos)} videos importees en base")

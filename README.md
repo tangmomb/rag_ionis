@@ -75,6 +75,12 @@ docker compose up -d postgres
 
 Le volume Docker est nomme `rag_ionis_pgdata`. Il est independant du dossier projet et conserve les donnees entre les redemarrages/recreations du conteneur.
 
+Le schema de base est initialise par un fichier unique:
+
+```text
+docker/postgres/init/001_schema.sql
+```
+
 Verifier la base:
 
 ```powershell
@@ -85,7 +91,7 @@ Tables principales:
 
 - `videos`: videos de la chaine IONIS-STM, avec titre, lien et metadonnees stables.
 - `video_daily_stats`: statistiques quotidiennes rattachees a une video via `video_id`, avec vues, likes et nombre de commentaires.
-- `video_transcripts`: transcriptions rattachees a une video via `video_id`, avec texte complet et segments horodates.
+- `video_transcripts`: transcriptions rattachees a une video via `video_id`, avec une ligne par video/langue et les variantes `transcript`, `transcript_timecodes`, `transcript_timecodes_enrichi`.
 - `comments`: commentaires rattaches a une video via `video_id`, avec support des reponses via `parent_comment_id`.
 
 Comparer les vues entre deux jours:
@@ -124,6 +130,40 @@ python scripts/init/01_get_data.py
 
 Le script travaille sur `https://www.youtube.com/@IONIS-STM/videos` et remplit les tables `videos`, `video_daily_stats`, `video_transcripts` et `comments`.
 
+## Run Pipeline
+
+Executer toutes les steps dans l'ordre:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all
+```
+
+Sans argument, le script demande combien de videos traiter: `all` pour toute la chaine ou un nombre pour tester.
+
+Tester le pipeline sur un nombre limite de videos:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3
+```
+
+Le script lance les steps 00 a 09. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
+
+Un run d'initialisation remplace le precedent:
+
+- localement, `downloads/youtube/` ne conserve qu'un seul dossier `*_init`;
+- dans S3, les anciens prefixes `youtube/*_init` sont supprimes avant le nouvel upload;
+- dans SQL, les donnees applicatives sont videes avant la recollecte, tout en gardant l'architecture de tables.
+
+Options utiles:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --dry-run-upload --dry-run-sql
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --skip-upload
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all --skip-data
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --force
+```
+
 ## Step 02 - Download Videos
 
 Telecharger en 360p les videos referencees dans la table SQL `videos`:
@@ -132,7 +172,13 @@ Telecharger en 360p les videos referencees dans la table SQL `videos`:
 python scripts/init/02_download_videos.py
 ```
 
-Chaque lancement cree un sous-dossier date dans `downloads/youtube/`, par exemple `downloads/youtube/20260628_1312/`.
+Chaque lancement cree un sous-dossier date suffixe `_init` dans `downloads/youtube/`, puis un dossier par video:
+
+```text
+downloads/youtube/20260628_1312_init/
+  LJ-W6BjSJRo/
+    LJ-W6BjSJRo.mp4
+```
 
 ## Step 03 - Transcribe Videos
 
@@ -142,7 +188,7 @@ Transcrire avec l'API OpenAI les videos du dernier dossier de telechargement:
 python scripts/init/03_transcribe_videos.py
 ```
 
-Le script extrait un fichier audio temporaire avec ffmpeg, appelle `whisper-1` en francais, puis cree un dossier `transcript/` a cote des videos et produit un fichier horodate par video, par exemple `hGUkhjssd_transcript_timecodes.txt`.
+Le script extrait un fichier audio temporaire avec ffmpeg, appelle `whisper-1` en francais, puis cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.
 
 Pour detecter les intervenants, utiliser `OPENAI_TRANSCRIBE_MODEL=gpt-4o-transcribe-diarize`. Ce modele n'accepte pas de prompt de guidage et peut moins bien respecter le francais sur ce corpus.
 
@@ -166,7 +212,7 @@ Extraire une image toutes les 2 secondes pour chaque video:
 python scripts/init/05_extract_images.py
 ```
 
-Le script cree un dossier `images/` a cote de `transcript/`, puis un sous-dossier par video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
+Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
 ## Step 06 - Analyze Image Text
 
@@ -176,9 +222,92 @@ Detecter les images ou du texte ecrit apparait a l'ecran:
 python scripts/init/06_analyze_image_text.py
 ```
 
-Le script envoie les images en `detail: low` au modele `OPENAI_IMAGE_ANALYZE_MODEL` (`gpt-5.4-nano` par defaut) et ecrit les resultats dans `images/analyse/`.
+Le script envoie les images en `detail: low` au modele `OPENAI_IMAGE_ANALYZE_MODEL` (`gpt-5.4-nano` par defaut) et ecrit les resultats dans le dossier `analyse/` de chaque video.
+
+## Step 07 - Enrich Transcripts
+
+Ajouter les textes visibles a l'ecran dans les transcripts timecodes:
+
+```powershell
+python scripts/init/07_enrich_transcripts.py
+```
+
+Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes.txt` avec `analyse/*_image_text.txt` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
+
+## Step 08 - Upload Videos To S3
+
+Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
+
+```powershell
+python scripts/init/08_upload_videos_to_s3.py
+```
+
+Configuration requise dans `.env`:
+
+```powershell
+S3_BUCKET_NAME=rag-ionis-532523613357-eu-west-3-an
+S3_REGION=eu-west-3
+S3_ACCESS_KEY_ID=votre_access_key
+S3_SECRET_ACCESS_KEY=votre_secret_key
+```
+
+Par defaut, le script prend le dernier dossier de `downloads/youtube/` et l'upload dans le prefixe S3 `youtube/`:
+
+```text
+downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+-> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+```
+
+Options utiles:
+
+```powershell
+python scripts/init/08_upload_videos_to_s3.py --dry-run
+python scripts/init/08_upload_videos_to_s3.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/08_upload_videos_to_s3.py --prefix youtube/20260628_1312_init
+python scripts/init/08_upload_videos_to_s3.py --clean-init-prefix
+python scripts/init/08_upload_videos_to_s3.py --force
+```
+
+## Step 09 - Update SQL Assets
+
+Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
+
+```powershell
+python scripts/init/09_update_sql_assets.py
+```
+
+Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 08 par defaut:
+
+```text
+downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+-> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+```
+
+Il met aussi a jour une seule ligne `video_transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `transcript/`:
+
+```text
+transcript                  -> *_transcript.txt
+transcript_timecodes        -> *_transcript_timecodes.txt
+transcript_timecodes_enrichi -> *_transcript_timecodes_enrichi.txt
+```
+
+Options utiles:
+
+```powershell
+python scripts/init/09_update_sql_assets.py --dry-run
+python scripts/init/09_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/09_update_sql_assets.py --prefix youtube/20260628_1312_init
+python scripts/init/09_update_sql_assets.py --clean-init-assets
+python scripts/init/09_update_sql_assets.py --skip-transcripts
+```
 
 ## Step 99 - Clear Database
+
+Recreer la base SQL depuis le schema. Attention: cette commande supprime toutes les donnees des tables applicatives avant de recharger `docker/postgres/init/001_schema.sql`.
+
+```powershell
+python utils/reset_database.py
+```
 
 Vider les tables applicatives sans supprimer le schema:
 

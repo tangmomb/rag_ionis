@@ -32,10 +32,10 @@ def ffmpeg_exe():
     return target
 
 
-def existing_download(download_dir, youtube_video_id):
+def existing_download(video_dir, youtube_video_id):
     matches = sorted(
         path
-        for path in download_dir.glob(f"{youtube_video_id}.*")
+        for path in video_dir.glob(f"{youtube_video_id}.*")
         if path.is_file() and path.suffix not in {".part", ".ytdl", ".temp"}
     )
     return matches[0] if matches else None
@@ -58,7 +58,7 @@ def fetch_videos(cursor, limit=None):
 
 
 def timestamped_download_dir(parent_dir):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M')}_init"
     download_dir = parent_dir / timestamp
     suffix = 2
     while download_dir.exists():
@@ -70,10 +70,12 @@ def timestamped_download_dir(parent_dir):
 
 def download_video(video, download_dir, force=False):
     db_id, youtube_video_id, title, url = video
-    output_template = str(download_dir / "%(id)s.%(ext)s")
+    video_dir = download_dir / youtube_video_id
+    video_dir.mkdir(parents=True, exist_ok=True)
+    output_template = str(video_dir / "%(id)s.%(ext)s")
 
     if not force:
-        existing = existing_download(download_dir, youtube_video_id)
+        existing = existing_download(video_dir, youtube_video_id)
         if existing:
             print(f"[skip] {youtube_video_id} deja telecharge: {existing}")
             return existing
@@ -92,7 +94,7 @@ def download_video(video, download_dir, force=False):
     with yt_dlp.YoutubeDL(options) as downloader:
         downloader.extract_info(url, download=True)
 
-    downloaded = existing_download(download_dir, youtube_video_id)
+    downloaded = existing_download(video_dir, youtube_video_id)
     if not downloaded:
         raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")
     return downloaded

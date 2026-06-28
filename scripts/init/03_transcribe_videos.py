@@ -48,9 +48,21 @@ def latest_video_dir(parent_dir):
 
 
 def video_files(video_dir):
+    direct_videos = []
     for path in sorted(video_dir.iterdir()):
         if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            yield path
+            direct_videos.append(path)
+
+    if direct_videos:
+        yield from direct_videos
+        return
+
+    for child in sorted(video_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        for path in sorted(child.iterdir()):
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+                yield path
 
 
 def has_timecodes(model):
@@ -223,25 +235,25 @@ def main():
         print(f"Aucune video trouvee dans {video_dir}")
         return
 
-    transcript_dir = video_dir / "transcript"
-    audio_dir = transcript_dir / "audio"
-    transcript_dir.mkdir(parents=True, exist_ok=True)
-    audio_dir.mkdir(parents=True, exist_ok=True)
     print(f"Dossier videos: {video_dir}")
-    print(f"Dossier transcriptions: {transcript_dir}")
 
     done = 0
     failed = []
     for video_path in videos:
         try:
+            transcript_dir = video_path.parent / "transcript"
+            audio_dir = transcript_dir / "audio"
+            transcript_dir.mkdir(parents=True, exist_ok=True)
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Dossier transcriptions: {transcript_dir}")
             transcribe_video(client, video_path, transcript_dir, audio_dir, force=args.force)
             done += 1
         except Exception as error:
             print(f"[error] {video_path.name}: {error}")
             failed.append(video_path.name)
-
-    if not args.keep_audio:
-        shutil.rmtree(audio_dir, ignore_errors=True)
+        finally:
+            if not args.keep_audio and "audio_dir" in locals():
+                shutil.rmtree(audio_dir, ignore_errors=True)
 
     print(f"{done} videos transcrites.")
     if failed:

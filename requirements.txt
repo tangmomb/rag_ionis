@@ -1,4 +1,5 @@
 imageio-ffmpeg==0.6.0
+boto3==1.42.95
 openai==2.44.0
 openai-whisper==20250625
 psycopg[binary]==3.3.4

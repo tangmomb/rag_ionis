@@ -28,9 +28,21 @@ def ffmpeg_exe():
 
 
 def video_files(video_dir):
+    direct_videos = []
     for path in sorted(video_dir.iterdir()):
         if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            yield path
+            direct_videos.append(path)
+
+    if direct_videos:
+        yield from direct_videos
+        return
+
+    for child in sorted(video_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        for path in sorted(child.iterdir()):
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+                yield path
 
 
 def latest_video_dir(parent_dir):
@@ -44,8 +56,8 @@ def latest_video_dir(parent_dir):
     return candidates[-1]
 
 
-def extract_images(video_path, images_root, interval_seconds, force=False):
-    video_images_dir = images_root / video_path.stem
+def extract_images(video_path, interval_seconds, force=False):
+    video_images_dir = video_path.parent / "images"
     existing = sorted(video_images_dir.glob("*.jpg")) if video_images_dir.exists() else []
     if existing and not force:
         print(f"[skip] {video_path.name}: {len(existing)} images existent deja")
@@ -140,14 +152,11 @@ def main():
         print(f"Aucune video trouvee dans {video_dir}")
         return
 
-    images_root = video_dir / "images"
-    images_root.mkdir(parents=True, exist_ok=True)
     print(f"Dossier videos: {video_dir}")
-    print(f"Dossier images: {images_root}")
 
     total = 0
     for video_path in videos:
-        total += extract_images(video_path, images_root, args.interval, force=args.force)
+        total += extract_images(video_path, args.interval, force=args.force)
 
     print(f"{total} images extraites.")
 

@@ -16,6 +16,7 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 DEFAULT_FILTER_MODEL = "gpt-5.4"
 DEFAULT_FILTER_DETAIL = "low"
+DEFAULT_INPUT_PRICE_PER_1M = 1.25
 PROMPT_CACHE_KEY = "init-step05-filter-text-v1"
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -81,7 +82,7 @@ def build_request_body(model, batch, detail):
 def analyze_sync(client, model, batch, detail):
     body = build_request_body(model, batch, detail)
     response = client.responses.create(**body)
-    return parse_json_response(response.output_text)
+    return parse_json_response(response.output_text), getattr(response, "usage", None)
 
 
 def build_batch_payload(request_id, model, batch, detail):
@@ -145,15 +146,25 @@ def parse_batch_output(client, output_file_id, request_id):
             raise RuntimeError(f"Batch request error for {request_id}: {error}")
         response = row.get("response", {})
         body = response.get("body", {})
+        usage = body.get("usage")
         output_text = body.get("output_text")
         if output_text:
-            return parse_json_response(output_text)
+            return parse_json_response(output_text), usage
         for item in body.get("output", []):
             content = item.get("content", [])
             for part in content:
                 if part.get("type") == "output_text" and part.get("text"):
-                    return parse_json_response(part["text"])
+                    return parse_json_response(part["text"]), usage
         raise RuntimeError(f"Reponse batch introuvable pour {request_id}")
+
+
+def usage_stats(usage):
+    if not usage:
+        return 0, 0, 0.0
+    input_tokens = int(getattr(usage, "input_tokens", None) or getattr(usage, "get", lambda *_: 0)("input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", None) or getattr(usage, "get", lambda *_: 0)("output_tokens", 0) or 0)
+    cost = (input_tokens / 1_000_000) * DEFAULT_INPUT_PRICE_PER_1M
+    return input_tokens, output_tokens, cost
 
 
 def parse_json_response(text):
@@ -219,31 +230,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def ask_filter_enabled():
-    if not sys.stdin.isatty():
-        return True
-    while True:
-        value = input("Filtrer les images sans texte avant l'OCR ? [O/n]: ").strip().lower()
-        if value in {"", "o", "oui", "y", "yes"}:
-            return True
-        if value in {"n", "non", "no"}:
-            return False
-        print("Merci de repondre par o/n.", flush=True)
-
-
-def ask_batch_api():
-    if not sys.stdin.isatty():
-        return False
-
-    while True:
-        value = input("Traiter la step 05 en batch via la Batch API ? [o/N]: ").strip().lower()
-        if value in {"o", "oui", "y", "yes"}:
-            return True
-        if value in {"", "n", "non", "no"}:
-            return False
-        print("Merci de repondre par o/n.", flush=True)
-
-
 def latest_video_dir(parent_dir):
     candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(image_video_dirs(path)))
     if not candidates:
@@ -268,10 +254,10 @@ def write_filtered_images(images_dir, images):
 
 
 def main():
-    load_dotenv()
+    load_dotenv(override=True)
     args = parse_args()
     client = OpenAI()
-    batch_api = args.batch_api or ask_batch_api()
+    batch_api = args.batch_api
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(image_video_dirs(video_dir))
@@ -284,12 +270,6 @@ def main():
 
     print(f"Dossier videos: {video_dir}")
     print(f"Modele filtrage: {args.model}", flush=True)
-
-    enabled = ask_filter_enabled()
-    if not enabled:
-        print("Filtrage desactive, aucun manifeste genere.", flush=True)
-        return
-
     print(f"Mode traitement: {'batch' if batch_api else 'synchrone'}", flush=True)
 
     for video_path in videos:
@@ -300,14 +280,25 @@ def main():
             continue
         print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
         kept = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cost = 0.0
         total_batches = (len(images) + args.batch_size - 1) // args.batch_size
         for batch_index, batch in enumerate(chunks(images, args.batch_size), start=1):
             request_id = f"{video_path.name}_filter_{batch_index:04d}"
             print(f"[filter {batch_index}/{total_batches}] {request_id}: envoi", flush=True)
             if batch_api:
-                result = analyze_batch(client, args.model, batch, args.detail, request_id)
+                result, usage = analyze_batch(client, args.model, batch, args.detail, request_id)
             else:
-                result = analyze_sync(client, args.model, batch, args.detail)
+                result, usage = analyze_sync(client, args.model, batch, args.detail)
+            input_tokens, output_tokens, cost = usage_stats(usage)
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+            total_cost += cost
+            print(
+                f"[usage] in={input_tokens} out={output_tokens} cost=${cost:.6f} total=${total_cost:.6f}",
+                flush=True,
+            )
             for item in result.get("items", []):
                 if item.get("has_text") is True and item.get("image"):
                     candidate = images_dir / item["image"]
@@ -317,6 +308,10 @@ def main():
                         print(f"[skip] image introuvable dans le lot: {candidate}", flush=True)
         kept = sorted({path.name: path for path in kept}.values(), key=lambda path: path.name)
         write_filtered_images(images_dir, kept)
+        print(
+            f"[usage total] in={total_input_tokens} out={total_output_tokens} cost=${total_cost:.6f}",
+            flush=True,
+        )
         print(f"[done] {video_path.name}: {len(kept)}/{len(images)} images gardees", flush=True)
 
 

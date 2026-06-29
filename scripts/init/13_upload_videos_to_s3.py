@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
+ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_S3_ROOT_PREFIX = "youtube"
 DEFAULT_S3_BUCKET_NAME = ""
 DEFAULT_S3_REGION = ""
@@ -181,8 +182,15 @@ def parse_args():
 
 
 def main():
-    load_dotenv()
+    load_dotenv(ROOT_DIR / ".env", override=True)
+    default_bucket = os.environ.get("S3_BUCKET_NAME", "")
+    default_region = os.environ.get("S3_REGION", "")
     args = parse_args()
+
+    if not args.bucket:
+        args.bucket = default_bucket
+    if not args.region:
+        args.region = default_region
 
     if not args.bucket:
         raise RuntimeError("S3_BUCKET_NAME est requis dans .env ou via --bucket")

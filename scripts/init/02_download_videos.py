@@ -1,11 +1,11 @@
 import argparse
+import json
 import os
 import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
-import psycopg
 import yt_dlp
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
@@ -33,6 +33,30 @@ def ffmpeg_exe():
     return target
 
 
+def info_cache_dir(parent_dir):
+    return Path(parent_dir) / "info_videos"
+
+
+def load_video_infos(parent_dir, limit=None):
+    cache_dir = info_cache_dir(parent_dir)
+    if not cache_dir.is_dir():
+        return []
+
+    infos = []
+    for path in sorted(cache_dir.glob("*.info.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as error:
+            print(f"[skip] info json invalide: {path} ({error})")
+            continue
+        youtube_video_id = payload.get("youtube_video_id") or path.stem.removesuffix(".info")
+        title = payload.get("title") or youtube_video_id
+        url = payload.get("url") or f"https://www.youtube.com/watch?v={youtube_video_id}"
+        infos.append((youtube_video_id, title, url, payload))
+
+    return infos[:limit] if limit is not None else infos
+
+
 def existing_download(video_dir, youtube_video_id):
     matches = sorted(
         path
@@ -42,20 +66,13 @@ def existing_download(video_dir, youtube_video_id):
     return matches[0] if matches else None
 
 
-def fetch_videos(cursor, limit=None):
-    query = """
-        SELECT id, youtube_video_id, title, url
-        FROM videos
-        WHERE url IS NOT NULL
-        ORDER BY published_at NULLS LAST, id
-    """
-    params = ()
-    if limit is not None:
-        query += " LIMIT %s"
-        params = (limit,)
-
-    cursor.execute(query, params)
-    return cursor.fetchall()
+def copy_video_info(video_dir, youtube_video_id, parent_dir):
+    source = info_cache_dir(parent_dir) / f"{youtube_video_id}.info.json"
+    if not source.exists():
+        return None
+    target = video_dir / f"{youtube_video_id}.info.json"
+    shutil.copy2(source, target)
+    return target
 
 
 def timestamped_download_dir(parent_dir):
@@ -69,8 +86,8 @@ def timestamped_download_dir(parent_dir):
     return download_dir
 
 
-def download_video(video, download_dir, force=False):
-    db_id, youtube_video_id, title, url = video
+def download_video(video, download_dir, parent_dir, force=False):
+    youtube_video_id, title, url, _payload = video
     video_dir = download_dir / youtube_video_id
     video_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(video_dir / "%(id)s.%(ext)s")
@@ -79,6 +96,7 @@ def download_video(video, download_dir, force=False):
         existing = existing_download(video_dir, youtube_video_id)
         if existing:
             print(f"[skip] {youtube_video_id} deja telecharge: {existing}")
+            copy_video_info(video_dir, youtube_video_id, parent_dir)
             return existing
 
     options = {
@@ -91,19 +109,20 @@ def download_video(video, download_dir, force=False):
         "noplaylist": True,
     }
 
-    print(f"[download] #{db_id} {youtube_video_id} - {title}")
+    print(f"[download] {youtube_video_id} - {title}")
     with yt_dlp.YoutubeDL(options) as downloader:
         downloader.extract_info(url, download=True)
 
     downloaded = existing_download(video_dir, youtube_video_id)
     if not downloaded:
         raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")
+    copy_video_info(video_dir, youtube_video_id, parent_dir)
     return downloaded
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Telecharge en priorisant le 720p les videos listees dans la table SQL videos."
+        description="Telecharge les videos listees dans le cache de metadonnees local."
     )
     parser.add_argument(
         "--download-dir",
@@ -129,21 +148,18 @@ def parse_args():
 
 
 def main():
-    load_dotenv()
+    load_dotenv(override=True)
     args = parse_args()
     parent_download_dir = Path(args.download_dir)
 
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
-        with connection.cursor() as cursor:
-            videos = fetch_videos(cursor, args.limit)
-
+    videos = load_video_infos(parent_download_dir, limit=args.limit)
     if not videos:
-        print("Aucune video trouvee dans la table videos.")
+        print(f"Aucune video trouvee dans {info_cache_dir(parent_download_dir)}.")
         return
 
     if args.dry_run:
-        for db_id, youtube_video_id, title, url in videos:
-            print(f"[dry-run] #{db_id} {youtube_video_id} - {title} - {url}")
+        for youtube_video_id, title, url, _payload in videos:
+            print(f"[dry-run] {youtube_video_id} - {title} - {url}")
         print(f"{len(videos)} videos trouvees.")
         return
 
@@ -154,10 +170,10 @@ def main():
     failed = []
     for video in videos:
         try:
-            download_video(video, download_dir, force=args.force)
+            download_video(video, download_dir, parent_download_dir, force=args.force)
             downloaded_count += 1
         except DownloadError as error:
-            youtube_video_id = video[1]
+            youtube_video_id = video[0]
             print(f"[error] {youtube_video_id}: {error}")
             failed.append(youtube_video_id)
 

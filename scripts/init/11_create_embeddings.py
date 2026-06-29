@@ -132,7 +132,7 @@ def parse_args():
 
 
 def main():
-    load_dotenv()
+    load_dotenv(override=True)
     args = parse_args()
     client = OpenAI()
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))

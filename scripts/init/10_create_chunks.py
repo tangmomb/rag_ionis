@@ -79,21 +79,11 @@ def published_at(video_path):
     if info_path.exists():
         try:
             payload = json.loads(info_path.read_text(encoding="utf-8"))
-            timestamp = payload.get("release_timestamp") or payload.get("timestamp")
-            if timestamp:
-                return datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat().replace("+00:00", "Z")
-            upload_date = payload.get("upload_date")
-            if upload_date and len(upload_date) == 8:
-                return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+            published_at = payload.get("published_at")
+            if published_at:
+                return published_at
         except Exception:
             pass
-
-    video = youtube("videos", part="snippet", id=video_path.stem)
-    items = video.get("items", [])
-    if items:
-        published = items[0]["snippet"].get("publishedAt")
-        if published:
-            return published
 
     dt = datetime.fromtimestamp(video_path.stat().st_mtime, tz=timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
@@ -179,7 +169,7 @@ def split_into_chunks(text, max_chars=DEFAULT_MAX_CHARS, overlap_chars=DEFAULT_O
     return chunks
 
 
-def build_chunks_payload(text):
+def build_chunks_payload(text, meta_data):
     chunks = split_into_chunks(text)
     return {
         "chunking": {
@@ -224,8 +214,7 @@ def create_chunks(video_path, force=False):
         "intervenants": extract_intervenants(normalized),
         "video_url": video_url(video_path),
     }
-    payload = build_chunks_payload(normalized)
-    payload["meta_data"] = meta_data
+    payload = build_chunks_payload(normalized, meta_data)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[ok] {target} ({len(payload['chunks'])} chunks)")

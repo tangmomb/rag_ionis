@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DOWNLOAD_DIR = ROOT_DIR / "downloads" / "youtube"
@@ -100,16 +102,14 @@ def utils_command(script_name, *args):
     return [sys.executable, str(ROOT_DIR / "utils" / script_name), *map(str, args)]
 
 
-def clean_local_init_dirs(download_parent):
+def clean_download_root(download_parent):
     root = download_parent.resolve()
-    for path in sorted(download_parent.iterdir()):
-        if not path.is_dir() or not path.name.endswith("_init"):
-            continue
-        resolved = path.resolve()
-        if root not in resolved.parents:
-            raise RuntimeError(f"Chemin refuse pour suppression: {resolved}")
-        print(f"[clean] Suppression ancien init local: {path}")
-        shutil.rmtree(path)
+    workspace_root = ROOT_DIR.resolve()
+    if workspace_root not in root.parents and root != workspace_root:
+        raise RuntimeError(f"Chemin refuse pour suppression: {root}")
+    if download_parent.exists():
+        print(f"[clean] Suppression complete: {download_parent}")
+        shutil.rmtree(download_parent)
 
 
 def parse_args():
@@ -161,6 +161,7 @@ def parse_args():
 
 
 def main():
+    load_dotenv(ROOT_DIR / ".env", override=True)
     args = parse_args()
     if args.videos is None:
         args.videos = ask_video_count()
@@ -172,19 +173,19 @@ def main():
     download_parent = Path(args.download_dir)
     if not download_parent.is_absolute():
         download_parent = ROOT_DIR / download_parent
-    download_parent.mkdir(parents=True, exist_ok=True)
 
     if args.videos is None:
         print("Mode pipeline: toutes les videos", flush=True)
     else:
         print(f"Mode pipeline: test sur {args.videos} video(s)", flush=True)
 
-    clean_local_init_dirs(download_parent)
+    clean_download_root(download_parent)
+    download_parent.mkdir(parents=True, exist_ok=True)
     total_steps = 15
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
-        step01 = step_command("01_get_data.py", "--skip-transcripts")
+        step01 = step_command("01_get_data.py", "--skip-transcripts", "--download-dir", download_parent)
         if args.videos is not None:
             step01 += ["--limit", str(args.videos)]
         run_step_numbered(1, total_steps, "Step 01 - Get Data", step01, env)

@@ -1,17 +1,16 @@
 import argparse
+import json
 import os
 import shutil
 import time
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
-import psycopg
 import requests
 import yt_dlp
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
-from psycopg.types.json import Jsonb
 
 
 API = "https://www.googleapis.com/youtube/v3"
@@ -121,75 +120,27 @@ def fetch_videos(channel, limit=None):
     return videos[:limit] if limit is not None else videos
 
 
-def upsert_video(cursor, video):
+def video_info_payload(video):
     snippet = video["snippet"]
     content = video["contentDetails"]
     video_id = video["id"]
+    published_at = parse_datetime(snippet.get("publishedAt"))
+    return {
+        "youtube_video_id": video_id,
+        "title": snippet["title"],
+        "description": snippet.get("description"),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "published_at": published_at.isoformat().replace("+00:00", "Z") if published_at else None,
+        "duration_seconds": parse_duration(content["duration"]),
+        "raw_json": video,
+    }
 
-    cursor.execute(
-        """
-        INSERT INTO videos (
-            youtube_video_id,
-            title,
-            description,
-            url,
-            published_at,
-            duration_seconds,
-            raw_json,
-            updated_at
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, now())
-        ON CONFLICT (youtube_video_id) DO UPDATE SET
-            title = EXCLUDED.title,
-            description = EXCLUDED.description,
-            url = EXCLUDED.url,
-            published_at = EXCLUDED.published_at,
-            duration_seconds = EXCLUDED.duration_seconds,
-            raw_json = EXCLUDED.raw_json,
-            updated_at = now()
-        RETURNING id
-        """,
-        (
-            video_id,
-            snippet["title"],
-            snippet.get("description"),
-            f"https://www.youtube.com/watch?v={video_id}",
-            parse_datetime(snippet.get("publishedAt")),
-            parse_duration(content["duration"]),
-            Jsonb(video),
-        ),
-    )
-    return cursor.fetchone()[0]
-
-
-def upsert_daily_stats(cursor, video_db_id, video):
-    stats = video.get("statistics", {})
-    cursor.execute(
-        """
-        INSERT INTO video_daily_stats (
-            video_id,
-            snapshot_date,
-            view_count,
-            like_count,
-            comment_count,
-            raw_json
-        )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (video_id, snapshot_date) DO UPDATE SET
-            view_count = EXCLUDED.view_count,
-            like_count = EXCLUDED.like_count,
-            comment_count = EXCLUDED.comment_count,
-            raw_json = EXCLUDED.raw_json
-        """,
-        (
-            video_db_id,
-            date.today(),
-            int(stats["viewCount"]) if "viewCount" in stats else None,
-            int(stats["likeCount"]) if "likeCount" in stats else None,
-            int(stats["commentCount"]) if "commentCount" in stats else None,
-            Jsonb(stats),
-        ),
-    )
+def write_video_info(video, info_dir):
+    payload = video_info_payload(video)
+    info_dir.mkdir(parents=True, exist_ok=True)
+    path = info_dir / f"{video['id']}.info.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def ffmpeg_exe():
@@ -333,6 +284,11 @@ def parse_args():
         help="Nombre maximum de videos a importer.",
     )
     parser.add_argument(
+        "--download-dir",
+        default=str(DOWNLOAD_DIR),
+        help="Dossier parent utilise pour stocker les metadonnees locales. Defaut: downloads/youtube",
+    )
+    parser.add_argument(
         "--skip-transcripts",
         action="store_true",
         help="Conserve l'option de compatibilite; les transcripts ne sont plus importes dans cette step.",
@@ -341,18 +297,16 @@ def parse_args():
 
 
 def main():
-    load_dotenv()
+    load_dotenv(override=True)
     args = parse_args()
     videos = fetch_videos(CHANNEL, limit=args.limit)
+    info_dir = Path(args.download_dir) / "info_videos"
+    if info_dir.exists():
+        shutil.rmtree(info_dir)
+    for video in videos:
+        write_video_info(video, info_dir)
 
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
-        with connection.cursor() as cursor:
-            for video in videos:
-                video_db_id = upsert_video(cursor, video)
-                upsert_daily_stats(cursor, video_db_id, video)
-                import_comments(cursor, video_db_id, video["id"])
-
-    print(f"{len(videos)} videos importees en base")
+    print(f"{len(videos)} videos preparees en cache metadata")
 
 
 if __name__ == "__main__":

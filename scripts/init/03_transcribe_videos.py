@@ -224,7 +224,7 @@ def parse_args():
 
 
 def main():
-    load_dotenv()
+    load_dotenv(override=True)
     args = parse_args()
     client = OpenAI()
 

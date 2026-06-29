@@ -66,11 +66,7 @@ def image_files(video_images_dir):
 
 
 def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path
-        for path in parent_dir.iterdir()
-        if path.is_dir() and any(image_video_dirs(path))
-    )
+    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(image_video_dirs(path)))
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier avec images trouve dans {parent_dir}")
     return candidates[-1]
@@ -100,28 +96,13 @@ def analyze_batch(client, model, batch, detail):
     content = [
         {
             "type": "input_text",
-            "text": (
-                "Analyse ces images extraites d'une video. Chaque image est nommee par seconde. "
-                "Detecte uniquement les images ou du texte ecrit est visible a l'ecran: nom, titre, "
-                "question, slide, panneau, sous-titre, logo texte important. Ignore les images sans "
-                "texte lisible. Ne retourne une liste vide que si aucune image du lot ne contient de "
-                "texte lisible. Reponds uniquement en JSON valide avec la forme "
-                '{"items":[{"image":"00_12.jpg","timecode":"00:12","second":12,"text_visible":true,'
-                '"text":"texte lu ou resume court","kind":"name|question|slide|title|subtitle|other",'
-                '"confidence":"low|medium|high"}]}.'
-            ),
+            "text": "Analyse ces images extraites d'une video. Chaque image est nommee par seconde. Retranscris de facon litterale tous les textes ecrits visibles a l'ecran, y compris les sous-titres, les noms, les titres, les questions, les slides, les panneaux et les logos texte importants. Ne fais pas de resume si le texte est lisible: recopie au plus pres le texte exact vu a l'ecran, ligne par ligne si besoin. Ignore les images sans texte lisible. Ne retourne une liste vide que si aucune image du lot ne contient de texte lisible. Reponds uniquement en JSON valide avec la forme {\"items\":[{\"image\":\"00_12.jpg\",\"text\":\"texte lu ou extrait litteral\",\"kind\":\"name|question|slide|title|subtitle|other\",\"confidence\":\"low|medium|high\"}]}.",
         }
     ]
 
     for image_path in batch:
         content.append({"type": "input_text", "text": f"Image: {image_path.name}"})
-        content.append(
-            {
-                "type": "input_image",
-                "image_url": image_data_url(image_path),
-                "detail": detail,
-            }
-        )
+        content.append({"type": "input_image", "image_url": image_data_url(image_path), "detail": detail})
 
     response = client.responses.create(
         model=model,
@@ -194,25 +175,10 @@ def deduplicate_items(items):
     return deduplicated
 
 
-def write_outputs(analyse_dir, video_id, result):
-    json_path = analyse_dir / f"{video_id}_image_text.json"
-    txt_path = analyse_dir / f"{video_id}_image_text.txt"
-
+def write_outputs(transcript_dir, video_id, result):
+    json_path = transcript_dir / f"{video_id}_ocr.json"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    lines = []
-    for item in result["items"]:
-        second = item.get("second", "")
-        timecode = item.get("timecode") or format_timecode(second)
-        kind = item.get("kind", "other")
-        confidence = item.get("confidence", "")
-        text = item.get("text", "").strip()
-        image = item.get("image", "")
-        lines.append(f"[{timecode}] {kind} ({confidence}) {image}: {text}")
-
-    txt_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
     print(f"[ok] {json_path}")
-    print(f"[ok] {txt_path}")
 
 
 def format_timecode(seconds):
@@ -259,16 +225,6 @@ def parse_args():
         type=int,
         help="Nombre maximum de videos a analyser.",
     )
-    parser.add_argument(
-        "--limit-images",
-        type=int,
-        help="Nombre maximum d'images par video.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les analyses meme si elles existent deja.",
-    )
     return parser.parse_args()
 
 
@@ -278,35 +234,30 @@ def main():
     client = OpenAI()
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    dirs = image_video_dirs(video_dir)
+    videos = list(image_video_dirs(video_dir))
     if args.limit_videos is not None:
-        dirs = dirs[: args.limit_videos]
-    if not dirs:
-        print(f"Aucun dossier image trouve dans {video_dir}")
+        videos = videos[: args.limit_videos]
+
+    if not videos:
+        print(f"Aucune video trouvee dans {video_dir}")
         return
 
     print(f"Dossier videos: {video_dir}")
     print(f"Modele: {args.model}")
-
-    for current_video_dir in dirs:
-        images_dir = current_video_dir / "images"
-        analyse_dir = current_video_dir / "analyse"
-        analyse_dir.mkdir(parents=True, exist_ok=True)
-        json_path = analyse_dir / f"{current_video_dir.name}_image_text.json"
-        if json_path.exists() and not args.force:
-            print(f"[skip] {current_video_dir.name}: analyse existe deja")
-            continue
-
+    for video_path in videos:
+        images_dir = video_path / "images"
+        transcript_dir = video_path / "transcript"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
         images = image_files(images_dir)
-        if args.limit_images is not None:
-            images = images[: args.limit_images]
-        print(f"[analyse] {current_video_dir.name}: {len(images)} images")
-
+        if not images:
+            print(f"[skip] {video_path.name}: aucune image")
+            continue
+        print(f"[analyse] {video_path.name}: {len(images)} images")
         results = []
         for batch in chunks(images, args.batch_size):
             results.append(analyze_batch(client, args.model, batch, args.detail))
-
-        write_outputs(analyse_dir, current_video_dir.name, merge_results(results))
+        merged = merge_results(results)
+        write_outputs(transcript_dir, video_path.name, merged)
 
 
 if __name__ == "__main__":

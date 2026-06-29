@@ -14,7 +14,7 @@ from yt_dlp.utils import DownloadError
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
-DEFAULT_FORMAT = "best[height<=360]/bestvideo[height<=360]+bestaudio/best"
+DEFAULT_FORMAT = "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -102,7 +102,7 @@ def download_video(video, download_dir, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Telecharge en 360p les videos listees dans la table SQL videos."
+        description="Telecharge en 720p les videos listees dans la table SQL videos."
     )
     parser.add_argument(
         "--download-dir",

@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -9,7 +10,6 @@ VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 TIMECODED_SUFFIX = "_transcript_timecodes.txt"
 ENRICHED_SUFFIX = "_transcript_timecodes_enrichi.txt"
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
-ANALYSE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -55,9 +55,7 @@ def video_files(video_dir):
 
 def latest_video_dir(parent_dir):
     candidates = sorted(
-        path
-        for path in parent_dir.iterdir()
-        if path.is_dir() and any(video_files(path))
+        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
     )
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
@@ -73,7 +71,7 @@ def enriched_path(video_path):
 
 
 def analyse_path(video_path):
-    return video_path.parent / "analyse" / f"{video_path.stem}_image_text.txt"
+    return video_path.parent / "transcript" / f"{video_path.stem}_ocr.json"
 
 
 def parse_transcript(path):
@@ -83,34 +81,25 @@ def parse_transcript(path):
         if not match:
             continue
         start, end, text = match.groups()
-        segments.append(
-            {
-                "start": parse_timecode(start),
-                "end": parse_timecode(end),
-                "line": line,
-            }
-        )
+        segments.append({"start": parse_timecode(start), "end": parse_timecode(end), "line": line})
     return segments
 
 
 def parse_analyse(path):
+    payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = ANALYSE_LINE.match(line)
-        if not match:
+    for item in payload.get("items", []):
+        text = str(item.get("text", "")).strip()
+        if not text:
             continue
-        timecode, text = match.groups()
-        text = clean_analyse_text(text)
-        if text:
-            items.append({"second": parse_timecode(timecode), "text": text})
+        second = item.get("second")
+        if second is None:
+            timecode = str(item.get("timecode", "")).strip()
+            if not timecode:
+                continue
+            second = parse_timecode(timecode)
+        items.append({"second": int(second), "text": text})
     return sorted(items, key=lambda item: item["second"])
-
-
-def clean_analyse_text(text):
-    text = text.strip()
-    if ": " in text:
-        return text.rsplit(": ", 1)[1].strip()
-    return text
 
 
 def enrich_transcript(video_path, force=False):

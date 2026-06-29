@@ -192,11 +192,6 @@ def main():
         step03.append("--force")
     run_step("Step 03 - Transcribe Videos", step03, env)
 
-    step04 = step_command("04_strip_timecodes.py", "--video-dir", video_dir)
-    if args.force:
-        step04.append("--force")
-    run_step("Step 04 - Strip Timecodes", step04, env)
-
     step05 = step_command("05_extract_images.py", "--video-dir", video_dir)
     if args.videos is not None:
         step05 += ["--limit", str(args.videos)]
@@ -204,31 +199,41 @@ def main():
         step05.append("--force")
     run_step("Step 05 - Extract Images", step05, env)
 
-    step06 = step_command("06_analyze_image_text.py", "--video-dir", video_dir)
+    step06 = step_command("06_images_ocr.py", "--video-dir", video_dir)
     if args.videos is not None:
         step06 += ["--limit-videos", str(args.videos)]
     if args.force:
         step06.append("--force")
     run_step("Step 06 - Analyze Image Text", step06, env)
 
-    step07 = step_command("07_enrich_transcripts.py", "--video-dir", video_dir)
+    step07 = step_command("07_correct_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step07.append("--force")
-    run_step("Step 07 - Enrich Transcripts", step07, env)
+    run_step("Step 07 - Correct Transcripts", step07, env)
+
+    step08 = step_command("08_enrich_transcripts.py", "--video-dir", video_dir)
+    if args.force:
+        step08.append("--force")
+    run_step("Step 08 - Enrich Transcripts", step08, env)
+
+    step09 = step_command("09_strip_timecodes.py", "--video-dir", video_dir)
+    if args.force:
+        step09.append("--force")
+    run_step("Step 09 - Strip Timecodes", step09, env)
 
     if not args.skip_upload:
-        step08 = step_command("08_upload_videos_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step10 = step_command("10_upload_videos_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
-            step08.append("--force")
+            step10.append("--force")
         if args.dry_run_upload:
-            step08.append("--dry-run")
-        run_step("Step 08 - Upload Videos To S3", step08, env)
+            step10.append("--dry-run")
+        run_step("Step 10 - Upload Videos To S3", step10, env)
 
     if not args.skip_sql:
-        step09 = step_command("09_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
+        step11 = step_command("11_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
-            step09.append("--dry-run")
-        run_step("Step 09 - Update SQL Assets", step09, env)
+            step11.append("--dry-run")
+        run_step("Step 11 - Update SQL Assets", step11, env)
 
     print("\nPipeline termine.")
     print(f"Dossier traite: {video_dir}")

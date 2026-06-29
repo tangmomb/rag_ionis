@@ -7,6 +7,7 @@ from pathlib import Path
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 TIMECODED_SUFFIX = "_transcript_timecodes.txt"
+CORRECTED_SUFFIX = "_transcript_timecodes_corrected.txt"
 PLAIN_SUFFIX = "_transcript.txt"
 TIMECODE_PREFIX = re.compile(
     r"^\[(?:\d{2}:)?\d{2}:\d{2}-(?:\d{2}:)?\d{2}:\d{2}\]\s*(?:[A-Z][A-Z0-9_-]*:\s*)?"
@@ -57,8 +58,18 @@ def strip_timecodes(text):
 
 
 def output_path(input_path):
-    name = input_path.name.removesuffix(TIMECODED_SUFFIX) + PLAIN_SUFFIX
+    if input_path.name.endswith(CORRECTED_SUFFIX):
+        name = input_path.name.removesuffix(CORRECTED_SUFFIX) + PLAIN_SUFFIX
+    else:
+        name = input_path.name.removesuffix(TIMECODED_SUFFIX) + PLAIN_SUFFIX
     return input_path.with_name(name)
+
+
+def timecoded_inputs(transcript_dir):
+    corrected = sorted(transcript_dir.glob(f"*{CORRECTED_SUFFIX}"))
+    if corrected:
+        return corrected
+    return sorted(transcript_dir.glob(f"*{TIMECODED_SUFFIX}"))
 
 
 def convert_file(input_path, force=False):
@@ -101,7 +112,7 @@ def main():
     transcript_dirs = sorted({video_path.parent / "transcript" for video_path in video_files(video_dir)})
     inputs = []
     for transcript_dir in transcript_dirs:
-        inputs.extend(sorted(transcript_dir.glob(f"*{TIMECODED_SUFFIX}")))
+        inputs.extend(timecoded_inputs(transcript_dir))
 
     if not inputs:
         print(f"Aucun fichier *{TIMECODED_SUFFIX} trouve dans {video_dir}")

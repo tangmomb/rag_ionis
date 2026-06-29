@@ -122,8 +122,8 @@ def parse_args():
     parser.add_argument(
         "--interval",
         type=float,
-        default=2.0,
-        help="Intervalle en secondes entre deux images. Defaut: 2",
+        default=1.0,
+        help="Intervalle en secondes entre deux images. Defaut: 1",
     )
     parser.add_argument(
         "--limit",

@@ -1,11 +1,11 @@
 import argparse
 import base64
 import json
-import os
 import re
+import shutil
 import sys
-import time
 import tempfile
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,11 +14,9 @@ from openai import OpenAI
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
-SECOND_PATTERN = re.compile(r"^seconde_(\d+(?:_\d+)?)$")
-TIMECODE_PATTERN = re.compile(r"^(?:(\d{2})_)?(\d{2})_(\d{2})$")
-DEFAULT_IMAGE_ANALYZE_MODEL = "gpt-5.4"
-DEFAULT_IMAGE_ANALYZE_DETAIL = "low"
-PROMPT_CACHE_KEY = "init-step06-ocr-v1"
+DEFAULT_FILTER_MODEL = "gpt-5.4"
+DEFAULT_FILTER_DETAIL = "low"
+PROMPT_CACHE_KEY = "init-step05-filter-text-v1"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -32,33 +30,6 @@ def image_data_url(path):
     return f"data:{mime};base64,{encoded}"
 
 
-def image_second(path):
-    parsed = seconds_from_image_name(path.name)
-    if parsed is not None:
-        return parsed
-
-    match = SECOND_PATTERN.match(path.stem)
-    if not match:
-        return float("inf")
-    return float(match.group(1).replace("_", "."))
-
-
-def seconds_from_image_name(name):
-    stem = Path(name).stem
-    timecode_match = TIMECODE_PATTERN.match(stem)
-    if timecode_match:
-        hours = int(timecode_match.group(1) or 0)
-        minutes = int(timecode_match.group(2))
-        seconds = int(timecode_match.group(3))
-        return hours * 3600 + minutes * 60 + seconds
-
-    second_match = SECOND_PATTERN.match(stem)
-    if second_match:
-        return float(second_match.group(1).replace("_", "."))
-
-    return None
-
-
 def image_files(video_images_dir):
     return sorted(
         (
@@ -66,36 +37,17 @@ def image_files(video_images_dir):
             for path in video_images_dir.iterdir()
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
         ),
-        key=image_second,
+        key=lambda path: path.name,
     )
-
-
-def load_filtered_images(video_path, images_dir):
-    filtered_dir = images_dir / "with_text"
-    if not filtered_dir.is_dir():
-        return image_files(images_dir)
-    return image_files(filtered_dir)
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(image_video_dirs(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier avec images trouve dans {parent_dir}")
-    return candidates[-1]
 
 
 def image_video_dirs(video_dir):
     candidates = []
-
     if (video_dir / "images").is_dir() and any(image_files(video_dir / "images")):
         candidates.append(video_dir)
-
     for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        if (child / "images").is_dir() and any(image_files(child / "images")):
+        if child.is_dir() and (child / "images").is_dir() and any(image_files(child / "images")):
             candidates.append(child)
-
     return candidates
 
 
@@ -108,7 +60,7 @@ def build_request_body(model, batch, detail):
     content = [
         {
             "type": "input_text",
-            "text": "Analyse ces images extraites d'une video. Chaque image est nommee par seconde. Retranscris de facon litterale tous les textes ecrits visibles a l'ecran, y compris les sous-titres, les noms, les titres, les questions, les slides et les panneaux. Ignore les logos, meme s'ils contiennent du texte. S'il n'y a qu'un seul element de texte visible, considere-le comme un sous-titre. Si tu identifies plusieurs zones de texte ou plusieurs types de textes distincts sur une meme image, cree un element JSON par zone de texte, sans les fusionner. Si deux textes differents sont tres similaires, considere que le plus long des deux est un sous-titre. Ne fais pas de resume si le texte est lisible: recopie au plus pres le texte exact vu a l'ecran, ligne par ligne si besoin. Ignore les images sans texte lisible. Ne retourne une liste vide que si aucune image du lot ne contient de texte lisible. Reponds uniquement en JSON valide avec la forme {\"items\":[{\"image\":\"00_12.jpg\",\"text\":\"texte lu ou extrait litteral\",\"kind\":\"name|question|slide|title|subtitle|other\",\"confidence\":\"low|medium|high\"}]}. N'utilise jamais le kind \"logo\".",
+            "text": "Pour chaque image, reponds uniquement en JSON valide avec la forme {\"items\":[{\"image\":\"nom_du_fichier\",\"has_text\":true|false}]}. Marque has_text=true seulement si le texte est clairement ajoute au montage video et utile pour l'OCR: sous-titres, titres a l'ecran, slides, questions, annotations, incrustations ou panneaux explicitement presents comme partie du contenu video. Marque has_text=false si le texte appartient au decor ou a l'environnement, meme s'il est lisible: roll-up, affiche de fond, signaletique de lieu, packaging, etiquette, objet de scene, element de decor ou texte secondaire non incruste. Si un mot ou une suite de mots semble encore en train d'apparaitre, de se construire ou d'animer, considere l'image comme non pertinente: le texte complet devrait suivre dans une image plus tardive, donc mets false. Ignore aussi les logos decoratifs, icones, pictogrammes et elements de UI sans texte lisible. Si tu as un doute, mets false. Ne fais aucun commentaire.",
         }
     ]
 
@@ -119,7 +71,7 @@ def build_request_body(model, batch, detail):
     return {
         "model": model,
         "input": [{"role": "user", "content": content}],
-        "max_output_tokens": 2000,
+        "max_output_tokens": 1000,
         "temperature": 0,
         "prompt_cache_key": PROMPT_CACHE_KEY,
         "prompt_cache_retention": "24h",
@@ -201,7 +153,7 @@ def parse_batch_output(client, output_file_id, request_id):
             for part in content:
                 if part.get("type") == "output_text" and part.get("text"):
                     return parse_json_response(part["text"])
-        raise RuntimeError(f"Réponse batch introuvable pour {request_id}")
+        raise RuntimeError(f"Reponse batch introuvable pour {request_id}")
 
 
 def parse_json_response(text):
@@ -219,74 +171,9 @@ def parse_json_response(text):
         return json.loads(cleaned[start : end + 1])
 
 
-def merge_result_items(items, result):
-    for item in result.get("items", []):
-        items.append(normalize_item_timecode(item))
-    items.sort(key=lambda item: item.get("second", 0))
-    return deduplicate_items(items)
-
-
-def normalize_item_timecode(item):
-    image = item.get("image", "")
-    seconds = seconds_from_image_name(image)
-    if seconds is not None:
-        item["second"] = seconds
-        item["timecode"] = format_timecode(seconds)
-    return item
-
-
-def normalize_detected_text(text):
-    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
-    text = " ".join(lines)
-    text = re.sub(r"\s+", " ", text).strip().lower()
-    return text
-
-
-def deduplicate_items(items):
-    seen = set()
-    seen_lines = set()
-    deduplicated = []
-    for item in items:
-        lines = [line.strip() for line in str(item.get("text", "")).splitlines() if line.strip()]
-        new_lines = []
-        for line in lines:
-            line_key = normalize_detected_text(line)
-            if line_key and line_key not in seen_lines:
-                new_lines.append(line)
-        item["text"] = "\n".join(new_lines)
-
-        key = normalize_detected_text(item.get("text", ""))
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        for line in new_lines:
-            seen_lines.add(normalize_detected_text(line))
-        deduplicated.append(item)
-    return deduplicated
-
-
-def write_outputs(transcript_dir, video_id, result):
-    json_path = transcript_dir / f"{video_id}_ocr.json"
-    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"[write] {len(result.get('items', []))} items -> {json_path}", flush=True)
-
-
-def write_outputs_incrementally(transcript_dir, video_id, items):
-    write_outputs(transcript_dir, video_id, {"items": items})
-
-
-def format_timecode(seconds):
-    seconds = int(seconds or 0)
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes:02d}:{seconds:02d}"
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Detecte les images contenant du texte ecrit et ecrit le resultat dans images/analyse."
+        description="Filtre les images qui contiennent du texte lisible avant l'OCR complet."
     )
     parser.add_argument(
         "--video-dir",
@@ -299,19 +186,19 @@ def parse_args():
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_IMAGE_ANALYZE_MODEL,
-        help="Modele vision. Defaut: gpt-5.4-mini",
+        default=DEFAULT_FILTER_MODEL,
+        help="Modele vision utilise pour le filtrage. Defaut: gpt-5.4-mini",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=20,
-        help="Nombre d'images envoyees par appel API. Defaut: 20",
+        default=24,
+        help="Nombre d'images envoyees par appel de filtrage. Defaut: 24",
     )
     parser.add_argument(
         "--detail",
         choices=("low", "high", "auto"),
-        default=DEFAULT_IMAGE_ANALYZE_DETAIL,
+        default=DEFAULT_FILTER_DETAIL,
         help="Niveau de detail image envoye au modele. Defaut: high",
     )
     parser.add_argument(
@@ -320,8 +207,9 @@ def parse_args():
         help="Nombre maximum de videos a analyser.",
     )
     parser.add_argument(
-        "--images-manifest",
-        help="Manifeste JSON optionnel produit par la step de filtrage. Si absent, toutes les images sont utilisees.",
+        "--force",
+        action="store_true",
+        help="Accepte l'option pour compatibilite avec le pipeline. Sans effet.",
     )
     parser.add_argument(
         "--batch-api",
@@ -331,17 +219,52 @@ def parse_args():
     return parser.parse_args()
 
 
+def ask_filter_enabled():
+    if not sys.stdin.isatty():
+        return True
+    while True:
+        value = input("Filtrer les images sans texte avant l'OCR ? [O/n]: ").strip().lower()
+        if value in {"", "o", "oui", "y", "yes"}:
+            return True
+        if value in {"n", "non", "no"}:
+            return False
+        print("Merci de repondre par o/n.", flush=True)
+
+
 def ask_batch_api():
     if not sys.stdin.isatty():
         return False
 
     while True:
-        value = input("Traiter en batch via la Batch API ? [o/N]: ").strip().lower()
+        value = input("Traiter la step 05 en batch via la Batch API ? [o/N]: ").strip().lower()
         if value in {"o", "oui", "y", "yes"}:
             return True
         if value in {"", "n", "non", "no"}:
             return False
         print("Merci de repondre par o/n.", flush=True)
+
+
+def latest_video_dir(parent_dir):
+    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(image_video_dirs(path)))
+    if not candidates:
+        raise FileNotFoundError(f"Aucun dossier avec images trouve dans {parent_dir}")
+    return candidates[-1]
+
+
+def write_filtered_images(images_dir, images):
+    output_dir = images_dir / "with_text"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for existing in output_dir.iterdir():
+        if existing.is_file():
+            existing.unlink()
+    copied = 0
+    for path in images:
+        if not path.exists():
+            print(f"[skip] image introuvable: {path}", flush=True)
+            continue
+        shutil.copy2(path, output_dir / path.name)
+        copied += 1
+    print(f"[write] {copied} images -> {output_dir}", flush=True)
 
 
 def main():
@@ -360,29 +283,41 @@ def main():
         return
 
     print(f"Dossier videos: {video_dir}")
-    print(f"Modele: {args.model}", flush=True)
+    print(f"Modele filtrage: {args.model}", flush=True)
+
+    enabled = ask_filter_enabled()
+    if not enabled:
+        print("Filtrage desactive, aucun manifeste genere.", flush=True)
+        return
+
     print(f"Mode traitement: {'batch' if batch_api else 'synchrone'}", flush=True)
+
     for video_path in videos:
         images_dir = video_path / "images"
-        transcript_dir = video_path / "transcript"
-        transcript_dir.mkdir(parents=True, exist_ok=True)
-        images = load_filtered_images(video_path, images_dir)
+        images = image_files(images_dir)
         if not images:
             print(f"[skip] {video_path.name}: aucune image", flush=True)
             continue
         print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
-        items = []
+        kept = []
         total_batches = (len(images) + args.batch_size - 1) // args.batch_size
         for batch_index, batch in enumerate(chunks(images, args.batch_size), start=1):
-            request_id = f"{video_path.name}_batch_{batch_index:04d}"
-            print(f"[batch {batch_index}/{total_batches}] {request_id}: envoi", flush=True)
+            request_id = f"{video_path.name}_filter_{batch_index:04d}"
+            print(f"[filter {batch_index}/{total_batches}] {request_id}: envoi", flush=True)
             if batch_api:
                 result = analyze_batch(client, args.model, batch, args.detail, request_id)
             else:
                 result = analyze_sync(client, args.model, batch, args.detail)
-            items = merge_result_items(items, result)
-            write_outputs_incrementally(transcript_dir, video_path.name, items)
-        print(f"[done] {video_path.name}: {len(items)} items", flush=True)
+            for item in result.get("items", []):
+                if item.get("has_text") is True and item.get("image"):
+                    candidate = images_dir / item["image"]
+                    if candidate.exists():
+                        kept.append(candidate)
+                    else:
+                        print(f"[skip] image introuvable dans le lot: {candidate}", flush=True)
+        kept = sorted({path.name: path for path in kept}.values(), key=lambda path: path.name)
+        write_filtered_images(images_dir, kept)
+        print(f"[done] {video_path.name}: {len(kept)}/{len(images)} images gardees", flush=True)
 
 
 if __name__ == "__main__":

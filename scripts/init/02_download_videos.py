@@ -14,7 +14,8 @@ from yt_dlp.utils import DownloadError
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
-DEFAULT_FORMAT = "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+DEFAULT_FORMAT = "bestvideo[height=720]+bestaudio/best[height=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+DEFAULT_MERGE_FORMAT = "mp4"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -81,8 +82,8 @@ def download_video(video, download_dir, force=False):
             return existing
 
     options = {
-        "format": os.getenv("YTDLP_FORMAT", DEFAULT_FORMAT),
-        "merge_output_format": os.getenv("YTDLP_MERGE_FORMAT", "mp4"),
+        "format": DEFAULT_FORMAT,
+        "merge_output_format": DEFAULT_MERGE_FORMAT,
         "outtmpl": output_template,
         "ffmpeg_location": str(ffmpeg_exe()),
         "js_runtimes": {"node": {}},
@@ -102,7 +103,7 @@ def download_video(video, download_dir, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Telecharge en 720p les videos listees dans la table SQL videos."
+        description="Telecharge en priorisant le 720p les videos listees dans la table SQL videos."
     )
     parser.add_argument(
         "--download-dir",

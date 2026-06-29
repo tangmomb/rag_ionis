@@ -67,11 +67,29 @@ def ask_video_count():
             print(error)
 
 
+def ask_batch_api():
+    if not sys.stdin.isatty():
+        return False
+
+    while True:
+        value = input("Traiter la step 05 en batch via la Batch API ? [o/N]: ").strip().lower()
+        if value in {"o", "oui", "y", "yes"}:
+            return True
+        if value in {"", "n", "non", "no"}:
+            return False
+        print("Merci de repondre par o/n.", flush=True)
+
+
 def run_step(label, command, env):
     printable = " ".join(str(part) for part in command)
     print(f"\n=== {label} ===")
     print(printable)
     subprocess.run(command, cwd=ROOT_DIR, env=env, check=True)
+
+
+def run_step_numbered(index, total, label, command, env):
+    print(f"\n[step {index:02d}/{total:02d}] {label}", flush=True)
+    run_step(label, command, env)
 
 
 def step_command(script_name, *args):
@@ -146,6 +164,7 @@ def main():
     args = parse_args()
     if args.videos is None:
         args.videos = ask_video_count()
+    batch_api = ask_batch_api()
 
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
@@ -156,25 +175,26 @@ def main():
     download_parent.mkdir(parents=True, exist_ok=True)
 
     if args.videos is None:
-        print("Mode pipeline: toutes les videos")
+        print("Mode pipeline: toutes les videos", flush=True)
     else:
-        print(f"Mode pipeline: test sur {args.videos} video(s)")
+        print(f"Mode pipeline: test sur {args.videos} video(s)", flush=True)
 
     clean_local_init_dirs(download_parent)
-    run_step("Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
+    total_steps = 15
+    run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
         step01 = step_command("01_get_data.py", "--skip-transcripts")
         if args.videos is not None:
             step01 += ["--limit", str(args.videos)]
-        run_step("Step 01 - Get Data", step01, env)
+        run_step_numbered(1, total_steps, "Step 01 - Get Data", step01, env)
 
     step02 = step_command("02_download_videos.py", "--download-dir", download_parent)
     if args.videos is not None:
         step02 += ["--limit", str(args.videos)]
     if args.force:
         step02.append("--force")
-    run_step("Step 02 - Download Videos", step02, env)
+    run_step_numbered(2, total_steps, "Step 02 - Download Videos", step02, env)
 
     try:
         video_dir = latest_video_dir(download_parent)
@@ -183,60 +203,86 @@ def main():
             "La Step 02 n'a cree aucun dossier de videos. "
             "Verifie que la table videos contient des lignes, ou relance sans --skip-data."
         ) from error
-    print(f"\nDossier pipeline: {video_dir}")
+    print(f"\nDossier pipeline: {video_dir}", flush=True)
 
     step03 = step_command("03_transcribe_videos.py", "--video-dir", video_dir)
     if args.videos is not None:
         step03 += ["--limit", str(args.videos)]
     if args.force:
         step03.append("--force")
-    run_step("Step 03 - Transcribe Videos", step03, env)
+    run_step_numbered(3, total_steps, "Step 03 - Transcribe Videos", step03, env)
 
-    step05 = step_command("05_extract_images.py", "--video-dir", video_dir)
+    step04 = step_command("04_extract_images.py", "--video-dir", video_dir)
     if args.videos is not None:
-        step05 += ["--limit", str(args.videos)]
+        step04 += ["--limit", str(args.videos)]
+    if args.force:
+        step04.append("--force")
+    run_step_numbered(4, total_steps, "Step 04 - Extract Images", step04, env)
+
+    step05 = step_command("05_filter_images_with_text.py", "--video-dir", video_dir)
+    if args.videos is not None:
+        step05 += ["--limit-videos", str(args.videos)]
+    if batch_api:
+        step05.append("--batch-api")
     if args.force:
         step05.append("--force")
-    run_step("Step 05 - Extract Images", step05, env)
+    run_step_numbered(5, total_steps, "Step 05 - Filter Images With Text", step05, env)
 
     step06 = step_command("06_images_ocr.py", "--video-dir", video_dir)
     if args.videos is not None:
         step06 += ["--limit-videos", str(args.videos)]
+    if batch_api:
+        step06.append("--batch-api")
     if args.force:
         step06.append("--force")
-    run_step("Step 06 - Analyze Image Text", step06, env)
+    run_step_numbered(6, total_steps, "Step 06 - Analyze Image Text", step06, env)
 
     step07 = step_command("07_correct_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step07.append("--force")
-    run_step("Step 07 - Correct Transcripts", step07, env)
+    run_step_numbered(7, total_steps, "Step 07 - Correct Transcripts", step07, env)
 
     step08 = step_command("08_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step08.append("--force")
-    run_step("Step 08 - Enrich Transcripts", step08, env)
+    run_step_numbered(8, total_steps, "Step 08 - Enrich Transcripts", step08, env)
 
     step09 = step_command("09_strip_timecodes.py", "--video-dir", video_dir)
     if args.force:
         step09.append("--force")
-    run_step("Step 09 - Strip Timecodes", step09, env)
+    run_step_numbered(9, total_steps, "Step 09 - Strip Timecodes", step09, env)
+
+    step10 = step_command("10_create_chunks.py", "--video-dir", video_dir)
+    if args.force:
+        step10.append("--force")
+    run_step_numbered(10, total_steps, "Step 10 - Create Transcript Chunks", step10, env)
+
+    step11 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
+    if args.force:
+        step11.append("--force")
+    run_step_numbered(11, total_steps, "Step 11 - Split Alert Chunks", step11, env)
+
+    step12 = step_command("11_create_embeddings.py", "--video-dir", video_dir)
+    if args.force:
+        step12.append("--force")
+    run_step_numbered(12, total_steps, "Step 12 - Create Transcript Embeddings", step12, env)
 
     if not args.skip_upload:
-        step10 = step_command("10_upload_videos_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step13 = step_command("13_upload_videos_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
-            step10.append("--force")
+            step13.append("--force")
         if args.dry_run_upload:
-            step10.append("--dry-run")
-        run_step("Step 10 - Upload Videos To S3", step10, env)
+            step13.append("--dry-run")
+        run_step_numbered(13, total_steps, "Step 13 - Upload Videos To S3", step13, env)
 
     if not args.skip_sql:
-        step11 = step_command("11_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
+        step14 = step_command("14_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
-            step11.append("--dry-run")
-        run_step("Step 11 - Update SQL Assets", step11, env)
+            step14.append("--dry-run")
+        run_step_numbered(14, total_steps, "Step 14 - Update SQL Assets", step14, env)
 
-    print("\nPipeline termine.")
-    print(f"Dossier traite: {video_dir}")
+    print("\nPipeline termine.", flush=True)
+    print(f"Dossier traite: {video_dir}", flush=True)
 
 
 if __name__ == "__main__":

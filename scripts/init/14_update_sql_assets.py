@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_S3_ROOT_PREFIX = "youtube"
+DEFAULT_S3_BUCKET_NAME = ""
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_enrichi.txt"
 TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
@@ -466,8 +467,8 @@ def parse_args():
     )
     parser.add_argument(
         "--bucket",
-        default=os.getenv("S3_BUCKET_NAME"),
-        help="Nom du bucket S3. Defaut: S3_BUCKET_NAME",
+        default=DEFAULT_S3_BUCKET_NAME,
+        help="Nom du bucket S3. Defaut: aucun",
     )
     parser.add_argument(
         "--prefix",

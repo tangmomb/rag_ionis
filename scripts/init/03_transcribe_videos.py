@@ -14,6 +14,9 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 OPENAI_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
+DEFAULT_TRANSCRIBE_MODEL = "whisper-1"
+DEFAULT_TRANSCRIBE_LANGUAGE = "fr"
+DEFAULT_TRANSCRIBE_AUDIO_BITRATE = "48k"
 DEFAULT_TRANSCRIBE_PROMPT = (
     "Transcrire strictement l'audio en francais. Ne pas traduire en anglais. "
     "Conserver les noms propres et termes techniques lies a IONIS-STM, job dating, "
@@ -90,7 +93,7 @@ def extract_audio(video_path, audio_dir):
         "-ar",
         "16000",
         "-b:a",
-        os.getenv("OPENAI_TRANSCRIBE_AUDIO_BITRATE", "48k"),
+        DEFAULT_TRANSCRIBE_AUDIO_BITRATE,
         str(audio_path),
     ]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -102,8 +105,8 @@ def transcribe_with_openai(client, audio_path):
         size_mb = audio_path.stat().st_size / 1024 / 1024
         raise ValueError(f"{audio_path.name} fait {size_mb:.1f} MiB apres extraction audio")
 
-    model = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
-    language = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE") or os.getenv("WHISPER_LANGUAGE", "fr") or None
+    model = DEFAULT_TRANSCRIBE_MODEL
+    language = DEFAULT_TRANSCRIBE_LANGUAGE
     print(f"[openai] {audio_path.name} ({model})")
 
     with audio_path.open("rb") as audio_file:
@@ -119,9 +122,8 @@ def transcribe_with_openai(client, audio_path):
             "language": language,
             "response_format": response_format,
         }
-        prompt = os.getenv("OPENAI_TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
-        if prompt and "diarize" not in model:
-            request["prompt"] = prompt
+        if DEFAULT_TRANSCRIBE_PROMPT and "diarize" not in model:
+            request["prompt"] = DEFAULT_TRANSCRIBE_PROMPT
         if "diarize" in model:
             request["chunking_strategy"] = "auto"
         if model == "whisper-1":
@@ -176,7 +178,7 @@ def format_timestamped_transcript(segments):
 
 
 def transcribe_video(client, video_path, transcript_dir, audio_dir, force=False):
-    model = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
+    model = DEFAULT_TRANSCRIBE_MODEL
     output_path = transcript_path(transcript_dir, video_path, model)
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")

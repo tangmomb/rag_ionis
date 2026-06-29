@@ -90,6 +90,8 @@ def parse_analyse(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
     for item in payload.get("items", []):
+        if str(item.get("kind", "")).strip().lower() == "subtitle":
+            continue
         text = str(item.get("text", "")).strip()
         if not text:
             continue

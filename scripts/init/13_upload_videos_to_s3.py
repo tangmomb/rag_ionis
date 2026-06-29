@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_S3_ROOT_PREFIX = "youtube"
+DEFAULT_S3_BUCKET_NAME = ""
+DEFAULT_S3_REGION = ""
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -25,8 +27,8 @@ def latest_video_dir(parent_dir):
 
 
 def s3_client(region):
-    access_key = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
+    access_key = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
 
     options = {}
     if region:
@@ -143,13 +145,13 @@ def parse_args():
     )
     parser.add_argument(
         "--bucket",
-        default=os.getenv("S3_BUCKET_NAME"),
-        help="Nom du bucket S3. Defaut: S3_BUCKET_NAME",
+        default=DEFAULT_S3_BUCKET_NAME,
+        help="Nom du bucket S3. Defaut: aucun",
     )
     parser.add_argument(
         "--region",
-        default=os.getenv("S3_REGION") or os.getenv("AWS_DEFAULT_REGION"),
-        help="Region AWS. Defaut: S3_REGION ou AWS_DEFAULT_REGION",
+        default=DEFAULT_S3_REGION,
+        help="Region AWS. Defaut: aucune",
     )
     parser.add_argument(
         "--prefix",

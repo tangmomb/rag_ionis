@@ -258,6 +258,11 @@ class LocalPaddleOCR:
             return self._recognize_paddlex(image_path)
         return self._recognize_paddleocr(image_path)
 
+    def recognize_raw(self, image_path):
+        if self.backend == "paddlex":
+            return self._recognize_paddlex_raw(image_path)
+        return self._recognize_paddleocr_raw(image_path)
+
     def _recognize_paddlex(self, image_path):
         records = []
         output = self.engine.predict(
@@ -273,6 +278,22 @@ class LocalPaddleOCR:
                 payload = payload["res"]
             records.extend(self._records_from_payload(payload))
         return records
+
+    def _recognize_paddlex_raw(self, image_path):
+        raw_items = []
+        output = self.engine.predict(
+            input=str(image_path),
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            text_rec_score_thresh=self.min_confidence,
+        )
+        for result in output:
+            payload = getattr(result, "json", result)
+            if isinstance(payload, dict) and "res" in payload:
+                payload = payload["res"]
+            raw_items.append(payload)
+        return raw_items
 
     def _records_from_payload(self, payload):
         texts = list(payload.get("rec_texts") or [])
@@ -318,6 +339,20 @@ class LocalPaddleOCR:
                     continue
                 records.append({"text": cleaned, "score": score, "poly": point_list(poly), "box": box_bounds(poly)})
         return records
+
+    def _recognize_paddleocr_raw(self, image_path):
+        if hasattr(self.engine, "predict"):
+            try:
+                raw_items = []
+                for result in self.engine.predict(str(image_path)):
+                    payload = getattr(result, "json", result)
+                    if isinstance(payload, dict) and "res" in payload:
+                        payload = payload["res"]
+                    raw_items.append(payload)
+                return raw_items
+            except (AttributeError, NotImplementedError):
+                pass
+        return self.engine.ocr(str(image_path), cls=False)
 
 
 def ocr_items_for_image(ocr, image_path):

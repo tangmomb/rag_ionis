@@ -216,32 +216,25 @@ python scripts/init/04_extract_images.py
 
 Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
-## Step 05 - Filter Images With Text
+## Step 05 - Image OCR
 
-Filtrer localement avec PaddleOCR les images ou du texte ecrit apparait a l'ecran:
-
-```powershell
-python scripts/init/05_filter_images_with_text.py
-```
-
-Le script n'appelle aucune API OpenAI. Il copie les images contenant du texte dans `images/with_text/`.
-
-Options utiles:
+Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 
 ```powershell
-python scripts/init/05_filter_images_with_text.py --device gpu:0 --lang fr
-python scripts/init/05_filter_images_with_text.py --device cpu
+python scripts/init/05_images_ocr.py
 ```
 
-## Step 06 - Image OCR
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
 
-Extraire localement les textes visibles avec PaddleOCR:
+## Step 06 - OCR Subtitles
+
+Concatener les items OCR de type `subtitle` dans un fichier texte dedie:
 
 ```powershell
-python scripts/init/06_images_ocr.py
+python scripts/init/06_ocr_subtitles.py
 ```
 
-Le script lit `images/with_text/` si la Step 05 l'a produit, sinon toutes les images. Il ecrit `transcript/<video_id>_ocr.json`, consomme ensuite par les steps de correction et d'enrichissement.
+Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` en collant les textes `kind == subtitle` avec des espaces.
 
 ## Step 07 - Correct Transcripts
 
@@ -251,7 +244,7 @@ Corriger les erreurs de noms dans les transcripts timecodes a partir du JSON OCR
 python scripts/init/07_correct_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il lit `transcript/*_ocr.json` et cree `transcript/*_transcript_timecodes_corrected.txt`.
+Le script n'appelle aucune API. Il lit `transcript/*_ocr_processed.json` et cree `transcript/*_transcript_timecodes_corrected.txt`.
 
 ## Step 08 - Enrich Transcripts
 
@@ -261,7 +254,7 @@ Ajouter les textes visibles a l'ecran dans les transcripts timecodes:
 python scripts/init/08_enrich_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes_corrected.txt` avec `transcript/*_ocr.json` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
+Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes_corrected.txt` avec `transcript/*_ocr_processed.json` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
 
 ## Step 13 - Upload Videos To S3
 

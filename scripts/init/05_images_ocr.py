@@ -19,17 +19,16 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 configure_stdio()
 
 
-def load_filtered_images(images_dir):
-    filtered_dir = images_dir / "with_text"
-    if filtered_dir.is_dir():
-        return image_files(filtered_dir)
-    return image_files(images_dir)
-
-
 def write_outputs(transcript_dir, video_id, result):
-    json_path = transcript_dir / f"{video_id}_ocr.json"
+    json_path = transcript_dir / f"{video_id}_ocr_processed.json"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[write] {len(result.get('items', []))} items -> {json_path}", flush=True)
+
+
+def write_raw_outputs(transcript_dir, video_id, raw_result):
+    json_path = transcript_dir / f"{video_id}_ocr_brut.json"
+    json_path.write_text(json.dumps(raw_result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"[write] raw -> {json_path}", flush=True)
 
 
 def parse_args():
@@ -98,12 +97,12 @@ def main():
         images_dir = video_path / "images"
         transcript_dir = video_path / "transcript"
         transcript_dir.mkdir(parents=True, exist_ok=True)
-        output_path = transcript_dir / f"{video_path.name}_ocr.json"
+        output_path = transcript_dir / f"{video_path.name}_ocr_processed.json"
         if output_path.exists() and not args.force:
             print(f"[skip] {output_path.name} existe deja")
             continue
 
-        images = load_filtered_images(images_dir)
+        images = image_files(images_dir)
         if not images:
             print(f"[skip] {video_path.name}: aucune image", flush=True)
             write_outputs(transcript_dir, video_path.name, {"items": []})
@@ -111,12 +110,22 @@ def main():
 
         print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
         items = []
+        raw_items = []
         for index, image_path in enumerate(images, start=1):
+            raw_result = ocr.recognize_raw(image_path)
+            raw_items.append(
+                {
+                    "image": image_path.name,
+                    "raw": raw_result,
+                }
+            )
             image_items = ocr_items_for_image(ocr, image_path)
             items.extend(image_items)
             print(f"[ocr {index}/{len(images)}] {image_path.name}: {len(image_items)} texte(s)", flush=True)
 
-        write_outputs(transcript_dir, video_path.name, {"items": deduplicate_items(items)})
+        write_raw_outputs(transcript_dir, video_path.name, {"items": raw_items})
+        processed_items = deduplicate_items(items)
+        write_outputs(transcript_dir, video_path.name, {"items": processed_items})
         print(f"[done] {video_path.name}: {len(items)} items bruts", flush=True)
 
 

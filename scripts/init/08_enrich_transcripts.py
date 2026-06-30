@@ -72,7 +72,7 @@ def enriched_path(video_path):
 
 
 def analyse_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}_ocr.json"
+    return video_path.parent / "transcript" / f"{video_path.stem}_ocr_processed.json"
 
 
 def parse_transcript(path):

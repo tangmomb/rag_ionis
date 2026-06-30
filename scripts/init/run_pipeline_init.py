@@ -206,19 +206,19 @@ def main():
         step04.append("--force")
     run_step_numbered(4, total_steps, "Step 04 - Extract Images", step04, env)
 
-    step05 = step_command("05_filter_images_with_text.py", "--video-dir", video_dir)
+    step05 = step_command("05_images_ocr.py", "--video-dir", video_dir)
     if args.videos is not None:
         step05 += ["--limit-videos", str(args.videos)]
     if args.force:
         step05.append("--force")
-    run_step_numbered(5, total_steps, "Step 05 - Filter Images With Text (PaddleOCR)", step05, env)
+    run_step_numbered(5, total_steps, "Step 05 - Image OCR (PaddleOCR)", step05, env)
 
-    step06 = step_command("06_images_ocr.py", "--video-dir", video_dir)
+    step06 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
     if args.videos is not None:
         step06 += ["--limit-videos", str(args.videos)]
     if args.force:
         step06.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - Image OCR (PaddleOCR)", step06, env)
+    run_step_numbered(6, total_steps, "Step 06 - OCR Subtitles", step06, env)
 
     step07 = step_command("07_correct_transcripts.py", "--video-dir", video_dir)
     if args.force:

@@ -72,6 +72,10 @@ def subtitle_timecodes_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
 
 
+def processed_ocr_path(video_path):
+    return video_path.parent / "transcript" / f"{video_path.stem}_ocr_processed.json"
+
+
 def enriched_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{ENRICHED_SUFFIX}"
 
@@ -105,10 +109,7 @@ def parse_subtitle_timecodes(path):
     return items
 
 
-def parse_analyse(path, prefer_subtitle_timecodes=False):
-    if prefer_subtitle_timecodes:
-        return parse_subtitle_timecodes(path)
-
+def parse_processed_non_subtitles(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
     for item in payload.get("items", []):
@@ -130,7 +131,7 @@ def parse_analyse(path, prefer_subtitle_timecodes=False):
 def enrich_transcript(video_path, force=False):
     source = transcript_path(video_path)
     subtitle_source = subtitle_timecodes_path(video_path)
-    analyse = subtitle_source if subtitle_source.exists() else analyse_path(video_path)
+    analyse = processed_ocr_path(video_path)
     target = enriched_path(video_path)
 
     if target.exists() and not force:
@@ -139,20 +140,32 @@ def enrich_transcript(video_path, force=False):
     if not source.exists():
         print(f"[skip] transcript introuvable: {source}")
         return None
+    if not subtitle_source.exists():
+        print(f"[skip] sous-titres OCR introuvables: {subtitle_source}")
+        return None
     if not analyse.exists():
         print(f"[skip] analyse introuvable: {analyse}")
         return None
 
     segments = parse_transcript(source)
-    overlays = parse_analyse(analyse, prefer_subtitle_timecodes=analyse == subtitle_source)
+    subtitles = parse_subtitle_timecodes(subtitle_source)
+    overlays = parse_processed_non_subtitles(analyse)
     lines = []
+    subtitle_index = 0
     overlay_index = 0
 
     for segment in segments:
+        while subtitle_index < len(subtitles) and subtitles[subtitle_index]["second"] <= segment["start"]:
+            lines.append(format_overlay_line(subtitles[subtitle_index]))
+            subtitle_index += 1
+
         while overlay_index < len(overlays) and overlays[overlay_index]["second"] <= segment["start"]:
-            overlay = overlays[overlay_index]
-            lines.append(format_overlay_line(overlay))
+            lines.append(format_overlay_line(overlays[overlay_index]))
             overlay_index += 1
+
+        while subtitle_index < len(subtitles) and segment["start"] < subtitles[subtitle_index]["second"] <= segment["end"]:
+            lines.append(format_overlay_line(subtitles[subtitle_index]))
+            subtitle_index += 1
 
         while overlay_index < len(overlays) and segment["start"] < overlays[overlay_index]["second"] <= segment["end"]:
             overlay = overlays[overlay_index]
@@ -160,6 +173,10 @@ def enrich_transcript(video_path, force=False):
             overlay_index += 1
 
         lines.append(segment["line"])
+
+    while subtitle_index < len(subtitles):
+        lines.append(format_overlay_line(subtitles[subtitle_index]))
+        subtitle_index += 1
 
     while overlay_index < len(overlays):
         lines.append(format_overlay_line(overlays[overlay_index]))

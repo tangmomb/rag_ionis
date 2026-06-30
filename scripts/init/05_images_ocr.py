@@ -10,6 +10,7 @@ from local_paddle_ocr import (
     image_video_dirs,
     latest_video_dir,
     ocr_items_for_image,
+    refine_subtitle_kinds,
 )
 
 
@@ -124,7 +125,7 @@ def main():
             print(f"[ocr {index}/{len(images)}] {image_path.name}: {len(image_items)} texte(s)", flush=True)
 
         write_raw_outputs(transcript_dir, video_path.name, {"items": raw_items})
-        processed_items = deduplicate_items(items)
+        processed_items = deduplicate_items(refine_subtitle_kinds(items, images_dir))
         write_outputs(transcript_dir, video_path.name, {"items": processed_items})
         print(f"[done] {video_path.name}: {len(items)} items bruts", flush=True)
 

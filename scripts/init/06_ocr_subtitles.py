@@ -49,11 +49,46 @@ def load_processed_items(path):
 
 
 def normalize_text(text):
-    return " ".join(str(text).split()).strip().casefold()
+    return "".join(str(text).casefold().split())
+
+
+def one_edit_apart(left, right):
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > 1:
+        return False
+
+    if len(left) == len(right):
+        differences = sum(1 for left_char, right_char in zip(left, right) if left_char != right_char)
+        return differences <= 1
+
+    shorter, longer = sorted((left, right), key=len)
+    short_index = 0
+    long_index = 0
+    differences = 0
+    while short_index < len(shorter) and long_index < len(longer):
+        if shorter[short_index] == longer[long_index]:
+            short_index += 1
+            long_index += 1
+            continue
+        differences += 1
+        if differences > 1:
+            return False
+        long_index += 1
+    return True
+
+
+def is_duplicate_subtitle(normalized, seen_normalized):
+    if normalized in seen_normalized:
+        return True
+    if len(normalized) < 12:
+        return False
+    return any(one_edit_apart(normalized, previous) for previous in seen_normalized if len(previous) >= 12)
+
 
 def render_subtitles(items):
     subtitles = []
-    seen = set()
+    seen_normalized = set()
     for item in items:
         if str(item.get("kind", "")).strip().lower() != "subtitle":
             continue
@@ -61,9 +96,10 @@ def render_subtitles(items):
         if not text:
             continue
         cleaned = " ".join(text.split())
-        if cleaned in seen:
+        normalized = normalize_text(cleaned)
+        if is_duplicate_subtitle(normalized, seen_normalized):
             continue
-        seen.add(cleaned)
+        seen_normalized.add(normalized)
         subtitles.append(cleaned)
     return " ".join(subtitles)
 

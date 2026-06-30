@@ -1,6 +1,7 @@
 import inspect
 import importlib.machinery
 import re
+import statistics
 import sys
 import types
 from pathlib import Path
@@ -101,6 +102,10 @@ def confidence_label(score):
     return "low"
 
 
+def clamp(value, minimum=0.0, maximum=1.0):
+    return max(minimum, min(maximum, value))
+
+
 def point_list(poly):
     if poly is None:
         return []
@@ -118,32 +123,210 @@ def box_bounds(poly):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def box_geometry(box, image_size):
+    width, height = image_size or (0, 0)
+    if not box or not width or not height:
+        return {
+            "cx": 0.0,
+            "cy": 0.0,
+            "relative_width": 0.0,
+            "relative_height": 0.0,
+        }
+
+    x1, y1, x2, y2 = box
+    box_width = max(0.0, x2 - x1)
+    box_height = max(0.0, y2 - y1)
+    return {
+        "cx": clamp(((x1 + x2) / 2) / width),
+        "cy": clamp(((y1 + y2) / 2) / height),
+        "relative_width": clamp(box_width / width),
+        "relative_height": clamp(box_height / height),
+    }
+
+
+def is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count, has_sentence_punctuation):
+    return (
+        0.67 <= cy <= 0.78
+        and 0.42 <= cx <= 0.58
+        and 0.025 <= relative_height <= 0.075
+        and (
+            relative_width >= 0.24
+            or has_sentence_punctuation
+            or word_count >= 3
+        )
+    )
+
+
+def anchored_subtitle_match(geometry, anchor_cx, anchor_cy, x_tolerance, y_tolerance):
+    return (
+        abs(geometry["cx"] - anchor_cx) <= x_tolerance
+        and abs(geometry["cy"] - anchor_cy) <= y_tolerance
+        and 0.02 <= geometry["relative_height"] <= 0.09
+    )
+
+
+def subtitle_text_signal(text, relative_width):
+    cleaned = normalize_detected_text(text)
+    word_count = len(re.findall(r"\w+", cleaned, flags=re.UNICODE))
+    has_sentence_punctuation = any(mark in cleaned for mark in ".?!")
+    return word_count, has_sentence_punctuation, (
+        relative_width >= 0.24
+        or has_sentence_punctuation
+        or word_count >= 3
+    )
+
+
+def non_subtitle_kind(text, geometry, word_count, has_sentence_punctuation):
+    cleaned = normalize_detected_text(text)
+    mostly_upper = cleaned.isupper() and len(cleaned) >= 3
+    title_like = word_count <= 8 and (mostly_upper or cleaned[:1].isupper())
+    cy = geometry["cy"]
+    cx = geometry["cx"]
+    relative_width = geometry["relative_width"]
+
+    if len(cleaned) <= 20 and cy <= 0.18 and relative_width <= 0.28:
+        return "logo"
+    if cy >= 0.78:
+        return "lower_third"
+    if word_count <= 4 and title_like and not has_sentence_punctuation and "'" not in cleaned and "," not in cleaned and not any(char.isdigit() for char in cleaned):
+        return "name"
+    if word_count <= 10 and title_like:
+        return "title"
+    if cy >= 0.68 and (cx < 0.42 or cx > 0.58):
+        return "lower_third"
+    return "other"
+
+
 def classify_text(text, box, image_size):
     cleaned = normalize_detected_text(text)
     if not cleaned:
         return "other"
 
-    width, height = image_size or (0, 0)
-    lower_band = False
-    relative_width = 0.0
-    if box and width and height:
-        x1, y1, x2, y2 = box
-        y_center = (y1 + y2) / 2
-        lower_band = y_center >= height * 0.66
-        relative_width = (x2 - x1) / width
+    geometry = box_geometry(box, image_size)
+    cx = geometry["cx"]
+    cy = geometry["cy"]
+    relative_width = geometry["relative_width"]
+    relative_height = geometry["relative_height"]
 
-    word_count = len(re.findall(r"\w+", cleaned, flags=re.UNICODE))
-    has_sentence_punctuation = any(mark in cleaned for mark in ".?!")
+    word_count, has_sentence_punctuation, _ = subtitle_text_signal(cleaned, relative_width)
+    is_short = word_count <= 4
+    is_medium = 5 <= word_count <= 12
+    is_long = word_count >= 6
+    is_wide = relative_width >= 0.34
+    is_tall = relative_height >= 0.08
+    in_lower_band = cy >= 0.68
+    in_subtitle_band = 0.62 <= cy <= 0.93
+    centered = 0.18 <= cx <= 0.82
+    near_bottom = cy >= 0.82
+    lower_third_left = near_bottom and cx < 0.42
+    lower_third_right = near_bottom and cx > 0.58
+
+    if is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count, has_sentence_punctuation):
+        return "subtitle"
     mostly_upper = cleaned.isupper() and len(cleaned) >= 3
     title_like = word_count <= 8 and (mostly_upper or cleaned[:1].isupper())
-
     if word_count <= 4 and title_like and not has_sentence_punctuation and "'" not in cleaned and "," not in cleaned and not any(char.isdigit() for char in cleaned):
         return "name"
-    if lower_band and (word_count >= 5 or relative_width >= 0.25 or has_sentence_punctuation):
+    if len(cleaned) <= 20 and cy <= 0.18 and relative_width <= 0.28:
+        return "logo"
+    if lower_third_left or lower_third_right:
+        if is_short and not is_wide and not has_sentence_punctuation:
+            return "lower_third"
+    if (
+        in_subtitle_band
+        and centered
+        and (
+            is_long
+            or is_wide
+            or has_sentence_punctuation
+            or (is_medium and is_tall)
+            or (is_short and is_wide)
+        )
+    ):
+        return "subtitle"
+    if in_lower_band and (is_medium or is_wide or has_sentence_punctuation or is_tall):
         return "subtitle"
     if word_count <= 10 and title_like:
         return "title"
     return "other"
+
+
+def refine_subtitle_kinds(items, images_dir):
+    geometries = []
+    sizes = {}
+
+    for item in items:
+        image_name = item.get("image")
+        size = None
+        if image_name and image_name not in sizes:
+            sizes[image_name] = image_size(images_dir / image_name)
+        if image_name:
+            size = sizes[image_name]
+        box = box_bounds(item.get("box"))
+        geometry = box_geometry(box, size)
+        word_count, has_sentence_punctuation, has_subtitle_signal = subtitle_text_signal(
+            item.get("text", ""),
+            geometry["relative_width"],
+        )
+        geometries.append(
+            {
+                "item": item,
+                "geometry": geometry,
+                "word_count": word_count,
+                "has_sentence_punctuation": has_sentence_punctuation,
+                "has_subtitle_signal": has_subtitle_signal,
+            }
+        )
+
+    anchors = [
+        entry["geometry"]
+        for entry in geometries
+        if entry["item"].get("kind") == "subtitle"
+        and is_primary_subtitle_box(
+            entry["geometry"]["cx"],
+            entry["geometry"]["cy"],
+            entry["geometry"]["relative_width"],
+            entry["geometry"]["relative_height"],
+            entry["word_count"],
+            entry["has_sentence_punctuation"],
+        )
+    ]
+    if len(anchors) < 2:
+        return items
+
+    anchor_cx = statistics.median(anchor["cx"] for anchor in anchors)
+    anchor_cy = statistics.median(anchor["cy"] for anchor in anchors)
+    anchor_height = statistics.median(anchor["relative_height"] for anchor in anchors)
+    anchor_widths = [anchor["relative_width"] for anchor in anchors]
+    x_tolerance = max(0.035, min(0.055, statistics.median(anchor_widths) * 0.08))
+    y_tolerance = max(0.035, min(0.065, anchor_height * 1.4))
+
+    refined = []
+    for entry in geometries:
+        item = dict(entry["item"])
+        geometry = entry["geometry"]
+        is_near_anchor = anchored_subtitle_match(
+            geometry,
+            anchor_cx,
+            anchor_cy,
+            x_tolerance,
+            y_tolerance,
+        )
+        if (
+            entry["has_subtitle_signal"]
+            and is_near_anchor
+        ):
+            item["kind"] = "subtitle"
+        elif item.get("kind") == "subtitle":
+            item["kind"] = non_subtitle_kind(
+                item.get("text", ""),
+                geometry,
+                entry["word_count"],
+                entry["has_sentence_punctuation"],
+            )
+        refined.append(item)
+
+    return refined
 
 
 def image_size(path):

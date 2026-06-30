@@ -14,6 +14,9 @@ IGNORED_TEXT_KEYS = {"ionis", "kionis", "<ionis", "stm"}
 DECOR_TEXT_KEYS = IGNORED_TEXT_KEYS | {"x", "in"}
 MIN_OVERLAY_RELATIVE_HEIGHT = 0.03
 MIN_OVERLAY_RELATIVE_WIDTH = 0.24
+MIN_SUBTITLE_UNIQUE_TEXTS = 3
+SUBTITLE_CLUSTER_X_TOLERANCE = 0.16
+SUBTITLE_CLUSTER_Y_TOLERANCE = 0.055
 
 
 def configure_stdio():
@@ -149,7 +152,7 @@ def box_geometry(box, image_size):
 
 def is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count, has_sentence_punctuation):
     return (
-        0.67 <= cy <= 0.78
+        0.62 <= cy <= 0.88
         and 0.42 <= cx <= 0.58
         and 0.025 <= relative_height <= 0.075
         and (
@@ -160,10 +163,73 @@ def is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count,
     )
 
 
+def is_subtitle_anchor_candidate(entry):
+    geometry = entry["geometry"]
+    return (
+        entry["has_subtitle_signal"]
+        and 0.35 <= geometry["cx"] <= 0.65
+        and 0.60 <= geometry["cy"] <= 0.94
+        and 0.018 <= geometry["relative_height"] <= 0.09
+        and (
+            geometry["relative_width"] >= 0.08
+            or entry["word_count"] >= 2
+            or entry["has_sentence_punctuation"]
+        )
+    )
+
+
+def subtitle_cluster_score(cluster):
+    keys = {entry["key"] for entry in cluster if entry["key"]}
+    seconds = {entry["second"] for entry in cluster if entry["second"] is not None}
+    if len(keys) < MIN_SUBTITLE_UNIQUE_TEXTS or len(seconds) < MIN_SUBTITLE_UNIQUE_TEXTS:
+        return 0.0
+
+    median_cx = statistics.median(entry["geometry"]["cx"] for entry in cluster)
+    median_cy = statistics.median(entry["geometry"]["cy"] for entry in cluster)
+    x_spread = max(entry["geometry"]["cx"] for entry in cluster) - min(entry["geometry"]["cx"] for entry in cluster)
+    y_spread = max(entry["geometry"]["cy"] for entry in cluster) - min(entry["geometry"]["cy"] for entry in cluster)
+    centrality = max(0.0, 1.0 - abs(median_cx - 0.5) * 2.0)
+    temporal_density = min(len(seconds), len(cluster))
+    text_change = len(keys) / max(1, len(cluster))
+    stability = max(0.0, 1.0 - (x_spread + y_spread))
+
+    return (
+        temporal_density
+        + len(keys) * 1.8
+        + centrality * 4.0
+        + stability * 3.0
+        + text_change * 8.0
+        - abs(median_cy - 0.78) * 2.0
+    )
+
+
+def infer_subtitle_anchors(entries):
+    candidates = [entry for entry in entries if is_subtitle_anchor_candidate(entry)]
+    if len(candidates) < 2:
+        return []
+
+    best_cluster = []
+    best_score = 0.0
+    for candidate in candidates:
+        cluster = [
+            other
+            for other in candidates
+            if abs(other["geometry"]["cx"] - candidate["geometry"]["cx"]) <= SUBTITLE_CLUSTER_X_TOLERANCE
+            and abs(other["geometry"]["cy"] - candidate["geometry"]["cy"]) <= SUBTITLE_CLUSTER_Y_TOLERANCE
+        ]
+        score = subtitle_cluster_score(cluster)
+        if score > best_score:
+            best_cluster = cluster
+            best_score = score
+
+    if len(best_cluster) < 2:
+        return []
+    return [entry["geometry"] for entry in best_cluster]
+
+
 def anchored_subtitle_match(geometry, anchor_cx, anchor_cy, x_tolerance, y_tolerance):
     return (
-        0.42 <= geometry["cx"] <= 0.58
-        and abs(geometry["cx"] - anchor_cx) <= x_tolerance
+        abs(geometry["cx"] - anchor_cx) <= x_tolerance
         and abs(geometry["cy"] - anchor_cy) <= y_tolerance
         and 0.02 <= geometry["relative_height"] <= 0.09
     )
@@ -261,11 +327,13 @@ def refine_subtitle_kinds(items, images_dir):
                 "word_count": word_count,
                 "has_sentence_punctuation": has_sentence_punctuation,
                 "has_subtitle_signal": has_subtitle_signal,
+                "key": text_key(item.get("text", "")),
+                "second": item.get("second"),
             }
         )
 
-    anchors = [
-        entry["geometry"]
+    primary_anchor_entries = [
+        entry
         for entry in geometries
         if entry["item"].get("kind") == "subtitle"
         and is_primary_subtitle_box(
@@ -277,6 +345,17 @@ def refine_subtitle_kinds(items, images_dir):
             entry["has_sentence_punctuation"],
         )
     ]
+    primary_anchor_keys = {entry["key"] for entry in primary_anchor_entries if entry["key"]}
+    primary_anchors = []
+    if len(primary_anchor_keys) >= MIN_SUBTITLE_UNIQUE_TEXTS:
+        primary_anchors = [entry["geometry"] for entry in primary_anchor_entries]
+    adaptive_anchors = infer_subtitle_anchors(geometries)
+    anchors = primary_anchors
+    if len(adaptive_anchors) >= max(2, len(primary_anchors) * 2):
+        anchors = adaptive_anchors
+    elif len(anchors) < 2:
+        anchors = adaptive_anchors
+
     if len(anchors) < 2:
         refined = []
         for entry in geometries:
@@ -295,8 +374,8 @@ def refine_subtitle_kinds(items, images_dir):
     anchor_cy = statistics.median(anchor["cy"] for anchor in anchors)
     anchor_height = statistics.median(anchor["relative_height"] for anchor in anchors)
     anchor_widths = [anchor["relative_width"] for anchor in anchors]
-    x_tolerance = max(0.035, min(0.055, statistics.median(anchor_widths) * 0.08))
-    y_tolerance = max(0.035, min(0.065, anchor_height * 1.4))
+    x_tolerance = max(0.06, min(0.16, statistics.median(anchor_widths) * 0.25))
+    y_tolerance = max(0.04, min(0.075, anchor_height * 1.6))
 
     refined = []
     for entry in geometries:

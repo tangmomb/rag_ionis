@@ -4,6 +4,7 @@ import re
 import statistics
 import sys
 import types
+from difflib import SequenceMatcher
 from pathlib import Path
 
 
@@ -15,6 +16,17 @@ DECOR_TEXT_KEYS = IGNORED_TEXT_KEYS | {"x", "in"}
 MIN_OVERLAY_RELATIVE_HEIGHT = 0.03
 MIN_OVERLAY_RELATIVE_WIDTH = 0.24
 MIN_SUBTITLE_UNIQUE_TEXTS = 3
+STATIC_DECOR_MIN_SECONDS = 5
+STATIC_DECOR_MIN_DURATION = 5
+STATIC_DECOR_POSITION_TOLERANCE = 0.045
+STATIC_DECOR_MIN_TEXT_LENGTH = 8
+STATIC_DECOR_VARIANT_RATIO = 0.82
+STATIC_DECOR_CONTAINED_RATIO = 0.65
+PROGRESSIVE_TEXT_WINDOW_SECONDS = 4
+PROGRESSIVE_TEXT_POSITION_TOLERANCE = 0.10
+PROGRESSIVE_QUESTION_POSITION_TOLERANCE = 0.24
+PROGRESSIVE_TEXT_MIN_EXTRA_CHARS = 2
+PROGRESSIVE_TEXT_MIN_OVERLAP_RATIO = 0.75
 SUBTITLE_CLUSTER_X_TOLERANCE = 0.16
 SUBTITLE_CLUSTER_Y_TOLERANCE = 0.055
 
@@ -98,6 +110,10 @@ def normalize_detected_text(text):
 def text_key(text):
     text = re.sub(r"\s+", " ", normalize_detected_text(text).casefold())
     return text.strip(" \t\r\n,.;:!?()[]{}\"'")
+
+
+def compact_text_key(text):
+    return re.sub(r"\W+", "", normalize_detected_text(text).casefold())
 
 
 def confidence_label(score):
@@ -254,6 +270,8 @@ def non_subtitle_kind(text, geometry, word_count, has_sentence_punctuation):
     cx = geometry["cx"]
     relative_width = geometry["relative_width"]
 
+    if cleaned.endswith("?"):
+        return "question_intertitle"
     if len(cleaned) <= 20 and cy <= 0.18 and relative_width <= 0.28:
         return "logo"
     if cy >= 0.78:
@@ -289,6 +307,8 @@ def classify_text(text, box, image_size):
         return "subtitle"
     mostly_upper = cleaned.isupper() and len(cleaned) >= 3
     title_like = word_count <= 8 and (mostly_upper or cleaned[:1].isupper())
+    if cleaned.endswith("?"):
+        return "question_intertitle"
     if word_count <= 4 and title_like and not has_sentence_punctuation and "'" not in cleaned and "," not in cleaned and not any(char.isdigit() for char in cleaned):
         return "name"
     if len(cleaned) <= 20 and cy <= 0.18 and relative_width <= 0.28:
@@ -431,6 +451,128 @@ def boxes_are_grouped(left, right):
     )
 
 
+def similar_static_text(left, right):
+    left_text = left["compact_key"]
+    right_text = right["compact_key"]
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text:
+        return True
+
+    shorter, longer = sorted((left_text, right_text), key=len)
+    if len(shorter) < STATIC_DECOR_MIN_TEXT_LENGTH:
+        return False
+    if shorter in longer and len(shorter) / len(longer) >= STATIC_DECOR_CONTAINED_RATIO:
+        return True
+
+    return SequenceMatcher(None, left_text, right_text).ratio() >= STATIC_DECOR_VARIANT_RATIO
+
+
+def same_static_text_position(left, right):
+    return (
+        similar_static_text(left, right)
+        and abs(left["geometry"]["cx"] - right["geometry"]["cx"]) <= STATIC_DECOR_POSITION_TOLERANCE
+        and abs(left["geometry"]["cy"] - right["geometry"]["cy"]) <= STATIC_DECOR_POSITION_TOLERANCE
+    )
+
+
+def static_decor_keys(entries):
+    groups = []
+    for entry in entries:
+        if entry["item"].get("kind") == "subtitle" or not entry["key"]:
+            continue
+
+        target_group = None
+        for group in groups:
+            if same_static_text_position(entry, group[0]):
+                target_group = group
+                break
+        if target_group is None:
+            groups.append([entry])
+        else:
+            target_group.append(entry)
+
+    static_keys = set()
+    for group in groups:
+        seconds = sorted(
+            {
+                entry["item"].get("second")
+                for entry in group
+                if entry["item"].get("second") is not None
+            }
+        )
+        if len(seconds) < STATIC_DECOR_MIN_SECONDS:
+            continue
+        if seconds[-1] - seconds[0] < STATIC_DECOR_MIN_DURATION:
+            continue
+        for entry in group:
+            static_keys.add((entry["key"], entry["item"].get("image"), entry["item"].get("text")))
+
+    return static_keys
+
+
+def same_progressive_text_area(left, right):
+    tolerance = PROGRESSIVE_TEXT_POSITION_TOLERANCE
+    left_text = left["compact_key"]
+    right_text = right["compact_key"]
+    if (
+        normalize_detected_text(left["item"].get("text", "")).endswith("?")
+        or normalize_detected_text(right["item"].get("text", "")).endswith("?")
+        or (left_text and right_text and (left_text in right_text or right_text in left_text))
+    ):
+        tolerance = PROGRESSIVE_QUESTION_POSITION_TOLERANCE
+    return (
+        abs(left["geometry"]["cx"] - right["geometry"]["cx"]) <= tolerance
+        and abs(left["geometry"]["cy"] - right["geometry"]["cy"]) <= tolerance
+    )
+
+
+def edge_overlap_length(left, right):
+    max_overlap = min(len(left), len(right))
+    for length in range(max_overlap, 0, -1):
+        if left[-length:] == right[:length] or right[-length:] == left[:length]:
+            return length
+    return 0
+
+
+def is_progressive_fragment(shorter, longer):
+    short_text = shorter["compact_key"]
+    long_text = longer["compact_key"]
+    if not short_text or not long_text:
+        return False
+    if len(long_text) - len(short_text) < PROGRESSIVE_TEXT_MIN_EXTRA_CHARS:
+        return False
+    if short_text in long_text:
+        return True
+    overlap = edge_overlap_length(short_text, long_text)
+    return overlap / len(short_text) >= PROGRESSIVE_TEXT_MIN_OVERLAP_RATIO
+
+
+def progressive_fragment_keys(entries):
+    fragments = set()
+    candidates = [
+        entry
+        for entry in entries
+        if entry["item"].get("kind") != "subtitle"
+        and entry["compact_key"]
+        and entry["item"].get("second") is not None
+    ]
+
+    for entry in candidates:
+        for other in candidates:
+            if entry is other:
+                continue
+            if abs(entry["item"].get("second") - other["item"].get("second")) > PROGRESSIVE_TEXT_WINDOW_SECONDS:
+                continue
+            if not same_progressive_text_area(entry, other):
+                continue
+            if is_progressive_fragment(entry, other):
+                fragments.add((entry["key"], entry["item"].get("image"), entry["item"].get("text")))
+                break
+
+    return fragments
+
+
 def filter_decor_items(items, images_dir):
     entries = []
     by_image = {}
@@ -451,11 +593,14 @@ def filter_decor_items(items, images_dir):
             "box": box,
             "geometry": geometry,
             "key": text_key(item.get("text", "")),
+            "compact_key": compact_text_key(item.get("text", "")),
             "word_count": word_count,
         }
         entries.append(entry)
         by_image.setdefault(image_name, []).append(entry)
 
+    static_keys = static_decor_keys(entries)
+    progressive_keys = progressive_fragment_keys(entries)
     filtered = []
     for entry in entries:
         item = entry["item"]
@@ -465,6 +610,10 @@ def filter_decor_items(items, images_dir):
 
         key = entry["key"]
         if not key or key in DECOR_TEXT_KEYS:
+            continue
+        if (key, item.get("image"), item.get("text")) in static_keys:
+            continue
+        if (key, item.get("image"), item.get("text")) in progressive_keys:
             continue
 
         geometry = entry["geometry"]

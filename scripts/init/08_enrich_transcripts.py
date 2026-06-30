@@ -9,7 +9,7 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 ENRICHED_SUFFIX = "_transcript_timecodes_enrichi.txt"
 MIN_OVERLAY_SCORE = 0.9
-OVERLAY_KINDS = {"name", "lower_third", "title"}
+OVERLAY_KINDS = {"name", "lower_third", "question_intertitle", "title"}
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 SUBTITLE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
@@ -110,6 +110,42 @@ def normalize_text(text):
     return re.sub(r"\W+", "", str(text).casefold())
 
 
+def merge_question_parts(items):
+    merged = []
+    for item in items:
+        if (
+            item.get("kind") == "question_intertitle"
+            and merged
+            and merged[-1].get("kind") != "question_intertitle"
+            and item["second"] - merged[-1]["second"] <= 1
+        ):
+            previous = merged.pop()
+            item = dict(item)
+            item["second"] = previous["second"]
+            item["text"] = f"{previous['text']} {item['text']}"
+        merged.append(item)
+    return merged
+
+
+def remove_overlay_fragments(items):
+    kept = []
+    for index, item in enumerate(items):
+        normalized = normalize_text(item["text"])
+        is_fragment = False
+        for other in items[index + 1 :]:
+            if other["second"] - item["second"] > 4:
+                break
+            other_normalized = normalize_text(other["text"])
+            if len(normalized) < 4 or len(other_normalized) <= len(normalized) + 1:
+                continue
+            if normalized and normalized in other_normalized:
+                is_fragment = True
+                break
+        if not is_fragment:
+            kept.append(item)
+    return kept
+
+
 def confidence_score(item):
     try:
         return float(item.get("score"))
@@ -149,8 +185,8 @@ def parse_processed_non_subtitles(path):
             if not timecode:
                 continue
             second = parse_timecode(timecode)
-        items.append({"second": int(second), "text": text})
-    return sorted(items, key=lambda item: item["second"])
+        items.append({"kind": kind, "second": int(second), "text": text})
+    return remove_overlay_fragments(merge_question_parts(sorted(items, key=lambda item: item["second"])))
 
 
 def enrich_transcript(video_path, force=False):
@@ -194,7 +230,8 @@ def enrich_transcript(video_path, force=False):
 
 def format_overlay_line(overlay):
     timecode = format_timecode(overlay["second"])
-    return f"[{timecode}] TEXTE ECRIT SUR LA VIDEO: {overlay['text']}"
+    label = "INTERCALAIRE QUESTION" if overlay.get("kind") == "question_intertitle" else "TEXTE ECRIT SUR LA VIDEO"
+    return f"[{timecode}] {label}: {overlay['text']}"
 
 
 def parse_args():

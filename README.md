@@ -224,7 +224,7 @@ Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 python scripts/init/05_images_ocr.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, afin d'eviter les textes de decor peu fiables. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement et liste d'exclusion legere. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
 
 ## Step 05 - OCR Subtitles
 

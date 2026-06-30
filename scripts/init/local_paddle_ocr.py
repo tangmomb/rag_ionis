@@ -11,6 +11,9 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 SECOND_PATTERN = re.compile(r"^seconde_(\d+(?:_\d+)?)$")
 TIMECODE_PATTERN = re.compile(r"^(?:(\d{2})_)?(\d{2})_(\d{2})$")
 IGNORED_TEXT_KEYS = {"ionis", "kionis", "<ionis", "stm"}
+DECOR_TEXT_KEYS = IGNORED_TEXT_KEYS | {"x", "in"}
+MIN_OVERLAY_RELATIVE_HEIGHT = 0.03
+MIN_OVERLAY_RELATIVE_WIDTH = 0.24
 
 
 def configure_stdio():
@@ -321,6 +324,91 @@ def refine_subtitle_kinds(items, images_dir):
         refined.append(item)
 
     return refined
+
+
+def boxes_are_grouped(left, right):
+    if left is None or right is None:
+        return False
+
+    left_x1, left_y1, left_x2, left_y2 = left
+    right_x1, right_y1, right_x2, right_y2 = right
+    left_width = max(0.0, left_x2 - left_x1)
+    right_width = max(0.0, right_x2 - right_x1)
+    if not left_width or not right_width:
+        return False
+
+    horizontal_overlap = max(0.0, min(left_x2, right_x2) - max(left_x1, right_x1))
+    horizontal_gap = max(0.0, max(left_x1, right_x1) - min(left_x2, right_x2))
+    vertical_gap = max(0.0, max(left_y1, right_y1) - min(left_y2, right_y2))
+    min_width = min(left_width, right_width)
+    max_height = max(max(0.0, left_y2 - left_y1), max(0.0, right_y2 - right_y1))
+
+    return (
+        horizontal_overlap >= min_width * 0.25
+        and vertical_gap <= max(8.0, max_height * 1.2)
+    ) or (
+        horizontal_gap <= min_width * 0.8
+        and vertical_gap <= max(6.0, max_height * 0.7)
+    )
+
+
+def filter_decor_items(items, images_dir):
+    entries = []
+    by_image = {}
+    sizes = {}
+
+    for item in items:
+        image_name = item.get("image")
+        size = None
+        if image_name and image_name not in sizes:
+            sizes[image_name] = image_size(images_dir / image_name)
+        if image_name:
+            size = sizes[image_name]
+        box = box_bounds(item.get("box"))
+        geometry = box_geometry(box, size)
+        word_count, _, _ = subtitle_text_signal(item.get("text", ""), geometry["relative_width"])
+        entry = {
+            "item": item,
+            "box": box,
+            "geometry": geometry,
+            "key": text_key(item.get("text", "")),
+            "word_count": word_count,
+        }
+        entries.append(entry)
+        by_image.setdefault(image_name, []).append(entry)
+
+    filtered = []
+    for entry in entries:
+        item = entry["item"]
+        if item.get("kind") == "subtitle":
+            filtered.append(item)
+            continue
+
+        key = entry["key"]
+        if not key or key in DECOR_TEXT_KEYS:
+            continue
+
+        geometry = entry["geometry"]
+        is_readable_overlay = (
+            geometry["relative_height"] >= MIN_OVERLAY_RELATIVE_HEIGHT
+            or geometry["relative_width"] >= MIN_OVERLAY_RELATIVE_WIDTH
+        )
+        if not is_readable_overlay:
+            continue
+
+        grouped = any(
+            other is not entry
+            and other["item"].get("kind") != "subtitle"
+            and boxes_are_grouped(entry["box"], other["box"])
+            for other in by_image.get(item.get("image"), [])
+        )
+        compact_isolated_text = entry["word_count"] <= 1 and len(key) <= 4 and not grouped
+        if compact_isolated_text and geometry["relative_height"] < 0.07 and geometry["relative_width"] < 0.35:
+            continue
+
+        filtered.append(item)
+
+    return filtered
 
 
 def image_size(path):

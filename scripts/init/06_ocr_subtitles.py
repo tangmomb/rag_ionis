@@ -53,6 +53,10 @@ def load_processed_items(path):
     return sorted(items, key=lambda item: (item.get("second", 0), item.get("image", ""), item.get("text", "")))
 
 
+def has_ocr_subtitles(items):
+    return any(str(item.get("kind", "")).strip().lower() == "subtitle" for item in items)
+
+
 def normalize_text(text):
     return "".join(str(text).casefold().split())
 
@@ -187,6 +191,9 @@ def main():
             continue
 
         items = load_processed_items(source)
+        if not has_ocr_subtitles(items):
+            print(f"[skip] aucun kind=subtitle dans {source.name}")
+            continue
         subtitles = collect_subtitles(items)
         text = render_subtitles(subtitles)
         timecoded_text = render_subtitles_timecodes(subtitles)

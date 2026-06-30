@@ -190,12 +190,42 @@ downloads/youtube/20260628_1312_init/
     LJ-W6BjSJRo.mp4
 ```
 
+## Step 03 - Extract Images
+
+Extraire une image toutes les 2 secondes pour chaque video:
+
+```powershell
+python scripts/init/03_extract_images.py
+```
+
+Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
+
+## Step 04 - Image OCR
+
+Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
+
+```powershell
+python scripts/init/04_images_ocr.py
+```
+
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par grappes de positions relatives recurrentes, avec au moins 3 textes distincts dans le temps, pour fonctionner aussi bien en vertical qu'en 1280x720 sans imposer un style visuel unique. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
+
+## Step 05 - OCR Subtitles
+
+Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
+
+```powershell
+python scripts/init/05_ocr_subtitles.py
+```
+
+Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
+
 ## Step 06 - Whisper Transcription
 
 Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
 
 ```powershell
-python scripts/init/07_whisper_transcription.py
+python scripts/init/06_whisper_transcription.py
 ```
 
 Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.
@@ -206,52 +236,84 @@ Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE
 
 Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
 
-## Step 03 - Extract Images
+## Step 07 - Correct Timecodes
 
-Extraire une image toutes les 2 secondes pour chaque video:
-
-```powershell
-python scripts/init/04_extract_images.py
-```
-
-Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
-
-## Step 04 - Image OCR
-
-Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
+Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
 
 ```powershell
-python scripts/init/05_images_ocr.py
+python scripts/init/07_correct_timecodes.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par grappes de positions relatives recurrentes, avec au moins 3 textes distincts dans le temps, pour fonctionner aussi bien en vertical qu'en 1280x720 sans imposer un style visuel unique. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
+Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title` et `logo` pour limiter les faux positifs.
 
-## Step 05 - OCR Subtitles
-
-Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
+Le niveau de correction est ajustable:
 
 ```powershell
-python scripts/init/06_ocr_subtitles.py
+python scripts/init/07_correct_timecodes.py --mode conservative
+python scripts/init/07_correct_timecodes.py --mode balanced
+python scripts/init/07_correct_timecodes.py --mode aggressive
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
+`conservative` corrige peu, `aggressive` accepte plus de noms proches, et `balanced` est le defaut.
 
-## Step 07 - Enrich Transcripts
+## Step 08 - Enrich Timecodes
 
-Ajouter les textes visibles a l'ecran dans les transcripts timecodes:
+Ajouter les textes visibles a l'ecran dans les timecodes corriges:
 
 ```powershell
 python scripts/init/08_enrich_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes.txt` avec `transcript/*_ocr_processed.json` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
+Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed.json` et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
+
+La step suivante `09_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
+
+## Step 09 - Strip Timecodes
+
+Creer le transcript sans timecodes depuis la version corrigee:
+
+```powershell
+python scripts/init/09_strip_timecodes.py
+```
+
+Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_transcript.txt`. Les fichiers `*_ocr_subtitle_timecodes_corrected.txt` ne generent pas de transcript plain.
+
+## Step 10 - Create Transcript Chunks
+
+Decouper les transcripts sans timecodes en chunks JSON:
+
+```powershell
+python scripts/init/10_create_chunks.py
+```
+
+Le script lit `transcript/<video_id>_transcript.txt` et ecrit `chunks/<video_id>_transcript_chunks.json`.
+
+## Step 11 - Split Alert Chunks
+
+Redecouper les chunks trop longs marques `ALERT`:
+
+```powershell
+python scripts/init/11_split_alert_chunks.py
+```
+
+Le script met a jour les fichiers `chunks/*_transcript_chunks.json` en place.
+
+## Step 12 - Create Transcript Embeddings
+
+Creer les embeddings a partir des chunks:
+
+```powershell
+python scripts/init/12_create_embeddings.py
+```
+
+Le script lit `chunks/<video_id>_transcript_chunks.json` et ecrit `transcript/<video_id>_transcript_embeddings.json`.
 
 ## Step 13 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
 ```powershell
-python scripts/init/08_upload_videos_to_s3.py
+python scripts/init/13_upload_videos_to_s3.py
 ```
 
 Configuration requise dans `.env`:
@@ -273,11 +335,11 @@ downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 Options utiles:
 
 ```powershell
-python scripts/init/08_upload_videos_to_s3.py --dry-run
-python scripts/init/08_upload_videos_to_s3.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/08_upload_videos_to_s3.py --prefix youtube/20260628_1312_init
-python scripts/init/08_upload_videos_to_s3.py --clean-init-prefix
-python scripts/init/08_upload_videos_to_s3.py --force
+python scripts/init/13_upload_videos_to_s3.py --dry-run
+python scripts/init/13_upload_videos_to_s3.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/13_upload_videos_to_s3.py --prefix youtube/20260628_1312_init
+python scripts/init/13_upload_videos_to_s3.py --clean-init-prefix
+python scripts/init/13_upload_videos_to_s3.py --force
 ```
 
 ## Step 14 - Update SQL Assets
@@ -285,10 +347,10 @@ python scripts/init/08_upload_videos_to_s3.py --force
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 
 ```powershell
-python scripts/init/09_update_sql_assets.py
+python scripts/init/14_update_sql_assets.py
 ```
 
-Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 08 par defaut:
+Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 13 par defaut:
 
 ```text
 downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
@@ -299,18 +361,18 @@ Il met aussi a jour une seule ligne `video_transcripts` par video/langue avec le
 
 ```text
 transcript                  -> *_transcript.txt
-transcript_timecodes        -> *_transcript_timecodes.txt
-transcript_timecodes_enrichi -> *_transcript_timecodes_enrichi.txt
+transcript_timecodes        -> *_transcript_timecodes_corrected.txt
+transcript_timecodes_enrichi -> *_transcript_timecodes_corrected_enrichi.txt
 ```
 
 Options utiles:
 
 ```powershell
-python scripts/init/09_update_sql_assets.py --dry-run
-python scripts/init/09_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/09_update_sql_assets.py --prefix youtube/20260628_1312_init
-python scripts/init/09_update_sql_assets.py --clean-init-assets
-python scripts/init/09_update_sql_assets.py --skip-transcripts
+python scripts/init/14_update_sql_assets.py --dry-run
+python scripts/init/14_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/14_update_sql_assets.py --prefix youtube/20260628_1312_init
+python scripts/init/14_update_sql_assets.py --clean-init-assets
+python scripts/init/14_update_sql_assets.py --skip-transcripts
 ```
 
 ## Step 99 - Clear Database

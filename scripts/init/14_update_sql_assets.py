@@ -11,9 +11,14 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_S3_ROOT_PREFIX = "youtube"
 DEFAULT_S3_BUCKET_NAME = ""
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_enrichi.txt"
-TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
+ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected_enrichi.txt"
+TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected.txt"
+LEGACY_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
 PLAIN_TRANSCRIPT_SUFFIX = "_transcript.txt"
+OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
+OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
+OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
+OCR_SUBTITLE_ENRICHED_SUFFIX = "_ocr_subtitle_timecodes_corrected_enrichi.txt"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -353,9 +358,15 @@ def asset_type(path):
 
     if suffix in VIDEO_EXTENSIONS:
         return "video"
+    if name.endswith(OCR_SUBTITLE_ENRICHED_SUFFIX):
+        return "ocr_subtitle_enriched"
+    if name.endswith(OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX) or name.endswith(OCR_SUBTITLE_TIMECODED_SUFFIX):
+        return "ocr_subtitle_timecoded"
+    if name.endswith(OCR_SUBTITLE_SUFFIX):
+        return "ocr_subtitle"
     if name.endswith(ENRICHED_TRANSCRIPT_SUFFIX):
         return "transcript_enriched"
-    if name.endswith(TIMECODED_TRANSCRIPT_SUFFIX):
+    if name.endswith(TIMECODED_TRANSCRIPT_SUFFIX) or name.endswith(LEGACY_TIMECODED_TRANSCRIPT_SUFFIX):
         return "transcript_timecoded"
     if name.endswith(PLAIN_TRANSCRIPT_SUFFIX):
         return "transcript"
@@ -411,15 +422,17 @@ def transcript_paths(video_dir):
         return []
 
     candidates = (
-        ("plain", f"*{PLAIN_TRANSCRIPT_SUFFIX}"),
-        ("timecoded", f"*{TIMECODED_TRANSCRIPT_SUFFIX}"),
-        ("enriched", f"*{ENRICHED_TRANSCRIPT_SUFFIX}"),
+        ("plain", (f"*{PLAIN_TRANSCRIPT_SUFFIX}",)),
+        ("timecoded", (f"*{TIMECODED_TRANSCRIPT_SUFFIX}", f"*{LEGACY_TIMECODED_TRANSCRIPT_SUFFIX}")),
+        ("enriched", (f"*{ENRICHED_TRANSCRIPT_SUFFIX}",)),
     )
     found = []
-    for transcript_type, pattern in candidates:
-        matches = sorted(transcript_dir.glob(pattern))
-        if matches:
-            found.append((transcript_type, matches[0]))
+    for transcript_type, patterns in candidates:
+        for pattern in patterns:
+            matches = sorted(transcript_dir.glob(pattern))
+            if matches:
+                found.append((transcript_type, matches[0]))
+                break
     return found
 
 
@@ -472,7 +485,7 @@ def parse_args():
     )
     parser.add_argument(
         "--prefix",
-        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 08",
+        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 13",
     )
     parser.add_argument(
         "--no-prefix",

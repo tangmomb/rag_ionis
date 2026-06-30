@@ -6,7 +6,7 @@ from pathlib import Path
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-TIMECODED_SUFFIX = "_transcript_timecodes.txt"
+CORRECTED_TIMECODED_SUFFIX = "_transcript_timecodes_corrected.txt"
 PLAIN_SUFFIX = "_transcript.txt"
 TIMECODE_PREFIX = re.compile(
     r"^\[(?:\d{2}:)?\d{2}:\d{2}-(?:\d{2}:)?\d{2}:\d{2}\]\s*(?:[A-Z][A-Z0-9_-]*:\s*)?"
@@ -57,12 +57,16 @@ def strip_timecodes(text):
 
 
 def output_path(input_path):
-    name = input_path.name.removesuffix(TIMECODED_SUFFIX) + PLAIN_SUFFIX
+    name = input_path.name
+    if name.endswith(CORRECTED_TIMECODED_SUFFIX):
+        name = name[: -len(CORRECTED_TIMECODED_SUFFIX)] + PLAIN_SUFFIX
+    else:
+        name = input_path.stem + PLAIN_SUFFIX
     return input_path.with_name(name)
 
 
 def timecoded_inputs(transcript_dir):
-    return sorted(transcript_dir.glob(f"*{TIMECODED_SUFFIX}"))
+    return sorted(transcript_dir.glob(f"*{CORRECTED_TIMECODED_SUFFIX}"))
 
 
 def convert_file(input_path, force=False):
@@ -80,7 +84,7 @@ def convert_file(input_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Cree des transcriptions sans timecodes depuis les fichiers *_transcript_timecodes.txt."
+        description="Cree des transcriptions sans timecodes depuis les fichiers *_transcript_timecodes_corrected.txt."
     )
     parser.add_argument(
         "--video-dir",
@@ -108,7 +112,7 @@ def main():
         inputs.extend(timecoded_inputs(transcript_dir))
 
     if not inputs:
-        print(f"Aucun fichier *{TIMECODED_SUFFIX} trouve dans {video_dir}")
+        print(f"Aucun fichier *{CORRECTED_TIMECODED_SUFFIX} trouve dans {video_dir}")
         return
 
     print(f"Dossier videos: {video_dir}")

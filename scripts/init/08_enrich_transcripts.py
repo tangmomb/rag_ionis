@@ -7,7 +7,8 @@ from pathlib import Path
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-ENRICHED_SUFFIX = "_transcript_timecodes_enrichi.txt"
+CORRECTED_SUFFIX = "_corrected.txt"
+ENRICHED_SUFFIX = "_enrichi.txt"
 MIN_OVERLAY_SCORE = 0.9
 OVERLAY_KINDS = {"name", "lower_third", "question_intertitle", "title"}
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
@@ -70,23 +71,21 @@ def processed_ocr_path(video_path):
 
 def timecodes_path(video_path):
     transcript_dir = video_path.parent / "transcript"
-    subtitle_candidates = sorted(transcript_dir.glob(f"{video_path.stem}_ocr_subtitle_timecodes*.txt"))
-    if subtitle_candidates:
-        return subtitle_candidates[0]
-
-    transcript_candidates = sorted(
-        path
-        for path in transcript_dir.glob(f"{video_path.stem}*timecodes*.txt")
-        if "ocr_subtitle_timecodes" not in path.name and not path.name.endswith(ENRICHED_SUFFIX)
+    candidates = (
+        transcript_dir / f"{video_path.stem}_transcript_timecodes_corrected.txt",
+        transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes_corrected.txt",
     )
-    if transcript_candidates:
-        return transcript_candidates[0]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
 
-    raise FileNotFoundError(f"Aucun fichier timecodes trouve pour {video_path.stem} dans {transcript_dir}")
+    raise FileNotFoundError(f"Aucun fichier timecodes corrige trouve pour {video_path.stem} dans {transcript_dir}")
 
 
-def enriched_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{ENRICHED_SUFFIX}"
+def enriched_path(source_path):
+    if source_path.name.endswith(CORRECTED_SUFFIX):
+        return source_path.with_name(source_path.name[: -len(".txt")] + ENRICHED_SUFFIX)
+    return source_path.with_name(f"{source_path.stem}{ENRICHED_SUFFIX}")
 
 
 def parse_timecoded_source(path):
@@ -192,13 +191,13 @@ def parse_processed_non_subtitles(path):
 def enrich_transcript(video_path, force=False):
     source = timecodes_path(video_path)
     analyse = processed_ocr_path(video_path)
-    target = enriched_path(video_path)
+    target = enriched_path(source)
 
     if target.exists() and not force:
         print(f"[skip] {target.name} existe deja")
         return target
     if not source.exists():
-        print(f"[skip] timecodes introuvable: {source}")
+        print(f"[skip] timecodes corrige introuvable: {source}")
         return None
     if not analyse.exists():
         print(f"[skip] analyse introuvable: {analyse}")
@@ -236,7 +235,7 @@ def format_overlay_line(overlay):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Ajoute les textes visibles a l'ecran dans les transcripts timecodes."
+        description="Ajoute les textes visibles a l'ecran dans les timecodes corriges."
     )
     parser.add_argument(
         "--video-dir",
@@ -250,7 +249,7 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenere les transcripts enrichis meme s'ils existent deja.",
+        help="Regenere les fichiers enrichis meme s'ils existent deja.",
     )
     return parser.parse_args()
 
@@ -269,7 +268,7 @@ def main():
         if enrich_transcript(video_path, force=args.force):
             done += 1
 
-    print(f"{done} transcripts enrichis.")
+    print(f"{done} fichiers enrichis.")
 
 
 if __name__ == "__main__":

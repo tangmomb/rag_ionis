@@ -190,7 +190,7 @@ downloads/youtube/20260628_1312_init/
     LJ-W6BjSJRo.mp4
 ```
 
-## Step 06 - Transcribe Videos
+## Step 06 - Whisper Transcription
 
 Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
 

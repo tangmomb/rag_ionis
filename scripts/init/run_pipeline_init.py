@@ -218,7 +218,7 @@ def main():
         step03 += ["--limit", str(args.videos)]
     if args.force:
         step03.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - Transcribe Videos", step03, env)
+    run_step_numbered(6, total_steps, "Step 06 - Whisper Transcription", step03, env)
 
     step08 = step_command("08_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:

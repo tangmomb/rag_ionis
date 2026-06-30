@@ -8,8 +8,10 @@ from pathlib import Path
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 TIMECODED_SUFFIX = "_transcript_timecodes.txt"
+OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
 ENRICHED_SUFFIX = "_transcript_timecodes_enrichi.txt"
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
+SUBTITLE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -66,6 +68,10 @@ def transcript_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{TIMECODED_SUFFIX}"
 
 
+def subtitle_timecodes_path(video_path):
+    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
+
+
 def enriched_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{ENRICHED_SUFFIX}"
 
@@ -85,7 +91,24 @@ def parse_transcript(path):
     return segments
 
 
-def parse_analyse(path):
+def parse_subtitle_timecodes(path):
+    items = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = SUBTITLE_LINE.match(line)
+        if not match:
+            continue
+        second, text = match.groups()
+        text = text.strip()
+        if not text:
+            continue
+        items.append({"second": parse_timecode(second), "text": text})
+    return items
+
+
+def parse_analyse(path, prefer_subtitle_timecodes=False):
+    if prefer_subtitle_timecodes:
+        return parse_subtitle_timecodes(path)
+
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
     for item in payload.get("items", []):
@@ -106,7 +129,8 @@ def parse_analyse(path):
 
 def enrich_transcript(video_path, force=False):
     source = transcript_path(video_path)
-    analyse = analyse_path(video_path)
+    subtitle_source = subtitle_timecodes_path(video_path)
+    analyse = subtitle_source if subtitle_source.exists() else analyse_path(video_path)
     target = enriched_path(video_path)
 
     if target.exists() and not force:
@@ -120,7 +144,7 @@ def enrich_transcript(video_path, force=False):
         return None
 
     segments = parse_transcript(source)
-    overlays = parse_analyse(analyse)
+    overlays = parse_analyse(analyse, prefer_subtitle_timecodes=analyse == subtitle_source)
     lines = []
     overlay_index = 0
 

@@ -6,6 +6,7 @@ from pathlib import Path
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
 OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
+OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 
 
@@ -40,6 +41,10 @@ def processed_ocr_path(video_path):
 
 def subtitle_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_SUFFIX}"
+
+
+def subtitle_timecodes_path(video_path):
+    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
 
 
 def load_processed_items(path):
@@ -86,7 +91,16 @@ def is_duplicate_subtitle(normalized, seen_normalized):
     return any(one_edit_apart(normalized, previous) for previous in seen_normalized if len(previous) >= 12)
 
 
-def render_subtitles(items):
+def format_timecode(seconds):
+    seconds = int(seconds)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def collect_subtitles(items):
     subtitles = []
     seen_normalized = set()
     for item in items:
@@ -100,8 +114,24 @@ def render_subtitles(items):
         if is_duplicate_subtitle(normalized, seen_normalized):
             continue
         seen_normalized.add(normalized)
-        subtitles.append(cleaned)
-    return " ".join(subtitles)
+        subtitles.append(
+            {
+                "text": cleaned,
+                "second": int(item.get("second", 0)),
+            }
+        )
+    return subtitles
+
+
+def render_subtitles(items):
+    return " ".join(item["text"] for item in items)
+
+
+def render_subtitles_timecodes(items):
+    lines = []
+    for item in items:
+        lines.append(f"[{format_timecode(item['second'])}] {item['text']}")
+    return "\n".join(lines)
 
 
 def parse_args():
@@ -146,19 +176,25 @@ def main():
     for video_path in videos:
         source = processed_ocr_path(video_path)
         target = subtitle_path(video_path)
+        target_timecodes = subtitle_timecodes_path(video_path)
         if target.exists() and not args.force:
             print(f"[skip] {target.name} existe deja")
-            done += 1
-            continue
+            if target_timecodes.exists() and not args.force:
+                done += 1
+                continue
         if not source.exists():
             print(f"[skip] OCR traite introuvable: {source}")
             continue
 
         items = load_processed_items(source)
-        text = render_subtitles(items)
+        subtitles = collect_subtitles(items)
+        text = render_subtitles(subtitles)
+        timecoded_text = render_subtitles_timecodes(subtitles)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text + ("\n" if text else ""), encoding="utf-8")
+        target_timecodes.write_text(timecoded_text + ("\n" if timecoded_text else ""), encoding="utf-8")
         print(f"[ok] {target}")
+        print(f"[ok] {target_timecodes}")
         done += 1
 
     print(f"{done} subtitles OCR generes.")

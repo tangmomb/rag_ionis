@@ -213,7 +213,7 @@ def main():
         step06.append("--force")
     run_step_numbered(5, total_steps, "Step 05 - OCR Subtitles", step06, env)
 
-    step03 = step_command("03_transcribe_videos.py", "--video-dir", video_dir)
+    step03 = step_command("06_whisper_transcription.py", "--video-dir", video_dir)
     if args.videos is not None:
         step03 += ["--limit", str(args.videos)]
     if args.force:

@@ -8,7 +8,6 @@ from pathlib import Path
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 TIMECODED_SUFFIX = "_transcript_timecodes.txt"
-CORRECTED_SUFFIX = "_transcript_timecodes_corrected.txt"
 ENRICHED_SUFFIX = "_transcript_timecodes_enrichi.txt"
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
@@ -64,7 +63,7 @@ def latest_video_dir(parent_dir):
 
 
 def transcript_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{CORRECTED_SUFFIX}"
+    return video_path.parent / "transcript" / f"{video_path.stem}{TIMECODED_SUFFIX}"
 
 
 def enriched_path(video_path):

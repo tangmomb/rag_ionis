@@ -236,17 +236,7 @@ python scripts/init/06_ocr_subtitles.py
 
 Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` en collant les textes `kind == subtitle` avec des espaces.
 
-## Step 07 - Correct Transcripts
-
-Corriger les erreurs de noms dans les transcripts timecodes a partir du JSON OCR:
-
-```powershell
-python scripts/init/07_correct_transcripts.py
-```
-
-Le script n'appelle aucune API. Il lit `transcript/*_ocr_processed.json` et cree `transcript/*_transcript_timecodes_corrected.txt`.
-
-## Step 08 - Enrich Transcripts
+## Step 07 - Enrich Transcripts
 
 Ajouter les textes visibles a l'ecran dans les transcripts timecodes:
 
@@ -254,7 +244,7 @@ Ajouter les textes visibles a l'ecran dans les transcripts timecodes:
 python scripts/init/08_enrich_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes_corrected.txt` avec `transcript/*_ocr_processed.json` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
+Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes.txt` avec `transcript/*_ocr_processed.json` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
 
 ## Step 13 - Upload Videos To S3
 

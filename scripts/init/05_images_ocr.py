@@ -15,6 +15,7 @@ from local_paddle_ocr import (
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
+DEFAULT_MIN_CONFIDENCE = 0.9
 
 
 configure_stdio()
@@ -63,8 +64,8 @@ def parse_args():
     parser.add_argument(
         "--min-confidence",
         type=float,
-        default=0.45,
-        help="Score minimum pour garder une detection OCR. Defaut: 0.45",
+        default=DEFAULT_MIN_CONFIDENCE,
+        help=f"rec_score minimum pour garder une detection OCR. Defaut: {DEFAULT_MIN_CONFIDENCE}",
     )
     parser.add_argument(
         "--force",

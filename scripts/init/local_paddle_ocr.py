@@ -389,7 +389,7 @@ def install_torch_import_stub():
 
 
 class LocalPaddleOCR:
-    def __init__(self, device="gpu:0", lang="fr", min_confidence=0.45):
+    def __init__(self, device="gpu:0", lang="fr", min_confidence=0.9):
         self.device = device
         self.lang = lang
         self.min_confidence = min_confidence

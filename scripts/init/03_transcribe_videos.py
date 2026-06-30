@@ -74,6 +74,10 @@ def transcript_path(transcript_dir, video_path):
     return transcript_dir / f"{video_path.stem}_transcript_timecodes.txt"
 
 
+def subtitle_timecodes_path(transcript_dir, video_path):
+    return transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes.txt"
+
+
 def extract_audio(video_path, audio_dir):
     audio_path = audio_dir / f"{video_path.stem}.wav"
     if audio_path.exists():
@@ -174,6 +178,10 @@ def transcribe_with_whisperx(whisperx, model, audio_path):
 
 def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=False):
     output_path = transcript_path(transcript_dir, video_path)
+    subtitle_output = subtitle_timecodes_path(transcript_dir, video_path)
+    if subtitle_output.exists() and not force:
+        print(f"[skip] {subtitle_output.name} existe deja, Whisper ignore")
+        return None
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")
         return output_path

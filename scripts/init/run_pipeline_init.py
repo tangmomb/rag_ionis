@@ -192,33 +192,33 @@ def main():
         ) from error
     print(f"\nDossier pipeline: {video_dir}", flush=True)
 
-    step03 = step_command("03_transcribe_videos.py", "--video-dir", video_dir)
-    if args.videos is not None:
-        step03 += ["--limit", str(args.videos)]
-    if args.force:
-        step03.append("--force")
-    run_step_numbered(3, total_steps, "Step 03 - Transcribe Videos", step03, env)
-
     step04 = step_command("04_extract_images.py", "--video-dir", video_dir)
     if args.videos is not None:
         step04 += ["--limit", str(args.videos)]
     if args.force:
         step04.append("--force")
-    run_step_numbered(4, total_steps, "Step 04 - Extract Images", step04, env)
+    run_step_numbered(3, total_steps, "Step 03 - Extract Images", step04, env)
 
     step05 = step_command("05_images_ocr.py", "--video-dir", video_dir)
     if args.videos is not None:
         step05 += ["--limit-videos", str(args.videos)]
     if args.force:
         step05.append("--force")
-    run_step_numbered(5, total_steps, "Step 05 - Image OCR (PaddleOCR)", step05, env)
+    run_step_numbered(4, total_steps, "Step 04 - Image OCR (PaddleOCR)", step05, env)
 
     step06 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
     if args.videos is not None:
         step06 += ["--limit-videos", str(args.videos)]
     if args.force:
         step06.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - OCR Subtitles", step06, env)
+    run_step_numbered(5, total_steps, "Step 05 - OCR Subtitles", step06, env)
+
+    step03 = step_command("03_transcribe_videos.py", "--video-dir", video_dir)
+    if args.videos is not None:
+        step03 += ["--limit", str(args.videos)]
+    if args.force:
+        step03.append("--force")
+    run_step_numbered(6, total_steps, "Step 06 - Transcribe Videos", step03, env)
 
     step08 = step_command("08_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:

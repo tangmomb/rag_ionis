@@ -190,9 +190,9 @@ downloads/youtube/20260628_1312_init/
     LJ-W6BjSJRo.mp4
 ```
 
-## Step 03 - Transcribe Videos
+## Step 06 - Transcribe Videos
 
-Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement:
+Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
 
 ```powershell
 python scripts/init/03_transcribe_videos.py
@@ -206,7 +206,7 @@ Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE
 
 Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
 
-## Step 04 - Extract Images
+## Step 03 - Extract Images
 
 Extraire une image toutes les 2 secondes pour chaque video:
 
@@ -216,7 +216,7 @@ python scripts/init/04_extract_images.py
 
 Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
-## Step 05 - Image OCR
+## Step 04 - Image OCR
 
 Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 
@@ -226,15 +226,15 @@ python scripts/init/05_images_ocr.py
 
 Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
 
-## Step 06 - OCR Subtitles
+## Step 05 - OCR Subtitles
 
-Concatener les items OCR de type `subtitle` dans un fichier texte dedie:
+Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
 
 ```powershell
 python scripts/init/06_ocr_subtitles.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` en collant les textes `kind == subtitle` avec des espaces.
+Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
 
 ## Step 07 - Enrich Transcripts
 

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -78,6 +79,10 @@ def subtitle_timecodes_path(transcript_dir, video_path):
     return transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes.txt"
 
 
+def processed_ocr_path(transcript_dir, video_path):
+    return transcript_dir / f"{video_path.stem}_ocr_processed.json"
+
+
 def extract_audio(video_path, audio_dir):
     audio_path = audio_dir / f"{video_path.stem}.wav"
     if audio_path.exists():
@@ -97,6 +102,14 @@ def extract_audio(video_path, audio_dir):
     ]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return audio_path
+
+
+def has_ocr_subtitles(processed_path):
+    payload = json.loads(processed_path.read_text(encoding="utf-8"))
+    return any(
+        str(item.get("kind", "")).strip().lower() == "subtitle"
+        for item in payload.get("items", [])
+    )
 
 
 def load_whisperx_model():
@@ -178,9 +191,9 @@ def transcribe_with_whisperx(whisperx, model, audio_path):
 
 def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=False):
     output_path = transcript_path(transcript_dir, video_path)
-    subtitle_output = subtitle_timecodes_path(transcript_dir, video_path)
-    if subtitle_output.exists() and not force:
-        print(f"[skip] {subtitle_output.name} existe deja, Whisper ignore")
+    processed_path = processed_ocr_path(transcript_dir, video_path)
+    if processed_path.exists() and not force and has_ocr_subtitles(processed_path):
+        print(f"[skip] {processed_path.name} contient deja des subtitles OCR, Whisper ignore")
         return None
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")
@@ -250,8 +263,8 @@ def main():
             transcript_dir.mkdir(parents=True, exist_ok=True)
             audio_dir.mkdir(parents=True, exist_ok=True)
             print(f"Dossier transcriptions: {transcript_dir}")
-            transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=args.force)
-            done += 1
+            if transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=args.force):
+                done += 1
         except Exception as error:
             print(f"[error] {video_path.name}: {error}")
             failed.append(video_path.name)

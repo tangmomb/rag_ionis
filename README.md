@@ -195,7 +195,7 @@ downloads/youtube/20260628_1312_init/
 Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
 
 ```powershell
-python scripts/init/06_whisper_transcription.py
+python scripts/init/07_whisper_transcription.py
 ```
 
 Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.

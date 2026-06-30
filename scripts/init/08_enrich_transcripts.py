@@ -7,9 +7,9 @@ from pathlib import Path
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-TIMECODED_SUFFIX = "_transcript_timecodes.txt"
-OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
 ENRICHED_SUFFIX = "_transcript_timecodes_enrichi.txt"
+MIN_OVERLAY_SCORE = 0.9
+OVERLAY_KINDS = {"name", "lower_third", "title"}
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 SUBTITLE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
@@ -64,60 +64,85 @@ def latest_video_dir(parent_dir):
     return candidates[-1]
 
 
-def transcript_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{TIMECODED_SUFFIX}"
-
-
-def subtitle_timecodes_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
-
-
 def processed_ocr_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}_ocr_processed.json"
+
+
+def timecodes_path(video_path):
+    transcript_dir = video_path.parent / "transcript"
+    subtitle_candidates = sorted(transcript_dir.glob(f"{video_path.stem}_ocr_subtitle_timecodes*.txt"))
+    if subtitle_candidates:
+        return subtitle_candidates[0]
+
+    transcript_candidates = sorted(
+        path
+        for path in transcript_dir.glob(f"{video_path.stem}*timecodes*.txt")
+        if "ocr_subtitle_timecodes" not in path.name and not path.name.endswith(ENRICHED_SUFFIX)
+    )
+    if transcript_candidates:
+        return transcript_candidates[0]
+
+    raise FileNotFoundError(f"Aucun fichier timecodes trouve pour {video_path.stem} dans {transcript_dir}")
 
 
 def enriched_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{ENRICHED_SUFFIX}"
 
 
-def analyse_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}_ocr_processed.json"
-
-
-def parse_transcript(path):
-    segments = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = TRANSCRIPT_LINE.match(line)
-        if not match:
-            continue
-        start, end, text = match.groups()
-        segments.append({"start": parse_timecode(start), "end": parse_timecode(end), "line": line})
-    return segments
-
-
-def parse_subtitle_timecodes(path):
+def parse_timecoded_source(path):
     items = []
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = SUBTITLE_LINE.match(line)
-        if not match:
+        transcript_match = TRANSCRIPT_LINE.match(line)
+        if transcript_match:
+            start, _, _ = transcript_match.groups()
+            items.append({"second": parse_timecode(start), "line": line})
             continue
-        second, text = match.groups()
-        text = text.strip()
-        if not text:
+        subtitle_match = SUBTITLE_LINE.match(line)
+        if subtitle_match:
+            second, _ = subtitle_match.groups()
+            items.append({"second": parse_timecode(second), "line": line})
             continue
-        items.append({"second": parse_timecode(second), "text": text})
+        items.append({"second": 10**12, "line": line})
     return items
+
+
+def normalize_text(text):
+    return re.sub(r"\W+", "", str(text).casefold())
+
+
+def confidence_score(item):
+    try:
+        return float(item.get("score"))
+    except (TypeError, ValueError):
+        pass
+
+    label = str(item.get("confidence", "")).strip().lower()
+    if label == "high":
+        return 1.0
+    if label == "medium":
+        return 0.7
+    if label == "low":
+        return 0.4
+    return 0.0
 
 
 def parse_processed_non_subtitles(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
+    seen_normalized = set()
     for item in payload.get("items", []):
-        if str(item.get("kind", "")).strip().lower() == "subtitle":
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind == "subtitle" or (kind and kind not in OVERLAY_KINDS):
             continue
-        text = str(item.get("text", "")).strip()
+        if confidence_score(item) < MIN_OVERLAY_SCORE:
+            continue
+        text = " ".join(str(item.get("text", "")).split())
         if not text:
             continue
+        normalized = normalize_text(text)
+        if not normalized or normalized in seen_normalized:
+            continue
+        seen_normalized.add(normalized)
         second = item.get("second")
         if second is None:
             timecode = str(item.get("timecode", "")).strip()
@@ -129,8 +154,7 @@ def parse_processed_non_subtitles(path):
 
 
 def enrich_transcript(video_path, force=False):
-    source = transcript_path(video_path)
-    subtitle_source = subtitle_timecodes_path(video_path)
+    source = timecodes_path(video_path)
     analyse = processed_ocr_path(video_path)
     target = enriched_path(video_path)
 
@@ -138,45 +162,26 @@ def enrich_transcript(video_path, force=False):
         print(f"[skip] {target.name} existe deja")
         return target
     if not source.exists():
-        print(f"[skip] transcript introuvable: {source}")
-        return None
-    if not subtitle_source.exists():
-        print(f"[skip] sous-titres OCR introuvables: {subtitle_source}")
+        print(f"[skip] timecodes introuvable: {source}")
         return None
     if not analyse.exists():
         print(f"[skip] analyse introuvable: {analyse}")
         return None
 
-    segments = parse_transcript(source)
-    subtitles = parse_subtitle_timecodes(subtitle_source)
+    source_lines = parse_timecoded_source(source)
     overlays = parse_processed_non_subtitles(analyse)
     lines = []
-    subtitle_index = 0
+    source_index = 0
     overlay_index = 0
 
-    for segment in segments:
-        while subtitle_index < len(subtitles) and subtitles[subtitle_index]["second"] <= segment["start"]:
-            lines.append(format_overlay_line(subtitles[subtitle_index]))
-            subtitle_index += 1
-
-        while overlay_index < len(overlays) and overlays[overlay_index]["second"] <= segment["start"]:
+    while source_index < len(source_lines):
+        current_second = source_lines[source_index]["second"]
+        while overlay_index < len(overlays) and overlays[overlay_index]["second"] <= current_second:
             lines.append(format_overlay_line(overlays[overlay_index]))
             overlay_index += 1
 
-        while subtitle_index < len(subtitles) and segment["start"] < subtitles[subtitle_index]["second"] <= segment["end"]:
-            lines.append(format_overlay_line(subtitles[subtitle_index]))
-            subtitle_index += 1
-
-        while overlay_index < len(overlays) and segment["start"] < overlays[overlay_index]["second"] <= segment["end"]:
-            overlay = overlays[overlay_index]
-            lines.append(format_overlay_line(overlay))
-            overlay_index += 1
-
-        lines.append(segment["line"])
-
-    while subtitle_index < len(subtitles):
-        lines.append(format_overlay_line(subtitles[subtitle_index]))
-        subtitle_index += 1
+        lines.append(source_lines[source_index]["line"])
+        source_index += 1
 
     while overlay_index < len(overlays):
         lines.append(format_overlay_line(overlays[overlay_index]))

@@ -159,7 +159,8 @@ def is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count,
 
 def anchored_subtitle_match(geometry, anchor_cx, anchor_cy, x_tolerance, y_tolerance):
     return (
-        abs(geometry["cx"] - anchor_cx) <= x_tolerance
+        0.42 <= geometry["cx"] <= 0.58
+        and abs(geometry["cx"] - anchor_cx) <= x_tolerance
         and abs(geometry["cy"] - anchor_cy) <= y_tolerance
         and 0.02 <= geometry["relative_height"] <= 0.09
     )
@@ -210,13 +211,7 @@ def classify_text(text, box, image_size):
 
     word_count, has_sentence_punctuation, _ = subtitle_text_signal(cleaned, relative_width)
     is_short = word_count <= 4
-    is_medium = 5 <= word_count <= 12
-    is_long = word_count >= 6
     is_wide = relative_width >= 0.34
-    is_tall = relative_height >= 0.08
-    in_lower_band = cy >= 0.68
-    in_subtitle_band = 0.62 <= cy <= 0.93
-    centered = 0.18 <= cx <= 0.82
     near_bottom = cy >= 0.82
     lower_third_left = near_bottom and cx < 0.42
     lower_third_right = near_bottom and cx > 0.58
@@ -232,20 +227,8 @@ def classify_text(text, box, image_size):
     if lower_third_left or lower_third_right:
         if is_short and not is_wide and not has_sentence_punctuation:
             return "lower_third"
-    if (
-        in_subtitle_band
-        and centered
-        and (
-            is_long
-            or is_wide
-            or has_sentence_punctuation
-            or (is_medium and is_tall)
-            or (is_short and is_wide)
-        )
-    ):
-        return "subtitle"
-    if in_lower_band and (is_medium or is_wide or has_sentence_punctuation or is_tall):
-        return "subtitle"
+    if cy >= 0.68 and (cx < 0.42 or cx > 0.58):
+        return "lower_third"
     if word_count <= 10 and title_like:
         return "title"
     return "other"
@@ -292,7 +275,18 @@ def refine_subtitle_kinds(items, images_dir):
         )
     ]
     if len(anchors) < 2:
-        return items
+        refined = []
+        for entry in geometries:
+            item = dict(entry["item"])
+            if item.get("kind") == "subtitle":
+                item["kind"] = non_subtitle_kind(
+                    item.get("text", ""),
+                    entry["geometry"],
+                    entry["word_count"],
+                    entry["has_sentence_punctuation"],
+                )
+            refined.append(item)
+        return refined
 
     anchor_cx = statistics.median(anchor["cx"] for anchor in anchors)
     anchor_cy = statistics.median(anchor["cy"] for anchor in anchors)

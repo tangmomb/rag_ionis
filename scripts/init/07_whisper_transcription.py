@@ -193,7 +193,7 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
     output_path = transcript_path(transcript_dir, video_path)
     processed_path = processed_ocr_path(transcript_dir, video_path)
     if processed_path.exists() and not force and has_ocr_subtitles(processed_path):
-        print(f"[skip] {processed_path.name} contient deja des subtitles OCR, Whisper ignore")
+        print(f"[skip] subtitle detecte, pas de whisper")
         return None
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")

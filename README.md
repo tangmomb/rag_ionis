@@ -26,6 +26,14 @@ py -3.10 -m venv .venv
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements-torch-cu126.txt
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-paddle-cu126.txt
+```
+
+Pour PaddleOCR GPU, la machine locale a ete verifiee avec un driver NVIDIA exposant CUDA 12.7 et un venv PyTorch en `cu126`. L'installation Paddle correspondante est:
+
+```powershell
+python -m pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+python -m pip install paddleocr
 ```
 
 ## Postgres + pgvector
@@ -58,9 +66,11 @@ Par defaut, le script transcrit avec `yt-dlp` + Whisper: il telecharge la video 
 TRANSCRIPT_SOURCE=whisper
 WHISPER_MODEL=small
 WHISPER_LANGUAGE=fr
-OPENAI_TRANSCRIBE_MODEL=whisper-1
-OPENAI_TRANSCRIBE_LANGUAGE=fr
-OPENAI_TRANSCRIBE_AUDIO_BITRATE=48k
+WHISPERX_MODEL=large-v3
+WHISPERX_LANGUAGE=fr
+WHISPERX_DEVICE=cuda
+WHISPERX_COMPUTE_TYPE=float16
+WHISPERX_BATCH_SIZE=16
 YTDLP_FORMAT=bestvideo[height<=360]+bestaudio/best[height<=360]/best
 YTDLP_MERGE_FORMAT=mp4
 ```
@@ -147,7 +157,7 @@ Tester le pipeline sur un nombre limite de videos:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3
 ```
 
-Le script lance les steps 00 a 09. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
+Le script lance les steps 00 a 14. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
 
 Un run d'initialisation remplace le precedent:
 
@@ -182,59 +192,78 @@ downloads/youtube/20260628_1312_init/
 
 ## Step 03 - Transcribe Videos
 
-Transcrire avec l'API OpenAI les videos du dernier dossier de telechargement:
+Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement:
 
 ```powershell
 python scripts/init/03_transcribe_videos.py
 ```
 
-Le script extrait un fichier audio temporaire avec ffmpeg, appelle `whisper-1` en francais, puis cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.
+Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.
 
-Pour detecter les intervenants, utiliser `OPENAI_TRANSCRIBE_MODEL=gpt-4o-transcribe-diarize`. Ce modele n'accepte pas de prompt de guidage et peut moins bien respecter le francais sur ce corpus.
+Les parametres utiles se reglant via `.env` sont `WHISPERX_MODEL`, `WHISPERX_LANGUAGE`, `WHISPERX_DEVICE`, `WHISPERX_COMPUTE_TYPE` et `WHISPERX_BATCH_SIZE`.
 
-Quand le modele produit des timecodes (`whisper-1` ou `gpt-4o-transcribe-diarize`), le fichier se termine par `_transcript_timecodes.txt`.
+Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE=float16`. Pour des machines plus legeres, `WHISPERX_DEVICE=cpu` et `WHISPERX_COMPUTE_TYPE=int8` restent possibles. Le modele par defaut est maintenant `large-v3`.
 
-## Step 04 - Strip Timecodes
+Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
 
-Produire les fichiers de transcription sans timecodes a partir des fichiers `*_transcript_timecodes.txt`:
-
-```powershell
-python scripts/init/04_strip_timecodes.py
-```
-
-Le script n'appelle aucune API. Il cree les fichiers freres `*_transcript.txt`.
-
-## Step 05 - Extract Images
+## Step 04 - Extract Images
 
 Extraire une image toutes les 2 secondes pour chaque video:
 
 ```powershell
-python scripts/init/05_extract_images.py
+python scripts/init/04_extract_images.py
 ```
 
 Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
-## Step 06 - Analyze Image Text
+## Step 05 - Filter Images With Text
 
-Detecter les images ou du texte ecrit apparait a l'ecran:
+Filtrer localement avec PaddleOCR les images ou du texte ecrit apparait a l'ecran:
 
 ```powershell
-python scripts/init/06_analyze_image_text.py
+python scripts/init/05_filter_images_with_text.py
 ```
 
-Le script envoie les images en `detail: low` au modele `OPENAI_IMAGE_ANALYZE_MODEL` (`gpt-5.4-nano` par defaut) et ecrit les resultats dans le dossier `analyse/` de chaque video.
+Le script n'appelle aucune API OpenAI. Il copie les images contenant du texte dans `images/with_text/`.
 
-## Step 07 - Enrich Transcripts
+Options utiles:
+
+```powershell
+python scripts/init/05_filter_images_with_text.py --device gpu:0 --lang fr
+python scripts/init/05_filter_images_with_text.py --device cpu
+```
+
+## Step 06 - Image OCR
+
+Extraire localement les textes visibles avec PaddleOCR:
+
+```powershell
+python scripts/init/06_images_ocr.py
+```
+
+Le script lit `images/with_text/` si la Step 05 l'a produit, sinon toutes les images. Il ecrit `transcript/<video_id>_ocr.json`, consomme ensuite par les steps de correction et d'enrichissement.
+
+## Step 07 - Correct Transcripts
+
+Corriger les erreurs de noms dans les transcripts timecodes a partir du JSON OCR:
+
+```powershell
+python scripts/init/07_correct_transcripts.py
+```
+
+Le script n'appelle aucune API. Il lit `transcript/*_ocr.json` et cree `transcript/*_transcript_timecodes_corrected.txt`.
+
+## Step 08 - Enrich Transcripts
 
 Ajouter les textes visibles a l'ecran dans les transcripts timecodes:
 
 ```powershell
-python scripts/init/07_enrich_transcripts.py
+python scripts/init/08_enrich_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes.txt` avec `analyse/*_image_text.txt` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
+Le script n'appelle aucune API. Il combine `transcript/*_transcript_timecodes_corrected.txt` avec `transcript/*_ocr.json` et cree `transcript/*_transcript_timecodes_enrichi.txt`.
 
-## Step 08 - Upload Videos To S3
+## Step 13 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
@@ -268,7 +297,7 @@ python scripts/init/08_upload_videos_to_s3.py --clean-init-prefix
 python scripts/init/08_upload_videos_to_s3.py --force
 ```
 
-## Step 09 - Update SQL Assets
+## Step 14 - Update SQL Assets
 
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 

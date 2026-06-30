@@ -7,21 +7,25 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
-from openai import OpenAI
+try:
+    import torch
+except ImportError:  # pragma: no cover
+    torch = None
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-OPENAI_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
-DEFAULT_TRANSCRIBE_MODEL = "whisper-1"
-DEFAULT_TRANSCRIBE_LANGUAGE = "fr"
-DEFAULT_TRANSCRIBE_AUDIO_BITRATE = "48k"
-DEFAULT_TRANSCRIBE_PROMPT = (
-    "Transcrire strictement l'audio en francais. Ne pas traduire en anglais. "
-    "Conserver les noms propres et termes techniques lies a IONIS-STM, job dating, "
-    "management, biotechnologies, informatique, energie et double competence."
+DEFAULT_TRANSCRIBE_MODEL = os.getenv("WHISPERX_MODEL", "large-v3")
+DEFAULT_TRANSCRIBE_LANGUAGE = os.getenv("WHISPERX_LANGUAGE", "fr")
+REQUESTED_TRANSCRIBE_DEVICE = os.getenv("WHISPERX_DEVICE", "cuda")
+DEFAULT_TRANSCRIBE_DEVICE = REQUESTED_TRANSCRIBE_DEVICE
+DEFAULT_TRANSCRIBE_COMPUTE_TYPE = os.getenv(
+    "WHISPERX_COMPUTE_TYPE",
+    "float16" if DEFAULT_TRANSCRIBE_DEVICE == "cuda" else "int8",
 )
+DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
+STRICT_CUDA = os.getenv("WHISPERX_STRICT_CUDA", "1").lower() not in {"0", "false", "no"}
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -41,9 +45,7 @@ def ffmpeg_exe():
 
 def latest_video_dir(parent_dir):
     candidates = sorted(
-        path
-        for path in parent_dir.iterdir()
-        if path.is_dir() and any(video_files(path))
+        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
     )
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
@@ -68,17 +70,12 @@ def video_files(video_dir):
                 yield path
 
 
-def has_timecodes(model):
-    return model == "whisper-1" or "diarize" in model
-
-
-def transcript_path(transcript_dir, video_path, model):
-    suffix = "_transcript_timecodes" if has_timecodes(model) else "_transcript"
-    return transcript_dir / f"{video_path.stem}{suffix}.txt"
+def transcript_path(transcript_dir, video_path):
+    return transcript_dir / f"{video_path.stem}_transcript_timecodes.txt"
 
 
 def extract_audio(video_path, audio_dir):
-    audio_path = audio_dir / f"{video_path.stem}.mp3"
+    audio_path = audio_dir / f"{video_path.stem}.wav"
     if audio_path.exists():
         return audio_path
 
@@ -92,51 +89,44 @@ def extract_audio(video_path, audio_dir):
         "1",
         "-ar",
         "16000",
-        "-b:a",
-        DEFAULT_TRANSCRIBE_AUDIO_BITRATE,
         str(audio_path),
     ]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return audio_path
 
 
-def transcribe_with_openai(client, audio_path):
-    if audio_path.stat().st_size > OPENAI_UPLOAD_LIMIT_BYTES:
-        size_mb = audio_path.stat().st_size / 1024 / 1024
-        raise ValueError(f"{audio_path.name} fait {size_mb:.1f} MiB apres extraction audio")
+def load_whisperx_model():
+    try:
+        import whisperx
+    except ImportError as error:
+        raise RuntimeError(
+            "Le package whisperx est absent. Installe-le avec `pip install whisperx`."
+        ) from error
 
-    model = DEFAULT_TRANSCRIBE_MODEL
-    language = DEFAULT_TRANSCRIBE_LANGUAGE
-    print(f"[openai] {audio_path.name} ({model})")
+    if DEFAULT_TRANSCRIBE_DEVICE == "cuda" and (torch is None or not torch.cuda.is_available()):
+        message = (
+            "WHISPERX_DEVICE=cuda est demande, mais le GPU n'est pas accessible dans cette "
+            "environnement Python. Verifie l'installation PyTorch CUDA, les pilotes NVIDIA "
+            "et la visibilite du GPU dans la .venv."
+        )
+        if STRICT_CUDA:
+            raise RuntimeError(message)
+        print(f"[warn] {message} Fallback sur cpu.")
+    device = DEFAULT_TRANSCRIBE_DEVICE if DEFAULT_TRANSCRIBE_DEVICE != "cuda" or (torch is not None and torch.cuda.is_available()) else "cpu"
+    compute_type = DEFAULT_TRANSCRIBE_COMPUTE_TYPE
+    if device == "cpu" and compute_type == "float16":
+        compute_type = "int8"
 
-    with audio_path.open("rb") as audio_file:
-        if "diarize" in model:
-            response_format = "diarized_json"
-        elif model == "whisper-1":
-            response_format = "verbose_json"
-        else:
-            response_format = "text"
-        request = {
-            "model": model,
-            "file": audio_file,
-            "language": language,
-            "response_format": response_format,
-        }
-        if DEFAULT_TRANSCRIBE_PROMPT and "diarize" not in model:
-            request["prompt"] = DEFAULT_TRANSCRIBE_PROMPT
-        if "diarize" in model:
-            request["chunking_strategy"] = "auto"
-        if model == "whisper-1":
-            request["timestamp_granularities"] = ["segment"]
-        transcript = client.audio.transcriptions.create(**request)
-
-    if isinstance(transcript, str):
-        return transcript
-    if hasattr(transcript, "segments") and transcript.segments:
-        if "diarize" in model:
-            return format_diarized_transcript(transcript.segments)
-        return format_timestamped_transcript(transcript.segments)
-    return transcript.text
+    print(
+        f"[whisperx] model={DEFAULT_TRANSCRIBE_MODEL} device={device} "
+        f"compute_type={compute_type}"
+    )
+    model = whisperx.load_model(
+        DEFAULT_TRANSCRIBE_MODEL,
+        device,
+        compute_type=compute_type,
+    )
+    return whisperx, model
 
 
 def format_timestamp(seconds):
@@ -148,45 +138,49 @@ def format_timestamp(seconds):
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def segment_value(segment, key, default=None):
-    if isinstance(segment, dict):
-        return segment.get(key, default)
-    return getattr(segment, key, default)
-
-
-def format_diarized_transcript(segments):
-    lines = []
-    for segment in segments:
-        speaker = segment_value(segment, "speaker", "speaker_unknown")
-        start = format_timestamp(segment_value(segment, "start", 0))
-        end = format_timestamp(segment_value(segment, "end", 0))
-        text = str(segment_value(segment, "text", "")).strip()
-        if text:
-            lines.append(f"[{start}-{end}] {speaker}: {text}")
-    return "\n".join(lines)
-
-
 def format_timestamped_transcript(segments):
     lines = []
     for segment in segments:
-        start = format_timestamp(segment_value(segment, "start", 0))
-        end = format_timestamp(segment_value(segment, "end", 0))
-        text = str(segment_value(segment, "text", "")).strip()
+        start = format_timestamp(segment.get("start", 0))
+        end = format_timestamp(segment.get("end", 0))
+        text = str(segment.get("text", "")).strip()
         if text:
             lines.append(f"[{start}-{end}] {text}")
     return "\n".join(lines)
 
 
-def transcribe_video(client, video_path, transcript_dir, audio_dir, force=False):
-    model = DEFAULT_TRANSCRIBE_MODEL
-    output_path = transcript_path(transcript_dir, video_path, model)
+def transcribe_with_whisperx(whisperx, model, audio_path):
+    result = model.transcribe(
+        str(audio_path),
+        batch_size=DEFAULT_TRANSCRIBE_BATCH_SIZE,
+        language=DEFAULT_TRANSCRIBE_LANGUAGE,
+    )
+    segments = result.get("segments", [])
+    if not segments:
+        return ""
+
+    language_code = result.get("language") or DEFAULT_TRANSCRIBE_LANGUAGE
+    align_model, metadata = whisperx.load_align_model(language_code=language_code, device=DEFAULT_TRANSCRIBE_DEVICE)
+    aligned = whisperx.align(
+        segments,
+        align_model,
+        metadata,
+        str(audio_path),
+        DEFAULT_TRANSCRIBE_DEVICE,
+        return_char_alignments=False,
+    )
+    return format_timestamped_transcript(aligned.get("segments", segments))
+
+
+def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=False):
+    output_path = transcript_path(transcript_dir, video_path)
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")
         return output_path
 
     print(f"[audio] {video_path.name}")
     audio_path = extract_audio(video_path, audio_dir)
-    text = transcribe_with_openai(client, audio_path).strip()
+    text = transcribe_with_whisperx(whisperx, model, audio_path).strip()
     output_path.write_text(text + "\n", encoding="utf-8")
     print(f"[ok] {output_path}")
     return output_path
@@ -194,7 +188,7 @@ def transcribe_video(client, video_path, transcript_dir, audio_dir, force=False)
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Transcrit avec l'API OpenAI les videos d'un dossier vers un sous-dossier transcript."
+        description="Transcrit localement avec whisperx les videos d'un dossier vers un sous-dossier transcript."
     )
     parser.add_argument(
         "--video-dir",
@@ -213,7 +207,7 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenere les transcriptions meme si les fichiers txt existent deja.",
+        help="Regenerer les transcriptions meme si les fichiers txt existent deja.",
     )
     parser.add_argument(
         "--keep-audio",
@@ -226,7 +220,7 @@ def parse_args():
 def main():
     load_dotenv(override=True)
     args = parse_args()
-    client = OpenAI()
+    whisperx, model = load_whisperx_model()
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))
@@ -248,7 +242,7 @@ def main():
             transcript_dir.mkdir(parents=True, exist_ok=True)
             audio_dir.mkdir(parents=True, exist_ok=True)
             print(f"Dossier transcriptions: {transcript_dir}")
-            transcribe_video(client, video_path, transcript_dir, audio_dir, force=args.force)
+            transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=args.force)
             done += 1
         except Exception as error:
             print(f"[error] {video_path.name}: {error}")

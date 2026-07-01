@@ -3,7 +3,9 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
@@ -16,6 +18,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class VideoSelection:
+    mode: str
+    value: object = None
 
 
 def video_files(video_dir):
@@ -47,24 +55,53 @@ def latest_video_dir(parent_dir):
     return candidates[-1]
 
 
-def parse_video_count(value):
+def extract_youtube_video_id(value):
+    raw_value = value.strip()
+    parsed = urlparse(raw_value if "://" in raw_value else f"https://{raw_value}")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host.startswith("m."):
+        host = host[2:]
+
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif host.endswith("youtube.com"):
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        else:
+            parts = [part for part in parsed.path.split("/") if part]
+            video_id = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"} else ""
+    else:
+        video_id = ""
+
+    return video_id if len(video_id) == 11 else ""
+
+
+def parse_video_selection(value):
     normalized = value.strip().lower()
     if normalized == "all":
-        return None
+        return VideoSelection("all")
+
+    if extract_youtube_video_id(value):
+        return VideoSelection("url", value.strip())
+
     try:
         count = int(normalized)
     except ValueError as error:
-        raise argparse.ArgumentTypeError("Utilise 'all' ou un nombre entier, par exemple 3.") from error
+        raise argparse.ArgumentTypeError(
+            "Utilise 'all', un nombre entier, ou un lien YouTube."
+        ) from error
     if count <= 0:
         raise argparse.ArgumentTypeError("Le nombre de videos doit etre superieur a 0.")
-    return count
+    return VideoSelection("count", count)
 
 
-def ask_video_count():
+def ask_video_selection():
     while True:
-        value = input("Nombre de videos a traiter ('all' pour toutes les videos): ").strip()
+        value = input("Videos a traiter (nombre, 'all', ou lien YouTube): ").strip()
         try:
-            return parse_video_count(value)
+            return parse_video_selection(value)
         except argparse.ArgumentTypeError as error:
             print(error)
 
@@ -106,8 +143,8 @@ def parse_args():
     parser.add_argument(
         "videos",
         nargs="?",
-        type=parse_video_count,
-        help="Nombre de videos a tester, ou 'all' pour toutes les videos.",
+        type=parse_video_selection,
+        help="Nombre de videos a tester, 'all' pour toutes les videos, ou lien YouTube precis.",
     )
     parser.add_argument(
         "--download-dir",
@@ -201,7 +238,10 @@ def main():
     load_dotenv(ROOT_DIR / ".env", override=True)
     args = parse_args()
     if args.videos is None:
-        args.videos = ask_video_count()
+        args.videos = ask_video_selection()
+
+    video_limit = args.videos.value if args.videos.mode == "count" else None
+    video_url = args.videos.value if args.videos.mode == "url" else None
 
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
@@ -210,10 +250,12 @@ def main():
     if not download_parent.is_absolute():
         download_parent = ROOT_DIR / download_parent
 
-    if args.videos is None:
+    if args.videos.mode == "all":
         print("Mode pipeline: toutes les videos", flush=True)
+    elif args.videos.mode == "url":
+        print(f"Mode pipeline: test sur la video {video_url}", flush=True)
     else:
-        print(f"Mode pipeline: test sur {args.videos} video(s)", flush=True)
+        print(f"Mode pipeline: test sur {video_limit} video(s)", flush=True)
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
@@ -222,13 +264,17 @@ def main():
 
     if not args.skip_data:
         step01 = step_command("01_get_data.py", "--skip-transcripts", "--download-dir", download_parent)
-        if args.videos is not None:
-            step01 += ["--limit", str(args.videos)]
+        if video_url:
+            step01 += ["--video-url", video_url]
+        elif video_limit is not None:
+            step01 += ["--limit", str(video_limit)]
         run_step_numbered(1, total_steps, "Step 01 - Get Data", step01, env)
 
     step02 = step_command("02_download_videos.py", "--download-dir", download_parent)
-    if args.videos is not None:
-        step02 += ["--limit", str(args.videos)]
+    if video_url:
+        step02 += ["--video-url", video_url]
+    elif video_limit is not None:
+        step02 += ["--limit", str(video_limit)]
     if args.force:
         step02.append("--force")
     run_step_numbered(2, total_steps, "Step 02 - Download Videos", step02, env)
@@ -243,8 +289,8 @@ def main():
     print(f"\nDossier pipeline: {video_dir}", flush=True)
 
     step03 = step_command("03_extract_images.py", "--video-dir", video_dir)
-    if args.videos is not None:
-        step03 += ["--limit", str(args.videos)]
+    if video_limit is not None:
+        step03 += ["--limit", str(video_limit)]
     if args.force:
         step03.append("--force")
     run_step_numbered(3, total_steps, "Step 03 - Extract Images", step03, env)
@@ -268,29 +314,29 @@ def main():
         "--graphic-max-edge-ratio",
         args.image_graphic_max_edge_ratio,
     )
-    if args.videos is not None:
-        step04 += ["--limit-videos", str(args.videos)]
+    if video_limit is not None:
+        step04 += ["--limit-videos", str(video_limit)]
     if args.force:
         step04.append("--force")
     run_step_numbered(4, total_steps, "Step 04 - Classify Images (OpenCV)", step04, env)
 
     step05 = step_command("05_images_ocr.py", "--video-dir", video_dir)
-    if args.videos is not None:
-        step05 += ["--limit-videos", str(args.videos)]
+    if video_limit is not None:
+        step05 += ["--limit-videos", str(video_limit)]
     if args.force:
         step05.append("--force")
     run_step_numbered(5, total_steps, "Step 05 - Image OCR (PaddleOCR)", step05, env)
 
     step06 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
-    if args.videos is not None:
-        step06 += ["--limit-videos", str(args.videos)]
+    if video_limit is not None:
+        step06 += ["--limit-videos", str(video_limit)]
     if args.force:
         step06.append("--force")
     run_step_numbered(6, total_steps, "Step 06 - OCR Subtitles", step06, env)
 
     step07 = step_command("07_whisper_transcription.py", "--video-dir", video_dir)
-    if args.videos is not None:
-        step07 += ["--limit", str(args.videos)]
+    if video_limit is not None:
+        step07 += ["--limit", str(video_limit)]
     if args.force:
         step07.append("--force")
     run_step_numbered(7, total_steps, "Step 07 - Whisper Transcription", step07, env)

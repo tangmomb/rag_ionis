@@ -5,7 +5,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 import yt_dlp
@@ -80,6 +80,31 @@ def parse_duration(duration):
     return total
 
 
+def extract_youtube_video_id(value):
+    raw_value = value.strip()
+    parsed = urlparse(raw_value if "://" in raw_value else f"https://{raw_value}")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host.startswith("m."):
+        host = host[2:]
+
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif host.endswith("youtube.com"):
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        else:
+            parts = [part for part in parsed.path.split("/") if part]
+            video_id = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"} else ""
+    else:
+        video_id = ""
+
+    if len(video_id) != 11:
+        raise argparse.ArgumentTypeError("Lien YouTube invalide ou ID video introuvable.")
+    return video_id
+
+
 def playlist_video_ids(channel, limit=None):
     playlist_id = uploads_playlist_id(channel)
     video_ids = []
@@ -118,6 +143,19 @@ def fetch_videos(channel, limit=None):
         )
         videos += data["items"]
     return videos[:limit] if limit is not None else videos
+
+
+def fetch_video(video_url):
+    video_id = extract_youtube_video_id(video_url)
+    data = youtube(
+        "videos",
+        part="snippet,contentDetails,statistics",
+        id=video_id,
+        maxResults=1,
+    )
+    if not data.get("items"):
+        raise RuntimeError(f"Video YouTube introuvable: {video_url}")
+    return data["items"]
 
 
 def video_info_payload(video):
@@ -278,10 +316,15 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Importe les donnees YouTube de la chaine en base SQL."
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--limit",
         type=int,
         help="Nombre maximum de videos a importer.",
+    )
+    selection.add_argument(
+        "--video-url",
+        help="Lien YouTube d'une video precise a importer.",
     )
     parser.add_argument(
         "--download-dir",
@@ -299,7 +342,7 @@ def parse_args():
 def main():
     load_dotenv(override=True)
     args = parse_args()
-    videos = fetch_videos(CHANNEL, limit=args.limit)
+    videos = fetch_video(args.video_url) if args.video_url else fetch_videos(CHANNEL, limit=args.limit)
     info_dir = Path(args.download_dir) / "info_videos"
     if info_dir.exists():
         shutil.rmtree(info_dir)

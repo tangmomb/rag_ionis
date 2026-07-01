@@ -149,12 +149,18 @@ Executer toutes les steps dans l'ordre:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all
 ```
 
-Sans argument, le script demande combien de videos traiter: `all` pour toute la chaine ou un nombre pour tester.
+Sans argument, le script demande quoi traiter: `all` pour toute la chaine, un nombre pour tester, ou un lien YouTube precis.
 
 Tester le pipeline sur un nombre limite de videos:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3
+```
+
+Tester le pipeline sur une video precise:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 Le script lance les steps 00 a 16. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.

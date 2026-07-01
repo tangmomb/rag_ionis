@@ -17,6 +17,11 @@ DEFAULT_MIN_MAJORITY_RATIO = 0.70
 DEFAULT_MIN_SILHOUETTE = 0.12
 DEFAULT_GRAPHIC_DOMINANT_HUE_RATIO = 0.70
 DEFAULT_GRAPHIC_MAX_EDGE_RATIO = 0.002
+DEFAULT_BOUNDARY_SECONDS = 12.0
+DEFAULT_BOUNDARY_MAX_RATIO = 0.12
+DEFAULT_BOUNDARY_MAX_RAW_EDGE_RATIO = 0.08
+DEFAULT_BOUNDARY_MAX_GRAY_ENTROPY = 0.60
+DEFAULT_BOUNDARY_MIN_SEQUENCE_IMAGES = 2
 ANSWERS_DIR_NAME = "answers"
 GRAPHIC_DIR_NAME = "graphic"
 NO_CLUSTER_DIR_NAME = "no_cluster"
@@ -110,6 +115,15 @@ def image_cv_features(path, feature_size, blur_kernel):
 
     kernel = odd_kernel(blur_kernel)
     blurred = cv2.GaussianBlur(image, (kernel, kernel), 0) if kernel > 1 else image
+    raw_small = cv2.resize(image, (128, 72), interpolation=cv2.INTER_AREA)
+    raw_gray = cv2.cvtColor(raw_small, cv2.COLOR_BGR2GRAY)
+    raw_edges = cv2.Canny(raw_gray, 80, 160)
+    raw_edge_ratio = float(np.mean(raw_edges > 0))
+    histogram = cv2.calcHist([raw_gray], [0], None, [32], [0, 256]).ravel()
+    probabilities = histogram / histogram.sum()
+    probabilities = probabilities[probabilities > 0]
+    gray_entropy = float(-(probabilities * np.log2(probabilities)).sum() / 5.0)
+
     gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
     small = cv2.resize(blurred, (feature_size, feature_size), interpolation=cv2.INTER_AREA)
     small_float = small.astype(np.float32) / 255.0
@@ -137,9 +151,11 @@ def image_cv_features(path, feature_size, blur_kernel):
         "gray_std": gray_std,
         "color_std": color_std,
         "edge_ratio": edge_ratio,
+        "raw_edge_ratio": raw_edge_ratio,
         "dominant_hue_ratio": dominant_hue_ratio,
         "brightness_mean": float(brightness.mean()),
         "brightness_std": float(brightness.std()),
+        "gray_entropy": gray_entropy,
     }
 
 
@@ -238,7 +254,63 @@ def graphic_override_indices(features, args):
     }
 
 
-def cluster_decision(labels, points, features, args):
+def contiguous_index_runs(indices):
+    runs = []
+    start = None
+    previous = None
+    for index in sorted(indices):
+        if start is None:
+            start = previous = index
+            continue
+        if index == previous + 1:
+            previous = index
+            continue
+        runs.append((start, previous))
+        start = previous = index
+    if start is not None:
+        runs.append((start, previous))
+    return runs
+
+
+def boundary_window_seconds(image_paths, args):
+    seconds = [image_second(path) for path in image_paths]
+    finite_seconds = [second for second in seconds if second != float("inf")]
+    if len(finite_seconds) < 2:
+        return args.boundary_seconds
+    duration = max(finite_seconds) - min(finite_seconds)
+    return min(args.boundary_seconds, max(6.0, duration * args.boundary_max_ratio))
+
+
+def boundary_graphic_indices(image_paths, features, args):
+    seconds = [image_second(path) for path in image_paths]
+    finite_seconds = [second for second in seconds if second != float("inf")]
+    if not finite_seconds:
+        edge_count = max(1, int(round(len(image_paths) * args.boundary_max_ratio)))
+        boundary_indices = set(range(edge_count)) | set(range(max(0, len(image_paths) - edge_count), len(image_paths)))
+    else:
+        first_second = min(finite_seconds)
+        last_second = max(finite_seconds)
+        window = boundary_window_seconds(image_paths, args)
+        boundary_indices = {
+            index
+            for index, second in enumerate(seconds)
+            if second != float("inf") and (second <= first_second + window or second >= last_second - window)
+        }
+
+    candidates = {
+        index
+        for index in boundary_indices
+        if features[index]["raw_edge_ratio"] <= args.boundary_max_raw_edge_ratio
+        and features[index]["gray_entropy"] <= args.boundary_max_gray_entropy
+    }
+    kept = set()
+    for start, end in contiguous_index_runs(candidates):
+        if end - start + 1 >= args.boundary_min_sequence_images:
+            kept.update(range(start, end + 1))
+    return kept
+
+
+def cluster_decision(labels, points, image_paths, features, args):
     counts = cluster_counts(labels)
     total = len(labels)
     answer_cluster = choose_answer_cluster(labels)
@@ -259,14 +331,21 @@ def cluster_decision(labels, points, features, args):
     if silhouette < args.min_silhouette:
         reasons.append("weak_separation")
 
+    boundary_indices = boundary_graphic_indices(image_paths, features, args)
     identifiable = not reasons
+    boundary_fallback = bool(boundary_indices) and reasons and all(
+        reason in {"balanced_clusters", "weak_separation"} for reason in reasons
+    )
     override_indices = graphic_override_indices(features, args) if identifiable else set()
 
     if identifiable:
         roles = [
-            "graphic" if index in override_indices or int(label) != answer_cluster else "answer"
+            "graphic" if index in boundary_indices or index in override_indices or int(label) != answer_cluster else "answer"
             for index, label in enumerate(labels)
         ]
+    elif boundary_fallback:
+        identifiable = True
+        roles = ["graphic" if index in boundary_indices else "answer" for index in range(total)]
     else:
         roles = ["no_cluster" for _ in labels]
 
@@ -274,8 +353,11 @@ def cluster_decision(labels, points, features, args):
         "answer_cluster": int(answer_cluster),
         "graphic_cluster": int(graphic_cluster),
         "cluster_identifiable": identifiable,
-        "no_graphic_reasons": reasons,
+        "no_graphic_reasons": [] if identifiable else reasons,
+        "kmeans_rejection_reasons": reasons,
+        "identification_strategy": "kmeans" if not boundary_fallback else "boundary_fallback",
         "roles": roles,
+        "boundary_graphic_indices": sorted(boundary_indices),
         "graphic_override_indices": sorted(override_indices),
         "raw_cluster_counts": {str(cluster): int(count) for cluster, count in sorted(counts.items())},
         "largest_cluster_ratio": majority_ratio,
@@ -287,6 +369,11 @@ def cluster_decision(labels, points, features, args):
             "min_silhouette": float(args.min_silhouette),
             "graphic_dominant_hue_ratio": float(args.graphic_dominant_hue_ratio),
             "graphic_max_edge_ratio": float(args.graphic_max_edge_ratio),
+            "boundary_seconds": float(args.boundary_seconds),
+            "boundary_max_ratio": float(args.boundary_max_ratio),
+            "boundary_max_raw_edge_ratio": float(args.boundary_max_raw_edge_ratio),
+            "boundary_max_gray_entropy": float(args.boundary_max_gray_entropy),
+            "boundary_min_sequence_images": int(args.boundary_min_sequence_images),
         },
     }
 
@@ -378,6 +465,7 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
         "no_cluster": roles.count("no_cluster"),
     }
     graphic_override_index_set = set(decision["graphic_override_indices"])
+    boundary_graphic_index_set = set(decision["boundary_graphic_indices"])
     graphic_sequences_by_index, graphic_sequences = graphic_sequence_map(image_paths, roles)
 
     staged_paths = stage_images(images_dir, image_paths)
@@ -407,6 +495,7 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
                 "image": relative_image,
                 "role": role,
                 "cluster": int(labels[index]),
+                "boundary_graphic": index in boundary_graphic_index_set,
                 "graphic_override": index in graphic_override_index_set,
                 **feature_payload,
                 "target": relative_target,
@@ -439,10 +528,13 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
         "answer_cluster": int(answer_cluster),
         "graphic_cluster": int(graphic_cluster),
         "cluster_identifiable": decision["cluster_identifiable"],
+        "identification_strategy": decision["identification_strategy"],
         "no_graphic_reasons": decision["no_graphic_reasons"],
+        "kmeans_rejection_reasons": decision["kmeans_rejection_reasons"],
         "answer_count": role_counts["answer"],
         "graphic_count": role_counts["graphic"],
         "no_cluster_count": role_counts["no_cluster"],
+        "boundary_graphic_count": len(decision["boundary_graphic_indices"]),
         "graphic_sequences_count": len(graphic_sequences),
         "graphic_override_count": len(decision["graphic_override_indices"]),
         "features": features_path.relative_to(video_path.parent).as_posix(),
@@ -456,6 +548,11 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
             "min_silhouette": decision["thresholds"]["min_silhouette"],
             "graphic_dominant_hue_ratio": decision["thresholds"]["graphic_dominant_hue_ratio"],
             "graphic_max_edge_ratio": decision["thresholds"]["graphic_max_edge_ratio"],
+            "boundary_seconds": decision["thresholds"]["boundary_seconds"],
+            "boundary_max_ratio": decision["thresholds"]["boundary_max_ratio"],
+            "boundary_max_raw_edge_ratio": decision["thresholds"]["boundary_max_raw_edge_ratio"],
+            "boundary_max_gray_entropy": decision["thresholds"]["boundary_max_gray_entropy"],
+            "boundary_min_sequence_images": decision["thresholds"]["boundary_min_sequence_images"],
         },
         "raw_cluster_counts": decision["raw_cluster_counts"],
         "clusters": (
@@ -528,7 +625,7 @@ def classify_video_images(video_path, args):
         compactness = 0.0
     else:
         labels, centers, compactness = kmeans(points, args.clusters, args.iterations, args.seed)
-    decision = cluster_decision(labels, points, features, args)
+    decision = cluster_decision(labels, points, paths, features, args)
     normalization = {"keys": keys, "mean": mean, "std": std}
     return write_outputs(
         video_path,
@@ -626,6 +723,51 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--boundary-seconds",
+        type=float,
+        default=DEFAULT_BOUNDARY_SECONDS,
+        help=(
+            "Fenetre maximale au debut et a la fin pour detecter intro/outro par faible complexite. "
+            f"Defaut: {DEFAULT_BOUNDARY_SECONDS}"
+        ),
+    )
+    parser.add_argument(
+        "--boundary-max-ratio",
+        type=float,
+        default=DEFAULT_BOUNDARY_MAX_RATIO,
+        help=(
+            "Part maximale de la video analysee a chaque bord pour intro/outro. "
+            f"Defaut: {DEFAULT_BOUNDARY_MAX_RATIO}"
+        ),
+    )
+    parser.add_argument(
+        "--boundary-max-raw-edge-ratio",
+        type=float,
+        default=DEFAULT_BOUNDARY_MAX_RAW_EDGE_RATIO,
+        help=(
+            "Densite maximum de contours non floutes pour accepter une frame intro/outro. "
+            f"Defaut: {DEFAULT_BOUNDARY_MAX_RAW_EDGE_RATIO}"
+        ),
+    )
+    parser.add_argument(
+        "--boundary-max-gray-entropy",
+        type=float,
+        default=DEFAULT_BOUNDARY_MAX_GRAY_ENTROPY,
+        help=(
+            "Entropie grayscale maximum pour accepter une frame intro/outro. "
+            f"Defaut: {DEFAULT_BOUNDARY_MAX_GRAY_ENTROPY}"
+        ),
+    )
+    parser.add_argument(
+        "--boundary-min-sequence-images",
+        type=int,
+        default=DEFAULT_BOUNDARY_MIN_SEQUENCE_IMAGES,
+        help=(
+            "Nombre minimum d'images consecutives pour valider une sequence intro/outro. "
+            f"Defaut: {DEFAULT_BOUNDARY_MIN_SEQUENCE_IMAGES}"
+        ),
+    )
+    parser.add_argument(
         "--iterations",
         type=int,
         default=50,
@@ -671,6 +813,16 @@ def main():
         raise ValueError("--graphic-dominant-hue-ratio doit etre entre 0 et 1")
     if not 0.0 <= args.graphic_max_edge_ratio <= 1.0:
         raise ValueError("--graphic-max-edge-ratio doit etre entre 0 et 1")
+    if args.boundary_seconds <= 0:
+        raise ValueError("--boundary-seconds doit etre superieur a 0")
+    if not 0.0 <= args.boundary_max_ratio <= 1.0:
+        raise ValueError("--boundary-max-ratio doit etre entre 0 et 1")
+    if not 0.0 <= args.boundary_max_raw_edge_ratio <= 1.0:
+        raise ValueError("--boundary-max-raw-edge-ratio doit etre entre 0 et 1")
+    if not 0.0 <= args.boundary_max_gray_entropy <= 1.0:
+        raise ValueError("--boundary-max-gray-entropy doit etre entre 0 et 1")
+    if args.boundary_min_sequence_images < 1:
+        raise ValueError("--boundary-min-sequence-images doit etre superieur ou egal a 1")
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))

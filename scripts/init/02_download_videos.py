@@ -5,6 +5,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
 from dotenv import load_dotenv
@@ -37,6 +38,31 @@ def info_cache_dir(parent_dir):
     return Path(parent_dir) / "info_videos"
 
 
+def extract_youtube_video_id(value):
+    raw_value = value.strip()
+    parsed = urlparse(raw_value if "://" in raw_value else f"https://{raw_value}")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host.startswith("m."):
+        host = host[2:]
+
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif host.endswith("youtube.com"):
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        else:
+            parts = [part for part in parsed.path.split("/") if part]
+            video_id = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"} else ""
+    else:
+        video_id = ""
+
+    if len(video_id) != 11:
+        raise argparse.ArgumentTypeError("Lien YouTube invalide ou ID video introuvable.")
+    return video_id
+
+
 def load_video_infos(parent_dir, limit=None):
     cache_dir = info_cache_dir(parent_dir)
     if not cache_dir.is_dir():
@@ -57,6 +83,23 @@ def load_video_infos(parent_dir, limit=None):
     return infos[:limit] if limit is not None else infos
 
 
+def load_video_info_from_url(parent_dir, video_url):
+    youtube_video_id = extract_youtube_video_id(video_url)
+    cached = [video for video in load_video_infos(parent_dir) if video[0] == youtube_video_id]
+    if cached:
+        return cached[0]
+    return (
+        youtube_video_id,
+        youtube_video_id,
+        video_url,
+        {
+            "youtube_video_id": youtube_video_id,
+            "title": youtube_video_id,
+            "url": video_url,
+        },
+    )
+
+
 def existing_download(video_dir, youtube_video_id):
     matches = sorted(
         path
@@ -75,6 +118,16 @@ def copy_video_info(video_dir, youtube_video_id, parent_dir):
     return target
 
 
+def write_video_info(video_dir, youtube_video_id, payload):
+    if not payload:
+        return None
+    target = video_dir / f"{youtube_video_id}.info.json"
+    if target.exists():
+        return target
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
 def timestamped_download_dir(parent_dir):
     timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M')}_init"
     download_dir = parent_dir / timestamp
@@ -87,7 +140,7 @@ def timestamped_download_dir(parent_dir):
 
 
 def download_video(video, download_dir, parent_dir, force=False):
-    youtube_video_id, title, url, _payload = video
+    youtube_video_id, title, url, payload = video
     video_dir = download_dir / youtube_video_id
     video_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(video_dir / "%(id)s.%(ext)s")
@@ -96,7 +149,8 @@ def download_video(video, download_dir, parent_dir, force=False):
         existing = existing_download(video_dir, youtube_video_id)
         if existing:
             print(f"[skip] {youtube_video_id} deja telecharge: {existing}")
-            copy_video_info(video_dir, youtube_video_id, parent_dir)
+            if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
+                write_video_info(video_dir, youtube_video_id, payload)
             return existing
 
     options = {
@@ -116,7 +170,8 @@ def download_video(video, download_dir, parent_dir, force=False):
     downloaded = existing_download(video_dir, youtube_video_id)
     if not downloaded:
         raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")
-    copy_video_info(video_dir, youtube_video_id, parent_dir)
+    if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
+        write_video_info(video_dir, youtube_video_id, payload)
     return downloaded
 
 
@@ -129,10 +184,15 @@ def parse_args():
         default=str(DEFAULT_DOWNLOAD_DIR),
         help="Dossier parent de sortie des videos. Defaut: downloads/youtube",
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--limit",
         type=int,
         help="Nombre maximum de videos a traiter.",
+    )
+    selection.add_argument(
+        "--video-url",
+        help="Lien YouTube d'une video precise a telecharger.",
     )
     parser.add_argument(
         "--force",
@@ -152,7 +212,11 @@ def main():
     args = parse_args()
     parent_download_dir = Path(args.download_dir)
 
-    videos = load_video_infos(parent_download_dir, limit=args.limit)
+    videos = (
+        [load_video_info_from_url(parent_download_dir, args.video_url)]
+        if args.video_url
+        else load_video_infos(parent_download_dir, limit=args.limit)
+    )
     if not videos:
         print(f"Aucune video trouvee dans {info_cache_dir(parent_download_dir)}.")
         return

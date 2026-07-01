@@ -157,7 +157,7 @@ Tester le pipeline sur un nombre limite de videos:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3
 ```
 
-Le script lance les steps 00 a 14. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
+Le script lance les steps 00 a 15. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
 
 Un run d'initialisation remplace le precedent:
 
@@ -201,19 +201,19 @@ python scripts/init/03_extract_images.py
 
 Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
-## Step 03b - Classify Images
+## Step 04 - Classify Images
 
 Classer localement les images extraites avec des features OpenCV simples et k-means:
 
 ```powershell
-python scripts/init/03b_classify_images.py
+python scripts/init/04_classify_images.py
 ```
 
 Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite), lance k-means en 2 clusters, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`. Dans `graphic/`, les images qui se suivent numeriquement sont regroupees en sous-dossiers `graphic_01/`, `graphic_02/`, etc.
 
 Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si la separation est trop faible, si le plus gros cluster contient moins de 70% des images, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons`.
 
-Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/cv_features.json` avec les mesures OpenCV. La Step 04 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
+Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/cv_features.json` avec les mesures OpenCV. La Step 05 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
 
 Par defaut, la sortie finale est binaire: `answers` ou `graphic`.
 Quand un ecran graphique contient un portrait integre, k-means peut le rapprocher des reponses. Un override rattache alors l'image a `graphic` si le fond garde une couleur tres dominante (`--graphic-dominant-hue-ratio 0.70`) et tres peu de contours apres flou (`--graphic-max-edge-ratio 0.002`).
@@ -221,43 +221,43 @@ Quand un ecran graphique contient un portrait integre, k-means peut le rapproche
 Options utiles:
 
 ```powershell
-python scripts/init/03b_classify_images.py --clusters 2
-python scripts/init/03b_classify_images.py --blur-kernel 31
-python scripts/init/03b_classify_images.py --feature-size 64
-python scripts/init/03b_classify_images.py --min-cluster-images 5
-python scripts/init/03b_classify_images.py --min-majority-ratio 0.70
-python scripts/init/03b_classify_images.py --min-silhouette 0.12
-python scripts/init/03b_classify_images.py --graphic-dominant-hue-ratio 0.70
-python scripts/init/03b_classify_images.py --graphic-max-edge-ratio 0.002
-python scripts/init/03b_classify_images.py --force
+python scripts/init/04_classify_images.py --clusters 2
+python scripts/init/04_classify_images.py --blur-kernel 31
+python scripts/init/04_classify_images.py --feature-size 64
+python scripts/init/04_classify_images.py --min-cluster-images 5
+python scripts/init/04_classify_images.py --min-majority-ratio 0.70
+python scripts/init/04_classify_images.py --min-silhouette 0.12
+python scripts/init/04_classify_images.py --graphic-dominant-hue-ratio 0.70
+python scripts/init/04_classify_images.py --graphic-max-edge-ratio 0.002
+python scripts/init/04_classify_images.py --force
 ```
 
-## Step 04 - Image OCR
+## Step 05 - Image OCR
 
 Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 
 ```powershell
-python scripts/init/04_images_ocr.py
+python scripts/init/05_images_ocr.py
 ```
 
 Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
 
-## Step 05 - OCR Subtitles
+## Step 06 - OCR Subtitles
 
 Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
 
 ```powershell
-python scripts/init/05_ocr_subtitles.py
+python scripts/init/06_ocr_subtitles.py
 ```
 
 Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
 
-## Step 06 - Whisper Transcription
+## Step 07 - Whisper Transcription
 
 Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
 
 ```powershell
-python scripts/init/06_whisper_transcription.py
+python scripts/init/07_whisper_transcription.py
 ```
 
 Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.
@@ -268,12 +268,12 @@ Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE
 
 Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
 
-## Step 07 - Correct Timecodes
+## Step 08 - Correct Timecodes
 
 Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
 
 ```powershell
-python scripts/init/07_correct_timecodes.py
+python scripts/init/08_correct_timecodes.py
 ```
 
 Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic_XX` pour limiter les faux positifs.
@@ -281,71 +281,71 @@ Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_o
 Le niveau de correction est ajustable:
 
 ```powershell
-python scripts/init/07_correct_timecodes.py --mode conservative
-python scripts/init/07_correct_timecodes.py --mode balanced
-python scripts/init/07_correct_timecodes.py --mode aggressive
+python scripts/init/08_correct_timecodes.py --mode conservative
+python scripts/init/08_correct_timecodes.py --mode balanced
+python scripts/init/08_correct_timecodes.py --mode aggressive
 ```
 
 `conservative` corrige peu, `aggressive` accepte plus de noms proches, et `balanced` est le defaut.
 
-## Step 08 - Enrich Timecodes
+## Step 09 - Enrich Timecodes
 
 Ajouter les textes visibles a l'ecran dans les timecodes corriges:
 
 ```powershell
-python scripts/init/08_enrich_transcripts.py
+python scripts/init/09_enrich_transcripts.py
 ```
 
 Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed.json` et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
 
-La step suivante `09_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
+La step suivante `10_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
 
-## Step 09 - Strip Timecodes
+## Step 10 - Strip Timecodes
 
 Creer le transcript sans timecodes depuis la version corrigee:
 
 ```powershell
-python scripts/init/09_strip_timecodes.py
+python scripts/init/10_strip_timecodes.py
 ```
 
 Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_transcript.txt`. Les fichiers `*_ocr_subtitle_timecodes_corrected.txt` ne generent pas de transcript plain.
 
-## Step 10 - Create Transcript Chunks
+## Step 11 - Create Transcript Chunks
 
 Decouper les transcripts sans timecodes en chunks JSON:
 
 ```powershell
-python scripts/init/10_create_chunks.py
+python scripts/init/11_create_chunks.py
 ```
 
 Le script lit `transcript/<video_id>_transcript.txt` et ecrit `chunks/<video_id>_transcript_chunks.json`.
 
-## Step 11 - Split Alert Chunks
+## Step 12 - Split Alert Chunks
 
 Redecouper les chunks trop longs marques `ALERT`:
 
 ```powershell
-python scripts/init/11_split_alert_chunks.py
+python scripts/init/12_split_alert_chunks.py
 ```
 
 Le script met a jour les fichiers `chunks/*_transcript_chunks.json` en place.
 
-## Step 12 - Create Transcript Embeddings
+## Step 13 - Create Transcript Embeddings
 
 Creer les embeddings a partir des chunks:
 
 ```powershell
-python scripts/init/12_create_embeddings.py
+python scripts/init/13_create_embeddings.py
 ```
 
 Le script lit `chunks/<video_id>_transcript_chunks.json` et ecrit `transcript/<video_id>_transcript_embeddings.json`.
 
-## Step 13 - Upload Videos To S3
+## Step 14 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
 ```powershell
-python scripts/init/13_upload_videos_to_s3.py
+python scripts/init/14_upload_videos_to_s3.py
 ```
 
 Configuration requise dans `.env`:
@@ -367,22 +367,22 @@ downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 Options utiles:
 
 ```powershell
-python scripts/init/13_upload_videos_to_s3.py --dry-run
-python scripts/init/13_upload_videos_to_s3.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/13_upload_videos_to_s3.py --prefix youtube/20260628_1312_init
-python scripts/init/13_upload_videos_to_s3.py --clean-init-prefix
-python scripts/init/13_upload_videos_to_s3.py --force
+python scripts/init/14_upload_videos_to_s3.py --dry-run
+python scripts/init/14_upload_videos_to_s3.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/14_upload_videos_to_s3.py --prefix youtube/20260628_1312_init
+python scripts/init/14_upload_videos_to_s3.py --clean-init-prefix
+python scripts/init/14_upload_videos_to_s3.py --force
 ```
 
-## Step 14 - Update SQL Assets
+## Step 15 - Update SQL Assets
 
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 
 ```powershell
-python scripts/init/14_update_sql_assets.py
+python scripts/init/15_update_sql_assets.py
 ```
 
-Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 13 par defaut:
+Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 14 par defaut:
 
 ```text
 downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
@@ -400,11 +400,11 @@ transcript_timecodes_enrichi -> *_transcript_timecodes_corrected_enrichi.txt
 Options utiles:
 
 ```powershell
-python scripts/init/14_update_sql_assets.py --dry-run
-python scripts/init/14_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/14_update_sql_assets.py --prefix youtube/20260628_1312_init
-python scripts/init/14_update_sql_assets.py --clean-init-assets
-python scripts/init/14_update_sql_assets.py --skip-transcripts
+python scripts/init/15_update_sql_assets.py --dry-run
+python scripts/init/15_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/15_update_sql_assets.py --prefix youtube/20260628_1312_init
+python scripts/init/15_update_sql_assets.py --clean-init-assets
+python scripts/init/15_update_sql_assets.py --skip-transcripts
 ```
 
 ## Step 99 - Clear Database

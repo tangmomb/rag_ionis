@@ -485,7 +485,7 @@ def parse_args():
     )
     parser.add_argument(
         "--prefix",
-        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 13",
+        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 14",
     )
     parser.add_argument(
         "--no-prefix",

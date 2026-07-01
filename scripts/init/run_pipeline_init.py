@@ -161,8 +161,8 @@ def parse_args():
     parser.add_argument(
         "--image-min-majority-ratio",
         type=float,
-        default=0.60,
-        help="Part minimale du plus gros cluster pour accepter un cluster graphic. Defaut: 0.60.",
+        default=0.70,
+        help="Part minimale du plus gros cluster pour accepter un cluster graphic. Defaut: 0.70.",
     )
     parser.add_argument(
         "--image-min-silhouette",

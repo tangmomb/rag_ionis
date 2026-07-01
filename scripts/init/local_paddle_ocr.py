@@ -319,11 +319,43 @@ def classify_text(text, box, image_size):
     return "other"
 
 
+def is_graphic_image_name(image_name):
+    return str(image_name or "").replace("\\", "/").split("/", 1)[0] == "graphic"
+
+
+def graphic_sequence_key(image_name):
+    parts = str(image_name or "").replace("\\", "/").split("/")
+    if len(parts) >= 3 and parts[0] == "graphic" and parts[1].startswith("graphic_"):
+        return "/".join(parts[:2])
+    return None
+
+
+def graphic_kind_for_image(image_name):
+    parts = str(image_name or "").replace("\\", "/").split("/")
+    if len(parts) >= 3 and parts[0] == "graphic" and parts[1].startswith("graphic_"):
+        return parts[1]
+    if parts and parts[0] == "graphic":
+        return "graphic"
+    return None
+
+
+def is_graphic_kind(kind):
+    return kind == "graphic" or str(kind or "").startswith("graphic_")
+
+
 def refine_subtitle_kinds(items, images_dir):
     geometries = []
     sizes = {}
+    passthrough_items = []
 
     for item in items:
+        graphic_kind = graphic_kind_for_image(item.get("image"))
+        if is_graphic_kind(item.get("kind")) or graphic_kind:
+            item = dict(item)
+            item["kind"] = graphic_kind or item.get("kind")
+            passthrough_items.append(item)
+            continue
+
         image_name = item.get("image")
         size = None
         if image_name and image_name not in sizes:
@@ -351,7 +383,7 @@ def refine_subtitle_kinds(items, images_dir):
     anchors = infer_subtitle_anchors(geometries)
 
     if len(anchors) < 2:
-        refined = []
+        refined = list(passthrough_items)
         for entry in geometries:
             item = dict(entry["item"])
             if item.get("kind") == "subtitle":
@@ -371,7 +403,7 @@ def refine_subtitle_kinds(items, images_dir):
     x_tolerance = max(0.06, min(0.16, statistics.median(anchor_widths) * 0.25))
     y_tolerance = max(0.04, min(0.075, anchor_height * 1.6))
 
-    refined = []
+    refined = list(passthrough_items)
     for entry in geometries:
         item = dict(entry["item"])
         geometry = entry["geometry"]
@@ -548,8 +580,16 @@ def filter_decor_items(items, images_dir):
     entries = []
     by_image = {}
     sizes = {}
+    passthrough_items = []
 
     for item in items:
+        graphic_kind = graphic_kind_for_image(item.get("image"))
+        if is_graphic_kind(item.get("kind")) or graphic_kind:
+            item = dict(item)
+            item["kind"] = graphic_kind or item.get("kind")
+            passthrough_items.append(item)
+            continue
+
         image_name = item.get("image")
         size = None
         if image_name and image_name not in sizes:
@@ -572,7 +612,7 @@ def filter_decor_items(items, images_dir):
 
     static_keys = static_decor_keys(entries)
     progressive_keys = progressive_fragment_keys(entries)
-    filtered = []
+    filtered = list(passthrough_items)
     for entry in entries:
         item = entry["item"]
         if item.get("kind") == "subtitle":
@@ -608,6 +648,38 @@ def filter_decor_items(items, images_dir):
         filtered.append(item)
 
     return filtered
+
+
+def collapse_graphic_sequence_items(items):
+    groups = {}
+    for item in items:
+        if not is_graphic_kind(item.get("kind")):
+            continue
+        sequence = graphic_sequence_key(item.get("image"))
+        if not sequence:
+            continue
+        groups.setdefault(sequence, {}).setdefault(item.get("image"), []).append(item)
+
+    selected_images = {}
+    for sequence, images in groups.items():
+        best_image = max(
+            sorted(images),
+            key=lambda image_name: (
+                sum(len(normalize_detected_text(item.get("text", ""))) for item in images[image_name]),
+                sum(len(re.findall(r"\w+", normalize_detected_text(item.get("text", "")), flags=re.UNICODE)) for item in images[image_name]),
+                sum(float(item.get("score") or 0.0) for item in images[image_name]) / max(1, len(images[image_name])),
+                -float(seconds_from_image_name(Path(image_name).name) or 0.0),
+            ),
+        )
+        selected_images[sequence] = best_image
+
+    collapsed = []
+    for item in items:
+        sequence = graphic_sequence_key(item.get("image"))
+        if sequence and item.get("image") != selected_images.get(sequence):
+            continue
+        collapsed.append(item)
+    return collapsed
 
 
 def image_size(path):
@@ -825,6 +897,7 @@ def ocr_items_for_image(ocr, image_path, images_dir=None):
     image_name = image_path.name
     if images_dir is not None:
         image_name = image_path.relative_to(images_dir).as_posix()
+    image_kind = graphic_kind_for_image(image_name)
     items = []
     seen = set()
     for record in ocr.recognize(image_path):
@@ -835,7 +908,7 @@ def ocr_items_for_image(ocr, image_path, images_dir=None):
         item = {
             "image": image_name,
             "text": record["text"],
-            "kind": classify_text(record["text"], record.get("box"), size),
+            "kind": image_kind or classify_text(record["text"], record.get("box"), size),
             "confidence": confidence_label(float(record.get("score") or 0.0)),
             "score": round(float(record.get("score") or 0.0), 4),
         }

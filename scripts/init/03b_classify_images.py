@@ -13,7 +13,7 @@ DEFAULT_CLUSTERS = 2
 DEFAULT_BLUR_KERNEL = 31
 DEFAULT_FEATURE_SIZE = 64
 DEFAULT_MIN_CLUSTER_IMAGES = 5
-DEFAULT_MIN_MAJORITY_RATIO = 0.60
+DEFAULT_MIN_MAJORITY_RATIO = 0.70
 DEFAULT_MIN_SILHOUETTE = 0.12
 DEFAULT_GRAPHIC_DOMINANT_HUE_RATIO = 0.70
 DEFAULT_GRAPHIC_MAX_EDGE_RATIO = 0.002
@@ -299,6 +299,38 @@ def role_target(images_dir, role):
     return images_dir / GRAPHIC_DIR_NAME
 
 
+def graphic_sequence_map(image_paths, roles):
+    sequence_by_index = {}
+    sequences = []
+    current_sequence = None
+    previous_second = None
+
+    for index, (path, role) in enumerate(zip(image_paths, roles)):
+        if role != "graphic":
+            current_sequence = None
+            previous_second = None
+            continue
+
+        current_second = image_second(path)
+        starts_sequence = (
+            current_sequence is None
+            or current_second is None
+            or previous_second is None
+            or current_second <= previous_second
+            or current_second - previous_second > 1.5
+        )
+        if starts_sequence:
+            current_sequence = f"graphic_{len(sequences) + 1:02d}"
+            sequences.append({"name": current_sequence, "images": []})
+
+        relative_name = f"{current_sequence}/{path.name}"
+        sequence_by_index[index] = current_sequence
+        sequences[-1]["images"].append(relative_name)
+        previous_second = current_second
+
+    return sequence_by_index, sequences
+
+
 def stage_images(images_dir, image_paths):
     staging_dir = images_dir / STAGING_DIR_NAME
     if staging_dir.exists():
@@ -346,6 +378,7 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
         "no_cluster": roles.count("no_cluster"),
     }
     graphic_override_index_set = set(decision["graphic_override_indices"])
+    graphic_sequences_by_index, graphic_sequences = graphic_sequence_map(image_paths, roles)
 
     staged_paths = stage_images(images_dir, image_paths)
     clear_cluster_dirs(images_dir)
@@ -360,15 +393,18 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
     for index, path in enumerate(staged_paths):
         role = roles[index]
         target_dir = role_target(images_dir, role)
+        if role == "graphic":
+            target_dir = target_dir / graphic_sequences_by_index[index]
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / path.name
         shutil.move(path, target)
-        role_images[role].append(path.name)
+        relative_image = target.relative_to(images_dir).as_posix()
+        role_images[role].append(relative_image.split("/", 1)[1] if role == "graphic" else path.name)
         relative_target = target.relative_to(video_path.parent).as_posix()
         feature_payload = {key: round(float(value), 6) for key, value in features[index].items()}
         items.append(
             {
-                "image": path.name,
+                "image": relative_image,
                 "role": role,
                 "cluster": int(labels[index]),
                 "graphic_override": index in graphic_override_index_set,
@@ -407,6 +443,7 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
         "answer_count": role_counts["answer"],
         "graphic_count": role_counts["graphic"],
         "no_cluster_count": role_counts["no_cluster"],
+        "graphic_sequences_count": len(graphic_sequences),
         "graphic_override_count": len(decision["graphic_override_indices"]),
         "features": features_path.relative_to(video_path.parent).as_posix(),
         "compactness": round(compactness, 6),
@@ -433,6 +470,7 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
                     "role": "graphic",
                     "cluster": int(graphic_cluster),
                     "count": role_counts["graphic"],
+                    "sequences": graphic_sequences,
                     "images": role_images["graphic"],
                 },
             ]

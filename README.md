@@ -209,9 +209,9 @@ Classer localement les images extraites avec des features OpenCV simples et k-me
 python scripts/init/03b_classify_images.py
 ```
 
-Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite), lance k-means en 2 clusters, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`.
+Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite), lance k-means en 2 clusters, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`. Dans `graphic/`, les images qui se suivent numeriquement sont regroupees en sous-dossiers `graphic_01/`, `graphic_02/`, etc.
 
-Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si la separation est trop faible, si les deux clusters ont des tailles trop proches, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons`.
+Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si la separation est trop faible, si le plus gros cluster contient moins de 70% des images, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons`.
 
 Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/cv_features.json` avec les mesures OpenCV. La Step 04 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
 
@@ -225,7 +225,7 @@ python scripts/init/03b_classify_images.py --clusters 2
 python scripts/init/03b_classify_images.py --blur-kernel 31
 python scripts/init/03b_classify_images.py --feature-size 64
 python scripts/init/03b_classify_images.py --min-cluster-images 5
-python scripts/init/03b_classify_images.py --min-majority-ratio 0.60
+python scripts/init/03b_classify_images.py --min-majority-ratio 0.70
 python scripts/init/03b_classify_images.py --min-silhouette 0.12
 python scripts/init/03b_classify_images.py --graphic-dominant-hue-ratio 0.70
 python scripts/init/03b_classify_images.py --graphic-max-edge-ratio 0.002
@@ -240,7 +240,7 @@ Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 python scripts/init/04_images_ocr.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
 
 ## Step 05 - OCR Subtitles
 

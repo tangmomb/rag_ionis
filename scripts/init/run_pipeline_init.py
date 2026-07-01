@@ -159,12 +159,12 @@ def parse_args():
     parser.add_argument(
         "--skip-upload",
         action="store_true",
-        help="Ne lance pas la Step 14 d'upload S3.",
+        help="Ne lance pas la Step 17 d'upload S3.",
     )
     parser.add_argument(
         "--skip-sql",
         action="store_true",
-        help="Ne lance pas la Step 15 de mise a jour SQL.",
+        help="Ne lance pas la Step 18 de mise a jour SQL.",
     )
     parser.add_argument(
         "--force",
@@ -175,7 +175,17 @@ def parse_args():
         "--correction-mode",
         choices=("aggressive", "balanced", "conservative"),
         default="balanced",
-        help="Sensibilite de correction des noms propres pendant la Step 08. Defaut: balanced.",
+        help="Sensibilite de correction des noms propres pendant la Step 09. Defaut: balanced.",
+    )
+    parser.add_argument(
+        "--ocr-subtitle-validation-model",
+        default=os.getenv("OCR_SUBTITLE_VALIDATION_MODEL", "gpt-5.4-nano"),
+        help="Modele OpenAI pour valider les sous-titres OCR. Defaut: gpt-5.4-nano.",
+    )
+    parser.add_argument(
+        "--chunk-speaker-validation-model",
+        default=os.getenv("CHUNK_SPEAKER_VALIDATION_MODEL", "gpt-5.4-nano"),
+        help="Modele OpenAI pour valider les speakers des chunks. Defaut: gpt-5.4-nano.",
     )
     parser.add_argument(
         "--image-clusters",
@@ -224,12 +234,12 @@ def parse_args():
     parser.add_argument(
         "--dry-run-upload",
         action="store_true",
-        help="Simule l'upload S3 pendant la Step 14.",
+        help="Simule l'upload S3 pendant la Step 17.",
     )
     parser.add_argument(
         "--dry-run-sql",
         action="store_true",
-        help="Simule la mise a jour SQL pendant la Step 15.",
+        help="Simule la mise a jour SQL pendant la Step 18.",
     )
     return parser.parse_args()
 
@@ -259,7 +269,7 @@ def main():
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 17
+    total_steps = 19
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
@@ -327,68 +337,92 @@ def main():
         step05.append("--force")
     run_step_numbered(5, total_steps, "Step 05 - Image OCR (PaddleOCR)", step05, env)
 
-    step06 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
+    step06 = step_command(
+        "06_validate_ocr_subtitles.py",
+        "--video-dir",
+        video_dir,
+        "--model",
+        args.ocr_subtitle_validation_model,
+    )
     if video_limit is not None:
         step06 += ["--limit-videos", str(video_limit)]
     if args.force:
         step06.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - OCR Subtitles", step06, env)
+    run_step_numbered(6, total_steps, "Step 06 - Validate OCR Subtitles (OpenAI)", step06, env)
 
-    step07 = step_command("07_whisper_transcription.py", "--video-dir", video_dir)
+    step07 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:
-        step07 += ["--limit", str(video_limit)]
+        step07 += ["--limit-videos", str(video_limit)]
     if args.force:
         step07.append("--force")
-    run_step_numbered(7, total_steps, "Step 07 - Whisper Transcription", step07, env)
+    run_step_numbered(7, total_steps, "Step 07 - OCR Subtitles", step07, env)
 
-    step08 = step_command("08_correct_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
+    step08 = step_command("07_whisper_transcription.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step08 += ["--limit", str(video_limit)]
     if args.force:
         step08.append("--force")
-    run_step_numbered(8, total_steps, "Step 08 - Correct Timecodes", step08, env)
+    run_step_numbered(8, total_steps, "Step 08 - Whisper Transcription", step08, env)
 
-    step09 = step_command("09_enrich_transcripts.py", "--video-dir", video_dir)
+    step09 = step_command("08_correct_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
     if args.force:
         step09.append("--force")
-    run_step_numbered(9, total_steps, "Step 09 - Enrich Timecodes", step09, env)
+    run_step_numbered(9, total_steps, "Step 09 - Correct Timecodes", step09, env)
 
-    step10 = step_command("09_generate_video_summary.py", "--video-dir", video_dir)
+    step10 = step_command("09_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step10.append("--force")
-    run_step_numbered(10, total_steps, "Step 10 - Video Summary", step10, env)
+    run_step_numbered(10, total_steps, "Step 10 - Enrich Timecodes", step10, env)
 
-    step11 = step_command("10_strip_timecodes.py", "--video-dir", video_dir)
+    step11 = step_command("09_generate_video_summary.py", "--video-dir", video_dir)
     if args.force:
         step11.append("--force")
-    run_step_numbered(11, total_steps, "Step 11 - Strip Timecodes", step11, env)
+    run_step_numbered(11, total_steps, "Step 11 - Video Summary", step11, env)
 
-    step12 = step_command("11_create_chunks.py", "--video-dir", video_dir)
+    step12 = step_command("10_strip_timecodes.py", "--video-dir", video_dir)
     if args.force:
         step12.append("--force")
-    run_step_numbered(12, total_steps, "Step 12 - Create Transcript Chunks", step12, env)
+    run_step_numbered(12, total_steps, "Step 12 - Strip Timecodes", step12, env)
 
-    step13 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
+    step13 = step_command("11_create_chunks.py", "--video-dir", video_dir)
     if args.force:
         step13.append("--force")
-    run_step_numbered(13, total_steps, "Step 13 - Split Alert Chunks", step13, env)
+    run_step_numbered(13, total_steps, "Step 13 - Create Transcript Chunks", step13, env)
 
-    step14 = step_command("13_create_embeddings.py", "--video-dir", video_dir)
+    step14 = step_command(
+        "12_validate_chunk_speakers.py",
+        "--video-dir",
+        video_dir,
+        "--model",
+        args.chunk_speaker_validation_model,
+    )
     if args.force:
         step14.append("--force")
-    run_step_numbered(14, total_steps, "Step 14 - Create Transcript Embeddings", step14, env)
+    run_step_numbered(14, total_steps, "Step 14 - Validate Chunk Speakers (OpenAI)", step14, env)
+
+    step15 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
+    if args.force:
+        step15.append("--force")
+    run_step_numbered(15, total_steps, "Step 15 - Split Alert Chunks", step15, env)
+
+    step16 = step_command("13_create_embeddings.py", "--video-dir", video_dir)
+    if args.force:
+        step16.append("--force")
+    run_step_numbered(16, total_steps, "Step 16 - Create Transcript Embeddings", step16, env)
 
     if not args.skip_upload:
-        step15 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step17 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
-            step15.append("--force")
+            step17.append("--force")
         if args.dry_run_upload:
-            step15.append("--dry-run")
-        run_step_numbered(15, total_steps, "Step 15 - Upload Videos To S3", step15, env)
+            step17.append("--dry-run")
+        run_step_numbered(17, total_steps, "Step 17 - Upload Videos To S3", step17, env)
 
     if not args.skip_sql:
-        step16 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
+        step18 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
-            step16.append("--dry-run")
-        run_step_numbered(16, total_steps, "Step 16 - Update SQL Assets", step16, env)
+            step18.append("--dry-run")
+        run_step_numbered(18, total_steps, "Step 18 - Update SQL Assets", step18, env)
 
     print("\nPipeline termine.", flush=True)
     print(f"Dossier traite: {video_dir}", flush=True)

@@ -66,7 +66,11 @@ def latest_video_dir(parent_dir):
 
 
 def processed_ocr_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}_ocr_processed.json"
+    transcript_dir = video_path.parent / "transcript"
+    corrected = transcript_dir / f"{video_path.stem}_ocr_processed_corrected.json"
+    if corrected.exists():
+        return corrected
+    return transcript_dir / f"{video_path.stem}_ocr_processed.json"
 
 
 def timecodes_path(video_path):

@@ -248,7 +248,19 @@ python scripts/init/05_images_ocr.py
 
 Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; le dernier dossier graphique est conserve avec `kind: "outro"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
 
-## Step 06 - OCR Subtitles
+## Step 06 - Validate OCR Subtitles
+
+Valider les items OCR `kind: "subtitle"` avec OpenAI avant de les utiliser comme vrais sous-titres:
+
+```powershell
+python scripts/init/06_validate_ocr_subtitles.py
+```
+
+Le script lit `transcript/<video_id>_ocr_processed.json`, envoie chaque `text` dont le `kind` vaut `subtitle` au modele OpenAI configure, et lui demande de repondre uniquement `oui` ou `non` a la question: "A ton avis c'est vraiment du sous titre ou erreur de l'ocr ?". Par defaut, le modele est `gpt-5.4-nano`, configurable avec `--model` ou `OCR_SUBTITLE_VALIDATION_MODEL`; l'alias compact `gpt5.4nano` est aussi accepte.
+
+Il ecrit `transcript/<video_id>_ocr_processed_corrected.json`. Les items valides restent `kind: "subtitle"`; les items rejetes deviennent `kind: "ocr_error"` avec `previous_kind: "subtitle"` et une trace `subtitle_validation`. Le script ecrit aussi `transcript/<video_id>_ocr_subtitle_validation_log.json` avec chaque demande envoyee a GPT et sa reponse brute.
+
+## Step 07 - OCR Subtitles
 
 Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
 
@@ -256,9 +268,9 @@ Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec un
 python scripts/init/06_ocr_subtitles.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed.json` et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
+Le script lit `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
 
-## Step 07 - Whisper Transcription
+## Step 08 - Whisper Transcription
 
 Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
 
@@ -274,7 +286,7 @@ Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE
 
 Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
 
-## Step 08 - Correct Timecodes
+## Step 09 - Correct Timecodes
 
 Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
 
@@ -294,7 +306,7 @@ python scripts/init/08_correct_timecodes.py --mode aggressive
 
 `conservative` corrige peu, `aggressive` accepte plus de noms proches, et `balanced` est le defaut.
 
-## Step 09 - Enrich Timecodes
+## Step 10 - Enrich Timecodes
 
 Ajouter les textes visibles a l'ecran dans les timecodes corriges:
 
@@ -302,9 +314,9 @@ Ajouter les textes visibles a l'ecran dans les timecodes corriges:
 python scripts/init/09_enrich_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed.json` et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
+Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed_corrected.json` quand il existe, sinon `transcript/*_ocr_processed.json`, et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
 
-## Step 10 - Video Summary
+## Step 11 - Video Summary
 
 Produire un resume Markdown depuis le fichier enrichi, sous forme de tableau timecode/fait associe:
 
@@ -316,7 +328,7 @@ Le script lit `transcript/*_enrichi.txt` et ecrit `transcript/*_video_summary.md
 
 La step suivante `10_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
 
-## Step 11 - Strip Timecodes
+## Step 12 - Strip Timecodes
 
 Creer le transcript sans timecodes depuis la version corrigee:
 
@@ -326,7 +338,7 @@ python scripts/init/10_strip_timecodes.py
 
 Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_transcript.txt`. Les fichiers `*_ocr_subtitle_timecodes_corrected.txt` ne generent pas de transcript plain.
 
-## Step 12 - Create Transcript Chunks
+## Step 13 - Create Transcript Chunks
 
 Decouper les transcripts sans timecodes en chunks JSON, avec une limite de 1000 caracteres espaces compris et une coupe au prochain point apres depassement:
 
@@ -336,13 +348,25 @@ python scripts/init/11_create_chunks.py
 
 Le script lit d'abord `transcript/<video_id>_transcript.txt`, sinon `transcript/<video_id>_ocr_subtitle.txt`, et ecrit `chunks/<video_id>_chunks.json`.
 
-La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `transcript/<video_id>_ocr_processed.json` quand ils apparaissent dans un item OCR dont `kind` n'est pas `subtitle`. Le modele transformer francais `fr_dep_news_trf` est charge sur GPU par defaut, et le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele et CuPy CUDA 12 sont declares dans `requirements.txt`; si l'environnement ne trouve pas le modele, le reinstaller avec:
+La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, quand ils apparaissent dans un item OCR dont `kind` n'est ni `subtitle` ni `ocr_error`. Le modele transformer francais `fr_dep_news_trf` est charge sur GPU par defaut, et le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele et CuPy CUDA 12 sont declares dans `requirements.txt`; si l'environnement ne trouve pas le modele, le reinstaller avec:
 
 ```powershell
 python -m spacy download fr_dep_news_trf
 ```
 
-## Step 13 - Split Alert Chunks
+## Step 14 - Validate Chunk Speakers
+
+Valider la liste des speakers detectes dans les chunks avec OpenAI:
+
+```powershell
+python scripts/init/12_validate_chunk_speakers.py
+```
+
+Le script lit `chunks/<video_id>_chunks.json`, recupere les valeurs `meta_data.speakers`, demande au modele quels speakers sont vraiment des personnes physiques, puis ecrit `chunks/<video_id>_chunks_corrected.json`. Par defaut, le modele est `gpt-5.4-nano`, configurable avec `--model` ou `CHUNK_SPEAKER_VALIDATION_MODEL`; l'alias compact `gpt5.4nano` est aussi accepte.
+
+Les chunks conservent leur contenu; seule la liste `speakers` est filtree. Une trace `speaker_validation` est ajoutee au JSON corrige avec les noms gardes et le nombre de rejets. Le script ecrit aussi `chunks/<video_id>_chunk_speaker_validation_log.json` avec la demande envoyee a GPT et sa reponse brute.
+
+## Step 15 - Split Alert Chunks
 
 Redecouper les chunks trop longs marques `ALERT`:
 
@@ -350,9 +374,9 @@ Redecouper les chunks trop longs marques `ALERT`:
 python scripts/init/12_split_alert_chunks.py
 ```
 
-Le script met a jour les fichiers `chunks/*_chunks.json` en place.
+Le script lit `chunks/*_chunks_corrected.json` quand il existe, sinon `chunks/*_chunks.json`, et met a jour le fichier choisi en place.
 
-## Step 14 - Create Transcript Embeddings
+## Step 16 - Create Transcript Embeddings
 
 Creer les embeddings a partir des chunks:
 
@@ -360,11 +384,11 @@ Creer les embeddings a partir des chunks:
 python scripts/init/13_create_embeddings.py
 ```
 
-Le script lit `chunks/<video_id>_chunks.json` et ecrit un fichier JSON par chunk dans `chunks/`:
+Le script lit `chunks/<video_id>_chunks_corrected.json` quand il existe, sinon `chunks/<video_id>_chunks.json`, et ecrit un fichier JSON par chunk dans `chunks/`:
 
 - `chunks/<video_id>_chunk_<index>_embedding.json`
 
-## Step 15 - Upload Videos To S3
+## Step 17 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
@@ -398,7 +422,7 @@ python scripts/init/14_upload_s3.py --clean-init-prefix
 python scripts/init/14_upload_s3.py --force
 ```
 
-## Step 16 - Update SQL Assets
+## Step 18 - Update SQL Assets
 
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 
@@ -406,7 +430,7 @@ Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchronis
 python scripts/init/15_upload_sql.py
 ```
 
-Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 14 par defaut:
+Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 17 par defaut:
 
 ```text
 downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4

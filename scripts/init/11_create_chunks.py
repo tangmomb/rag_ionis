@@ -17,11 +17,13 @@ VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_SUFFIX = "_transcript.txt"
 OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
 OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
+OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
 CHUNKS_SUFFIX = "_chunks.json"
 DEFAULT_MAX_CHARS = 1000
 ALERT_WORD_THRESHOLD = 3000
 API = "https://www.googleapis.com/youtube/v3"
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
+OCR_LOWER_THIRD_MIN_TOP = 320
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
 SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+")
 SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", "fr_dep_news_trf")
@@ -33,24 +35,29 @@ LOWERCASE_CONNECTORS = {"d", "d'", "d’", "de", "du", "des", "la", "le"}
 SPEAKER_NAME_STOP_WORDS = {"je", "j'ai", "j’ai", "j", "moi"}
 NON_PERSON_NAME_KEYWORDS = {
     "analyst",
-    "batignolles",
     "bi",
-    "biomen",
     "buisness",
     "business",
+    "ceo",
+    "chief",
+    "conseil",
     "crm",
     "diagnostic",
     "diagnostics",
+    "directeur",
+    "directrice",
     "ecole",
     "energie",
     "energy",
-    "ionis",
-    "lonis",
-    "roche",
+    "etudiant",
+    "etudiante",
+    "fondateur",
+    "fondatrice",
+    "management",
+    "managemen",
+    "promo",
+    "sciences",
     "societe",
-    "spie",
-    "sfr",
-    "stm",
     "www",
 }
 _SPACY_NLP = None
@@ -97,7 +104,11 @@ def ocr_subtitle_path(video_path):
 
 
 def ocr_processed_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
+    transcript_dir = video_path.parent / "transcript"
+    corrected = transcript_dir / f"{video_path.stem}{OCR_PROCESSED_CORRECTED_SUFFIX}"
+    if corrected.exists():
+        return corrected
+    return transcript_dir / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
 
 
 def chunks_path(video_path):
@@ -162,12 +173,39 @@ def is_capitalized_word(word):
     return bool(word) and word[0].isalpha() and word[0].isupper()
 
 
+def speaker_words(name):
+    return [
+        word
+        for word in SPEAKER_WORD_PATTERN.findall(name)
+        if any(char.isalpha() for char in word)
+    ]
+
+
 def normalize_speaker_name(words):
     return " ".join(words).strip(" ,.;:!?-–—")
 
 
 def normalize_speaker_text(text):
     return re.sub(r"\s+", " ", str(text)).strip(" ,.;:!?-–—")
+
+
+def titlecase_all_caps_name(name):
+    words = speaker_words(name)
+    if not words:
+        return name
+    if any(any(char.islower() for char in word) for word in words):
+        return name
+
+    parts = []
+    for part in re.split(r"(\s+|-|')", name):
+        if not part or part.isspace() or part in {"-", "'"}:
+            parts.append(part)
+            continue
+        if any(char.isalpha() for char in part):
+            parts.append(part[:1].upper() + part[1:].lower())
+        else:
+            parts.append(part)
+    return "".join(parts)
 
 
 def normalize_match_text(text):
@@ -183,14 +221,14 @@ def normalize_match_text(text):
 def is_probable_speaker_name(name):
     if not name:
         return False
-    words = SPEAKER_WORD_PATTERN.findall(name)
+    words = speaker_words(name)
     if not words:
         return False
     return any(is_capitalized_word(word) for word in words)
 
 
 def has_multiple_speaker_words(name):
-    return len(SPEAKER_WORD_PATTERN.findall(name)) >= 2
+    return len(speaker_words(name)) >= 2
 
 
 def is_non_person_name(name):
@@ -199,7 +237,7 @@ def is_non_person_name(name):
 
 
 def add_speaker_name(names, seen, name):
-    name = normalize_speaker_text(name)
+    name = titlecase_all_caps_name(normalize_speaker_text(name))
     if not is_probable_speaker_name(name):
         return
     if is_non_person_name(name):
@@ -386,7 +424,91 @@ def load_processed_non_subtitle_texts(video_path):
     texts = []
     for item in payload.get("items", []):
         kind = str(item.get("kind", "")).strip().lower()
-        if kind == "subtitle":
+        if kind in {"subtitle", "ocr_error"}:
+            continue
+
+        text = normalize_speaker_text(item.get("text", ""))
+        if text:
+            texts.append(text)
+
+    return texts
+
+
+def ocr_box_bounds(item):
+    try:
+        xs = [float(point[0]) for point in item.get("box", [])]
+        ys = [float(point[1]) for point in item.get("box", [])]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not xs or not ys:
+        return None
+
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def is_lower_third_ocr_item(item):
+    bounds = ocr_box_bounds(item)
+    if bounds is None:
+        return False
+
+    return bounds[1] >= OCR_LOWER_THIRD_MIN_TOP
+
+
+def has_lower_third_companion(item, items):
+    bounds = ocr_box_bounds(item)
+    if bounds is None:
+        return False
+
+    left, _top, right, bottom = bounds
+    width = max(right - left, 1)
+    image = item.get("image")
+
+    for other in items:
+        if other is item:
+            continue
+        if str(other.get("kind", "")).strip().lower() != "lower_third":
+            continue
+        if image and other.get("image") != image:
+            continue
+
+        other_bounds = ocr_box_bounds(other)
+        if other_bounds is None:
+            continue
+
+        other_left, other_top, other_right, _other_bottom = other_bounds
+        gap = other_top - bottom
+        overlap = min(right, other_right) - max(left, other_left)
+        left_delta = abs(other_left - left)
+        if (
+            0 <= gap <= 80
+            and left_delta <= max(90, width * 0.25)
+            and overlap >= min(width, other_right - other_left) * 0.4
+        ):
+            return True
+
+    return False
+
+
+def load_processed_speaker_candidate_texts(video_path):
+    path = ocr_processed_path(video_path)
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[warn] OCR processed illisible pour {video_path.stem}: {exc}")
+        return None
+
+    texts = []
+    items = payload.get("items", [])
+    for item in items:
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind != "name":
+            continue
+        if not is_lower_third_ocr_item(item):
+            continue
+        if not has_lower_third_companion(item, items):
             continue
 
         text = normalize_speaker_text(item.get("text", ""))
@@ -419,22 +541,57 @@ def speaker_candidate_in_processed(name, processed_non_subtitle_text):
     return bool(normalized_name) and normalized_name in processed_non_subtitle_text
 
 
+def is_standalone_person_name_candidate(text):
+    text = normalize_speaker_text(text)
+    if not text:
+        return False
+    if is_non_person_name(text):
+        return False
+    if re.search(r"[@:/\\0-9()\[\]]", text):
+        return False
+
+    words = speaker_words(text)
+    if len(words) < 2 or len(words) > 4:
+        return False
+
+    for word in words:
+        lower_word = word.lower()
+        if lower_word in LOWERCASE_CONNECTORS:
+            continue
+        if not is_capitalized_word(word):
+            return False
+
+    return True
+
+
 def extract_processed_speakers(processed_non_subtitle_texts):
     if not processed_non_subtitle_texts:
         return []
 
+    candidate_texts = [
+        text
+        for text in processed_non_subtitle_texts
+        if is_standalone_person_name_candidate(text)
+    ]
+    if not candidate_texts:
+        return []
+
     nlp = load_french_spacy_model()
     if nlp is None:
-        return []
+        return candidate_texts
 
     nlp.max_length = max(
         nlp.max_length,
-        max((len(text) for text in processed_non_subtitle_texts), default=0) + 100,
+        max((len(text) for text in candidate_texts), default=0) + 100,
     )
     names = []
-    for doc in nlp.pipe(processed_non_subtitle_texts):
-        names.extend(extract_spacy_speakers_from_doc(doc))
-    return names
+    for doc in nlp.pipe(candidate_texts):
+        names.extend(
+            name
+            for name in extract_spacy_speakers_from_doc(doc)
+            if is_standalone_person_name_candidate(name)
+        )
+    return names or candidate_texts
 
 
 def extract_speakers(text, processed_non_subtitle_text=None, processed_non_subtitle_texts=None):
@@ -547,11 +704,12 @@ def create_chunks(video_path, force=False):
 
     processed_non_subtitle_texts = load_processed_non_subtitle_texts(video_path)
     processed_non_subtitle_text = processed_non_subtitle_match_text(processed_non_subtitle_texts)
+    processed_speaker_candidate_texts = load_processed_speaker_candidate_texts(video_path)
     meta_data = {
         "speakers": extract_speakers(
             normalized,
             processed_non_subtitle_text,
-            processed_non_subtitle_texts,
+            processed_speaker_candidate_texts,
         ),
     }
     payload = build_chunks_payload(normalized, meta_data)

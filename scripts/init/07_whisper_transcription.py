@@ -80,6 +80,9 @@ def subtitle_timecodes_path(transcript_dir, video_path):
 
 
 def processed_ocr_path(transcript_dir, video_path):
+    corrected = transcript_dir / f"{video_path.stem}_ocr_processed_corrected.json"
+    if corrected.exists():
+        return corrected
     return transcript_dir / f"{video_path.stem}_ocr_processed.json"
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
+OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
 OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
 OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -36,7 +37,11 @@ def latest_video_dir(parent_dir):
 
 
 def processed_ocr_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
+    transcript_dir = video_path.parent / "transcript"
+    corrected = transcript_dir / f"{video_path.stem}{OCR_PROCESSED_CORRECTED_SUFFIX}"
+    if corrected.exists():
+        return corrected
+    return transcript_dir / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
 
 
 def subtitle_path(video_path):

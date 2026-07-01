@@ -11,6 +11,7 @@ from openai import OpenAI
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CHUNKS_SUFFIX = "_chunks.json"
+CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 EMBEDDING_SUFFIX = "_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
@@ -46,7 +47,11 @@ def latest_video_dir(parent_dir):
 
 
 def chunks_path(video_path):
-    return video_path.parent / "chunks" / f"{video_path.stem}{CHUNKS_SUFFIX}"
+    chunks_dir = video_path.parent / "chunks"
+    corrected = chunks_dir / f"{video_path.stem}{CHUNKS_CORRECTED_SUFFIX}"
+    if corrected.exists():
+        return corrected
+    return chunks_dir / f"{video_path.stem}{CHUNKS_SUFFIX}"
 
 
 def embedding_path(video_path, chunk_index):

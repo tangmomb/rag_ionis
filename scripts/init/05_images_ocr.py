@@ -12,6 +12,7 @@ from local_paddle_ocr import (
     image_files,
     image_video_dirs,
     latest_video_dir,
+    mark_last_graphic_sequence_as_outro,
     ocr_items_for_image,
     refine_subtitle_kinds,
 )
@@ -133,7 +134,8 @@ def main():
         refined_items = refine_subtitle_kinds(items, images_dir)
         filtered_items = filter_decor_items(refined_items, images_dir)
         graphic_collapsed_items = collapse_graphic_sequence_items(filtered_items)
-        answer_collapsed_items = collapse_answer_overlay_items(graphic_collapsed_items, images_dir)
+        outro_marked_items = mark_last_graphic_sequence_as_outro(graphic_collapsed_items, images_dir)
+        answer_collapsed_items = collapse_answer_overlay_items(outro_marked_items, images_dir)
         processed_items = deduplicate_items(answer_collapsed_items, images_dir)
         write_outputs(transcript_dir, video_path.name, {"items": processed_items})
         print(f"[done] {video_path.name}: {len(items)} items bruts", flush=True)

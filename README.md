@@ -157,7 +157,7 @@ Tester le pipeline sur un nombre limite de videos:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3
 ```
 
-Le script lance les steps 00 a 15. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
+Le script lance les steps 00 a 16. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
 
 Un run d'initialisation remplace le precedent:
 
@@ -240,7 +240,7 @@ Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 python scripts/init/05_images_ocr.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; le dernier dossier graphique est conserve avec `kind: "outro"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
 
 ## Step 06 - OCR Subtitles
 
@@ -298,9 +298,19 @@ python scripts/init/09_enrich_transcripts.py
 
 Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed.json` et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
 
+## Step 10 - Video Summary
+
+Produire un resume Markdown depuis le fichier enrichi, sous forme de tableau timecode/fait associe:
+
+```powershell
+python scripts/init/09_generate_video_summary.py
+```
+
+Le script lit `transcript/*_enrichi.txt` et ecrit `transcript/*_video_summary.md`. Il conserve les lignes timecodees du fichier enrichi et les transforme en tableau Markdown avec une colonne `Timecode` et une colonne `Fait associé`.
+
 La step suivante `10_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
 
-## Step 10 - Strip Timecodes
+## Step 11 - Strip Timecodes
 
 Creer le transcript sans timecodes depuis la version corrigee:
 
@@ -310,7 +320,7 @@ python scripts/init/10_strip_timecodes.py
 
 Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_transcript.txt`. Les fichiers `*_ocr_subtitle_timecodes_corrected.txt` ne generent pas de transcript plain.
 
-## Step 11 - Create Transcript Chunks
+## Step 12 - Create Transcript Chunks
 
 Decouper les transcripts sans timecodes en chunks JSON:
 
@@ -320,7 +330,7 @@ python scripts/init/11_create_chunks.py
 
 Le script lit `transcript/<video_id>_transcript.txt` et ecrit `chunks/<video_id>_transcript_chunks.json`.
 
-## Step 12 - Split Alert Chunks
+## Step 13 - Split Alert Chunks
 
 Redecouper les chunks trop longs marques `ALERT`:
 
@@ -330,7 +340,7 @@ python scripts/init/12_split_alert_chunks.py
 
 Le script met a jour les fichiers `chunks/*_transcript_chunks.json` en place.
 
-## Step 13 - Create Transcript Embeddings
+## Step 14 - Create Transcript Embeddings
 
 Creer les embeddings a partir des chunks:
 
@@ -340,7 +350,7 @@ python scripts/init/13_create_embeddings.py
 
 Le script lit `chunks/<video_id>_transcript_chunks.json` et ecrit `transcript/<video_id>_transcript_embeddings.json`.
 
-## Step 14 - Upload Videos To S3
+## Step 15 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
@@ -374,7 +384,7 @@ python scripts/init/14_upload_videos_to_s3.py --clean-init-prefix
 python scripts/init/14_upload_videos_to_s3.py --force
 ```
 
-## Step 15 - Update SQL Assets
+## Step 16 - Update SQL Assets
 
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 

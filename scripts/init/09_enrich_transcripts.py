@@ -111,17 +111,19 @@ def normalize_text(text):
 
 def is_overlay_kind(kind):
     normalized = str(kind or "").strip().lower()
-    return normalized in OVERLAY_KINDS or normalized == "graphic" or normalized.startswith("graphic_")
+    return normalized in OVERLAY_KINDS or normalized in {"graphic", "outro"} or normalized.startswith("graphic_")
 
 
 def is_graphic_kind(kind):
     normalized = str(kind or "").strip().lower()
-    return normalized == "graphic" or normalized.startswith("graphic_")
+    return normalized in {"graphic", "outro"} or normalized.startswith("graphic_")
 
 
 def overlay_label_key(item):
     if item.get("kind") == "question_intertitle":
         return "question_intertitle"
+    if item.get("kind") == "outro":
+        return "outro"
     if is_graphic_kind(item.get("kind")):
         return "insert"
     return "graphic"
@@ -275,6 +277,7 @@ def format_overlay_line(overlay):
     labels = {
         "question_intertitle": "INTERCALAIRE QUESTION",
         "insert": "INSERT",
+        "outro": "OUTRO",
         "graphic": "GRAPHIC",
     }
     label = labels[overlay_label_key(overlay)]

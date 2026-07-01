@@ -347,6 +347,16 @@ def is_graphic_kind(kind):
     return kind == "graphic" or str(kind or "").startswith("graphic_")
 
 
+def last_graphic_sequence_key(images_dir):
+    sequence = None
+    for path in image_files(images_dir):
+        relative_name = path.relative_to(images_dir).as_posix()
+        current_sequence = graphic_sequence_key(relative_name)
+        if current_sequence:
+            sequence = current_sequence
+    return sequence
+
+
 def refine_subtitle_kinds(items, images_dir):
     geometries = []
     sizes = {}
@@ -684,6 +694,20 @@ def collapse_graphic_sequence_items(items):
             continue
         collapsed.append(item)
     return collapsed
+
+
+def mark_last_graphic_sequence_as_outro(items, images_dir):
+    outro_sequence = last_graphic_sequence_key(images_dir)
+    if not outro_sequence:
+        return list(items)
+
+    marked = []
+    for item in items:
+        item = dict(item)
+        if graphic_sequence_key(item.get("image")) == outro_sequence:
+            item["kind"] = "outro"
+        marked.append(item)
+    return marked
 
 
 def image_order_map(images_dir):

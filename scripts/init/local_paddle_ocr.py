@@ -15,7 +15,8 @@ IGNORED_TEXT_KEYS = {"ionis", "kionis", "<ionis", "stm"}
 DECOR_TEXT_KEYS = IGNORED_TEXT_KEYS | {"x", "in"}
 MIN_OVERLAY_RELATIVE_HEIGHT = 0.03
 MIN_OVERLAY_RELATIVE_WIDTH = 0.24
-MIN_SUBTITLE_UNIQUE_TEXTS = 3
+MIN_SUBTITLE_CLUSTER_SECONDS = 3
+MIN_SUBTITLE_CLUSTER_DURATION = 5
 STATIC_DECOR_MIN_SECONDS = 5
 STATIC_DECOR_MIN_DURATION = 5
 STATIC_DECOR_POSITION_TOLERANCE = 0.045
@@ -182,22 +183,18 @@ def is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count,
 def is_subtitle_anchor_candidate(entry):
     geometry = entry["geometry"]
     return (
-        entry["has_subtitle_signal"]
-        and 0.35 <= geometry["cx"] <= 0.65
+        0.35 <= geometry["cx"] <= 0.65
         and 0.60 <= geometry["cy"] <= 0.94
         and 0.018 <= geometry["relative_height"] <= 0.09
-        and (
-            geometry["relative_width"] >= 0.08
-            or entry["word_count"] >= 2
-            or entry["has_sentence_punctuation"]
-        )
+        and geometry["relative_width"] >= 0.06
     )
 
 
 def subtitle_cluster_score(cluster):
-    keys = {entry["key"] for entry in cluster if entry["key"]}
-    seconds = {entry["second"] for entry in cluster if entry["second"] is not None}
-    if len(keys) < MIN_SUBTITLE_UNIQUE_TEXTS or len(seconds) < MIN_SUBTITLE_UNIQUE_TEXTS:
+    seconds = sorted({entry["second"] for entry in cluster if entry["second"] is not None})
+    if len(seconds) < MIN_SUBTITLE_CLUSTER_SECONDS:
+        return 0.0
+    if seconds[-1] - seconds[0] < MIN_SUBTITLE_CLUSTER_DURATION:
         return 0.0
 
     median_cx = statistics.median(entry["geometry"]["cx"] for entry in cluster)
@@ -206,15 +203,13 @@ def subtitle_cluster_score(cluster):
     y_spread = max(entry["geometry"]["cy"] for entry in cluster) - min(entry["geometry"]["cy"] for entry in cluster)
     centrality = max(0.0, 1.0 - abs(median_cx - 0.5) * 2.0)
     temporal_density = min(len(seconds), len(cluster))
-    text_change = len(keys) / max(1, len(cluster))
     stability = max(0.0, 1.0 - (x_spread + y_spread))
 
     return (
-        temporal_density
-        + len(keys) * 1.8
+        temporal_density * 2.0
+        + len(cluster) * 0.5
         + centrality * 4.0
-        + stability * 3.0
-        + text_change * 8.0
+        + stability * 4.0
         - abs(median_cy - 0.78) * 2.0
     )
 
@@ -247,6 +242,7 @@ def anchored_subtitle_match(geometry, anchor_cx, anchor_cy, x_tolerance, y_toler
     return (
         abs(geometry["cx"] - anchor_cx) <= x_tolerance
         and abs(geometry["cy"] - anchor_cy) <= y_tolerance
+        and geometry["relative_width"] >= 0.06
         and 0.02 <= geometry["relative_height"] <= 0.09
     )
 
@@ -352,29 +348,7 @@ def refine_subtitle_kinds(items, images_dir):
             }
         )
 
-    primary_anchor_entries = [
-        entry
-        for entry in geometries
-        if entry["item"].get("kind") == "subtitle"
-        and is_primary_subtitle_box(
-            entry["geometry"]["cx"],
-            entry["geometry"]["cy"],
-            entry["geometry"]["relative_width"],
-            entry["geometry"]["relative_height"],
-            entry["word_count"],
-            entry["has_sentence_punctuation"],
-        )
-    ]
-    primary_anchor_keys = {entry["key"] for entry in primary_anchor_entries if entry["key"]}
-    primary_anchors = []
-    if len(primary_anchor_keys) >= MIN_SUBTITLE_UNIQUE_TEXTS:
-        primary_anchors = [entry["geometry"] for entry in primary_anchor_entries]
-    adaptive_anchors = infer_subtitle_anchors(geometries)
-    anchors = primary_anchors
-    if len(adaptive_anchors) >= max(2, len(primary_anchors) * 2):
-        anchors = adaptive_anchors
-    elif len(anchors) < 2:
-        anchors = adaptive_anchors
+    anchors = infer_subtitle_anchors(geometries)
 
     if len(anchors) < 2:
         refined = []
@@ -408,10 +382,7 @@ def refine_subtitle_kinds(items, images_dir):
             x_tolerance,
             y_tolerance,
         )
-        if (
-            entry["has_subtitle_signal"]
-            and is_near_anchor
-        ):
+        if is_near_anchor:
             item["kind"] = "subtitle"
         elif item.get("kind") == "subtitle":
             item["kind"] = non_subtitle_kind(

@@ -331,7 +331,7 @@ def main():
     run_step_numbered(14, total_steps, "Step 14 - Create Transcript Embeddings", step14, env)
 
     if not args.skip_upload:
-        step15 = step_command("14_upload_videos_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step15 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
             step15.append("--force")
         if args.dry_run_upload:
@@ -339,7 +339,7 @@ def main():
         run_step_numbered(15, total_steps, "Step 15 - Upload Videos To S3", step15, env)
 
     if not args.skip_sql:
-        step16 = step_command("15_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
+        step16 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
             step16.append("--dry-run")
         run_step_numbered(16, total_steps, "Step 16 - Update SQL Assets", step16, env)

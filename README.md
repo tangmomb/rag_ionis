@@ -328,7 +328,13 @@ Decouper les transcripts sans timecodes en chunks JSON, avec une limite de 1000 
 python scripts/init/11_create_chunks.py
 ```
 
-Le script lit `transcript/<video_id>_transcript.txt` et ecrit `chunks/<video_id>_transcript_chunks.json`.
+Le script lit d'abord `transcript/<video_id>_transcript.txt`, sinon `transcript/<video_id>_ocr_subtitle.txt`, et ecrit `chunks/<video_id>_chunks.json`.
+
+La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `transcript/<video_id>_ocr_processed.json` quand ils apparaissent dans un item OCR dont `kind` n'est pas `subtitle`. Le modele transformer francais `fr_dep_news_trf` est charge sur GPU par defaut, et le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele et CuPy CUDA 12 sont declares dans `requirements.txt`; si l'environnement ne trouve pas le modele, le reinstaller avec:
+
+```powershell
+python -m spacy download fr_dep_news_trf
+```
 
 ## Step 13 - Split Alert Chunks
 
@@ -338,7 +344,7 @@ Redecouper les chunks trop longs marques `ALERT`:
 python scripts/init/12_split_alert_chunks.py
 ```
 
-Le script met a jour les fichiers `chunks/*_transcript_chunks.json` en place.
+Le script met a jour les fichiers `chunks/*_chunks.json` en place.
 
 ## Step 14 - Create Transcript Embeddings
 
@@ -348,16 +354,16 @@ Creer les embeddings a partir des chunks:
 python scripts/init/13_create_embeddings.py
 ```
 
-Le script lit `chunks/<video_id>_transcript_chunks.json` et ecrit un fichier JSON par chunk dans `chunks/`:
+Le script lit `chunks/<video_id>_chunks.json` et ecrit un fichier JSON par chunk dans `chunks/`:
 
-- `chunks/<video_id>_chunk_<index>_transcript_embedding.json`
+- `chunks/<video_id>_chunk_<index>_embedding.json`
 
 ## Step 15 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
 ```powershell
-python scripts/init/14_upload_videos_to_s3.py
+python scripts/init/14_upload_s3.py
 ```
 
 Configuration requise dans `.env`:
@@ -379,11 +385,11 @@ downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 Options utiles:
 
 ```powershell
-python scripts/init/14_upload_videos_to_s3.py --dry-run
-python scripts/init/14_upload_videos_to_s3.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/14_upload_videos_to_s3.py --prefix youtube/20260628_1312_init
-python scripts/init/14_upload_videos_to_s3.py --clean-init-prefix
-python scripts/init/14_upload_videos_to_s3.py --force
+python scripts/init/14_upload_s3.py --dry-run
+python scripts/init/14_upload_s3.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/14_upload_s3.py --prefix youtube/20260628_1312_init
+python scripts/init/14_upload_s3.py --clean-init-prefix
+python scripts/init/14_upload_s3.py --force
 ```
 
 ## Step 16 - Update SQL Assets
@@ -391,7 +397,7 @@ python scripts/init/14_upload_videos_to_s3.py --force
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 
 ```powershell
-python scripts/init/15_update_sql_assets.py
+python scripts/init/15_upload_sql.py
 ```
 
 Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 14 par defaut:
@@ -412,11 +418,11 @@ transcript_timecodes_enrichi -> *_transcript_timecodes_corrected_enrichi.txt
 Options utiles:
 
 ```powershell
-python scripts/init/15_update_sql_assets.py --dry-run
-python scripts/init/15_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/15_update_sql_assets.py --prefix youtube/20260628_1312_init
-python scripts/init/15_update_sql_assets.py --clean-init-assets
-python scripts/init/15_update_sql_assets.py --skip-transcripts
+python scripts/init/15_upload_sql.py --dry-run
+python scripts/init/15_upload_sql.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/15_upload_sql.py --prefix youtube/20260628_1312_init
+python scripts/init/15_upload_sql.py --clean-init-assets
+python scripts/init/15_upload_sql.py --skip-transcripts
 ```
 
 ## Step 99 - Clear Database

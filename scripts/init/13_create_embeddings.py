@@ -10,8 +10,8 @@ from openai import OpenAI
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CHUNKS_SUFFIX = "_transcript_chunks.json"
-EMBEDDING_SUFFIX = "_transcript_embedding.json"
+CHUNKS_SUFFIX = "_chunks.json"
+EMBEDDING_SUFFIX = "_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 if hasattr(sys.stdout, "reconfigure"):

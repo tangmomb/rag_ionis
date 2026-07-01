@@ -4,6 +4,7 @@ import json
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -14,15 +15,47 @@ import requests
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_SUFFIX = "_transcript.txt"
-CHUNKS_SUFFIX = "_transcript_chunks.json"
+OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
+OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
+CHUNKS_SUFFIX = "_chunks.json"
 DEFAULT_MAX_CHARS = 1000
 ALERT_WORD_THRESHOLD = 3000
 API = "https://www.googleapis.com/youtube/v3"
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
-SPEAKER_PATTERN = re.compile(
-    r"je m'appelle\s+([A-ZÉÈÀÂÊÎÔÛÄËÏÖÜÇ][A-Za-zÀ-ÖØ-öø-ÿ'’ -]*(?:\s+[A-ZÉÈÀÂÊÎÔÛÄËÏÖÜÇ][A-Za-zÀ-ÖØ-öø-ÿ'’ -]*)*)",
-    re.IGNORECASE,
-)
+SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
+SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+")
+SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", "fr_dep_news_trf")
+SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "1").strip().lower() not in {"0", "false", "no"}
+SPACY_PERSON_LABELS = {"PER", "PERSON"}
+SPACY_ORG_LABELS = {"ORG"}
+
+LOWERCASE_CONNECTORS = {"d", "d'", "d’", "de", "du", "des", "la", "le"}
+SPEAKER_NAME_STOP_WORDS = {"je", "j'ai", "j’ai", "j", "moi"}
+NON_PERSON_NAME_KEYWORDS = {
+    "analyst",
+    "batignolles",
+    "bi",
+    "biomen",
+    "buisness",
+    "business",
+    "crm",
+    "diagnostic",
+    "diagnostics",
+    "ecole",
+    "energie",
+    "energy",
+    "ionis",
+    "lonis",
+    "roche",
+    "societe",
+    "spie",
+    "sfr",
+    "stm",
+    "www",
+}
+_SPACY_NLP = None
+_SPACY_LOAD_ATTEMPTED = False
+_SPACY_WARNING_SHOWN = False
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -59,8 +92,28 @@ def transcript_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{PLAIN_SUFFIX}"
 
 
+def ocr_subtitle_path(video_path):
+    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_SUFFIX}"
+
+
+def ocr_processed_path(video_path):
+    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
+
+
 def chunks_path(video_path):
     return video_path.parent / "chunks" / f"{video_path.stem}{CHUNKS_SUFFIX}"
+
+
+def source_text_path(video_path):
+    transcript = transcript_path(video_path)
+    if transcript.exists():
+        return transcript
+
+    ocr_subtitle = ocr_subtitle_path(video_path)
+    if ocr_subtitle.exists():
+        return ocr_subtitle
+
+    return None
 
 
 def youtube(endpoint, **params):
@@ -105,14 +158,302 @@ def video_title(video_path):
     return video_path.stem
 
 
-def extract_speakers(text):
+def is_capitalized_word(word):
+    return bool(word) and word[0].isalpha() and word[0].isupper()
+
+
+def normalize_speaker_name(words):
+    return " ".join(words).strip(" ,.;:!?-–—")
+
+
+def normalize_speaker_text(text):
+    return re.sub(r"\s+", " ", str(text)).strip(" ,.;:!?-–—")
+
+
+def normalize_match_text(text):
+    without_accents = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", str(text))
+        if not unicodedata.combining(char)
+    )
+    normalized = re.sub(r"[^0-9A-Za-z]+", " ", without_accents.casefold())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def is_probable_speaker_name(name):
+    if not name:
+        return False
+    words = SPEAKER_WORD_PATTERN.findall(name)
+    if not words:
+        return False
+    return any(is_capitalized_word(word) for word in words)
+
+
+def has_multiple_speaker_words(name):
+    return len(SPEAKER_WORD_PATTERN.findall(name)) >= 2
+
+
+def is_non_person_name(name):
+    normalized = normalize_match_text(name)
+    return any(keyword in normalized.split() for keyword in NON_PERSON_NAME_KEYWORDS)
+
+
+def add_speaker_name(names, seen, name):
+    name = normalize_speaker_text(name)
+    if not is_probable_speaker_name(name):
+        return
+    if is_non_person_name(name):
+        return
+
+    key = normalize_match_text(name)
+    if key in seen:
+        return
+
+    seen.add(key)
+    names.append(name)
+
+
+def extract_speaker_name(text, start_index):
+    words = []
+    text_after_intro = text[start_index:]
+    phrase_end = re.search(r"[\n\r,.;:!?]", text_after_intro)
+    if phrase_end:
+        text_after_intro = text_after_intro[: phrase_end.start()]
+
+    matches = list(SPEAKER_WORD_PATTERN.finditer(text_after_intro))
+    index = 0
+
+    while index < len(matches):
+        word = matches[index].group(0)
+        lower_word = word.lower()
+
+        if lower_word in SPEAKER_NAME_STOP_WORDS:
+            break
+
+        if is_capitalized_word(word):
+            words.append(word)
+            index += 1
+            continue
+
+        if lower_word in LOWERCASE_CONNECTORS:
+            next_index = index + 1
+            if lower_word == "de" and next_index + 1 < len(matches):
+                next_word = matches[next_index].group(0)
+                if next_word.lower() == "la":
+                    after_la = matches[next_index + 1].group(0)
+                    if is_capitalized_word(after_la):
+                        words.extend([word, next_word])
+                        index += 2
+                        continue
+            if next_index < len(matches) and is_capitalized_word(matches[next_index].group(0)):
+                words.append(word)
+                index += 1
+                continue
+
+        break
+
+    return normalize_speaker_name(words)
+
+
+def warn_spacy_unavailable(reason):
+    global _SPACY_WARNING_SHOWN
+
+    if _SPACY_WARNING_SHOWN:
+        return
+
+    print(
+        "[warn] Detection spaCy ignoree: "
+        f"{reason}. Installez spaCy, CuPy et le modele francais {SPACY_FRENCH_MODEL}."
+    )
+    _SPACY_WARNING_SHOWN = True
+
+
+def prepare_spacy_gpu(spacy):
+    if not SPACY_REQUIRE_GPU:
+        spacy.prefer_gpu()
+        return True
+
+    try:
+        spacy.require_gpu()
+    except Exception as exc:
+        warn_spacy_unavailable(f"GPU requis mais indisponible ({exc})")
+        return False
+
+    return True
+
+
+def load_french_spacy_model():
+    global _SPACY_NLP, _SPACY_LOAD_ATTEMPTED
+
+    if _SPACY_LOAD_ATTEMPTED:
+        return _SPACY_NLP
+
+    _SPACY_LOAD_ATTEMPTED = True
+    try:
+        import spacy
+    except ImportError as exc:
+        warn_spacy_unavailable(str(exc))
+        return None
+
+    if not prepare_spacy_gpu(spacy):
+        return None
+
+    try:
+        _SPACY_NLP = spacy.load(SPACY_FRENCH_MODEL)
+    except OSError as exc:
+        warn_spacy_unavailable(str(exc))
+        return None
+
+    return _SPACY_NLP
+
+
+def extract_proper_noun_speakers(doc):
+    names = []
+    current = []
+
+    def flush_current():
+        nonlocal current
+        if current:
+            names.append(normalize_speaker_text(" ".join(current)))
+            current = []
+
+    tokens = list(doc)
+    for index, token in enumerate(tokens):
+        lower_text = token.text.lower()
+        next_token = tokens[index + 1] if index + 1 < len(tokens) else None
+
+        if token.pos_ == "PROPN" and token.is_alpha:
+            current.append(token.text)
+            continue
+
+        if (
+            lower_text in LOWERCASE_CONNECTORS
+            and current
+            and next_token is not None
+            and next_token.pos_ == "PROPN"
+        ):
+            current.append(token.text)
+            continue
+
+        if token.text in {"-", "–", "—"} and current:
+            current.append(token.text)
+            continue
+
+        flush_current()
+
+    flush_current()
+    return names
+
+
+def extract_spacy_speakers_from_doc(doc):
+    organization_names = {
+        normalize_speaker_text(ent.text).casefold()
+        for ent in doc.ents
+        if ent.label_ in SPACY_ORG_LABELS
+    }
+    entity_names = [
+        normalize_speaker_text(ent.text)
+        for ent in doc.ents
+        if ent.label_ in SPACY_PERSON_LABELS
+        and normalize_speaker_text(ent.text).casefold() not in organization_names
+    ]
+    if entity_names:
+        return entity_names
+
+    return extract_proper_noun_speakers(doc)
+
+
+def extract_spacy_speakers(text):
+    nlp = load_french_spacy_model()
+    if nlp is None:
+        return []
+
+    nlp.max_length = max(nlp.max_length, len(text) + 100)
+    return extract_spacy_speakers_from_doc(nlp(text))
+
+
+def load_processed_non_subtitle_texts(video_path):
+    path = ocr_processed_path(video_path)
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[warn] OCR processed illisible pour {video_path.stem}: {exc}")
+        return None
+
+    texts = []
+    for item in payload.get("items", []):
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind == "subtitle":
+            continue
+
+        text = normalize_speaker_text(item.get("text", ""))
+        if text:
+            texts.append(text)
+
+    return texts
+
+
+def processed_non_subtitle_match_text(processed_non_subtitle_texts):
+    if processed_non_subtitle_texts is None:
+        return None
+
+    return " ".join(
+        text
+        for text in (normalize_match_text(text) for text in processed_non_subtitle_texts)
+        if text
+    )
+
+
+def load_processed_non_subtitle_text(video_path):
+    return processed_non_subtitle_match_text(load_processed_non_subtitle_texts(video_path))
+
+
+def speaker_candidate_in_processed(name, processed_non_subtitle_text):
+    if processed_non_subtitle_text is None:
+        return True
+
+    normalized_name = normalize_match_text(name)
+    return bool(normalized_name) and normalized_name in processed_non_subtitle_text
+
+
+def extract_processed_speakers(processed_non_subtitle_texts):
+    if not processed_non_subtitle_texts:
+        return []
+
+    nlp = load_french_spacy_model()
+    if nlp is None:
+        return []
+
+    nlp.max_length = max(
+        nlp.max_length,
+        max((len(text) for text in processed_non_subtitle_texts), default=0) + 100,
+    )
+    names = []
+    for doc in nlp.pipe(processed_non_subtitle_texts):
+        names.extend(extract_spacy_speakers_from_doc(doc))
+    return names
+
+
+def extract_speakers(text, processed_non_subtitle_text=None, processed_non_subtitle_texts=None):
     names = []
     seen = set()
-    for match in SPEAKER_PATTERN.finditer(text):
-        name = " ".join(match.group(1).split()).strip(" ,.;:!?")
-        if name and name.lower() not in seen:
-            seen.add(name.lower())
-            names.append(name)
+
+    for match in SPEAKER_INTRO_PATTERN.finditer(text):
+        name = extract_speaker_name(text, match.end())
+        if speaker_candidate_in_processed(name, processed_non_subtitle_text):
+            add_speaker_name(names, seen, name)
+
+    for name in extract_spacy_speakers(text):
+        if has_multiple_speaker_words(name) and speaker_candidate_in_processed(name, processed_non_subtitle_text):
+            add_speaker_name(names, seen, name)
+
+    for name in extract_processed_speakers(processed_non_subtitle_texts):
+        if has_multiple_speaker_words(name):
+            add_speaker_name(names, seen, name)
+
     return names
 
 
@@ -188,14 +529,14 @@ def build_chunks_payload(text, meta_data):
 
 
 def create_chunks(video_path, force=False):
-    source = transcript_path(video_path)
     target = chunks_path(video_path)
+    source = source_text_path(video_path)
 
     if target.exists() and not force:
         print(f"[skip] {target.name} existe deja")
         return target
-    if not source.exists():
-        print(f"[skip] transcript introuvable: {source}")
+    if source is None:
+        print(f"[skip] transcript ou ocr_subtitle introuvable pour: {video_path.stem}")
         return None
 
     text = source.read_text(encoding="utf-8")
@@ -204,14 +545,17 @@ def create_chunks(video_path, force=False):
         print(f"[skip] transcript vide: {source}")
         return None
 
+    processed_non_subtitle_texts = load_processed_non_subtitle_texts(video_path)
+    processed_non_subtitle_text = processed_non_subtitle_match_text(processed_non_subtitle_texts)
     meta_data = {
-        "video_name": video_path.stem,
-        "video_title": video_title(video_path),
-        "published_at": published_at(video_path),
-        "speakers": extract_speakers(normalized),
-        "video_url": video_url(video_path),
+        "speakers": extract_speakers(
+            normalized,
+            processed_non_subtitle_text,
+            processed_non_subtitle_texts,
+        ),
     }
     payload = build_chunks_payload(normalized, meta_data)
+    payload["source"] = str(source.relative_to(video_path.parent))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[ok] {target} ({len(payload['chunks'])} chunks)")

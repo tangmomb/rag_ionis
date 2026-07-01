@@ -9,15 +9,20 @@ from pathlib import Path
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-DEFAULT_MODEL = "dinov2_vitl14"
 DEFAULT_CLUSTERS = 2
-DEFAULT_BATCH_SIZE = 2
-DEFAULT_IMAGE_SIZE = 518
-DEFAULT_INTERTITLE_DOMINANT_COLOR_RATIO = 0.45
+DEFAULT_BLUR_KERNEL = 31
+DEFAULT_FEATURE_SIZE = 64
+DEFAULT_MIN_CLUSTER_IMAGES = 5
+DEFAULT_MIN_MAJORITY_RATIO = 0.60
+DEFAULT_MIN_SILHOUETTE = 0.12
+DEFAULT_GRAPHIC_DOMINANT_HUE_RATIO = 0.70
+DEFAULT_GRAPHIC_MAX_EDGE_RATIO = 0.002
 ANSWERS_DIR_NAME = "answers"
 GRAPHIC_DIR_NAME = "graphic"
+NO_CLUSTER_DIR_NAME = "no_cluster"
 MANIFEST_NAME = "manifest.json"
-EMBEDDINGS_NAME = "dinov2_embeddings.json"
+FEATURES_NAME = "cv_features.json"
+OLD_EMBEDDINGS_NAME = "dinov2_embeddings.json"
 STAGING_DIR_NAME = ".cluster_tmp"
 SECOND_PATTERN = re.compile(r"^seconde_(\d+(?:_\d+)?)$")
 TIMECODE_PATTERN = re.compile(r"^(?:(\d{2})_)?(\d{2})_(\d{2})$")
@@ -60,7 +65,8 @@ def image_files(images_dir):
     candidates = (
         path
         for path in images_dir.rglob("*")
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        if path.is_file()
+        and path.suffix.lower() in IMAGE_EXTENSIONS
         and STAGING_DIR_NAME not in path.parts
     )
     return sorted(candidates, key=lambda path: (image_second(path), path.name, path.as_posix()))
@@ -89,238 +95,207 @@ def image_second(path):
     return float("inf")
 
 
-def load_dinov2(model_name, device):
-    import torch
-
-    model = torch.hub.load("facebookresearch/dinov2", model_name)
-    model.eval().to(device)
-    return model
+def odd_kernel(value):
+    value = max(1, int(value))
+    return value if value % 2 == 1 else value + 1
 
 
-def image_transform(image_size):
-    from torchvision import transforms
-
-    return transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size), antialias=True),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=(0.485, 0.456, 0.406),
-                std=(0.229, 0.224, 0.225),
-            ),
-        ]
-    )
-
-
-def embed_images(model, paths, device, batch_size, image_size):
-    import torch
-    import torch.nn.functional as functional
-    from PIL import Image
-
-    transform = image_transform(image_size)
-    embeddings = []
-    autocast_enabled = device.startswith("cuda")
-
-    for start in range(0, len(paths), batch_size):
-        batch_paths = paths[start : start + batch_size]
-        batch = []
-        for path in batch_paths:
-            with Image.open(path) as image:
-                batch.append(transform(image.convert("RGB")))
-        tensor = torch.stack(batch).to(device, non_blocking=True)
-        autocast_device = "cuda" if device.startswith("cuda") else "cpu"
-        with torch.inference_mode(), torch.autocast(device_type=autocast_device, enabled=autocast_enabled):
-            output = model(tensor)
-            if isinstance(output, dict):
-                output = output.get("x_norm_clstoken")
-                if output is None:
-                    output = output.get("x_prenorm")
-                if output is None:
-                    output = next(iter(output.values()))
-            output = functional.normalize(output.float(), dim=1)
-        embeddings.append(output.cpu())
-        print(f"[embed] {start + len(batch_paths)}/{len(paths)} images", flush=True)
-
-    return torch.cat(embeddings, dim=0)
-
-
-def image_visual_features(path):
+def image_cv_features(path, feature_size, blur_kernel):
+    import cv2
     import numpy as np
-    from PIL import Image
 
-    with Image.open(path) as image:
-        array = np.asarray(image.convert("RGB").resize((224, 126)), dtype=np.float32) / 255.0
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Image illisible: {path}")
 
-    red = array[..., 0]
-    green = array[..., 1]
-    blue = array[..., 2]
-    maximum = np.maximum(np.maximum(red, green), blue)
-    minimum = np.minimum(np.minimum(red, green), blue)
-    chroma = maximum - minimum
-    saturation = np.divide(chroma, maximum, out=np.zeros_like(chroma), where=maximum > 0)
-    hue = np.zeros_like(maximum)
+    kernel = odd_kernel(blur_kernel)
+    blurred = cv2.GaussianBlur(image, (kernel, kernel), 0) if kernel > 1 else image
+    gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(blurred, (feature_size, feature_size), interpolation=cv2.INTER_AREA)
+    small_float = small.astype(np.float32) / 255.0
 
-    red_is_max = maximum == red
-    green_is_max = maximum == green
-    blue_is_max = maximum == blue
-    chromatic = chroma > 0
-    hue[red_is_max & chromatic] = ((green - blue)[red_is_max & chromatic] / chroma[red_is_max & chromatic]) % 6
-    hue[green_is_max & chromatic] = ((blue - red)[green_is_max & chromatic] / chroma[green_is_max & chromatic]) + 2
-    hue[blue_is_max & chromatic] = ((red - green)[blue_is_max & chromatic] / chroma[blue_is_max & chromatic]) + 4
-    hue = hue / 6.0
+    gray_std = float(gray.std() / 255.0)
+    color_std = float(small_float.reshape(-1, 3).std(axis=0).mean())
+    edges = cv2.Canny(gray, 80, 160)
+    edge_ratio = float(np.mean(edges > 0))
 
-    saturated_mask = (saturation >= 0.28) & (maximum >= 0.20)
-    hue_bins = 24
-    if saturated_mask.any():
-        bins = np.floor(hue[saturated_mask] * hue_bins).astype(np.int32) % hue_bins
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    saturation = hsv[..., 1].astype(np.float32) / 255.0
+    value = hsv[..., 2].astype(np.float32) / 255.0
+    chromatic_mask = (saturation >= 0.20) & (value >= 0.18)
+    if chromatic_mask.any():
+        hue_bins = 18
+        bins = np.floor(hsv[..., 0][chromatic_mask].astype(np.float32) / 180.0 * hue_bins).astype(np.int32) % hue_bins
         histogram = np.bincount(bins, minlength=hue_bins)
         smoothed = histogram + np.roll(histogram, 1) + np.roll(histogram, -1)
-        dominant_color_ratio = float(smoothed.max() / hue.size)
-        dominant_chromatic_ratio = float(histogram.max() / saturated_mask.sum())
-        dominant_hue = float(histogram.argmax() / hue_bins)
+        dominant_hue_ratio = float(smoothed.max() / (feature_size * feature_size))
     else:
-        dominant_color_ratio = 0.0
-        dominant_chromatic_ratio = 0.0
-        dominant_hue = 0.0
+        dominant_hue_ratio = 0.0
 
-    brightness = array.mean(axis=2)
+    brightness = gray.astype(np.float32) / 255.0
     return {
-        "dominant_color_ratio": dominant_color_ratio,
-        "dominant_chromatic_ratio": dominant_chromatic_ratio,
-        "dominant_hue": dominant_hue,
-        "saturation_mean": float(saturation.mean()),
+        "gray_std": gray_std,
+        "color_std": color_std,
+        "edge_ratio": edge_ratio,
+        "dominant_hue_ratio": dominant_hue_ratio,
         "brightness_mean": float(brightness.mean()),
         "brightness_std": float(brightness.std()),
     }
 
 
-def visual_features_for_images(paths):
-    return [image_visual_features(path) for path in paths]
+def features_for_images(paths, feature_size, blur_kernel):
+    features = []
+    for index, path in enumerate(paths, start=1):
+        features.append(image_cv_features(path, feature_size, blur_kernel))
+        if index % 50 == 0 or index == len(paths):
+            print(f"[features] {index}/{len(paths)} images", flush=True)
+    return features
 
 
-def kmeans_plusplus(points, cluster_count, seed):
-    import torch
+def feature_matrix(features):
+    import numpy as np
 
-    generator = torch.Generator(device=points.device)
-    generator.manual_seed(seed)
-    first = torch.randint(points.size(0), (1,), generator=generator, device=points.device)
-    centroids = [points[first.item()]]
-    closest_distances = torch.cdist(points, centroids[0].unsqueeze(0)).squeeze(1).pow(2)
-
-    for _ in range(1, cluster_count):
-        total = closest_distances.sum()
-        if float(total) == 0.0:
-            candidate = torch.randint(points.size(0), (1,), generator=generator, device=points.device).item()
-        else:
-            candidate = torch.multinomial(closest_distances / total, 1, generator=generator).item()
-        centroids.append(points[candidate])
-        distances = torch.cdist(points, centroids[-1].unsqueeze(0)).squeeze(1).pow(2)
-        closest_distances = torch.minimum(closest_distances, distances)
-
-    return torch.stack(centroids)
+    keys = ("gray_std", "color_std", "edge_ratio", "dominant_hue_ratio", "brightness_std")
+    matrix = np.array([[item[key] for key in keys] for item in features], dtype=np.float32)
+    mean = matrix.mean(axis=0)
+    std = matrix.std(axis=0)
+    std[std < 1e-6] = 1.0
+    return (matrix - mean) / std, keys, mean, std
 
 
-def kmeans(points, cluster_count, iterations, seed, device):
-    import torch
+def kmeans(points, clusters, iterations, seed):
+    import cv2
+    import numpy as np
 
-    points = points.to(device)
-    centroids = kmeans_plusplus(points, cluster_count, seed)
-    labels = torch.full((points.size(0),), -1, device=device, dtype=torch.long)
-
-    for _ in range(iterations):
-        distances = torch.cdist(points, centroids)
-        next_labels = distances.argmin(dim=1)
-        if torch.equal(labels, next_labels):
-            break
-        labels = next_labels
-
-        updated = []
-        for cluster in range(cluster_count):
-            mask = labels == cluster
-            if mask.any():
-                updated.append(points[mask].mean(dim=0))
-            else:
-                updated.append(centroids[cluster])
-        centroids = torch.stack(updated)
-
-    return labels.cpu(), centroids.cpu()
-
-
-def largest_cluster(labels, eligible_indices=None):
-    counts = {}
-    if eligible_indices is None:
-        values = labels.tolist()
-    else:
-        values = labels[eligible_indices].tolist()
-    for label in values:
-        counts[label] = counts.get(label, 0) + 1
-    if not counts:
-        return largest_cluster(labels)
-    return max(sorted(counts), key=lambda cluster: counts[cluster])
-
-
-def recompute_centroids(points, labels):
-    import torch
-    import torch.nn.functional as functional
-
-    centroids = {}
-    for cluster in sorted(set(labels.tolist())):
-        mask = labels == cluster
-        centroid = points[mask].mean(dim=0)
-        centroids[cluster] = functional.normalize(centroid.unsqueeze(0), dim=1).squeeze(0)
-    return centroids
-
-
-def refine_labels(embeddings, labels, visual_features, intertitle_dominant_color_ratio):
-    import torch
-
-    dominant_color_indices = [
-        index
-        for index, features in enumerate(visual_features)
-        if features["dominant_color_ratio"] >= intertitle_dominant_color_ratio
-    ]
-    dominant_color_index_set = set(dominant_color_indices)
-    answer_eligible_indices = [
-        index
-        for index in range(len(labels))
-        if index not in dominant_color_index_set
-    ]
-    answer_cluster = largest_cluster(labels, answer_eligible_indices)
-    candidate_indices = torch.tensor(
-        [
-            index
-            for index in answer_eligible_indices
-            if int(labels[index].item()) == answer_cluster
-        ],
-        dtype=torch.long,
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, int(iterations), 1e-4)
+    cv2.setRNGSeed(int(seed))
+    compactness, labels, centers = cv2.kmeans(
+        points.astype(np.float32),
+        int(clusters),
+        None,
+        criteria,
+        10,
+        cv2.KMEANS_PP_CENTERS,
     )
-    if len(candidate_indices) == 0:
-        candidate_indices = torch.nonzero(labels == answer_cluster, as_tuple=False).flatten()
-    candidate_vectors = embeddings[candidate_indices]
-    pairwise_similarity = candidate_vectors @ candidate_vectors.T
-    medoid_local_index = pairwise_similarity.mean(dim=1).argmax().item()
-    medoid_index = candidate_indices[medoid_local_index].item()
-    medoid = embeddings[medoid_index]
-    answer_similarities = embeddings @ medoid
+    return labels.flatten().astype(np.int32), centers.astype(np.float32), float(compactness)
 
-    roles = [
-        "graphic" if index in dominant_color_index_set else "answer"
-        for index in range(len(labels))
-    ]
+
+def cluster_counts(labels):
+    counts = {}
+    for label in labels:
+        label = int(label)
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def choose_answer_cluster(labels):
+    counts = cluster_counts(labels)
+    return max(sorted(counts), key=lambda label: counts[label])
+
+
+def silhouette_score(points, labels):
+    import numpy as np
+
+    unique_labels = sorted(set(labels.tolist()))
+    if len(unique_labels) < 2:
+        return 0.0
+
+    distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+    scores = []
+    for index, label in enumerate(labels):
+        same_mask = labels == label
+        same_indices = np.flatnonzero(same_mask)
+        if len(same_indices) <= 1:
+            scores.append(0.0)
+            continue
+
+        other_means = []
+        for other_label in unique_labels:
+            if other_label == label:
+                continue
+            other_indices = np.flatnonzero(labels == other_label)
+            if len(other_indices) > 0:
+                other_means.append(float(distances[index, other_indices].mean()))
+        if not other_means:
+            scores.append(0.0)
+            continue
+
+        own_indices = same_indices[same_indices != index]
+        own_mean = float(distances[index, own_indices].mean()) if len(own_indices) else 0.0
+        other_mean = min(other_means)
+        denominator = max(own_mean, other_mean)
+        scores.append((other_mean - own_mean) / denominator if denominator > 0.0 else 0.0)
+
+    return float(np.mean(scores)) if scores else 0.0
+
+
+def graphic_override_indices(features, args):
+    return {
+        index
+        for index, feature in enumerate(features)
+        if feature["dominant_hue_ratio"] >= args.graphic_dominant_hue_ratio
+        and feature["edge_ratio"] <= args.graphic_max_edge_ratio
+    }
+
+
+def cluster_decision(labels, points, features, args):
+    counts = cluster_counts(labels)
+    total = len(labels)
+    answer_cluster = choose_answer_cluster(labels)
+    raw_graphic_clusters = [cluster for cluster in sorted(counts) if cluster != answer_cluster]
+    graphic_cluster = raw_graphic_clusters[0] if raw_graphic_clusters else answer_cluster
+    largest_count = counts[answer_cluster]
+    smallest_count = min(counts.values()) if counts else 0
+    majority_ratio = largest_count / total if total else 1.0
+    silhouette = silhouette_score(points, labels)
+
+    reasons = []
+    if len(counts) < 2:
+        reasons.append("single_cluster")
+    if smallest_count < args.min_cluster_images:
+        reasons.append("small_cluster")
+    if majority_ratio < args.min_majority_ratio:
+        reasons.append("balanced_clusters")
+    if silhouette < args.min_silhouette:
+        reasons.append("weak_separation")
+
+    identifiable = not reasons
+    override_indices = graphic_override_indices(features, args) if identifiable else set()
+
+    if identifiable:
+        roles = [
+            "graphic" if index in override_indices or int(label) != answer_cluster else "answer"
+            for index, label in enumerate(labels)
+        ]
+    else:
+        roles = ["no_cluster" for _ in labels]
 
     return {
         "answer_cluster": int(answer_cluster),
-        "answer_medoid_index": medoid_index,
-        "answer_similarities": answer_similarities,
+        "graphic_cluster": int(graphic_cluster),
+        "cluster_identifiable": identifiable,
+        "no_graphic_reasons": reasons,
         "roles": roles,
-        "dominant_color_intertitle_count": len(dominant_color_indices),
-        "answer_core_count": len(answer_eligible_indices),
+        "graphic_override_indices": sorted(override_indices),
+        "raw_cluster_counts": {str(cluster): int(count) for cluster, count in sorted(counts.items())},
+        "largest_cluster_ratio": majority_ratio,
+        "smallest_cluster_count": int(smallest_count),
+        "silhouette": silhouette,
+        "thresholds": {
+            "min_cluster_images": int(args.min_cluster_images),
+            "min_majority_ratio": float(args.min_majority_ratio),
+            "min_silhouette": float(args.min_silhouette),
+            "graphic_dominant_hue_ratio": float(args.graphic_dominant_hue_ratio),
+            "graphic_max_edge_ratio": float(args.graphic_max_edge_ratio),
+        },
     }
 
 
 def role_target(images_dir, role):
     if role == "answer":
         return images_dir / ANSWERS_DIR_NAME
+    if role == "no_cluster":
+        return images_dir / NO_CLUSTER_DIR_NAME
     return images_dir / GRAPHIC_DIR_NAME
 
 
@@ -346,109 +321,153 @@ def clear_cluster_dirs(images_dir):
         images_dir / "answer_variants",
         images_dir / ANSWERS_DIR_NAME,
         images_dir / GRAPHIC_DIR_NAME,
+        images_dir / NO_CLUSTER_DIR_NAME,
         images_dir / "question_intertitles",
     ):
         if path.exists():
             shutil.rmtree(path)
+    old_embeddings_path = images_dir / OLD_EMBEDDINGS_NAME
+    if old_embeddings_path.exists():
+        old_embeddings_path.unlink()
 
 
-def write_outputs(video_path, image_paths, embeddings, labels, model_name, images_dir, force, refinement, visual_features):
+def write_outputs(video_path, image_paths, labels, centers, compactness, images_dir, force, features, normalization, decision):
     manifest_path = images_dir / MANIFEST_NAME
     if manifest_path.exists() and not force:
         print(f"[skip] {video_path.name}: {manifest_path} existe deja")
         return manifest_path
 
+    answer_cluster = decision["answer_cluster"]
+    graphic_cluster = decision["graphic_cluster"]
+    roles = decision["roles"]
     role_counts = {
-        "answer": refinement["roles"].count("answer"),
-        "graphic": refinement["roles"].count("graphic"),
+        "answer": roles.count("answer"),
+        "graphic": roles.count("graphic"),
+        "no_cluster": roles.count("no_cluster"),
     }
-    centroids = recompute_centroids(embeddings, labels)
+    graphic_override_index_set = set(decision["graphic_override_indices"])
+
     staged_paths = stage_images(images_dir, image_paths)
     clear_cluster_dirs(images_dir)
+    if decision["cluster_identifiable"]:
+        (images_dir / ANSWERS_DIR_NAME).mkdir(parents=True, exist_ok=True)
+        (images_dir / GRAPHIC_DIR_NAME).mkdir(parents=True, exist_ok=True)
+    else:
+        (images_dir / NO_CLUSTER_DIR_NAME).mkdir(parents=True, exist_ok=True)
 
     items = []
-    role_images = {"answer": [], "graphic": []}
+    role_images = {"answer": [], "graphic": [], "no_cluster": []}
     for index, path in enumerate(staged_paths):
-        role = refinement["roles"][index]
+        role = roles[index]
         target_dir = role_target(images_dir, role)
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / path.name
         shutil.move(path, target)
-        relative_target = target.relative_to(video_path.parent).as_posix()
         role_images[role].append(path.name)
+        relative_target = target.relative_to(video_path.parent).as_posix()
+        feature_payload = {key: round(float(value), 6) for key, value in features[index].items()}
         items.append(
             {
                 "image": path.name,
                 "role": role,
-                "initial_cluster": int(refinement["initial_labels"][index].item()),
-                "answer_similarity": round(float(refinement["answer_similarities"][index].item()), 6),
-                "dominant_color_ratio": round(visual_features[index]["dominant_color_ratio"], 6),
-                "dominant_chromatic_ratio": round(visual_features[index]["dominant_chromatic_ratio"], 6),
-                "dominant_hue": round(visual_features[index]["dominant_hue"], 6),
-                "saturation_mean": round(visual_features[index]["saturation_mean"], 6),
-                "brightness_mean": round(visual_features[index]["brightness_mean"], 6),
-                "brightness_std": round(visual_features[index]["brightness_std"], 6),
+                "cluster": int(labels[index]),
+                "graphic_override": index in graphic_override_index_set,
+                **feature_payload,
                 "target": relative_target,
             }
         )
-    clusters = [
-        {"role": "answer", "count": role_counts["answer"], "images": role_images["answer"]},
-        {"role": "graphic", "count": role_counts["graphic"], "images": role_images["graphic"]},
-    ]
 
     staging_dir = images_dir / STAGING_DIR_NAME
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
 
-    embeddings_path = images_dir / EMBEDDINGS_NAME
-    embeddings_payload = {
-        "model": f"facebookresearch/dinov2:{model_name}",
+    features_path = images_dir / FEATURES_NAME
+    features_payload = {
+        "method": "opencv_features_kmeans",
         "source": "images",
-        "embedding_count": len(image_paths),
-        "embedding_dim": int(embeddings.shape[1]) if len(embeddings.shape) > 1 else 0,
-        "items": [
-            {
-                "image": path.name,
-                "embedding": [round(float(value), 6) for value in vector],
-            }
-            for path, vector in zip(image_paths, embeddings.tolist())
-        ],
+        "feature_count": len(image_paths),
+        "feature_keys": list(normalization["keys"]),
+        "normalization": {
+            "mean": [round(float(value), 6) for value in normalization["mean"]],
+            "std": [round(float(value), 6) for value in normalization["std"]],
+        },
+        "items": sorted(items, key=lambda item: item["image"]),
     }
-    embeddings_path.write_text(json.dumps(embeddings_payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    features_path.write_text(json.dumps(features_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     manifest = {
-        "model": f"facebookresearch/dinov2:{model_name}",
+        "method": "opencv_features_kmeans",
         "source": "images",
         "output_dir": "images",
         "clusters_count": 2,
-        "answer_cluster": "answer",
-        "graphic_cluster": "graphic",
-        "answer_candidate_cluster": refinement["answer_candidate_cluster"],
-        "intertitle_dominant_color_ratio": refinement["intertitle_dominant_color_ratio"],
-        "graphic_count": role_counts["graphic"],
-        "answer_medoid_image": image_paths[refinement["answer_medoid_index"]].name,
+        "answer_cluster": int(answer_cluster),
+        "graphic_cluster": int(graphic_cluster),
+        "cluster_identifiable": decision["cluster_identifiable"],
+        "no_graphic_reasons": decision["no_graphic_reasons"],
         "answer_count": role_counts["answer"],
-        "embeddings": embeddings_path.relative_to(video_path.parent).as_posix(),
-        "clusters": clusters,
+        "graphic_count": role_counts["graphic"],
+        "no_cluster_count": role_counts["no_cluster"],
+        "graphic_override_count": len(decision["graphic_override_indices"]),
+        "features": features_path.relative_to(video_path.parent).as_posix(),
+        "compactness": round(compactness, 6),
+        "silhouette": round(decision["silhouette"], 6),
+        "largest_cluster_ratio": round(decision["largest_cluster_ratio"], 6),
+        "smallest_cluster_count": decision["smallest_cluster_count"],
+        "thresholds": {
+            "min_cluster_images": decision["thresholds"]["min_cluster_images"],
+            "min_majority_ratio": decision["thresholds"]["min_majority_ratio"],
+            "min_silhouette": decision["thresholds"]["min_silhouette"],
+            "graphic_dominant_hue_ratio": decision["thresholds"]["graphic_dominant_hue_ratio"],
+            "graphic_max_edge_ratio": decision["thresholds"]["graphic_max_edge_ratio"],
+        },
+        "raw_cluster_counts": decision["raw_cluster_counts"],
+        "clusters": (
+            [
+                {
+                    "role": "answer",
+                    "cluster": int(answer_cluster),
+                    "count": role_counts["answer"],
+                    "images": role_images["answer"],
+                },
+                {
+                    "role": "graphic",
+                    "cluster": int(graphic_cluster),
+                    "count": role_counts["graphic"],
+                    "images": role_images["graphic"],
+                },
+            ]
+            if decision["cluster_identifiable"]
+            else [
+                {
+                    "role": "no_cluster",
+                    "cluster": None,
+                    "count": role_counts["no_cluster"],
+                    "images": role_images["no_cluster"],
+                }
+            ]
+        ),
         "items": sorted(items, key=lambda item: item["image"]),
-        "kmeans_centroids": [
-            {
-                "cluster": cluster,
-                "embedding": [round(float(value), 6) for value in vector],
-            }
-            for cluster, vector in centroids.items()
+        "kmeans_centers": [
+            {"cluster": index, "center": [round(float(value), 6) for value in center]}
+            for index, center in enumerate(centers.tolist())
         ],
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
         f"[ok] {video_path.name}: answers={role_counts['answer']}, "
-        f"graphic={role_counts['graphic']} -> {manifest_path}",
+        f"graphic={role_counts['graphic']}, no_cluster={role_counts['no_cluster']} -> {manifest_path}",
         flush=True,
     )
+    if not decision["cluster_identifiable"]:
+        print(
+            f"[no-graphic] {video_path.name}: cluster non identifiable "
+            f"({', '.join(decision['no_graphic_reasons'])})",
+            flush=True,
+        )
     return manifest_path
 
 
-def classify_video_images(model, video_path, args, device):
+def classify_video_images(video_path, args):
     images_dir = video_path.parent / "images"
     paths = image_files(images_dir)
     if not paths:
@@ -460,40 +479,36 @@ def classify_video_images(model, video_path, args, device):
         print(f"[skip] {video_path.name}: {manifest_path} existe deja")
         return manifest_path
 
-    cluster_count = min(args.clusters, len(paths))
-    if cluster_count < 2:
-        print(f"[skip] {video_path.name}: au moins 2 images sont necessaires pour k-means")
-        return None
+    print(f"[analyse] {video_path.name}: {len(paths)} images, k=2", flush=True)
+    features = features_for_images(paths, args.feature_size, args.blur_kernel)
+    points, keys, mean, std = feature_matrix(features)
+    if len(paths) < 2:
+        import numpy as np
 
-    print(f"[analyse] {video_path.name}: {len(paths)} images, k={cluster_count}", flush=True)
-    visual_features = visual_features_for_images(paths)
-    embeddings = embed_images(model, paths, device, args.batch_size, args.image_size)
-    labels, centroids = kmeans(embeddings, cluster_count, args.iterations, args.seed, device)
-    refinement = refine_labels(
-        embeddings,
-        labels,
-        visual_features,
-        args.intertitle_dominant_color_ratio,
-    )
-    refinement["initial_labels"] = labels
-    refinement["answer_candidate_cluster"] = refinement["answer_cluster"]
-    refinement["intertitle_dominant_color_ratio"] = args.intertitle_dominant_color_ratio
+        labels = np.zeros(len(paths), dtype=np.int32)
+        centers = points[:1]
+        compactness = 0.0
+    else:
+        labels, centers, compactness = kmeans(points, args.clusters, args.iterations, args.seed)
+    decision = cluster_decision(labels, points, features, args)
+    normalization = {"keys": keys, "mean": mean, "std": std}
     return write_outputs(
         video_path,
         paths,
-        embeddings,
         labels,
-        args.model,
+        centers,
+        compactness,
         images_dir,
         args.force,
-        refinement,
-        visual_features,
+        features,
+        normalization,
+        decision,
     )
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Classe les images extraites avec DINOv2 ViT-L/14 et k-means local."
+        description="Classe les images extraites en answers/graphic avec des features OpenCV simples et k-means."
     )
     parser.add_argument(
         "--video-dir",
@@ -510,44 +525,67 @@ def parse_args():
         help="Nombre maximum de videos a analyser.",
     )
     parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Modele DINOv2 torch.hub. Defaut: {DEFAULT_MODEL}",
-    )
-    parser.add_argument(
         "--clusters",
         type=int,
         default=DEFAULT_CLUSTERS,
         help=f"Nombre de clusters k-means. Defaut: {DEFAULT_CLUSTERS}",
     )
     parser.add_argument(
-        "--batch-size",
+        "--blur-kernel",
         type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help=f"Taille de batch DINOv2. Defaut: {DEFAULT_BATCH_SIZE}",
+        default=DEFAULT_BLUR_KERNEL,
+        help=f"Taille du flou gaussien applique avant mesure. Defaut: {DEFAULT_BLUR_KERNEL}",
     )
     parser.add_argument(
-        "--image-size",
+        "--feature-size",
         type=int,
-        default=DEFAULT_IMAGE_SIZE,
-        help=f"Taille carree envoyee a DINOv2. Defaut: {DEFAULT_IMAGE_SIZE}",
+        default=DEFAULT_FEATURE_SIZE,
+        help=f"Taille carree de l'image reduite pour les statistiques couleur. Defaut: {DEFAULT_FEATURE_SIZE}",
     )
-    parser.add_argument("--answer-min-similarity", type=float, default=0.0, help=argparse.SUPPRESS)
-    parser.add_argument("--answer-merge-similarity", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--intertitle-dominant-color-ratio",
-        type=float,
-        default=DEFAULT_INTERTITLE_DOMINANT_COLOR_RATIO,
+        "--min-cluster-images",
+        type=int,
+        default=DEFAULT_MIN_CLUSTER_IMAGES,
         help=(
-            "Part minimale de pixels domines par une meme famille de couleur pour classer une image en graphic. "
-            f"Defaut: {DEFAULT_INTERTITLE_DOMINANT_COLOR_RATIO}"
+            "Nombre minimum d'images dans le petit cluster pour accepter un cluster graphic. "
+            f"Defaut: {DEFAULT_MIN_CLUSTER_IMAGES}"
         ),
     )
     parser.add_argument(
-        "--intertitle-green-ratio",
-        dest="intertitle_dominant_color_ratio",
+        "--min-majority-ratio",
         type=float,
-        help=argparse.SUPPRESS,
+        default=DEFAULT_MIN_MAJORITY_RATIO,
+        help=(
+            "Part minimale du plus gros cluster pour accepter un cluster graphic. "
+            f"Defaut: {DEFAULT_MIN_MAJORITY_RATIO}"
+        ),
+    )
+    parser.add_argument(
+        "--min-silhouette",
+        type=float,
+        default=DEFAULT_MIN_SILHOUETTE,
+        help=(
+            "Score silhouette minimum pour considerer que les deux clusters sont separes. "
+            f"Defaut: {DEFAULT_MIN_SILHOUETTE}"
+        ),
+    )
+    parser.add_argument(
+        "--graphic-dominant-hue-ratio",
+        type=float,
+        default=DEFAULT_GRAPHIC_DOMINANT_HUE_RATIO,
+        help=(
+            "Seuil de couleur dominante pour rattacher une image au cluster graphic meme si k-means l'a mise avec answers. "
+            f"Defaut: {DEFAULT_GRAPHIC_DOMINANT_HUE_RATIO}"
+        ),
+    )
+    parser.add_argument(
+        "--graphic-max-edge-ratio",
+        type=float,
+        default=DEFAULT_GRAPHIC_MAX_EDGE_RATIO,
+        help=(
+            "Densite maximum de contours apres flou pour l'override graphic par couleur dominante. "
+            f"Defaut: {DEFAULT_GRAPHIC_MAX_EDGE_RATIO}"
+        ),
     )
     parser.add_argument(
         "--iterations",
@@ -561,11 +599,14 @@ def parse_args():
         default=0,
         help="Seed k-means. Defaut: 0",
     )
-    parser.add_argument(
-        "--device",
-        default="cuda",
-        help="Device torch, par exemple cuda ou cpu. Defaut: cuda",
-    )
+    parser.add_argument("--model", help=argparse.SUPPRESS)
+    parser.add_argument("--batch-size", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--image-size", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--device", help=argparse.SUPPRESS)
+    parser.add_argument("--answer-min-similarity", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--answer-merge-similarity", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--intertitle-dominant-color-ratio", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--intertitle-green-ratio", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--force",
         action="store_true",
@@ -575,17 +616,23 @@ def parse_args():
 
 
 def main():
-    import torch
-
     args = parse_args()
-    if args.clusters < 2:
-        raise ValueError("--clusters doit etre superieur ou egal a 2")
-    if args.batch_size <= 0:
-        raise ValueError("--batch-size doit etre superieur a 0")
-    if not 0.0 <= args.intertitle_dominant_color_ratio <= 1.0:
-        raise ValueError("--intertitle-dominant-color-ratio doit etre entre 0 et 1")
-    if args.device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA n'est pas disponible. Utilise --device cpu ou installe PyTorch CUDA.")
+    if args.clusters != 2:
+        raise ValueError("--clusters doit etre egal a 2")
+    if args.blur_kernel < 1:
+        raise ValueError("--blur-kernel doit etre superieur ou egal a 1")
+    if args.feature_size <= 0:
+        raise ValueError("--feature-size doit etre superieur a 0")
+    if args.min_cluster_images < 1:
+        raise ValueError("--min-cluster-images doit etre superieur ou egal a 1")
+    if not 0.0 <= args.min_majority_ratio <= 1.0:
+        raise ValueError("--min-majority-ratio doit etre entre 0 et 1")
+    if not -1.0 <= args.min_silhouette <= 1.0:
+        raise ValueError("--min-silhouette doit etre entre -1 et 1")
+    if not 0.0 <= args.graphic_dominant_hue_ratio <= 1.0:
+        raise ValueError("--graphic-dominant-hue-ratio doit etre entre 0 et 1")
+    if not 0.0 <= args.graphic_max_edge_ratio <= 1.0:
+        raise ValueError("--graphic-max-edge-ratio doit etre entre 0 et 1")
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))
@@ -596,12 +643,11 @@ def main():
         return
 
     print(f"Dossier videos: {video_dir}")
-    print(f"DINOv2: {args.model} sur {args.device}", flush=True)
-    model = load_dinov2(args.model, args.device)
+    print(f"Classification OpenCV: gray_std + color_std + edge_ratio, k=2", flush=True)
 
     done = 0
     for video_path in videos:
-        if classify_video_images(model, video_path, args, args.device):
+        if classify_video_images(video_path, args):
             done += 1
     print(f"{done} classification(s) image creee(s).")
 

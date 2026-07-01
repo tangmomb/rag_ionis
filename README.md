@@ -173,7 +173,6 @@ Options utiles:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all --skip-data
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --force
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --image-clusters 2
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --intertitle-dominant-color-ratio 0.45
 ```
 
 ## Step 02 - Download Videos
@@ -204,25 +203,32 @@ Le script cree un dossier `images/` dans chaque dossier video. Les images sont n
 
 ## Step 03b - Classify Images
 
-Classer localement les images extraites avec DINOv2 ViT-L/14 et k-means sur GPU:
+Classer localement les images extraites avec des features OpenCV simples et k-means:
 
 ```powershell
 python scripts/init/03b_classify_images.py
 ```
 
-Le script lit `images/`, calcule un embedding DINOv2 ViT-L/14 par image, lance k-means pour diagnostic, puis reorganise directement les fichiers dans deux dossiers finaux. Les images dominees par une couleur graphique ou un degrade de teinte proche vont dans `images/graphic/`; toutes les autres vont dans `images/answers/`.
+Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite), lance k-means en 2 clusters, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`.
 
-Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/dinov2_embeddings.json` avec les embeddings. La Step 04 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
+Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si la separation est trop faible, si les deux clusters ont des tailles trop proches, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons`.
 
-Par defaut, les graphiques/intercalaires sont detectes avec `--intertitle-dominant-color-ratio 0.45`. `--image-clusters` reste disponible pour le k-means de diagnostic, mais la sortie finale reste toujours binaire: `answers` ou `graphic`.
+Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/cv_features.json` avec les mesures OpenCV. La Step 04 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
+
+Par defaut, la sortie finale est binaire: `answers` ou `graphic`.
+Quand un ecran graphique contient un portrait integre, k-means peut le rapprocher des reponses. Un override rattache alors l'image a `graphic` si le fond garde une couleur tres dominante (`--graphic-dominant-hue-ratio 0.70`) et tres peu de contours apres flou (`--graphic-max-edge-ratio 0.002`).
 
 Options utiles:
 
 ```powershell
-python scripts/init/03b_classify_images.py --clusters 4
-python scripts/init/03b_classify_images.py --intertitle-dominant-color-ratio 0.45
-python scripts/init/03b_classify_images.py --device cuda --batch-size 2
-python scripts/init/03b_classify_images.py --model dinov2_vitb14 --batch-size 16
+python scripts/init/03b_classify_images.py --clusters 2
+python scripts/init/03b_classify_images.py --blur-kernel 31
+python scripts/init/03b_classify_images.py --feature-size 64
+python scripts/init/03b_classify_images.py --min-cluster-images 5
+python scripts/init/03b_classify_images.py --min-majority-ratio 0.60
+python scripts/init/03b_classify_images.py --min-silhouette 0.12
+python scripts/init/03b_classify_images.py --graphic-dominant-hue-ratio 0.70
+python scripts/init/03b_classify_images.py --graphic-max-edge-ratio 0.002
 python scripts/init/03b_classify_images.py --force
 ```
 

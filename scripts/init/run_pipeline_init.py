@@ -144,20 +144,46 @@ def parse_args():
         "--image-clusters",
         type=int,
         default=2,
-        help="Nombre de clusters k-means de diagnostic pour la classification DINOv2 des images. Defaut: 2.",
+        help="Nombre de clusters k-means pour la classification OpenCV des images. Defaut: 2.",
     )
     parser.add_argument(
-        "--intertitle-dominant-color-ratio",
-        type=float,
-        default=0.45,
-        help="Part minimale de pixels domines par une meme famille de couleur pour classer une image en graphic. Defaut: 0.45.",
+        "--image-blur-kernel",
+        type=int,
+        default=31,
+        help="Taille du flou applique avant classification image. Defaut: 31.",
     )
     parser.add_argument(
-        "--intertitle-green-ratio",
-        dest="intertitle_dominant_color_ratio",
-        type=float,
-        help=argparse.SUPPRESS,
+        "--image-min-cluster-images",
+        type=int,
+        default=5,
+        help="Minimum d'images dans le petit cluster pour accepter un cluster graphic. Defaut: 5.",
     )
+    parser.add_argument(
+        "--image-min-majority-ratio",
+        type=float,
+        default=0.60,
+        help="Part minimale du plus gros cluster pour accepter un cluster graphic. Defaut: 0.60.",
+    )
+    parser.add_argument(
+        "--image-min-silhouette",
+        type=float,
+        default=0.12,
+        help="Separation minimale des clusters image pour accepter un cluster graphic. Defaut: 0.12.",
+    )
+    parser.add_argument(
+        "--image-graphic-dominant-hue-ratio",
+        type=float,
+        default=0.70,
+        help="Seuil couleur dominante pour rattacher une image au dossier graphic. Defaut: 0.70.",
+    )
+    parser.add_argument(
+        "--image-graphic-max-edge-ratio",
+        type=float,
+        default=0.002,
+        help="Densite maximum de contours apres flou pour l'override graphic. Defaut: 0.002.",
+    )
+    parser.add_argument("--intertitle-dominant-color-ratio", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--intertitle-green-ratio", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--dry-run-upload",
         action="store_true",
@@ -229,14 +255,24 @@ def main():
         video_dir,
         "--clusters",
         args.image_clusters,
-        "--intertitle-dominant-color-ratio",
-        args.intertitle_dominant_color_ratio,
+        "--blur-kernel",
+        args.image_blur_kernel,
+        "--min-cluster-images",
+        args.image_min_cluster_images,
+        "--min-majority-ratio",
+        args.image_min_majority_ratio,
+        "--min-silhouette",
+        args.image_min_silhouette,
+        "--graphic-dominant-hue-ratio",
+        args.image_graphic_dominant_hue_ratio,
+        "--graphic-max-edge-ratio",
+        args.image_graphic_max_edge_ratio,
     )
     if args.videos is not None:
         step03b += ["--limit-videos", str(args.videos)]
     if args.force:
         step03b.append("--force")
-    run_step_numbered(4, total_steps, "Step 03b - Classify Images (DINOv2)", step03b, env)
+    run_step_numbered(4, total_steps, "Step 03b - Classify Images (OpenCV)", step03b, env)
 
     step04 = step_command("04_images_ocr.py", "--video-dir", video_dir)
     if args.videos is not None:

@@ -66,10 +66,10 @@ def image_files(video_images_dir):
     return sorted(
         (
             path
-            for path in video_images_dir.iterdir()
+            for path in video_images_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
         ),
-        key=image_second,
+        key=lambda path: (image_second(path), path.as_posix()),
     )
 
 
@@ -819,9 +819,12 @@ class LocalPaddleOCR:
         return self.engine.ocr(str(image_path), cls=False)
 
 
-def ocr_items_for_image(ocr, image_path):
+def ocr_items_for_image(ocr, image_path, images_dir=None):
     size = image_size(image_path)
     second = seconds_from_image_name(image_path.name)
+    image_name = image_path.name
+    if images_dir is not None:
+        image_name = image_path.relative_to(images_dir).as_posix()
     items = []
     seen = set()
     for record in ocr.recognize(image_path):
@@ -830,7 +833,7 @@ def ocr_items_for_image(ocr, image_path):
             continue
         seen.add(key)
         item = {
-            "image": image_path.name,
+            "image": image_name,
             "text": record["text"],
             "kind": classify_text(record["text"], record.get("box"), size),
             "confidence": confidence_label(float(record.get("score") or 0.0)),

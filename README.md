@@ -172,6 +172,8 @@ Options utiles:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --skip-upload
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all --skip-data
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --force
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --image-clusters 2
+.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --intertitle-dominant-color-ratio 0.45
 ```
 
 ## Step 02 - Download Videos
@@ -200,6 +202,30 @@ python scripts/init/03_extract_images.py
 
 Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
+## Step 03b - Classify Images
+
+Classer localement les images extraites avec DINOv2 ViT-L/14 et k-means sur GPU:
+
+```powershell
+python scripts/init/03b_classify_images.py
+```
+
+Le script lit `images/`, calcule un embedding DINOv2 ViT-L/14 par image, lance k-means pour diagnostic, puis reorganise directement les fichiers dans deux dossiers finaux. Les images dominees par une couleur graphique ou un degrade de teinte proche vont dans `images/graphic/`; toutes les autres vont dans `images/answers/`.
+
+Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/dinov2_embeddings.json` avec les embeddings. La Step 04 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
+
+Par defaut, les graphiques/intercalaires sont detectes avec `--intertitle-dominant-color-ratio 0.45`. `--image-clusters` reste disponible pour le k-means de diagnostic, mais la sortie finale reste toujours binaire: `answers` ou `graphic`.
+
+Options utiles:
+
+```powershell
+python scripts/init/03b_classify_images.py --clusters 4
+python scripts/init/03b_classify_images.py --intertitle-dominant-color-ratio 0.45
+python scripts/init/03b_classify_images.py --device cuda --batch-size 2
+python scripts/init/03b_classify_images.py --model dinov2_vitb14 --batch-size 16
+python scripts/init/03b_classify_images.py --force
+```
+
 ## Step 04 - Image OCR
 
 Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
@@ -208,7 +234,7 @@ Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 python scripts/init/04_images_ocr.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par grappes de positions relatives recurrentes, avec au moins 3 textes distincts dans le temps, pour fonctionner aussi bien en vertical qu'en 1280x720 sans imposer un style visuel unique. Le brut est conservé en `transcript/<video_id>_ocr_brut.json`.
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
 
 ## Step 05 - OCR Subtitles
 

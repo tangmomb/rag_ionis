@@ -115,16 +115,17 @@ def main():
         items = []
         raw_items = []
         for index, image_path in enumerate(images, start=1):
+            image_name = image_path.relative_to(images_dir).as_posix()
             raw_result = ocr.recognize_raw(image_path)
             raw_items.append(
                 {
-                    "image": image_path.name,
+                    "image": image_name,
                     "raw": raw_result,
                 }
             )
-            image_items = ocr_items_for_image(ocr, image_path)
+            image_items = ocr_items_for_image(ocr, image_path, images_dir)
             items.extend(image_items)
-            print(f"[ocr {index}/{len(images)}] {image_path.name}: {len(image_items)} texte(s)", flush=True)
+            print(f"[ocr {index}/{len(images)}] {image_name}: {len(image_items)} texte(s)", flush=True)
 
         write_raw_outputs(transcript_dir, video_path.name, {"items": raw_items})
         refined_items = refine_subtitle_kinds(items, images_dir)

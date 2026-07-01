@@ -141,6 +141,24 @@ def parse_args():
         help="Sensibilite de correction des noms propres pendant la Step 07. Defaut: balanced.",
     )
     parser.add_argument(
+        "--image-clusters",
+        type=int,
+        default=2,
+        help="Nombre de clusters k-means de diagnostic pour la classification DINOv2 des images. Defaut: 2.",
+    )
+    parser.add_argument(
+        "--intertitle-dominant-color-ratio",
+        type=float,
+        default=0.45,
+        help="Part minimale de pixels domines par une meme famille de couleur pour classer une image en graphic. Defaut: 0.45.",
+    )
+    parser.add_argument(
+        "--intertitle-green-ratio",
+        dest="intertitle_dominant_color_ratio",
+        type=float,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--dry-run-upload",
         action="store_true",
         help="Simule l'upload S3 pendant la Step 13.",
@@ -173,7 +191,7 @@ def main():
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 15
+    total_steps = 16
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
@@ -205,56 +223,71 @@ def main():
         step03.append("--force")
     run_step_numbered(3, total_steps, "Step 03 - Extract Images", step03, env)
 
+    step03b = step_command(
+        "03b_classify_images.py",
+        "--video-dir",
+        video_dir,
+        "--clusters",
+        args.image_clusters,
+        "--intertitle-dominant-color-ratio",
+        args.intertitle_dominant_color_ratio,
+    )
+    if args.videos is not None:
+        step03b += ["--limit-videos", str(args.videos)]
+    if args.force:
+        step03b.append("--force")
+    run_step_numbered(4, total_steps, "Step 03b - Classify Images (DINOv2)", step03b, env)
+
     step04 = step_command("04_images_ocr.py", "--video-dir", video_dir)
     if args.videos is not None:
         step04 += ["--limit-videos", str(args.videos)]
     if args.force:
         step04.append("--force")
-    run_step_numbered(4, total_steps, "Step 04 - Image OCR (PaddleOCR)", step04, env)
+    run_step_numbered(5, total_steps, "Step 04 - Image OCR (PaddleOCR)", step04, env)
 
     step05 = step_command("05_ocr_subtitles.py", "--video-dir", video_dir)
     if args.videos is not None:
         step05 += ["--limit-videos", str(args.videos)]
     if args.force:
         step05.append("--force")
-    run_step_numbered(5, total_steps, "Step 05 - OCR Subtitles", step05, env)
+    run_step_numbered(6, total_steps, "Step 05 - OCR Subtitles", step05, env)
 
     step06 = step_command("06_whisper_transcription.py", "--video-dir", video_dir)
     if args.videos is not None:
         step06 += ["--limit", str(args.videos)]
     if args.force:
         step06.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - Whisper Transcription", step06, env)
+    run_step_numbered(7, total_steps, "Step 06 - Whisper Transcription", step06, env)
 
     step07 = step_command("07_correct_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
     if args.force:
         step07.append("--force")
-    run_step_numbered(7, total_steps, "Step 07 - Correct Timecodes", step07, env)
+    run_step_numbered(8, total_steps, "Step 07 - Correct Timecodes", step07, env)
 
     step08 = step_command("08_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step08.append("--force")
-    run_step_numbered(8, total_steps, "Step 08 - Enrich Timecodes", step08, env)
+    run_step_numbered(9, total_steps, "Step 08 - Enrich Timecodes", step08, env)
 
     step09 = step_command("09_strip_timecodes.py", "--video-dir", video_dir)
     if args.force:
         step09.append("--force")
-    run_step_numbered(9, total_steps, "Step 09 - Strip Timecodes", step09, env)
+    run_step_numbered(10, total_steps, "Step 09 - Strip Timecodes", step09, env)
 
     step10 = step_command("10_create_chunks.py", "--video-dir", video_dir)
     if args.force:
         step10.append("--force")
-    run_step_numbered(10, total_steps, "Step 10 - Create Transcript Chunks", step10, env)
+    run_step_numbered(11, total_steps, "Step 10 - Create Transcript Chunks", step10, env)
 
     step11 = step_command("11_split_alert_chunks.py", "--video-dir", video_dir)
     if args.force:
         step11.append("--force")
-    run_step_numbered(11, total_steps, "Step 11 - Split Alert Chunks", step11, env)
+    run_step_numbered(12, total_steps, "Step 11 - Split Alert Chunks", step11, env)
 
     step12 = step_command("12_create_embeddings.py", "--video-dir", video_dir)
     if args.force:
         step12.append("--force")
-    run_step_numbered(12, total_steps, "Step 12 - Create Transcript Embeddings", step12, env)
+    run_step_numbered(13, total_steps, "Step 12 - Create Transcript Embeddings", step12, env)
 
     if not args.skip_upload:
         step13 = step_command("13_upload_videos_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
@@ -262,13 +295,13 @@ def main():
             step13.append("--force")
         if args.dry_run_upload:
             step13.append("--dry-run")
-        run_step_numbered(13, total_steps, "Step 13 - Upload Videos To S3", step13, env)
+        run_step_numbered(14, total_steps, "Step 13 - Upload Videos To S3", step13, env)
 
     if not args.skip_sql:
         step14 = step_command("14_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
             step14.append("--dry-run")
-        run_step_numbered(14, total_steps, "Step 14 - Update SQL Assets", step14, env)
+        run_step_numbered(15, total_steps, "Step 14 - Update SQL Assets", step14, env)
 
     print("\nPipeline termine.", flush=True)
     print(f"Dossier traite: {video_dir}", flush=True)

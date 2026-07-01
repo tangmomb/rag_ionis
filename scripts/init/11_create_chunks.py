@@ -15,14 +15,13 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_SUFFIX = "_transcript.txt"
 CHUNKS_SUFFIX = "_transcript_chunks.json"
-DEFAULT_MAX_CHARS = 1800
-DEFAULT_OVERLAP_CHARS = 200
+DEFAULT_MAX_CHARS = 1000
 ALERT_WORD_THRESHOLD = 3000
 API = "https://www.googleapis.com/youtube/v3"
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
-SPEAKER_PATTERNS = (
-    re.compile(r"\bJe suis ([A-ZÉÈÀÂÊÎÔÛÄËÏÖÜÇ][A-Za-zÀ-ÖØ-öø-ÿ'’ -]+?)(?:,|\.| je | j'| et |$)"),
-    re.compile(r"\bJe m'appelle ([A-ZÉÈÀÂÊÎÔÛÄËÏÖÜÇ][A-Za-zÀ-ÖØ-öø-ÿ'’ -]+?)(?:,|\.| je | j'| et |$)"),
+SPEAKER_PATTERN = re.compile(
+    r"je m'appelle\s+([A-ZÉÈÀÂÊÎÔÛÄËÏÖÜÇ][A-Za-zÀ-ÖØ-öø-ÿ'’ -]*(?:\s+[A-ZÉÈÀÂÊÎÔÛÄËÏÖÜÇ][A-Za-zÀ-ÖØ-öø-ÿ'’ -]*)*)",
+    re.IGNORECASE,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -106,15 +105,14 @@ def video_title(video_path):
     return video_path.stem
 
 
-def extract_intervenants(text):
+def extract_speakers(text):
     names = []
     seen = set()
-    for pattern in SPEAKER_PATTERNS:
-        for match in pattern.finditer(text):
-            name = " ".join(match.group(1).split()).strip(" ,.;:!?")
-            if name and name.lower() not in seen:
-                seen.add(name.lower())
-                names.append(name)
+    for match in SPEAKER_PATTERN.finditer(text):
+        name = " ".join(match.group(1).split()).strip(" ,.;:!?")
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
     return names
 
 
@@ -127,43 +125,42 @@ def normalize_text(text):
     return "\n".join(lines).strip()
 
 
-def split_into_chunks(text, max_chars=DEFAULT_MAX_CHARS, overlap_chars=DEFAULT_OVERLAP_CHARS):
+def split_sentences(text):
+    parts = re.split(r"(?<=[.!?])\s+", str(text).strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def split_into_chunks(text, max_chars=DEFAULT_MAX_CHARS):
     paragraphs = [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
     if not paragraphs:
         paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
 
     chunks = []
-    current = []
+    current = ""
     current_len = 0
 
     def flush_chunk():
         nonlocal current, current_len
-        if not current:
+        if not current.strip():
             return
-        chunk_text = "\n\n".join(current).strip()
-        if chunk_text:
-            chunks.append(chunk_text)
-        current = []
+        chunks.append(current.strip())
+        current = ""
         current_len = 0
 
     for paragraph in paragraphs:
         paragraph = normalize_text(paragraph)
         if not paragraph:
             continue
-        projected = current_len + len(paragraph) + (2 if current else 0)
-        if current and projected > max_chars:
-            flush_chunk()
-        if len(paragraph) > max_chars:
-            start = 0
-            while start < len(paragraph):
-                end = min(len(paragraph), start + max_chars)
-                chunks.append(paragraph[start:end].strip())
-                if end >= len(paragraph):
-                    break
-                start = max(end - overlap_chars, start + 1)
-            continue
-        current.append(paragraph)
-        current_len += len(paragraph) + (2 if len(current) > 1 else 0)
+        for sentence in split_sentences(paragraph):
+            projected = current_len + len(sentence) + (1 if current else 0)
+            if current and projected > max_chars:
+                flush_chunk()
+            if not current:
+                current = sentence
+                current_len = len(sentence)
+            else:
+                current = f"{current} {sentence}"
+                current_len = len(current)
 
     flush_chunk()
     return chunks
@@ -174,7 +171,7 @@ def build_chunks_payload(text, meta_data):
     return {
         "chunking": {
             "max_chars": DEFAULT_MAX_CHARS,
-            "overlap_chars": DEFAULT_OVERLAP_CHARS,
+            "cut_policy": "cut_at_next_sentence_after_threshold",
         },
         "chunks": [
             {
@@ -211,7 +208,7 @@ def create_chunks(video_path, force=False):
         "video_name": video_path.stem,
         "video_title": video_title(video_path),
         "published_at": published_at(video_path),
-        "intervenants": extract_intervenants(normalized),
+        "speakers": extract_speakers(normalized),
         "video_url": video_url(video_path),
     }
     payload = build_chunks_payload(normalized, meta_data)

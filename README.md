@@ -322,7 +322,7 @@ Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_tr
 
 ## Step 12 - Create Transcript Chunks
 
-Decouper les transcripts sans timecodes en chunks JSON:
+Decouper les transcripts sans timecodes en chunks JSON, avec une limite de 1000 caracteres espaces compris et une coupe au prochain point apres depassement:
 
 ```powershell
 python scripts/init/11_create_chunks.py
@@ -348,7 +348,9 @@ Creer les embeddings a partir des chunks:
 python scripts/init/13_create_embeddings.py
 ```
 
-Le script lit `chunks/<video_id>_transcript_chunks.json` et ecrit `transcript/<video_id>_transcript_embeddings.json`.
+Le script lit `chunks/<video_id>_transcript_chunks.json` et ecrit un fichier JSON par chunk dans `chunks/`:
+
+- `chunks/<video_id>_chunk_<index>_transcript_embedding.json`
 
 ## Step 15 - Upload Videos To S3
 

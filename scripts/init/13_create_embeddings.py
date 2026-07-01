@@ -11,7 +11,7 @@ from openai import OpenAI
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CHUNKS_SUFFIX = "_transcript_chunks.json"
-EMBEDDINGS_SUFFIX = "_transcript_embeddings.json"
+EMBEDDING_SUFFIX = "_transcript_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -49,8 +49,11 @@ def chunks_path(video_path):
     return video_path.parent / "chunks" / f"{video_path.stem}{CHUNKS_SUFFIX}"
 
 
-def embeddings_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{EMBEDDINGS_SUFFIX}"
+def embedding_path(video_path, chunk_index):
+    chunk_label = str(chunk_index).replace(".", "_")
+    if chunk_label.isdigit():
+        chunk_label = f"{int(chunk_label):02d}"
+    return video_path.parent / "chunks" / f"{video_path.stem}_chunk_{chunk_label}{EMBEDDING_SUFFIX}"
 
 
 def load_chunks(path):
@@ -60,11 +63,6 @@ def load_chunks(path):
 
 def create_embeddings(client, model, video_path, force=False):
     source = chunks_path(video_path)
-    target = embeddings_path(video_path)
-
-    if target.exists() and not force:
-        print(f"[skip] {target.name} existe deja")
-        return target
     if not source.exists():
         print(f"[skip] chunks introuvables: {source}")
         return None
@@ -74,35 +72,43 @@ def create_embeddings(client, model, video_path, force=False):
         print(f"[skip] aucun chunk dans: {source}")
         return None
 
-    embeddings = []
+    target_dir = video_path.parent / "chunks"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
     for chunk in chunks:
         text = str(chunk.get("content", "")).strip()
         if not text:
             continue
+        chunk_index = chunk.get("chunk_index")
+        target = embedding_path(video_path, chunk_index)
+        if target.exists() and not force:
+            print(f"[skip] {target.name} existe deja")
+            continue
         response = client.embeddings.create(model=model, input=text)
         embedding = response.data[0].embedding
-        embeddings.append(
-            {
-                "chunk_index": chunk.get("chunk_index"),
-                "char_count": chunk.get("char_count"),
-                "meta_data": chunk.get("meta_data", {}),
-                "content": text,
-                "embedding": embedding,
-            }
-        )
-        print(f"[embed] {video_path.name} chunk {chunk.get('chunk_index')}/{len(chunks)}", flush=True)
+        payload = {
+            "model": model,
+            "source": str(source.relative_to(video_path.parent)),
+            "chunk_count": len(chunks),
+            "chunk_index": chunk_index,
+            "char_count": chunk.get("char_count"),
+            "meta_data": {
+                **source_meta_data,
+                **chunk.get("meta_data", {}),
+            },
+            "content": text,
+            "embedding": embedding,
+        }
+        target.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+        written += 1
+        print(f"[embed] {video_path.name} chunk {chunk_index}/{len(chunks)} -> {target.name}", flush=True)
 
-    payload = {
-        "model": model,
-        "source": str(source.relative_to(video_path.parent)),
-        "chunk_count": len(embeddings),
-        "meta_data": source_meta_data,
-        "embeddings": embeddings,
-    }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"[ok] {target} ({len(embeddings)} embeddings)")
-    return target
+    if not written:
+        print(f"[skip] aucun nouvel embedding a ecrire pour {video_path.name}")
+        return None
+
+    print(f"[ok] {video_path.name} ({written} fichiers embeddings)")
+    return True
 
 
 def parse_args():
@@ -148,7 +154,7 @@ def main():
         if create_embeddings(client, args.model, video_path, force=args.force):
             done += 1
 
-    print(f"{done} fichiers embeddings crees.")
+    print(f"{done} videos traitees pour les embeddings.")
 
 
 if __name__ == "__main__":

@@ -120,6 +120,11 @@ def tokenize_words(text):
     return [token for token in TOKEN_PATTERN.findall(str(text)) if token.strip()]
 
 
+def is_ocr_name_kind(kind):
+    normalized = str(kind or "").strip().lower()
+    return normalized in OCR_NAME_KINDS or normalized == "graphic" or normalized.startswith("graphic_")
+
+
 def load_ocr_lexicon(path, min_count=2):
     payload = json.loads(path.read_text(encoding="utf-8"))
     counts = Counter()
@@ -127,7 +132,7 @@ def load_ocr_lexicon(path, min_count=2):
     name_phrases = defaultdict(Counter)
     by_initial = defaultdict(set)
     for item in payload.get("items", []):
-        if str(item.get("kind", "")).strip() not in OCR_NAME_KINDS:
+        if not is_ocr_name_kind(item.get("kind")):
             continue
         text = " ".join(str(item.get("text", "")).split())
         if not text:

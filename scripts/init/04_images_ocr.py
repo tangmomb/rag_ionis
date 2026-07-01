@@ -4,6 +4,7 @@ from pathlib import Path
 
 from local_paddle_ocr import (
     LocalPaddleOCR,
+    collapse_answer_overlay_items,
     collapse_graphic_sequence_items,
     configure_stdio,
     deduplicate_items,
@@ -131,7 +132,9 @@ def main():
         write_raw_outputs(transcript_dir, video_path.name, {"items": raw_items})
         refined_items = refine_subtitle_kinds(items, images_dir)
         filtered_items = filter_decor_items(refined_items, images_dir)
-        processed_items = deduplicate_items(collapse_graphic_sequence_items(filtered_items))
+        graphic_collapsed_items = collapse_graphic_sequence_items(filtered_items)
+        answer_collapsed_items = collapse_answer_overlay_items(graphic_collapsed_items, images_dir)
+        processed_items = deduplicate_items(answer_collapsed_items, images_dir)
         write_outputs(transcript_dir, video_path.name, {"items": processed_items})
         print(f"[done] {video_path.name}: {len(items)} items bruts", flush=True)
 

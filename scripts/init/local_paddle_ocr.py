@@ -323,6 +323,10 @@ def is_graphic_image_name(image_name):
     return str(image_name or "").replace("\\", "/").split("/", 1)[0] == "graphic"
 
 
+def is_answer_image_name(image_name):
+    return str(image_name or "").replace("\\", "/").split("/", 1)[0] == "answers"
+
+
 def graphic_sequence_key(image_name):
     parts = str(image_name or "").replace("\\", "/").split("/")
     if len(parts) >= 3 and parts[0] == "graphic" and parts[1].startswith("graphic_"):
@@ -682,6 +686,67 @@ def collapse_graphic_sequence_items(items):
     return collapsed
 
 
+def image_order_map(images_dir):
+    if not images_dir:
+        return {}
+    return {
+        path.relative_to(images_dir).as_posix(): index
+        for index, path in enumerate(image_files(images_dir))
+    }
+
+
+def item_frame_index(item, order_map):
+    image_name = item.get("image")
+    if image_name in order_map:
+        return order_map[image_name]
+    second = item.get("second")
+    if second is not None:
+        return float(second)
+    return image_second(Path(image_name or ""))
+
+
+def collapse_answer_overlay_items(items, images_dir=None, frame_window=20):
+    order_map = image_order_map(images_dir)
+    grouped = {}
+    passthrough = []
+
+    for position, item in enumerate(items):
+        if (
+            is_answer_image_name(item.get("image"))
+            and item.get("kind") != "subtitle"
+            and not is_graphic_kind(item.get("kind"))
+        ):
+            key = compact_text_key(item.get("text", ""))
+            if key:
+                grouped.setdefault(key, []).append((position, item_frame_index(item, order_map), item))
+                continue
+        passthrough.append((position, item))
+
+    keep_positions = {position for position, _ in passthrough}
+    for occurrences in grouped.values():
+        sorted_occurrences = sorted(occurrences, key=lambda value: (value[1], value[0]))
+        window_start = None
+        last_position = None
+
+        for position, frame_index, _ in sorted_occurrences:
+            if window_start is None:
+                window_start = frame_index
+                last_position = position
+                continue
+            if frame_index - window_start <= frame_window:
+                last_position = position
+                continue
+
+            keep_positions.add(last_position)
+            window_start = frame_index
+            last_position = position
+
+        if last_position is not None:
+            keep_positions.add(last_position)
+
+    return [item for position, item in enumerate(items) if position in keep_positions]
+
+
 def image_size(path):
     try:
         from PIL import Image
@@ -921,10 +986,30 @@ def ocr_items_for_image(ocr, image_path, images_dir=None):
     return items
 
 
-def deduplicate_items(items):
+def item_box_order(item):
+    box = box_bounds(item.get("box"))
+    if not box:
+        return (float("inf"), float("inf"))
+    x1, y1, _, _ = box
+    return (y1, x1)
+
+
+def deduplicate_items(items, images_dir=None):
+    order_map = image_order_map(images_dir)
     seen = set()
     deduplicated = []
-    for item in sorted(items, key=lambda value: (value.get("second", 0), value.get("image", ""), value.get("text", ""))):
+    indexed_items = enumerate(items)
+    sorted_items = sorted(
+        indexed_items,
+        key=lambda value: (
+            item_frame_index(value[1], order_map),
+            value[1].get("image", ""),
+            *item_box_order(value[1]),
+            value[1].get("text", ""),
+            value[0],
+        ),
+    )
+    for _, item in sorted_items:
         key = (text_key(item.get("text", "")), item.get("second"))
         if not key[0] or key in seen:
             continue

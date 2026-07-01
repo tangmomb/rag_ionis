@@ -240,7 +240,7 @@ Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
 python scripts/init/04_images_ocr.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
 
 ## Step 05 - OCR Subtitles
 
@@ -276,7 +276,7 @@ Corriger certains mots du transcript timecode en les comparant aux mots OCR trou
 python scripts/init/07_correct_timecodes.py
 ```
 
-Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title` et `logo` pour limiter les faux positifs.
+Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic_XX` pour limiter les faux positifs.
 
 Le niveau de correction est ajustable:
 

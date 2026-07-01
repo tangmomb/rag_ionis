@@ -109,6 +109,24 @@ def normalize_text(text):
     return re.sub(r"\W+", "", str(text).casefold())
 
 
+def is_overlay_kind(kind):
+    normalized = str(kind or "").strip().lower()
+    return normalized in OVERLAY_KINDS or normalized == "graphic" or normalized.startswith("graphic_")
+
+
+def is_graphic_kind(kind):
+    normalized = str(kind or "").strip().lower()
+    return normalized == "graphic" or normalized.startswith("graphic_")
+
+
+def overlay_label_key(item):
+    if item.get("kind") == "question_intertitle":
+        return "question_intertitle"
+    if is_graphic_kind(item.get("kind")):
+        return "insert"
+    return "graphic"
+
+
 def merge_question_parts(items):
     merged = []
     for item in items:
@@ -145,6 +163,30 @@ def remove_overlay_fragments(items):
     return kept
 
 
+def merge_same_second_overlays(items):
+    merged = []
+    for item in items:
+        if (
+            merged
+            and item.get("second") == merged[-1].get("second")
+            and overlay_label_key(item) == overlay_label_key(merged[-1])
+        ):
+            previous = merged[-1]
+            texts = previous.setdefault("_texts", [previous["text"]])
+            if item["text"] not in texts:
+                texts.append(item["text"])
+                previous["text"] = " / ".join(texts)
+            continue
+
+        item = dict(item)
+        item["_texts"] = [item["text"]]
+        merged.append(item)
+
+    for item in merged:
+        item.pop("_texts", None)
+    return merged
+
+
 def confidence_score(item):
     try:
         return float(item.get("score"))
@@ -167,7 +209,7 @@ def parse_processed_non_subtitles(path):
     seen_normalized = set()
     for item in payload.get("items", []):
         kind = str(item.get("kind", "")).strip().lower()
-        if kind == "subtitle" or (kind and kind not in OVERLAY_KINDS):
+        if kind == "subtitle" or (kind and not is_overlay_kind(kind)):
             continue
         if confidence_score(item) < MIN_OVERLAY_SCORE:
             continue
@@ -185,7 +227,8 @@ def parse_processed_non_subtitles(path):
                 continue
             second = parse_timecode(timecode)
         items.append({"kind": kind, "second": int(second), "text": text})
-    return remove_overlay_fragments(merge_question_parts(sorted(items, key=lambda item: item["second"])))
+    filtered_items = remove_overlay_fragments(merge_question_parts(sorted(items, key=lambda item: item["second"])))
+    return merge_same_second_overlays(filtered_items)
 
 
 def enrich_transcript(video_path, force=False):
@@ -229,7 +272,12 @@ def enrich_transcript(video_path, force=False):
 
 def format_overlay_line(overlay):
     timecode = format_timecode(overlay["second"])
-    label = "INTERCALAIRE QUESTION" if overlay.get("kind") == "question_intertitle" else "TEXTE ECRIT SUR LA VIDEO"
+    labels = {
+        "question_intertitle": "INTERCALAIRE QUESTION",
+        "insert": "INSERT",
+        "graphic": "GRAPHIC",
+    }
+    label = labels[overlay_label_key(overlay)]
     return f"[{timecode}] {label}: {overlay['text']}"
 
 

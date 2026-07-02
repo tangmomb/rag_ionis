@@ -17,6 +17,13 @@ DEFAULT_MIN_MAJORITY_RATIO = 0.70
 DEFAULT_MIN_SILHOUETTE = 0.12
 DEFAULT_GRAPHIC_DOMINANT_HUE_RATIO = 0.70
 DEFAULT_GRAPHIC_MAX_EDGE_RATIO = 0.002
+DEFAULT_FLAT_REGION_MIN_AREA = 500
+DEFAULT_FLAT_DELTA_E_THRESH = 3.0
+DEFAULT_FLAT_GRAD_THRESH = 0.015
+DEFAULT_FLAT_TILE_SIZE = 32
+DEFAULT_MIN_FLAT_REGION_RATIO = 0.08
+DEFAULT_MIN_FLAT_COMPONENT_RATIO = 0.03
+DEFAULT_MIN_FLAT_IMAGES = 2
 DEFAULT_BOUNDARY_SECONDS = 12.0
 DEFAULT_BOUNDARY_MAX_RATIO = 0.12
 DEFAULT_BOUNDARY_MAX_RAW_EDGE_RATIO = 0.08
@@ -105,7 +112,114 @@ def odd_kernel(value):
     return value if value % 2 == 1 else value + 1
 
 
-def image_cv_features(path, feature_size, blur_kernel):
+def lab_plane_residual_spread(tile_lab):
+    import numpy as np
+
+    height, width = tile_lab.shape[:2]
+    yy, xx = np.mgrid[:height, :width]
+    design = np.column_stack(
+        [
+            xx.reshape(-1).astype(np.float32),
+            yy.reshape(-1).astype(np.float32),
+            np.ones(height * width, dtype=np.float32),
+        ]
+    )
+    pixels = tile_lab.reshape(-1, 3).astype(np.float32)
+    fitted = np.empty_like(pixels)
+    for channel in range(3):
+        coefficients, *_ = np.linalg.lstsq(design, pixels[:, channel], rcond=None)
+        fitted[:, channel] = design @ coefficients
+    residual_delta_e = np.linalg.norm(pixels - fitted, axis=1)
+    return float(np.percentile(residual_delta_e, 95))
+
+
+def detect_flat_color_regions(
+    image_rgb,
+    min_area=DEFAULT_FLAT_REGION_MIN_AREA,
+    delta_e_thresh=DEFAULT_FLAT_DELTA_E_THRESH,
+    grad_thresh=DEFAULT_FLAT_GRAD_THRESH,
+    tile_size=DEFAULT_FLAT_TILE_SIZE,
+    max_dim=640,
+):
+    import cv2
+    import numpy as np
+
+    height, width = image_rgb.shape[:2]
+    scale = min(1.0, float(max_dim) / max(height, width))
+    if scale < 1.0:
+        work_rgb = cv2.resize(
+            image_rgb,
+            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    else:
+        work_rgb = image_rgb
+
+    work = work_rgb.astype(np.float32) / 255.0
+    lab = cv2.cvtColor(work, cv2.COLOR_RGB2Lab)
+    gray = cv2.cvtColor(work_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad = np.sqrt(grad_x * grad_x + grad_y * grad_y) / 4.0
+
+    work_height, work_width = work_rgb.shape[:2]
+    scaled_min_area = max(16, int(round(float(min_area) * scale * scale)))
+    tile_size = max(8, int(tile_size))
+    flat_mask = np.zeros((work_height, work_width), dtype=np.uint8)
+
+    for y in range(0, work_height, tile_size):
+        y2 = min(work_height, y + tile_size)
+        for x in range(0, work_width, tile_size):
+            x2 = min(work_width, x + tile_size)
+            area = (y2 - y) * (x2 - x)
+            if area < scaled_min_area:
+                continue
+
+            tile_lab = lab[y:y2, x:x2]
+            pixels = tile_lab.reshape(-1, 3)
+            mean_lab = pixels.mean(axis=0)
+            delta_e = np.linalg.norm(pixels - mean_lab, axis=1)
+            color_spread = float(np.percentile(delta_e, 95))
+            smooth_spread = color_spread
+            if color_spread >= delta_e_thresh:
+                smooth_spread = lab_plane_residual_spread(tile_lab)
+
+            mean_grad = float(grad[y:y2, x:x2].mean())
+            if min(color_spread, smooth_spread) < delta_e_thresh and mean_grad < grad_thresh:
+                flat_mask[y:y2, x:x2] = 255
+
+    kernel_size = max(3, tile_size // 4)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    flat_mask = cv2.morphologyEx(flat_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    if flat_mask.shape != (height, width):
+        flat_mask = cv2.resize(flat_mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    return flat_mask
+
+
+def flat_region_stats(flat_mask):
+    import cv2
+    import numpy as np
+
+    foreground = flat_mask > 0
+    total = int(flat_mask.size)
+    if total == 0 or not foreground.any():
+        return 0.0, 0.0
+
+    _, _, stats, _ = cv2.connectedComponentsWithStats(foreground.astype(np.uint8), connectivity=8)
+    largest_area = int(stats[1:, cv2.CC_STAT_AREA].max()) if len(stats) > 1 else 0
+    return float(foreground.mean()), float(largest_area / total)
+
+
+def image_cv_features(
+    path,
+    feature_size,
+    blur_kernel,
+    flat_region_min_area,
+    flat_delta_e_thresh,
+    flat_grad_thresh,
+    flat_tile_size,
+):
     import cv2
     import numpy as np
 
@@ -147,6 +261,16 @@ def image_cv_features(path, feature_size, blur_kernel):
         dominant_hue_ratio = 0.0
 
     brightness = gray.astype(np.float32) / 255.0
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    flat_mask = detect_flat_color_regions(
+        image_rgb,
+        min_area=flat_region_min_area,
+        delta_e_thresh=flat_delta_e_thresh,
+        grad_thresh=flat_grad_thresh,
+        tile_size=flat_tile_size,
+    )
+    flat_region_ratio, largest_flat_region_ratio = flat_region_stats(flat_mask)
+
     return {
         "gray_std": gray_std,
         "color_std": color_std,
@@ -156,13 +280,25 @@ def image_cv_features(path, feature_size, blur_kernel):
         "brightness_mean": float(brightness.mean()),
         "brightness_std": float(brightness.std()),
         "gray_entropy": gray_entropy,
+        "flat_region_ratio": flat_region_ratio,
+        "largest_flat_region_ratio": largest_flat_region_ratio,
     }
 
 
-def features_for_images(paths, feature_size, blur_kernel):
+def features_for_images(paths, args):
     features = []
     for index, path in enumerate(paths, start=1):
-        features.append(image_cv_features(path, feature_size, blur_kernel))
+        features.append(
+            image_cv_features(
+                path,
+                args.feature_size,
+                args.blur_kernel,
+                args.flat_region_min_area,
+                args.flat_delta_e_thresh,
+                args.flat_grad_thresh,
+                args.flat_tile_size,
+            )
+        )
         if index % 50 == 0 or index == len(paths):
             print(f"[features] {index}/{len(paths)} images", flush=True)
     return features
@@ -171,7 +307,15 @@ def features_for_images(paths, feature_size, blur_kernel):
 def feature_matrix(features):
     import numpy as np
 
-    keys = ("gray_std", "color_std", "edge_ratio", "dominant_hue_ratio", "brightness_std")
+    keys = (
+        "gray_std",
+        "color_std",
+        "edge_ratio",
+        "dominant_hue_ratio",
+        "brightness_std",
+        "flat_region_ratio",
+        "largest_flat_region_ratio",
+    )
     matrix = np.array([[item[key] for key in keys] for item in features], dtype=np.float32)
     mean = matrix.mean(axis=0)
     std = matrix.std(axis=0)
@@ -254,6 +398,15 @@ def graphic_override_indices(features, args):
     }
 
 
+def flat_graphic_candidate_indices(features, args):
+    return {
+        index
+        for index, feature in enumerate(features)
+        if feature["flat_region_ratio"] >= args.min_flat_region_ratio
+        and feature["largest_flat_region_ratio"] >= args.min_flat_component_ratio
+    }
+
+
 def contiguous_index_runs(indices):
     runs = []
     start = None
@@ -270,6 +423,15 @@ def contiguous_index_runs(indices):
     if start is not None:
         runs.append((start, previous))
     return runs
+
+
+def flat_graphic_evidence_indices(features, args):
+    candidates = flat_graphic_candidate_indices(features, args)
+    kept = set()
+    for start, end in contiguous_index_runs(candidates):
+        if end - start + 1 >= args.min_flat_images:
+            kept.update(range(start, end + 1))
+    return kept
 
 
 def boundary_window_seconds(image_paths, args):
@@ -310,7 +472,7 @@ def boundary_graphic_indices(image_paths, features, args):
     return kept
 
 
-def cluster_decision(labels, points, image_paths, features, args):
+def cluster_decision(labels, points, image_paths, features, args, kmeans_run):
     counts = cluster_counts(labels)
     total = len(labels)
     answer_cluster = choose_answer_cluster(labels)
@@ -321,15 +483,22 @@ def cluster_decision(labels, points, image_paths, features, args):
     majority_ratio = largest_count / total if total else 1.0
     silhouette = silhouette_score(points, labels)
 
+    flat_candidate_indices = flat_graphic_candidate_indices(features, args)
+    flat_evidence_indices = flat_graphic_evidence_indices(features, args)
     reasons = []
-    if len(counts) < 2:
-        reasons.append("single_cluster")
-    if smallest_count < args.min_cluster_images:
-        reasons.append("small_cluster")
-    if majority_ratio < args.min_majority_ratio:
-        reasons.append("balanced_clusters")
-    if silhouette < args.min_silhouette:
-        reasons.append("weak_separation")
+    if not kmeans_run and total >= 2 and not flat_evidence_indices:
+        reasons.append("no_flat_regions")
+    else:
+        if len(counts) < 2:
+            reasons.append("single_cluster")
+        if smallest_count < args.min_cluster_images:
+            reasons.append("small_cluster")
+        if majority_ratio < args.min_majority_ratio:
+            reasons.append("balanced_clusters")
+        if silhouette < args.min_silhouette:
+            reasons.append("weak_separation")
+        if not flat_evidence_indices:
+            reasons.append("no_flat_regions")
 
     boundary_indices = boundary_graphic_indices(image_paths, features, args)
     identifiable = not reasons
@@ -352,11 +521,14 @@ def cluster_decision(labels, points, image_paths, features, args):
     return {
         "answer_cluster": int(answer_cluster),
         "graphic_cluster": int(graphic_cluster),
+        "kmeans_run": bool(kmeans_run),
         "cluster_identifiable": identifiable,
         "no_graphic_reasons": [] if identifiable else reasons,
         "kmeans_rejection_reasons": reasons,
         "identification_strategy": "kmeans" if not boundary_fallback else "boundary_fallback",
         "roles": roles,
+        "flat_graphic_candidate_indices": sorted(flat_candidate_indices),
+        "flat_graphic_evidence_indices": sorted(flat_evidence_indices),
         "boundary_graphic_indices": sorted(boundary_indices),
         "graphic_override_indices": sorted(override_indices),
         "raw_cluster_counts": {str(cluster): int(count) for cluster, count in sorted(counts.items())},
@@ -369,6 +541,13 @@ def cluster_decision(labels, points, image_paths, features, args):
             "min_silhouette": float(args.min_silhouette),
             "graphic_dominant_hue_ratio": float(args.graphic_dominant_hue_ratio),
             "graphic_max_edge_ratio": float(args.graphic_max_edge_ratio),
+            "flat_region_min_area": int(args.flat_region_min_area),
+            "flat_delta_e_thresh": float(args.flat_delta_e_thresh),
+            "flat_grad_thresh": float(args.flat_grad_thresh),
+            "flat_tile_size": int(args.flat_tile_size),
+            "min_flat_region_ratio": float(args.min_flat_region_ratio),
+            "min_flat_component_ratio": float(args.min_flat_component_ratio),
+            "min_flat_images": int(args.min_flat_images),
             "boundary_seconds": float(args.boundary_seconds),
             "boundary_max_ratio": float(args.boundary_max_ratio),
             "boundary_max_raw_edge_ratio": float(args.boundary_max_raw_edge_ratio),
@@ -466,6 +645,8 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
     }
     graphic_override_index_set = set(decision["graphic_override_indices"])
     boundary_graphic_index_set = set(decision["boundary_graphic_indices"])
+    flat_candidate_index_set = set(decision["flat_graphic_candidate_indices"])
+    flat_evidence_index_set = set(decision["flat_graphic_evidence_indices"])
     graphic_sequences_by_index, graphic_sequences = graphic_sequence_map(image_paths, roles)
 
     staged_paths = stage_images(images_dir, image_paths)
@@ -495,6 +676,8 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
                 "image": relative_image,
                 "role": role,
                 "cluster": int(labels[index]),
+                "flat_graphic_candidate": index in flat_candidate_index_set,
+                "flat_graphic_evidence": index in flat_evidence_index_set,
                 "boundary_graphic": index in boundary_graphic_index_set,
                 "graphic_override": index in graphic_override_index_set,
                 **feature_payload,
@@ -527,6 +710,7 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
         "clusters_count": 2,
         "answer_cluster": int(answer_cluster),
         "graphic_cluster": int(graphic_cluster),
+        "kmeans_run": decision["kmeans_run"],
         "cluster_identifiable": decision["cluster_identifiable"],
         "identification_strategy": decision["identification_strategy"],
         "no_graphic_reasons": decision["no_graphic_reasons"],
@@ -534,6 +718,8 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
         "answer_count": role_counts["answer"],
         "graphic_count": role_counts["graphic"],
         "no_cluster_count": role_counts["no_cluster"],
+        "flat_graphic_candidate_count": len(decision["flat_graphic_candidate_indices"]),
+        "flat_graphic_evidence_count": len(decision["flat_graphic_evidence_indices"]),
         "boundary_graphic_count": len(decision["boundary_graphic_indices"]),
         "graphic_sequences_count": len(graphic_sequences),
         "graphic_override_count": len(decision["graphic_override_indices"]),
@@ -548,12 +734,21 @@ def write_outputs(video_path, image_paths, labels, centers, compactness, images_
             "min_silhouette": decision["thresholds"]["min_silhouette"],
             "graphic_dominant_hue_ratio": decision["thresholds"]["graphic_dominant_hue_ratio"],
             "graphic_max_edge_ratio": decision["thresholds"]["graphic_max_edge_ratio"],
+            "flat_region_min_area": decision["thresholds"]["flat_region_min_area"],
+            "flat_delta_e_thresh": decision["thresholds"]["flat_delta_e_thresh"],
+            "flat_grad_thresh": decision["thresholds"]["flat_grad_thresh"],
+            "flat_tile_size": decision["thresholds"]["flat_tile_size"],
+            "min_flat_region_ratio": decision["thresholds"]["min_flat_region_ratio"],
+            "min_flat_component_ratio": decision["thresholds"]["min_flat_component_ratio"],
+            "min_flat_images": decision["thresholds"]["min_flat_images"],
             "boundary_seconds": decision["thresholds"]["boundary_seconds"],
             "boundary_max_ratio": decision["thresholds"]["boundary_max_ratio"],
             "boundary_max_raw_edge_ratio": decision["thresholds"]["boundary_max_raw_edge_ratio"],
             "boundary_max_gray_entropy": decision["thresholds"]["boundary_max_gray_entropy"],
             "boundary_min_sequence_images": decision["thresholds"]["boundary_min_sequence_images"],
         },
+        "flat_graphic_candidate_indices": decision["flat_graphic_candidate_indices"],
+        "flat_graphic_evidence_indices": decision["flat_graphic_evidence_indices"],
         "raw_cluster_counts": decision["raw_cluster_counts"],
         "clusters": (
             [
@@ -615,17 +810,31 @@ def classify_video_images(video_path, args):
         return manifest_path
 
     print(f"[analyse] {video_path.name}: {len(paths)} images, k=2", flush=True)
-    features = features_for_images(paths, args.feature_size, args.blur_kernel)
+    features = features_for_images(paths, args)
     points, keys, mean, std = feature_matrix(features)
+    flat_evidence_indices = flat_graphic_evidence_indices(features, args)
     if len(paths) < 2:
         import numpy as np
 
         labels = np.zeros(len(paths), dtype=np.int32)
         centers = points[:1]
         compactness = 0.0
+        kmeans_run = False
+    elif not flat_evidence_indices:
+        import numpy as np
+
+        labels = np.zeros(len(paths), dtype=np.int32)
+        centers = points[:1]
+        compactness = 0.0
+        kmeans_run = False
+        print(
+            f"[preflight] {video_path.name}: aucun aplat/degrade stable detecte, k-means ignore",
+            flush=True,
+        )
     else:
         labels, centers, compactness = kmeans(points, args.clusters, args.iterations, args.seed)
-    decision = cluster_decision(labels, points, paths, features, args)
+        kmeans_run = True
+    decision = cluster_decision(labels, points, paths, features, args, kmeans_run)
     normalization = {"keys": keys, "mean": mean, "std": std}
     return write_outputs(
         video_path,
@@ -723,6 +932,66 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--flat-region-min-area",
+        type=int,
+        default=DEFAULT_FLAT_REGION_MIN_AREA,
+        help=(
+            "Surface minimale d'une zone locale analysee pour detecter un aplat ou degrade. "
+            f"Defaut: {DEFAULT_FLAT_REGION_MIN_AREA}"
+        ),
+    )
+    parser.add_argument(
+        "--flat-delta-e-thresh",
+        type=float,
+        default=DEFAULT_FLAT_DELTA_E_THRESH,
+        help=(
+            "Dispersion couleur Lab maximum pour considerer une zone comme un aplat. "
+            f"Defaut: {DEFAULT_FLAT_DELTA_E_THRESH}"
+        ),
+    )
+    parser.add_argument(
+        "--flat-grad-thresh",
+        type=float,
+        default=DEFAULT_FLAT_GRAD_THRESH,
+        help=(
+            "Gradient moyen maximum pour considerer une zone comme faiblement texturee. "
+            f"Defaut: {DEFAULT_FLAT_GRAD_THRESH}"
+        ),
+    )
+    parser.add_argument(
+        "--flat-tile-size",
+        type=int,
+        default=DEFAULT_FLAT_TILE_SIZE,
+        help=f"Taille des tuiles locales pour la detection d'aplat/degrade. Defaut: {DEFAULT_FLAT_TILE_SIZE}",
+    )
+    parser.add_argument(
+        "--min-flat-region-ratio",
+        type=float,
+        default=DEFAULT_MIN_FLAT_REGION_RATIO,
+        help=(
+            "Part minimale de l'image couverte par des zones plates pour autoriser k-means. "
+            f"Defaut: {DEFAULT_MIN_FLAT_REGION_RATIO}"
+        ),
+    )
+    parser.add_argument(
+        "--min-flat-component-ratio",
+        type=float,
+        default=DEFAULT_MIN_FLAT_COMPONENT_RATIO,
+        help=(
+            "Part minimale du plus grand composant plat pour autoriser k-means. "
+            f"Defaut: {DEFAULT_MIN_FLAT_COMPONENT_RATIO}"
+        ),
+    )
+    parser.add_argument(
+        "--min-flat-images",
+        type=int,
+        default=DEFAULT_MIN_FLAT_IMAGES,
+        help=(
+            "Nombre minimum d'images consecutives avec aplat/degrade pour lancer k-means. "
+            f"Defaut: {DEFAULT_MIN_FLAT_IMAGES}"
+        ),
+    )
+    parser.add_argument(
         "--boundary-seconds",
         type=float,
         default=DEFAULT_BOUNDARY_SECONDS,
@@ -813,6 +1082,20 @@ def main():
         raise ValueError("--graphic-dominant-hue-ratio doit etre entre 0 et 1")
     if not 0.0 <= args.graphic_max_edge_ratio <= 1.0:
         raise ValueError("--graphic-max-edge-ratio doit etre entre 0 et 1")
+    if args.flat_region_min_area < 1:
+        raise ValueError("--flat-region-min-area doit etre superieur ou egal a 1")
+    if args.flat_delta_e_thresh <= 0:
+        raise ValueError("--flat-delta-e-thresh doit etre superieur a 0")
+    if args.flat_grad_thresh < 0:
+        raise ValueError("--flat-grad-thresh doit etre superieur ou egal a 0")
+    if args.flat_tile_size < 8:
+        raise ValueError("--flat-tile-size doit etre superieur ou egal a 8")
+    if not 0.0 <= args.min_flat_region_ratio <= 1.0:
+        raise ValueError("--min-flat-region-ratio doit etre entre 0 et 1")
+    if not 0.0 <= args.min_flat_component_ratio <= 1.0:
+        raise ValueError("--min-flat-component-ratio doit etre entre 0 et 1")
+    if args.min_flat_images < 1:
+        raise ValueError("--min-flat-images doit etre superieur ou egal a 1")
     if args.boundary_seconds <= 0:
         raise ValueError("--boundary-seconds doit etre superieur a 0")
     if not 0.0 <= args.boundary_max_ratio <= 1.0:
@@ -833,7 +1116,10 @@ def main():
         return
 
     print(f"Dossier videos: {video_dir}")
-    print(f"Classification OpenCV: gray_std + color_std + edge_ratio, k=2", flush=True)
+    print(
+        "Classification OpenCV: gray_std + color_std + edge_ratio + flat_region, k=2",
+        flush=True,
+    )
 
     done = 0
     for video_path in videos:

@@ -224,6 +224,24 @@ def parse_args():
         default=0.002,
         help="Densite maximum de contours apres flou pour l'override graphic. Defaut: 0.002.",
     )
+    parser.add_argument(
+        "--image-min-flat-region-ratio",
+        type=float,
+        default=0.08,
+        help="Part minimale d'aplat/degrade dans une image pour autoriser k-means. Defaut: 0.08.",
+    )
+    parser.add_argument(
+        "--image-min-flat-component-ratio",
+        type=float,
+        default=0.03,
+        help="Part minimale du plus grand composant plat pour autoriser k-means. Defaut: 0.03.",
+    )
+    parser.add_argument(
+        "--image-min-flat-images",
+        type=int,
+        default=2,
+        help="Nombre minimum d'images consecutives avec aplat/degrade pour autoriser k-means. Defaut: 2.",
+    )
     parser.add_argument("--intertitle-dominant-color-ratio", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--intertitle-green-ratio", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
@@ -318,6 +336,12 @@ def main():
         args.image_graphic_dominant_hue_ratio,
         "--graphic-max-edge-ratio",
         args.image_graphic_max_edge_ratio,
+        "--min-flat-region-ratio",
+        args.image_min_flat_region_ratio,
+        "--min-flat-component-ratio",
+        args.image_min_flat_component_ratio,
+        "--min-flat-images",
+        args.image_min_flat_images,
     )
     if video_limit is not None:
         step04 += ["--limit-videos", str(video_limit)]

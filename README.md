@@ -215,9 +215,9 @@ Classer localement les images extraites avec des features OpenCV simples et k-me
 python scripts/init/04_classify_images.py
 ```
 
-Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite), lance k-means en 2 clusters, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`. Dans `graphic/`, les images qui se suivent numeriquement sont regroupees en sous-dossiers `graphic_01/`, `graphic_02/`, etc.
+Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite, regions plates), lance k-means en 2 clusters uniquement si une sequence d'images contient un aplat ou un degrade stable, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`. Dans `graphic/`, les images qui se suivent numeriquement sont regroupees en sous-dossiers `graphic_01/`, `graphic_02/`, etc.
 
-Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si la separation est trop faible, si le plus gros cluster contient moins de 70% des images, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons`.
+Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si aucune sequence d'images avec aplat/degrade n'est detectee, si la separation est trop faible, si le plus gros cluster contient moins de 70% des images, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons` et `kmeans_run: false` quand le preflight a bloque le clustering.
 
 Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/cv_features.json` avec les mesures OpenCV. La Step 05 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
 
@@ -235,6 +235,9 @@ python scripts/init/04_classify_images.py --min-majority-ratio 0.70
 python scripts/init/04_classify_images.py --min-silhouette 0.12
 python scripts/init/04_classify_images.py --graphic-dominant-hue-ratio 0.70
 python scripts/init/04_classify_images.py --graphic-max-edge-ratio 0.002
+python scripts/init/04_classify_images.py --min-flat-region-ratio 0.08
+python scripts/init/04_classify_images.py --min-flat-component-ratio 0.03
+python scripts/init/04_classify_images.py --min-flat-images 2
 python scripts/init/04_classify_images.py --force
 ```
 

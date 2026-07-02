@@ -178,11 +178,6 @@ def parse_args():
         help="Sensibilite de correction des noms propres pendant la Step 09. Defaut: balanced.",
     )
     parser.add_argument(
-        "--ocr-subtitle-validation-model",
-        default=os.getenv("OCR_SUBTITLE_VALIDATION_MODEL", "gpt-5.4-nano"),
-        help="Modele OpenAI pour valider les sous-titres OCR. Defaut: gpt-5.4-nano.",
-    )
-    parser.add_argument(
         "--chunk-speaker-validation-model",
         default=os.getenv("CHUNK_SPEAKER_VALIDATION_MODEL", "gpt-5.4-nano"),
         help="Modele OpenAI pour valider les speakers des chunks. Defaut: gpt-5.4-nano.",
@@ -337,18 +332,12 @@ def main():
         step05.append("--force")
     run_step_numbered(5, total_steps, "Step 05 - Image OCR (PaddleOCR)", step05, env)
 
-    step06 = step_command(
-        "06_validate_ocr_subtitles.py",
-        "--video-dir",
-        video_dir,
-        "--model",
-        args.ocr_subtitle_validation_model,
-    )
+    step06 = step_command("06_validate_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:
         step06 += ["--limit-videos", str(video_limit)]
     if args.force:
         step06.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - Validate OCR Subtitles (OpenAI)", step06, env)
+    run_step_numbered(6, total_steps, "Step 06 - Validate OCR Subtitles (spaCy)", step06, env)
 
     step07 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:

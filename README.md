@@ -250,15 +250,15 @@ Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_o
 
 ## Step 06 - Validate OCR Subtitles
 
-Valider les items OCR `kind: "subtitle"` avec OpenAI avant de les utiliser comme vrais sous-titres:
+Valider les items OCR `kind: "subtitle"` avec spaCy avant de les utiliser comme vrais sous-titres:
 
 ```powershell
 python scripts/init/06_validate_ocr_subtitles.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed.json`, envoie chaque `text` dont le `kind` vaut `subtitle` au modele OpenAI configure, et lui demande de repondre uniquement `oui` ou `non` a la question: "A ton avis c'est vraiment du sous titre ou erreur de l'ocr ?". Par defaut, le modele est `gpt-5.4-nano`, configurable avec `--model` ou `OCR_SUBTITLE_VALIDATION_MODEL`; l'alias compact `gpt5.4nano` est aussi accepte.
+Le script lit `transcript/<video_id>_ocr_processed.json`, extrait tous les `text` dont le `kind` vaut `subtitle`, puis les ecrit dans `transcript/<video_id>_ocr_subtitle_candidates.txt`. Il charge ensuite le modele spaCy francais `fr_dep_news_trf` et applique la regle `has_verb`: si le texte contient au moins un token `VERB` ou `AUX`, il reste `kind: "subtitle"`; sinon il est reclasse en `kind: "other"`.
 
-Il ecrit `transcript/<video_id>_ocr_processed_corrected.json`. Les items valides restent `kind: "subtitle"`; les items rejetes deviennent `kind: "ocr_error"` avec `previous_kind: "subtitle"` et une trace `subtitle_validation`. Le script ecrit aussi `transcript/<video_id>_ocr_subtitle_validation_log.json` avec chaque demande envoyee a GPT et sa reponse brute.
+Il ecrit `transcript/<video_id>_ocr_processed_corrected.json` avec la meme structure que `processed.json`: seuls certains champs `kind` changent. Les items valides restent `kind: "subtitle"`; les items rejetes deviennent `kind: "other"`. Le script ecrit aussi `transcript/<video_id>_ocr_subtitle_validation_log.json` avec l'analyse spaCy, les verbes detectes et le resultat `has_verb`.
 
 ## Step 07 - OCR Subtitles
 

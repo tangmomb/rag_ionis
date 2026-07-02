@@ -1,9 +1,7 @@
 import argparse
 import json
 import os
-import re
 import sys
-import unicodedata
 from copy import deepcopy
 from pathlib import Path
 
@@ -14,14 +12,9 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
 OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
-DEFAULT_MODEL = "gpt-5.4-nano"
-MAX_OUTPUT_TOKENS = 16
-SYSTEM_PROMPT = (
-    "Tu verifies des textes detectes par OCR dans des images de video. "
-    "Pour chaque texte, dis seulement s'il s'agit vraiment d'un sous-titre affiche a l'ecran. "
-    "Si c'est probablement du decor, un nom, un titre, une interface, un mot isole, un logo, "
-    "ou une erreur OCR, reponds non. Reponds uniquement par oui ou non."
-)
+SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", "fr_dep_news_trf")
+SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "1").lower() not in {"0", "false", "no"}
+VERB_POS = {"AUX", "VERB"}
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -62,6 +55,10 @@ def corrected_ocr_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}{OCR_PROCESSED_CORRECTED_SUFFIX}"
 
 
+def subtitle_candidates_path(video_path):
+    return video_path.parent / "transcript" / f"{video_path.stem}_ocr_subtitle_candidates.txt"
+
+
 def validation_log_path(video_path):
     return video_path.parent / "transcript" / f"{video_path.stem}_ocr_subtitle_validation_log.json"
 
@@ -70,143 +67,139 @@ def load_json(path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def normalize_model_name(model):
-    compact = str(model).strip().lower().replace("_", "").replace("-", "")
-    if compact == "gpt5.4nano":
-        return "gpt-5.4-nano"
-    return model
+def load_french_spacy_model():
+    try:
+        import spacy
+    except ImportError as exc:
+        raise RuntimeError(
+            "Le package spaCy est absent. Installe les requirements du projet."
+        ) from exc
+
+    if SPACY_REQUIRE_GPU:
+        try:
+            spacy.require_gpu()
+        except Exception as exc:
+            raise RuntimeError(
+                "SPACY_REQUIRE_GPU=1 mais le GPU spaCy n'est pas accessible. "
+                "Utilise SPACY_REQUIRE_GPU=0 pour autoriser le CPU."
+            ) from exc
+    else:
+        spacy.prefer_gpu()
+
+    try:
+        return spacy.load(SPACY_FRENCH_MODEL)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Modele spaCy introuvable: {SPACY_FRENCH_MODEL}. "
+            "Reinstalle-le avec `python -m spacy download fr_dep_news_trf`."
+        ) from exc
 
 
-def normalize_answer(value):
-    normalized = unicodedata.normalize("NFKD", str(value).strip().casefold())
-    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    return re.sub(r"[^a-z]+", "", normalized)
+def normalize_text(text):
+    return " ".join(str(text).split()).strip()
 
 
-def parse_yes_no(answer):
-    normalized = normalize_answer(answer)
-    if normalized.startswith("oui") or normalized.startswith("yes"):
-        return True
-    if normalized.startswith("non") or normalized.startswith("no"):
-        return False
-    raise ValueError(f"Reponse GPT inattendue: {answer!r}")
+def format_timecode(seconds):
+    seconds = int(seconds or 0)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
-def response_text(response):
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return str(output_text)
-
-    pieces = []
-    for output in getattr(response, "output", []) or []:
-        for content in getattr(output, "content", []) or []:
-            text = getattr(content, "text", None)
-            if text:
-                pieces.append(str(text))
-    return "\n".join(pieces).strip()
+def subtitle_candidate_items(payload):
+    items = []
+    for index, item in enumerate(payload.get("items", []), start=1):
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind != "subtitle":
+            continue
+        text = normalize_text(item.get("text", ""))
+        items.append({"index": index, "item": item, "text": text})
+    return items
 
 
-def ask_gpt(client, model, text):
-    user_prompt = (
-        "A ton avis c'est vraiment du sous titre ou erreur de l'ocr ? "
-        "Reponds juste oui ou non.\n\n"
-        f"{text}"
-    )
-    request_log = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+def write_subtitle_candidates(path, candidates):
+    lines = []
+    for candidate in candidates:
+        item = candidate["item"]
+        second = item.get("second")
+        prefix = f"[{format_timecode(second)}] " if second is not None else ""
+        lines.append(f"{prefix}{candidate['text']}")
+    path.write_text("\n".join(lines).strip() + ("\n" if lines else ""), encoding="utf-8")
+
+
+def verb_tokens(doc):
+    return [
+        {
+            "text": token.text,
+            "lemma": token.lemma_,
+            "pos": token.pos_,
+            "tag": token.tag_,
+        }
+        for token in doc
+        if token.pos_ in VERB_POS
+    ]
+
+
+def validate_items(nlp, payload):
+    candidates = subtitle_candidate_items(payload)
+    docs = list(nlp.pipe(candidate["text"] for candidate in candidates)) if candidates else []
+    by_index = {
+        candidate["index"]: {
+            "candidate": candidate,
+            "doc": doc,
+            "verbs": verb_tokens(doc),
+        }
+        for candidate, doc in zip(candidates, docs)
     }
-    if hasattr(client, "responses"):
-        response = client.responses.create(
-            model=model,
-            input=request_log["messages"],
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-        )
-        answer = response_text(response)
-        request_log["api"] = "responses.create"
-        request_log["max_output_tokens"] = MAX_OUTPUT_TOKENS
-        return answer, request_log
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=request_log["messages"],
-        max_completion_tokens=MAX_OUTPUT_TOKENS,
-    )
-    answer = response.choices[0].message.content or ""
-    request_log["api"] = "chat.completions.create"
-    request_log["max_completion_tokens"] = MAX_OUTPUT_TOKENS
-    return answer, request_log
-
-
-def openai_client():
-    from openai import OpenAI
-
-    return OpenAI()
-
-
-def validate_items(model, payload):
     corrected_items = []
     logs = []
     reviewed = 0
     kept = 0
     rejected = 0
-    client = None
 
-    for item in payload.get("items", []):
+    for index, item in enumerate(payload.get("items", []), start=1):
         corrected = deepcopy(item)
         kind = str(corrected.get("kind", "")).strip().lower()
         if kind != "subtitle":
             corrected_items.append(corrected)
             continue
 
-        text = str(corrected.get("text", ""))
         reviewed += 1
-        if not text.strip():
-            answer = "non"
-            is_subtitle = False
-        else:
-            if client is None:
-                client = openai_client()
-            answer, request_log = ask_gpt(client, model, text)
-            answer = answer.strip()
-            logs.append(
-                {
-                    "index": reviewed,
-                    "image": corrected.get("image"),
-                    "second": corrected.get("second"),
-                    "text": text,
-                    "request": request_log,
-                    "response": answer,
-                }
-            )
-            is_subtitle = parse_yes_no(answer)
+        analysis = by_index.get(index, {})
+        verbs = analysis.get("verbs", [])
+        has_verb = bool(verbs)
+        text = normalize_text(corrected.get("text", ""))
 
-        corrected["subtitle_validation"] = {
-            "model": model,
-            "answer": answer,
-            "is_subtitle": is_subtitle,
-        }
-        if is_subtitle:
+        if has_verb:
             kept += 1
         else:
             rejected += 1
-            corrected["previous_kind"] = corrected.get("kind")
-            corrected["kind"] = "ocr_error"
-            corrected["ocr_error_reason"] = "rejected_by_gpt_subtitle_validation"
+            corrected["kind"] = "other"
 
-        corrected_items.append(corrected)
-        verdict = "oui" if is_subtitle else "non"
+        logs.append(
+            {
+                "index": reviewed,
+                "image": corrected.get("image"),
+                "second": corrected.get("second"),
+                "text": text,
+                "has_verb": has_verb,
+                "verbs": verbs,
+            }
+        )
+        verdict = "subtitle" if has_verb else "other"
         print(f"[validate] {reviewed}: {verdict} -> {text}", flush=True)
+        corrected_items.append(corrected)
 
-    return corrected_items, {"reviewed": reviewed, "kept": kept, "rejected": rejected}, logs
+    return corrected_items, {"reviewed": reviewed, "kept": kept, "rejected": rejected}, logs, candidates
 
 
-def validate_file(model, video_path, force=False):
+def validate_file(nlp, video_path, force=False):
     source = processed_ocr_path(video_path)
     target = corrected_ocr_path(video_path)
+    candidates_target = subtitle_candidates_path(video_path)
     log_target = validation_log_path(video_path)
     if target.exists() and not force:
         print(f"[skip] {target.name} existe deja")
@@ -216,35 +209,35 @@ def validate_file(model, video_path, force=False):
         return None
 
     payload = load_json(source)
-    corrected_items, stats, logs = validate_items(model, payload)
+    corrected_items, stats, logs, candidates = validate_items(nlp, payload)
+    write_subtitle_candidates(candidates_target, candidates)
     result = {
         **payload,
         "items": corrected_items,
-        "subtitle_validation": {
-            "model": model,
-            "source": source.name,
-            **stats,
-        },
     }
     target.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     log_payload = {
-        "model": model,
+        "engine": "spacy",
+        "model": SPACY_FRENCH_MODEL,
+        "rule": "has_verb",
         "source": source.name,
+        "candidates": candidates_target.name,
         **stats,
-        "requests": logs,
+        "items": logs,
     }
     log_target.write_text(json.dumps(log_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
-        f"[write] {target} ({stats['kept']} sous-titres gardes, {stats['rejected']} rejetes)",
+        f"[write] {target} ({stats['kept']} sous-titres gardes, {stats['rejected']} reclasses other)",
         flush=True,
     )
+    print(f"[write] candidates -> {candidates_target}", flush=True)
     print(f"[write] log -> {log_target}", flush=True)
     return target
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Valide les items OCR kind=subtitle avec OpenAI et produit un JSON OCR corrige."
+        description="Valide les items OCR kind=subtitle avec spaCy has_verb et produit un JSON OCR corrige."
     )
     parser.add_argument(
         "--video-dir",
@@ -261,11 +254,6 @@ def parse_args():
         help="Nombre maximum de videos a analyser.",
     )
     parser.add_argument(
-        "--model",
-        default=os.getenv("OCR_SUBTITLE_VALIDATION_MODEL", DEFAULT_MODEL),
-        help=f"Modele OpenAI de validation. Defaut: {DEFAULT_MODEL}",
-    )
-    parser.add_argument(
         "--force",
         action="store_true",
         help="Regenere le JSON corrige meme s'il existe deja.",
@@ -274,9 +262,12 @@ def parse_args():
 
 
 def main():
+    global SPACY_FRENCH_MODEL, SPACY_REQUIRE_GPU
+
     load_dotenv(override=True)
+    SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", SPACY_FRENCH_MODEL)
+    SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "1").lower() not in {"0", "false", "no"}
     args = parse_args()
-    args.model = normalize_model_name(args.model)
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))
     if args.limit_videos is not None:
@@ -287,10 +278,11 @@ def main():
         return
 
     print(f"Dossier videos: {video_dir}")
-    print(f"Modele validation OCR: {args.model}", flush=True)
+    print(f"Validation OCR subtitles: spaCy {SPACY_FRENCH_MODEL}, rule=has_verb", flush=True)
+    nlp = load_french_spacy_model()
     done = 0
     for video_path in videos:
-        if validate_file(args.model, video_path, force=args.force):
+        if validate_file(nlp, video_path, force=args.force):
             done += 1
 
     print(f"{done} JSON OCR corriges generes.")

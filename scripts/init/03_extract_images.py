@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 from imageio_ffmpeg import get_ffmpeg_exe
 
 
@@ -85,6 +86,16 @@ def extract_images(video_path, interval_seconds, force=False):
     rename_frames_with_timecodes(video_images_dir, interval_seconds)
     count = len(list(video_images_dir.glob("*.jpg")))
     print(f"[ok] {count} images")
+    update_analysed_infos(
+        video_path,
+        "extract_images",
+        {
+            "status": "done",
+            "interval_seconds": interval_seconds,
+            "image_count": count,
+            "images_dir": "images",
+        },
+    )
     return count
 
 

@@ -318,31 +318,7 @@ def main():
         step03.append("--force")
     run_step_numbered(3, total_steps, "Step 03 - Extract Images", step03, env)
 
-    step04 = step_command(
-        "04_classify_images.py",
-        "--video-dir",
-        video_dir,
-        "--clusters",
-        args.image_clusters,
-        "--blur-kernel",
-        args.image_blur_kernel,
-        "--min-cluster-images",
-        args.image_min_cluster_images,
-        "--min-majority-ratio",
-        args.image_min_majority_ratio,
-        "--min-silhouette",
-        args.image_min_silhouette,
-        "--graphic-dominant-hue-ratio",
-        args.image_graphic_dominant_hue_ratio,
-        "--graphic-max-edge-ratio",
-        args.image_graphic_max_edge_ratio,
-        "--min-flat-region-ratio",
-        args.image_min_flat_region_ratio,
-        "--min-flat-component-ratio",
-        args.image_min_flat_component_ratio,
-        "--min-flat-images",
-        args.image_min_flat_images,
-    )
+    step04 = step_command("04_classify_images.py", "--video-dir", video_dir)
     if video_limit is not None:
         step04 += ["--limit-videos", str(video_limit)]
     if args.force:

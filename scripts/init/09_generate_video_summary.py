@@ -4,6 +4,7 @@ import re
 import sys
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -197,6 +198,18 @@ def summarize_file(input_path, force=False):
 
     rows = parse_enriched_lines(input_path.read_text(encoding="utf-8"))
     target.write_text(render_summary(rows, video_title_for_input(input_path)), encoding="utf-8")
+    video_dir = input_path.parent.parent
+    video_path = video_dir / f"{video_dir.name}.mp4"
+    update_analysed_infos(
+        video_path,
+        "video_summary",
+        {
+            "status": "done",
+            "source": f"transcript/{input_path.name}",
+            "summary_file": f"transcript/{target.name}",
+            "row_count": len(rows),
+        },
+    )
     print(f"[ok] {target}")
     return target
 

@@ -4,6 +4,7 @@ import re
 import sys
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -272,6 +273,17 @@ def enrich_transcript(video_path, force=False):
         overlay_index += 1
 
     target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    update_analysed_infos(
+        video_path,
+        "enrich_transcripts",
+        {
+            "status": "done",
+            "source": f"transcript/{source.name}",
+            "analysis_source": f"transcript/{analyse.name}",
+            "enriched_file": f"transcript/{target.name}",
+            "overlay_count": len(overlays),
+        },
+    )
     print(f"[ok] {target}")
     return target
 

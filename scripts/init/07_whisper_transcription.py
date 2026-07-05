@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 try:
@@ -197,6 +198,15 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
     processed_path = processed_ocr_path(transcript_dir, video_path)
     if processed_path.exists() and not force and has_ocr_subtitles(processed_path):
         print(f"[skip] subtitle detecte, pas de whisper")
+        update_analysed_infos(
+            video_path,
+            "whisper_transcription",
+            {
+                "status": "skipped",
+                "reason": "ocr_subtitles_detected",
+                "source": f"transcript/{processed_path.name}",
+            },
+        )
         return None
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")
@@ -206,6 +216,17 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
     audio_path = extract_audio(video_path, audio_dir)
     text = transcribe_with_whisperx(whisperx, model, audio_path).strip()
     output_path.write_text(text + "\n", encoding="utf-8")
+    update_analysed_infos(
+        video_path,
+        "whisper_transcription",
+        {
+            "status": "done",
+            "model": DEFAULT_TRANSCRIBE_MODEL,
+            "device": DEFAULT_TRANSCRIBE_DEVICE,
+            "transcript_timecodes_file": f"transcript/{output_path.name}",
+            "char_count": len(text),
+        },
+    )
     print(f"[ok] {output_path}")
     return output_path
 

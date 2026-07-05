@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 from local_paddle_ocr import (
     collapse_answer_overlay_items,
     collapse_graphic_sequence_items,
@@ -134,6 +135,17 @@ def main():
                 "source": source.name,
                 "min_confidence": min_confidence,
                 "items": processed_items,
+            },
+        )
+        update_analysed_infos(
+            video_path,
+            "ocr_processed",
+            {
+                "status": "done",
+                "source": f"transcript/{source.name}",
+                "processed_file": f"transcript/{target.name}",
+                "item_count": len(processed_items),
+                "min_confidence": min_confidence,
             },
         )
         print(f"[done] {video_path.name}: {len(items)} items intermediaires", flush=True)

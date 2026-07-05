@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 from local_paddle_ocr import (
     LocalPaddleOCR,
     configure_stdio,
@@ -131,6 +132,18 @@ def main():
                 "lang": args.lang,
                 "min_confidence": args.min_confidence,
                 "items": raw_items,
+            },
+        )
+        update_analysed_infos(
+            video_path,
+            "ocr_brut",
+            {
+                "status": "done",
+                "raw_file": f"transcript/{video_path.name}_ocr_brut.json",
+                "image_count": len(raw_items),
+                "device": args.device,
+                "lang": args.lang,
+                "min_confidence": args.min_confidence,
             },
         )
         print(f"[done] {video_path.name}: {len(raw_items)} images OCR brutes", flush=True)

@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
@@ -205,6 +206,17 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text + ("\n" if text else ""), encoding="utf-8")
         target_timecodes.write_text(timecoded_text + ("\n" if timecoded_text else ""), encoding="utf-8")
+        update_analysed_infos(
+            video_path,
+            "ocr_subtitles",
+            {
+                "status": "done",
+                "source": f"transcript/{source.name}",
+                "subtitle_file": f"transcript/{target.name}",
+                "subtitle_timecodes_file": f"transcript/{target_timecodes.name}",
+                "subtitle_count": len(subtitles),
+            },
+        )
         print(f"[ok] {target}")
         print(f"[ok] {target_timecodes}")
         done += 1

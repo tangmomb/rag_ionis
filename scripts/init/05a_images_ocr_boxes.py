@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 from local_paddle_ocr import (
     boxes_from_raw_result,
     configure_stdio,
@@ -111,6 +112,17 @@ def main():
             {
                 "source": source.name,
                 "items": box_items,
+            },
+        )
+        update_analysed_infos(
+            video_path,
+            "ocr_boxes",
+            {
+                "status": "done",
+                "source": f"transcript/{source.name}",
+                "boxes_file": f"transcript/{target.name}",
+                "image_count": len(box_items),
+                "box_count": total_boxes,
             },
         )
         print(f"[done] {video_path.name}: {total_boxes} box(es)", flush=True)

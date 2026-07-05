@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 import requests
 
+from analysed_infos import update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -716,6 +717,17 @@ def create_chunks(video_path, force=False):
     payload["source"] = str(source.relative_to(video_path.parent))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    update_analysed_infos(
+        video_path,
+        "create_chunks",
+        {
+            "status": "done",
+            "source": str(source.relative_to(video_path.parent)).replace("\\", "/"),
+            "chunks_file": str(target.relative_to(video_path.parent)).replace("\\", "/"),
+            "chunk_count": len(payload["chunks"]),
+            "speakers": meta_data.get("speakers", []),
+        },
+    )
     print(f"[ok] {target} ({len(payload['chunks'])} chunks)")
     return target
 

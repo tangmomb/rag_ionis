@@ -3,6 +3,7 @@ import re
 import sys
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -69,7 +70,7 @@ def timecoded_inputs(transcript_dir):
     return sorted(transcript_dir.glob(f"*{CORRECTED_TIMECODED_SUFFIX}"))
 
 
-def convert_file(input_path, force=False):
+def convert_file(video_path, input_path, force=False):
     target = output_path(input_path)
     if target.exists() and not force:
         print(f"[skip] {target.name} existe deja")
@@ -78,6 +79,16 @@ def convert_file(input_path, force=False):
     text = input_path.read_text(encoding="utf-8")
     cleaned = strip_timecodes(text)
     target.write_text(cleaned + "\n", encoding="utf-8")
+    update_analysed_infos(
+        video_path,
+        "strip_timecodes",
+        {
+            "status": "done",
+            "source": f"transcript/{input_path.name}",
+            "plain_transcript_file": f"transcript/{target.name}",
+            "char_count": len(cleaned),
+        },
+    )
     print(f"[ok] {target}")
     return target
 
@@ -106,20 +117,17 @@ def parse_args():
 def main():
     args = parse_args()
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    transcript_dirs = sorted({video_path.parent / "transcript" for video_path in video_files(video_dir)})
-    inputs = []
-    for transcript_dir in transcript_dirs:
-        inputs.extend(timecoded_inputs(transcript_dir))
-
-    if not inputs:
-        print(f"Aucun fichier *{CORRECTED_TIMECODED_SUFFIX} trouve dans {video_dir}")
-        return
-
     print(f"Dossier videos: {video_dir}")
     done = 0
-    for input_path in inputs:
-        convert_file(input_path, force=args.force)
-        done += 1
+    videos = list(video_files(video_dir))
+    for video_path in videos:
+        for input_path in timecoded_inputs(video_path.parent / "transcript"):
+            convert_file(video_path, input_path, force=args.force)
+            done += 1
+
+    if not done:
+        print(f"Aucun fichier *{CORRECTED_TIMECODED_SUFFIX} trouve dans {video_dir}")
+        return
 
     print(f"{done} fichiers traites.")
 

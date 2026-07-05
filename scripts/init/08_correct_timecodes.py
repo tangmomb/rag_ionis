@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from analysed_infos import update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -435,6 +436,19 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
         for new_word in sorted(corrections[old_word])
     ]
     words_target.write_text(("\n".join(correction_lines).strip() + "\n") if correction_lines else "", encoding="utf-8")
+    update_analysed_infos(
+        video_path,
+        "correct_timecodes",
+        {
+            "status": "done",
+            "source": f"transcript/{source.name}",
+            "analysis_source": f"transcript/{analyse.name}",
+            "corrected_file": f"transcript/{target.name}",
+            "corrected_words_file": f"transcript/{words_target.name}",
+            "correction_count": len(correction_lines),
+            "mode": mode,
+        },
+    )
     print(f"[ok] {target}")
     print(f"[ok] {words_target}")
     return target

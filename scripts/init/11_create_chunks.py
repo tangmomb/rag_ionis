@@ -64,6 +64,8 @@ NON_PERSON_NAME_KEYWORDS = {
 _SPACY_NLP = None
 _SPACY_LOAD_ATTEMPTED = False
 _SPACY_WARNING_SHOWN = False
+YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
+LEGACY_INFO_SUFFIX = ".info.json"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -138,8 +140,16 @@ def youtube(endpoint, **params):
     return response.json()
 
 
+def video_info_path(video_path):
+    candidates = [
+        video_path.with_name(f"{video_path.stem}{YOUTUBE_API_INFOS_SUFFIX}"),
+        video_path.with_name(f"{video_path.stem}{LEGACY_INFO_SUFFIX}"),
+    ]
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
 def published_at(video_path):
-    info_path = video_path.with_suffix(".info.json")
+    info_path = video_info_path(video_path)
     if info_path.exists():
         try:
             payload = json.loads(info_path.read_text(encoding="utf-8"))
@@ -158,7 +168,7 @@ def video_url(video_path):
 
 
 def video_title(video_path):
-    info_path = video_path.with_suffix(".info.json")
+    info_path = video_info_path(video_path)
     if info_path.exists():
         try:
             payload = json.loads(info_path.read_text(encoding="utf-8"))

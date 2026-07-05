@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from analysed_infos import analysed_infos_path, update_analysed_infos
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 try:
@@ -78,10 +78,6 @@ def transcript_path(transcript_dir, video_path):
 
 def subtitle_timecodes_path(transcript_dir, video_path):
     return transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes.txt"
-
-
-def analysed_infos_path(video_path):
-    return video_path.parent / "analysed_infos.json"
 
 
 def analysed_has_subtitles(video_path):

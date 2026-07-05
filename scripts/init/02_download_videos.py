@@ -17,6 +17,9 @@ DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
 DEFAULT_FORMAT = "bestvideo[height=720]+bestaudio/best[height=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
 DEFAULT_MERGE_FORMAT = "mp4"
+YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
+LEGACY_INFO_SUFFIX = ".info.json"
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -36,6 +39,13 @@ def ffmpeg_exe():
 
 def info_cache_dir(parent_dir):
     return Path(parent_dir) / "info_videos"
+
+
+def info_candidates(base_dir, youtube_video_id):
+    return [
+        Path(base_dir) / f"{youtube_video_id}{YOUTUBE_API_INFOS_SUFFIX}",
+        Path(base_dir) / f"{youtube_video_id}{LEGACY_INFO_SUFFIX}",
+    ]
 
 
 def extract_youtube_video_id(value):
@@ -69,18 +79,27 @@ def load_video_infos(parent_dir, limit=None):
         return []
 
     infos = []
-    for path in sorted(cache_dir.glob("*.info.json")):
+    for path in sorted(cache_dir.glob(f"*{YOUTUBE_API_INFOS_SUFFIX}")) + sorted(cache_dir.glob(f"*{LEGACY_INFO_SUFFIX}")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as error:
             print(f"[skip] info json invalide: {path} ({error})")
             continue
-        youtube_video_id = payload.get("youtube_video_id") or path.stem.removesuffix(".info")
+        youtube_video_id = payload.get("youtube_video_id") or path.name.removesuffix(YOUTUBE_API_INFOS_SUFFIX).removesuffix(LEGACY_INFO_SUFFIX)
         title = payload.get("title") or youtube_video_id
         url = payload.get("url") or f"https://www.youtube.com/watch?v={youtube_video_id}"
         infos.append((youtube_video_id, title, url, payload))
 
-    return infos[:limit] if limit is not None else infos
+    deduped_infos = []
+    seen_ids = set()
+    for info in infos:
+        youtube_video_id = info[0]
+        if youtube_video_id in seen_ids:
+            continue
+        seen_ids.add(youtube_video_id)
+        deduped_infos.append(info)
+
+    return deduped_infos[:limit] if limit is not None else deduped_infos
 
 
 def load_video_info_from_url(parent_dir, video_url):
@@ -104,16 +123,16 @@ def existing_download(video_dir, youtube_video_id):
     matches = sorted(
         path
         for path in video_dir.glob(f"{youtube_video_id}.*")
-        if path.is_file() and path.suffix not in {".part", ".ytdl", ".temp"}
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
     )
     return matches[0] if matches else None
 
 
 def copy_video_info(video_dir, youtube_video_id, parent_dir):
-    source = info_cache_dir(parent_dir) / f"{youtube_video_id}.info.json"
-    if not source.exists():
+    source = next((path for path in info_candidates(info_cache_dir(parent_dir), youtube_video_id) if path.exists()), None)
+    if source is None:
         return None
-    target = video_dir / f"{youtube_video_id}.info.json"
+    target = video_dir / f"{youtube_video_id}{YOUTUBE_API_INFOS_SUFFIX}"
     shutil.copy2(source, target)
     return target
 
@@ -121,7 +140,7 @@ def copy_video_info(video_dir, youtube_video_id, parent_dir):
 def write_video_info(video_dir, youtube_video_id, payload):
     if not payload:
         return None
-    target = video_dir / f"{youtube_video_id}.info.json"
+    target = video_dir / f"{youtube_video_id}{YOUTUBE_API_INFOS_SUFFIX}"
     if target.exists():
         return target
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

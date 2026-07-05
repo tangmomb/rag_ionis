@@ -235,7 +235,7 @@ Deduir le type de video depuis le manifeste de classification images:
 python scripts/init/04b_infer_video_type.py
 ```
 
-Le script ecrit `video_type` dans `analysed_infos.json`.
+Le script ecrit `video_type` dans `<video_id>_analysed_infos.json`.
 
 ## Step 06 - ocr_brut
 
@@ -265,7 +265,7 @@ Detecter si la video contient probablement des sous-titres OCR a partir des boxe
 python scripts/init/05a_detect_ocr_subtitles.py
 ```
 
-Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif se repete sur plusieurs secondes. Il ecrit `has_subtitles` dans `analysed_infos.json`.
+Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif se repete sur plusieurs secondes. Il ecrit `has_subtitles` dans `<video_id>_analysed_infos.json`.
 
 ## Step 09 - Build OCR Processed
 
@@ -285,11 +285,11 @@ Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec un
 python scripts/init/06_ocr_subtitles.py
 ```
 
-Le script ne traite une video que si `analysed_infos.json` contient `has_subtitles: true`. Il lit alors `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
+Le script ne traite une video que si `<video_id>_analysed_infos.json` contient `has_subtitles: true`. Il lit alors `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
 
 ## Step 11 - Whisper Transcription
 
-Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement uniquement si `analysed_infos.json` contient `has_subtitles: false`:
+Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement uniquement si `<video_id>_analysed_infos.json` contient `has_subtitles: false`:
 
 ```powershell
 python scripts/init/07_whisper_transcription.py

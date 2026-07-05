@@ -3,6 +3,7 @@ import json
 import statistics
 from pathlib import Path
 
+from analysed_infos import analysed_infos_path, update_analysed_infos
 from local_paddle_ocr import (
     anchored_subtitle_match,
     box_bounds,
@@ -28,27 +29,12 @@ def boxes_path(transcript_dir, video_id):
     return transcript_dir / f"{video_id}{BOXES_SUFFIX}"
 
 
-def analysed_infos_path(video_path):
-    return video_path / "analysed_infos.json"
-
-
 def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def write_has_subtitles(video_path, has_subtitles):
-    target = analysed_infos_path(video_path)
-    if target.exists():
-        try:
-            payload = load_json(target)
-        except Exception:
-            payload = {}
-    else:
-        payload = {}
-
-    payload["has_subtitles"] = bool(has_subtitles)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return target
+    return update_analysed_infos(video_path, "05a_detect_ocr_subtitles", {"has_subtitles": bool(has_subtitles)})
 
 
 def subtitle_entries_from_boxes(payload, images_dir):

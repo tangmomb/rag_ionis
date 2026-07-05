@@ -14,6 +14,8 @@ TIMECODE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 TIMECODE_WITH_RANGE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 INSERT_LINE = re.compile(r"^INSERT:\s*(.*)$", re.IGNORECASE)
 GRAPHIC_LINE = re.compile(r"^GRAPHIC:\s*(.*)$", re.IGNORECASE)
+YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
+LEGACY_INFO_SUFFIX = ".info.json"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -57,8 +59,10 @@ def summary_path(input_path):
 
 def video_title_for_input(input_path):
     candidates = [
-        input_path.parent.parent / f"{input_path.parent.parent.name}.info.json",
-        input_path.parent / f"{input_path.parent.parent.name}.info.json",
+        input_path.parent.parent / f"{input_path.parent.parent.name}{YOUTUBE_API_INFOS_SUFFIX}",
+        input_path.parent / f"{input_path.parent.parent.name}{YOUTUBE_API_INFOS_SUFFIX}",
+        input_path.parent.parent / f"{input_path.parent.parent.name}{LEGACY_INFO_SUFFIX}",
+        input_path.parent / f"{input_path.parent.parent.name}{LEGACY_INFO_SUFFIX}",
     ]
     for info_path in candidates:
         if not info_path.exists():

@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from analysed_infos import analysed_infos_path, update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
@@ -57,10 +57,6 @@ def load_processed_items(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = payload.get("items", [])
     return sorted(items, key=lambda item: (item.get("second", 0), item.get("image", ""), item.get("text", "")))
-
-
-def analysed_infos_path(video_path):
-    return video_path.parent / "analysed_infos.json"
 
 
 def analysed_has_subtitles(video_path):

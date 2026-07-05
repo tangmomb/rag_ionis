@@ -127,7 +127,7 @@ def tokenize_words(text):
 
 def is_ocr_name_kind(kind):
     normalized = str(kind or "").strip().lower()
-    return normalized in OCR_NAME_KINDS or normalized in {"graphic", "outro"} or normalized.startswith("graphic_")
+    return normalized in OCR_NAME_KINDS or normalized in {"graphic", "outro"}
 
 
 def load_ocr_lexicon(path, min_count=2):

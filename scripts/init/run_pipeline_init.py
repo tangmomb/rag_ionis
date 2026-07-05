@@ -222,7 +222,7 @@ def main():
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 22
+    total_steps = 23
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
@@ -319,27 +319,32 @@ def main():
         step12.append("--force")
     run_step_numbered(12, total_steps, "Step 12 - Correct Timecodes", step12, env)
 
-    step13 = step_command("09_enrich_transcripts.py", "--video-dir", video_dir)
+    step13 = step_command("08b_filter_ocr_processed.py", "--video-dir", video_dir)
     if args.force:
         step13.append("--force")
-    run_step_numbered(13, total_steps, "Step 13 - Enrich Timecodes", step13, env)
+    run_step_numbered(13, total_steps, "Step 13 - Filter OCR Processed", step13, env)
 
-    step14 = step_command("09_generate_video_summary.py", "--video-dir", video_dir)
+    step14 = step_command("09_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step14.append("--force")
-    run_step_numbered(14, total_steps, "Step 14 - Video Summary", step14, env)
+    run_step_numbered(14, total_steps, "Step 14 - Enrich Timecodes", step14, env)
 
-    step15 = step_command("10_strip_timecodes.py", "--video-dir", video_dir)
+    step15 = step_command("09_generate_video_summary.py", "--video-dir", video_dir)
     if args.force:
         step15.append("--force")
-    run_step_numbered(15, total_steps, "Step 15 - Strip Timecodes", step15, env)
+    run_step_numbered(15, total_steps, "Step 15 - Video Summary", step15, env)
 
-    step16 = step_command("11_create_chunks.py", "--video-dir", video_dir)
+    step16 = step_command("10_strip_timecodes.py", "--video-dir", video_dir)
     if args.force:
         step16.append("--force")
-    run_step_numbered(16, total_steps, "Step 16 - Create Transcript Chunks", step16, env)
+    run_step_numbered(16, total_steps, "Step 16 - Strip Timecodes", step16, env)
 
-    step17 = step_command(
+    step17 = step_command("11_create_chunks.py", "--video-dir", video_dir)
+    if args.force:
+        step17.append("--force")
+    run_step_numbered(17, total_steps, "Step 17 - Create Transcript Chunks", step17, env)
+
+    step18 = step_command(
         "12_validate_chunk_speakers.py",
         "--video-dir",
         video_dir,
@@ -347,32 +352,32 @@ def main():
         args.chunk_speaker_validation_model,
     )
     if args.force:
-        step17.append("--force")
-    run_step_numbered(17, total_steps, "Step 17 - Validate Chunk Speakers (OpenAI)", step17, env)
-
-    step18 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
-    if args.force:
         step18.append("--force")
-    run_step_numbered(18, total_steps, "Step 18 - Split Alert Chunks", step18, env)
+    run_step_numbered(18, total_steps, "Step 18 - Validate Chunk Speakers (OpenAI)", step18, env)
 
-    step19 = step_command("13_create_embeddings.py", "--video-dir", video_dir)
+    step19 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
     if args.force:
         step19.append("--force")
-    run_step_numbered(19, total_steps, "Step 19 - Create Transcript Embeddings", step19, env)
+    run_step_numbered(19, total_steps, "Step 19 - Split Alert Chunks", step19, env)
+
+    step20 = step_command("13_create_embeddings.py", "--video-dir", video_dir)
+    if args.force:
+        step20.append("--force")
+    run_step_numbered(20, total_steps, "Step 20 - Create Transcript Embeddings", step20, env)
 
     if not args.skip_upload:
-        step20 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step21 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
-            step20.append("--force")
+            step21.append("--force")
         if args.dry_run_upload:
-            step20.append("--dry-run")
-        run_step_numbered(20, total_steps, "Step 20 - Upload Videos To S3", step20, env)
+            step21.append("--dry-run")
+        run_step_numbered(21, total_steps, "Step 21 - Upload Videos To S3", step21, env)
 
     if not args.skip_sql:
-        step21 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
+        step22 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
-            step21.append("--dry-run")
-        run_step_numbered(21, total_steps, "Step 21 - Update SQL Assets", step21, env)
+            step22.append("--dry-run")
+        run_step_numbered(22, total_steps, "Step 22 - Update SQL Assets", step22, env)
 
     print("\nPipeline termine.", flush=True)
     print(f"Dossier traite: {video_dir}", flush=True)

@@ -329,23 +329,18 @@ def is_answer_image_name(image_name):
 
 
 def graphic_sequence_key(image_name):
-    parts = str(image_name or "").replace("\\", "/").split("/")
-    if len(parts) >= 3 and parts[0] == "graphic" and parts[1].startswith("graphic_"):
-        return "/".join(parts[:2])
     return None
 
 
 def graphic_kind_for_image(image_name):
     parts = str(image_name or "").replace("\\", "/").split("/")
-    if len(parts) >= 3 and parts[0] == "graphic" and parts[1].startswith("graphic_"):
-        return parts[1]
     if parts and parts[0] == "graphic":
         return "graphic"
     return None
 
 
 def is_graphic_kind(kind):
-    return kind == "graphic" or str(kind or "").startswith("graphic_")
+    return kind == "graphic"
 
 
 def last_graphic_sequence_key(images_dir):
@@ -730,8 +725,19 @@ def item_frame_index(item, order_map):
     return image_second(Path(image_name or ""))
 
 
-def collapse_answer_overlay_items(items, images_dir=None, frame_window=20):
-    order_map = image_order_map(images_dir)
+def item_time_index(item):
+    second = item.get("second")
+    if second is not None:
+        return float(second)
+    image_name = item.get("image")
+    if image_name:
+        parsed = seconds_from_image_name(Path(image_name).name)
+        if parsed is not None:
+            return float(parsed)
+    return float("inf")
+
+
+def collapse_answer_overlay_items(items, images_dir=None, time_window_seconds=10):
     grouped = {}
     passthrough = []
 
@@ -743,7 +749,7 @@ def collapse_answer_overlay_items(items, images_dir=None, frame_window=20):
         ):
             key = compact_text_key(item.get("text", ""))
             if key:
-                grouped.setdefault(key, []).append((position, item_frame_index(item, order_map), item))
+                grouped.setdefault(key, []).append((position, item_time_index(item), item))
                 continue
         passthrough.append((position, item))
 
@@ -753,17 +759,17 @@ def collapse_answer_overlay_items(items, images_dir=None, frame_window=20):
         window_start = None
         last_position = None
 
-        for position, frame_index, _ in sorted_occurrences:
+        for position, time_index, _ in sorted_occurrences:
             if window_start is None:
-                window_start = frame_index
+                window_start = time_index
                 last_position = position
                 continue
-            if frame_index - window_start <= frame_window:
+            if time_index - window_start <= time_window_seconds:
                 last_position = position
                 continue
 
             keep_positions.add(last_position)
-            window_start = frame_index
+            window_start = time_index
             last_position = position
 
         if last_position is not None:

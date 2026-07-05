@@ -20,6 +20,8 @@ BIN_DIR = Path("downloads/bin")
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
 DEFAULT_YTDLP_FORMAT_360P = "bestvideo[height<=360]+bestaudio/best[height<=360]/best"
 DEFAULT_YTDLP_MERGE_FORMAT = "mp4"
+YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 
 
 def youtube(endpoint, ignore_403=False, **params):
@@ -176,7 +178,7 @@ def video_info_payload(video):
 def write_video_info(video, info_dir):
     payload = video_info_payload(video)
     info_dir.mkdir(parents=True, exist_ok=True)
-    path = info_dir / f"{video['id']}.info.json"
+    path = info_dir / f"{video['id']}{YOUTUBE_API_INFOS_SUFFIX}"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -196,7 +198,7 @@ def download_video_360p(youtube_video_id):
     existing = sorted(
         path
         for path in DOWNLOAD_DIR.glob(f"{youtube_video_id}.*")
-        if path.is_file() and path.suffix not in {".part", ".ytdl"}
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
     )
     if existing:
         return existing[0]
@@ -218,7 +220,7 @@ def download_video_360p(youtube_video_id):
     downloaded = sorted(
         path
         for path in DOWNLOAD_DIR.glob(f"{youtube_video_id}.*")
-        if path.is_file() and path.suffix not in {".part", ".ytdl"}
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
     )
     if not downloaded:
         raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")

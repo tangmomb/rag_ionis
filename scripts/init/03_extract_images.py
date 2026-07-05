@@ -100,12 +100,14 @@ def extract_images(video_path, interval_seconds, force=False):
 
 
 def format_timecode(value):
-    total_seconds = int(round(value))
+    total_milliseconds = int(round(value * 1000))
+    total_seconds, milliseconds = divmod(total_milliseconds, 1000)
     minutes, seconds = divmod(total_seconds, 60)
     hours, minutes = divmod(minutes, 60)
+    suffix = f"_{milliseconds:03d}" if milliseconds else ""
     if hours:
-        return f"{hours:02d}_{minutes:02d}_{seconds:02d}"
-    return f"{minutes:02d}_{seconds:02d}"
+        return f"{hours:02d}_{minutes:02d}_{seconds:02d}{suffix}"
+    return f"{minutes:02d}_{seconds:02d}{suffix}"
 
 
 def rename_frames_with_timecodes(video_images_dir, interval_seconds):
@@ -133,8 +135,8 @@ def parse_args():
     parser.add_argument(
         "--interval",
         type=float,
-        default=1.0,
-        help="Intervalle en secondes entre deux images. Defaut: 1",
+        default=0.5,
+        help="Intervalle en secondes entre deux images. Defaut: 0.5",
     )
     parser.add_argument(
         "--limit",

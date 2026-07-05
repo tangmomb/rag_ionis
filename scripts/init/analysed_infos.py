@@ -4,7 +4,10 @@ from pathlib import Path
 
 
 def analysed_infos_path(video_path):
-    return Path(video_path).parent / "analysed_infos.json"
+    path = Path(video_path)
+    if path.is_dir():
+        return path / "analysed_infos.json"
+    return path.parent / "analysed_infos.json"
 
 
 def iso_now():

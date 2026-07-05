@@ -28,7 +28,7 @@ OCR_LOWER_THIRD_MIN_TOP = 320
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
 SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+")
 SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", "fr_dep_news_trf")
-SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "1").strip().lower() not in {"0", "false", "no"}
+SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "0").strip().lower() not in {"0", "false", "no"}
 SPACY_PERSON_LABELS = {"PER", "PERSON"}
 SPACY_ORG_LABELS = {"ORG"}
 
@@ -309,7 +309,7 @@ def warn_spacy_unavailable(reason):
 
 def prepare_spacy_gpu(spacy):
     if not SPACY_REQUIRE_GPU:
-        spacy.prefer_gpu()
+        spacy.require_cpu()
         return True
 
     try:

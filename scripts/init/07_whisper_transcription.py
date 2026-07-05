@@ -80,11 +80,20 @@ def subtitle_timecodes_path(transcript_dir, video_path):
     return transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes.txt"
 
 
-def processed_ocr_path(transcript_dir, video_path):
-    corrected = transcript_dir / f"{video_path.stem}_ocr_processed_corrected.json"
-    if corrected.exists():
-        return corrected
-    return transcript_dir / f"{video_path.stem}_ocr_processed.json"
+def analysed_infos_path(video_path):
+    return video_path.parent / "analysed_infos.json"
+
+
+def analysed_has_subtitles(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("has_subtitles")
+    return value if isinstance(value, bool) else None
 
 
 def extract_audio(video_path, audio_dir):
@@ -106,14 +115,6 @@ def extract_audio(video_path, audio_dir):
     ]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return audio_path
-
-
-def has_ocr_subtitles(processed_path):
-    payload = json.loads(processed_path.read_text(encoding="utf-8"))
-    return any(
-        str(item.get("kind", "")).strip().lower() == "subtitle"
-        for item in payload.get("items", [])
-    )
 
 
 def load_whisperx_model():
@@ -195,19 +196,6 @@ def transcribe_with_whisperx(whisperx, model, audio_path):
 
 def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=False):
     output_path = transcript_path(transcript_dir, video_path)
-    processed_path = processed_ocr_path(transcript_dir, video_path)
-    if processed_path.exists() and not force and has_ocr_subtitles(processed_path):
-        print(f"[skip] subtitle detecte, pas de whisper")
-        update_analysed_infos(
-            video_path,
-            "whisper_transcription",
-            {
-                "status": "skipped",
-                "reason": "ocr_subtitles_detected",
-                "source": f"transcript/{processed_path.name}",
-            },
-        )
-        return None
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")
         return output_path
@@ -265,7 +253,6 @@ def parse_args():
 def main():
     load_dotenv(override=True)
     args = parse_args()
-    whisperx, model = load_whisperx_model()
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))
@@ -277,10 +264,23 @@ def main():
         return
 
     print(f"Dossier videos: {video_dir}")
+    runnable_videos = []
+    for video_path in videos:
+        has_subtitles = analysed_has_subtitles(video_path)
+        if has_subtitles is not False:
+            print(f"[skip] {video_path.name}: analysed_infos.has_subtitles n'est pas false")
+            continue
+        runnable_videos.append(video_path)
+
+    if not runnable_videos:
+        print("Aucune video a transcrire avec WhisperX.")
+        return
+
+    whisperx, model = load_whisperx_model()
 
     done = 0
     failed = []
-    for video_path in videos:
+    for video_path in runnable_videos:
         try:
             transcript_dir = video_path.parent / "transcript"
             audio_dir = transcript_dir / "audio"

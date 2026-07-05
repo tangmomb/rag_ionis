@@ -59,6 +59,22 @@ def load_processed_items(path):
     return sorted(items, key=lambda item: (item.get("second", 0), item.get("image", ""), item.get("text", "")))
 
 
+def analysed_infos_path(video_path):
+    return video_path.parent / "analysed_infos.json"
+
+
+def analysed_has_subtitles(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("has_subtitles")
+    return value if isinstance(value, bool) else None
+
+
 def has_ocr_subtitles(items):
     return any(str(item.get("kind", "")).strip().lower() == "subtitle" for item in items)
 
@@ -184,6 +200,11 @@ def main():
     print(f"Dossier videos: {video_dir}")
     done = 0
     for video_path in videos:
+        has_subtitles = analysed_has_subtitles(video_path)
+        if has_subtitles is not True:
+            print(f"[skip] {video_path.name}: analysed_infos.has_subtitles n'est pas true")
+            continue
+
         source = processed_ocr_path(video_path)
         target = subtitle_path(video_path)
         target_timecodes = subtitle_timecodes_path(video_path)

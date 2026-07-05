@@ -159,12 +159,12 @@ def parse_args():
     parser.add_argument(
         "--skip-upload",
         action="store_true",
-        help="Ne lance pas la Step 18 d'upload S3.",
+        help="Ne lance pas la Step 20 d'upload S3.",
     )
     parser.add_argument(
         "--skip-sql",
         action="store_true",
-        help="Ne lance pas la Step 19 de mise a jour SQL.",
+        help="Ne lance pas la Step 21 de mise a jour SQL.",
     )
     parser.add_argument(
         "--force",
@@ -175,84 +175,24 @@ def parse_args():
         "--correction-mode",
         choices=("aggressive", "balanced", "conservative"),
         default="balanced",
-        help="Sensibilite de correction des noms propres pendant la Step 10. Defaut: balanced.",
+        help="Sensibilite de correction des noms propres pendant la Step 12. Defaut: balanced.",
     )
     parser.add_argument(
         "--chunk-speaker-validation-model",
         default=os.getenv("CHUNK_SPEAKER_VALIDATION_MODEL", "gpt-5.4-nano"),
         help="Modele OpenAI pour valider les speakers des chunks. Defaut: gpt-5.4-nano.",
     )
-    parser.add_argument(
-        "--image-clusters",
-        type=int,
-        default=2,
-        help="Nombre de clusters k-means pour la classification OpenCV des images. Defaut: 2.",
-    )
-    parser.add_argument(
-        "--image-blur-kernel",
-        type=int,
-        default=31,
-        help="Taille du flou applique avant classification image. Defaut: 31.",
-    )
-    parser.add_argument(
-        "--image-min-cluster-images",
-        type=int,
-        default=5,
-        help="Minimum d'images dans le petit cluster pour accepter un cluster graphic. Defaut: 5.",
-    )
-    parser.add_argument(
-        "--image-min-majority-ratio",
-        type=float,
-        default=0.70,
-        help="Part minimale du plus gros cluster pour accepter un cluster graphic. Defaut: 0.70.",
-    )
-    parser.add_argument(
-        "--image-min-silhouette",
-        type=float,
-        default=0.12,
-        help="Separation minimale des clusters image pour accepter un cluster graphic. Defaut: 0.12.",
-    )
-    parser.add_argument(
-        "--image-graphic-dominant-hue-ratio",
-        type=float,
-        default=0.70,
-        help="Seuil couleur dominante pour rattacher une image au dossier graphic. Defaut: 0.70.",
-    )
-    parser.add_argument(
-        "--image-graphic-max-edge-ratio",
-        type=float,
-        default=0.002,
-        help="Densite maximum de contours apres flou pour l'override graphic. Defaut: 0.002.",
-    )
-    parser.add_argument(
-        "--image-min-flat-region-ratio",
-        type=float,
-        default=0.08,
-        help="Part minimale d'aplat/degrade dans une image pour autoriser k-means. Defaut: 0.08.",
-    )
-    parser.add_argument(
-        "--image-min-flat-component-ratio",
-        type=float,
-        default=0.03,
-        help="Part minimale du plus grand composant plat pour autoriser k-means. Defaut: 0.03.",
-    )
-    parser.add_argument(
-        "--image-min-flat-images",
-        type=int,
-        default=2,
-        help="Nombre minimum d'images consecutives avec aplat/degrade pour autoriser k-means. Defaut: 2.",
-    )
     parser.add_argument("--intertitle-dominant-color-ratio", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--intertitle-green-ratio", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--dry-run-upload",
         action="store_true",
-        help="Simule l'upload S3 pendant la Step 18.",
+        help="Simule l'upload S3 pendant la Step 20.",
     )
     parser.add_argument(
         "--dry-run-sql",
         action="store_true",
-        help="Simule la mise a jour SQL pendant la Step 19.",
+        help="Simule la mise a jour SQL pendant la Step 21.",
     )
     return parser.parse_args()
 
@@ -282,7 +222,7 @@ def main():
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 20
+    total_steps = 22
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
@@ -323,69 +263,83 @@ def main():
         step04 += ["--limit-videos", str(video_limit)]
     if args.force:
         step04.append("--force")
-    run_step_numbered(4, total_steps, "Step 04 - Classify Images (OpenCV)", step04, env)
+    run_step_numbered(4, total_steps, "Step 04 - Classify Images (model)", step04, env)
 
-    step05 = step_command("05_numero_ocr_brut.py", "--video-dir", video_dir)
+    step05 = step_command("04b_infer_video_type.py", "--video-dir", video_dir)
     if video_limit is not None:
         step05 += ["--limit-videos", str(video_limit)]
     if args.force:
         step05.append("--force")
-    run_step_numbered(5, total_steps, "Step 05 - numero_ocr_brut", step05, env)
+    run_step_numbered(5, total_steps, "Step 05 - Infer Video Type", step05, env)
 
-    step06 = step_command("05a_images_ocr_boxes.py", "--video-dir", video_dir)
+    step06 = step_command("05_ocr_brut.py", "--video-dir", video_dir)
     if video_limit is not None:
         step06 += ["--limit-videos", str(video_limit)]
     if args.force:
         step06.append("--force")
-    run_step_numbered(6, total_steps, "Step 06 - OCR Boxes", step06, env)
+    run_step_numbered(6, total_steps, "Step 06 - ocr_brut", step06, env)
 
-    step07 = step_command("05b_images_ocr_postprocess.py", "--video-dir", video_dir)
+    step07 = step_command("05a_extract_ocr_boxes.py", "--video-dir", video_dir)
     if video_limit is not None:
         step07 += ["--limit-videos", str(video_limit)]
     if args.force:
         step07.append("--force")
-    run_step_numbered(7, total_steps, "Step 07 - Build OCR Processed", step07, env)
+    run_step_numbered(7, total_steps, "Step 07 - OCR Boxes", step07, env)
 
-    step08 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
+    step08 = step_command("05a_detect_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:
         step08 += ["--limit-videos", str(video_limit)]
     if args.force:
         step08.append("--force")
-    run_step_numbered(8, total_steps, "Step 08 - OCR Subtitles", step08, env)
+    run_step_numbered(8, total_steps, "Step 08 - Detect OCR Subtitles", step08, env)
 
-    step09 = step_command("07_whisper_transcription.py", "--video-dir", video_dir)
+    step09 = step_command("05b_images_ocr_postprocess.py", "--video-dir", video_dir)
     if video_limit is not None:
-        step09 += ["--limit", str(video_limit)]
+        step09 += ["--limit-videos", str(video_limit)]
     if args.force:
         step09.append("--force")
-    run_step_numbered(9, total_steps, "Step 09 - Whisper Transcription", step09, env)
+    run_step_numbered(9, total_steps, "Step 09 - Build OCR Processed", step09, env)
 
-    step10 = step_command("08_correct_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
+    step10 = step_command("06_ocr_subtitles.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step10 += ["--limit-videos", str(video_limit)]
     if args.force:
         step10.append("--force")
-    run_step_numbered(10, total_steps, "Step 10 - Correct Timecodes", step10, env)
+    run_step_numbered(10, total_steps, "Step 10 - OCR Subtitles", step10, env)
 
-    step11 = step_command("09_enrich_transcripts.py", "--video-dir", video_dir)
+    step11 = step_command("07_whisper_transcription.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step11 += ["--limit", str(video_limit)]
     if args.force:
         step11.append("--force")
-    run_step_numbered(11, total_steps, "Step 11 - Enrich Timecodes", step11, env)
+    run_step_numbered(11, total_steps, "Step 11 - Whisper Transcription", step11, env)
 
-    step12 = step_command("09_generate_video_summary.py", "--video-dir", video_dir)
+    step12 = step_command("08_correct_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
     if args.force:
         step12.append("--force")
-    run_step_numbered(12, total_steps, "Step 12 - Video Summary", step12, env)
+    run_step_numbered(12, total_steps, "Step 12 - Correct Timecodes", step12, env)
 
-    step13 = step_command("10_strip_timecodes.py", "--video-dir", video_dir)
+    step13 = step_command("09_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step13.append("--force")
-    run_step_numbered(13, total_steps, "Step 13 - Strip Timecodes", step13, env)
+    run_step_numbered(13, total_steps, "Step 13 - Enrich Timecodes", step13, env)
 
-    step14 = step_command("11_create_chunks.py", "--video-dir", video_dir)
+    step14 = step_command("09_generate_video_summary.py", "--video-dir", video_dir)
     if args.force:
         step14.append("--force")
-    run_step_numbered(14, total_steps, "Step 14 - Create Transcript Chunks", step14, env)
+    run_step_numbered(14, total_steps, "Step 14 - Video Summary", step14, env)
 
-    step15 = step_command(
+    step15 = step_command("10_strip_timecodes.py", "--video-dir", video_dir)
+    if args.force:
+        step15.append("--force")
+    run_step_numbered(15, total_steps, "Step 15 - Strip Timecodes", step15, env)
+
+    step16 = step_command("11_create_chunks.py", "--video-dir", video_dir)
+    if args.force:
+        step16.append("--force")
+    run_step_numbered(16, total_steps, "Step 16 - Create Transcript Chunks", step16, env)
+
+    step17 = step_command(
         "12_validate_chunk_speakers.py",
         "--video-dir",
         video_dir,
@@ -393,32 +347,32 @@ def main():
         args.chunk_speaker_validation_model,
     )
     if args.force:
-        step15.append("--force")
-    run_step_numbered(15, total_steps, "Step 15 - Validate Chunk Speakers (OpenAI)", step15, env)
-
-    step16 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
-    if args.force:
-        step16.append("--force")
-    run_step_numbered(16, total_steps, "Step 16 - Split Alert Chunks", step16, env)
-
-    step17 = step_command("13_create_embeddings.py", "--video-dir", video_dir)
-    if args.force:
         step17.append("--force")
-    run_step_numbered(17, total_steps, "Step 17 - Create Transcript Embeddings", step17, env)
+    run_step_numbered(17, total_steps, "Step 17 - Validate Chunk Speakers (OpenAI)", step17, env)
+
+    step18 = step_command("12_split_alert_chunks.py", "--video-dir", video_dir)
+    if args.force:
+        step18.append("--force")
+    run_step_numbered(18, total_steps, "Step 18 - Split Alert Chunks", step18, env)
+
+    step19 = step_command("13_create_embeddings.py", "--video-dir", video_dir)
+    if args.force:
+        step19.append("--force")
+    run_step_numbered(19, total_steps, "Step 19 - Create Transcript Embeddings", step19, env)
 
     if not args.skip_upload:
-        step18 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step20 = step_command("14_upload_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
-            step18.append("--force")
+            step20.append("--force")
         if args.dry_run_upload:
-            step18.append("--dry-run")
-        run_step_numbered(18, total_steps, "Step 18 - Upload Videos To S3", step18, env)
+            step20.append("--dry-run")
+        run_step_numbered(20, total_steps, "Step 20 - Upload Videos To S3", step20, env)
 
     if not args.skip_sql:
-        step19 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
+        step21 = step_command("15_upload_sql.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
-            step19.append("--dry-run")
-        run_step_numbered(19, total_steps, "Step 19 - Update SQL Assets", step19, env)
+            step21.append("--dry-run")
+        run_step_numbered(21, total_steps, "Step 21 - Update SQL Assets", step21, env)
 
     print("\nPipeline termine.", flush=True)
     print(f"Dossier traite: {video_dir}", flush=True)

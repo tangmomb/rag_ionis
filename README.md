@@ -178,7 +178,6 @@ Options utiles:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --skip-upload
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all --skip-data
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --force
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --image-clusters 2
 ```
 
 ## Step 02 - Download Videos
@@ -209,49 +208,66 @@ Le script cree un dossier `images/` dans chaque dossier video. Les images sont n
 
 ## Step 04 - Classify Images
 
-Classer localement les images extraites avec des features OpenCV simples et k-means:
+Classer localement les images extraites avec le modele DINO+CLIP entraine:
 
 ```powershell
 python scripts/init/04_classify_images.py
 ```
 
-Le script lit `images/`, applique un flou pour limiter l'impact du texte, calcule des features simples (`gray_std`, `color_std`, `edge_ratio`, couleur dominante, luminosite, regions plates), lance k-means en 2 clusters uniquement si une sequence d'images contient un aplat ou un degrade stable, puis reorganise directement les fichiers dans deux dossiers finaux. Si le split est net, le plus gros cluster va dans `images/answers/` et l'autre va dans `images/graphic/`. Dans `graphic/`, les images qui se suivent numeriquement sont regroupees en sous-dossiers `graphic_01/`, `graphic_02/`, etc.
+Le script lit `images/`, calcule les embeddings attendus par le modele, appelle le classifieur, puis reorganise directement les fichiers selon les trois sorties du modele: `images/footage/`, `images/graphic/` et `images/mixture/`. Il ne lance pas de k-means et ne cree pas de sous-dossiers `graphic_XX`.
 
-Pour les videos sans vrai chapitrage graphique, le script ne force pas de faux cluster: si aucune sequence d'images avec aplat/degrade n'est detectee, si la separation est trop faible, si le plus gros cluster contient moins de 70% des images, ou si le petit cluster contient moins de 5 images, toutes les images vont dans `images/no_cluster/`. Le manifeste indique alors `cluster_identifiable: false` avec les raisons dans `no_graphic_reasons` et `kmeans_run: false` quand le preflight a bloque le clustering.
-
-Il ecrit aussi `images/manifest.json` avec le role de chaque image et `images/cv_features.json` avec les mesures OpenCV. La Step 05 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
-
-Par defaut, la sortie finale est binaire: `answers` ou `graphic`.
-Quand un ecran graphique contient un portrait integre, k-means peut le rapprocher des reponses. Un override rattache alors l'image a `graphic` si le fond garde une couleur tres dominante (`--graphic-dominant-hue-ratio 0.70`) et tres peu de contours apres flou (`--graphic-max-edge-ratio 0.002`).
+Il ecrit aussi `images/manifest.json` avec le label predit de chaque image et `images/cv_features.json` avec les memes predictions pour compatibilite avec les etapes suivantes. La Step 05 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
 
 Options utiles:
 
 ```powershell
-python scripts/init/04_classify_images.py --clusters 2
-python scripts/init/04_classify_images.py --blur-kernel 31
-python scripts/init/04_classify_images.py --feature-size 64
-python scripts/init/04_classify_images.py --min-cluster-images 5
-python scripts/init/04_classify_images.py --min-majority-ratio 0.70
-python scripts/init/04_classify_images.py --min-silhouette 0.12
-python scripts/init/04_classify_images.py --graphic-dominant-hue-ratio 0.70
-python scripts/init/04_classify_images.py --graphic-max-edge-ratio 0.002
-python scripts/init/04_classify_images.py --min-flat-region-ratio 0.08
-python scripts/init/04_classify_images.py --min-flat-component-ratio 0.03
-python scripts/init/04_classify_images.py --min-flat-images 2
+python scripts/init/04_classify_images.py --model-path models/frame_filter_2026-07-02_21-30-31.joblib
+python scripts/init/04_classify_images.py --batch-size 16
+python scripts/init/04_classify_images.py --device cuda
 python scripts/init/04_classify_images.py --force
 ```
 
-## Step 05 - numero_ocr_brut
+## Step 05 - Infer Video Type
+
+Deduir le type de video depuis le manifeste de classification images:
+
+```powershell
+python scripts/init/04b_infer_video_type.py
+```
+
+Le script ecrit `video_type` dans `analysed_infos.json`.
+
+## Step 06 - ocr_brut
 
 Extraire localement l'OCR brut avec PaddleOCR sur toutes les images:
 
 ```powershell
-python scripts/init/05_numero_ocr_brut.py
+python scripts/init/05_ocr_brut.py
 ```
 
 Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_brut.json`. Il ne produit plus directement le `processed.json`.
 
-## Step 06 - Build OCR Processed
+## Step 07 - Extract OCR Boxes
+
+Extraire les emplacements OCR depuis le JSON brut, sans refaire tourner PaddleOCR:
+
+```powershell
+python scripts/init/05a_extract_ocr_boxes.py
+```
+
+Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_boxes.json`.
+
+## Step 08 - Detect OCR Subtitles
+
+Detecter si la video contient probablement des sous-titres OCR a partir des boxes:
+
+```powershell
+python scripts/init/05a_detect_ocr_subtitles.py
+```
+
+Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif se repete sur plusieurs secondes. Il ecrit `has_subtitles` dans `analysed_infos.json`.
+
+## Step 09 - Build OCR Processed
 
 Transformer l'OCR brut en OCR traite sans relancer PaddleOCR:
 
@@ -259,9 +275,9 @@ Transformer l'OCR brut en OCR traite sans relancer PaddleOCR:
 python scripts/init/05b_images_ocr_postprocess.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; le dernier dossier graphique est conserve avec `kind: "outro"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur.
+Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/` sont conservees avec `kind: "graphic"`. Pour les detections non sous-titres venant de `images/footage/` ou `images/mixture/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur.
 
-## Step 07 - OCR Subtitles
+## Step 10 - OCR Subtitles
 
 Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
 
@@ -269,11 +285,11 @@ Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec un
 python scripts/init/06_ocr_subtitles.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`. Dans le pipeline init, il s'appuie directement sur `transcript/<video_id>_ocr_processed.json`.
+Le script ne traite une video que si `analysed_infos.json` contient `has_subtitles: true`. Il lit alors `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
 
-## Step 08 - Whisper Transcription
+## Step 11 - Whisper Transcription
 
-Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement, sauf si des sous-titres OCR sont deja presents:
+Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement uniquement si `analysed_infos.json` contient `has_subtitles: false`:
 
 ```powershell
 python scripts/init/07_whisper_transcription.py
@@ -287,7 +303,7 @@ Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE
 
 Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
 
-## Step 09 - Correct Timecodes
+## Step 12 - Correct Timecodes
 
 Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
 
@@ -295,7 +311,7 @@ Corriger certains mots du transcript timecode en les comparant aux mots OCR trou
 python scripts/init/08_correct_timecodes.py
 ```
 
-Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic_XX` pour limiter les faux positifs.
+Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic` pour limiter les faux positifs.
 
 Le niveau de correction est ajustable:
 
@@ -307,7 +323,7 @@ python scripts/init/08_correct_timecodes.py --mode aggressive
 
 `conservative` corrige peu, `aggressive` accepte plus de noms proches, et `balanced` est le defaut.
 
-## Step 10 - Enrich Timecodes
+## Step 13 - Enrich Timecodes
 
 Ajouter les textes visibles a l'ecran dans les timecodes corriges:
 
@@ -317,7 +333,7 @@ python scripts/init/09_enrich_transcripts.py
 
 Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed_corrected.json` quand il existe, sinon `transcript/*_ocr_processed.json`, et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
 
-## Step 11 - Video Summary
+## Step 14 - Video Summary
 
 Produire un resume Markdown depuis le fichier enrichi, sous forme de tableau timecode/fait associe:
 
@@ -329,7 +345,7 @@ Le script lit `transcript/*_enrichi.txt` et ecrit `transcript/*_video_summary.md
 
 La step suivante `10_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
 
-## Step 12 - Strip Timecodes
+## Step 15 - Strip Timecodes
 
 Creer le transcript sans timecodes depuis la version corrigee:
 
@@ -339,7 +355,7 @@ python scripts/init/10_strip_timecodes.py
 
 Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_transcript.txt`. Les fichiers `*_ocr_subtitle_timecodes_corrected.txt` ne generent pas de transcript plain.
 
-## Step 13 - Create Transcript Chunks
+## Step 16 - Create Transcript Chunks
 
 Decouper les transcripts sans timecodes en chunks JSON, avec une limite de 1000 caracteres espaces compris et une coupe au prochain point apres depassement:
 
@@ -355,7 +371,7 @@ La detection des speakers combine les introductions du type `je m'appelle ...`, 
 python -m spacy download fr_dep_news_trf
 ```
 
-## Step 14 - Validate Chunk Speakers
+## Step 17 - Validate Chunk Speakers
 
 Valider la liste des speakers detectes dans les chunks avec OpenAI:
 
@@ -367,7 +383,7 @@ Le script lit `chunks/<video_id>_chunks.json`, recupere les valeurs `meta_data.s
 
 Les chunks conservent leur contenu; seule la liste `speakers` est filtree. Une trace `speaker_validation` est ajoutee au JSON corrige avec les noms gardes et le nombre de rejets. Le script ecrit aussi `chunks/<video_id>_chunk_speaker_validation_log.json` avec la demande envoyee a GPT et sa reponse brute.
 
-## Step 15 - Split Alert Chunks
+## Step 18 - Split Alert Chunks
 
 Redecouper les chunks trop longs marques `ALERT`:
 
@@ -377,7 +393,7 @@ python scripts/init/12_split_alert_chunks.py
 
 Le script lit `chunks/*_chunks_corrected.json` quand il existe, sinon `chunks/*_chunks.json`, et met a jour le fichier choisi en place.
 
-## Step 16 - Create Transcript Embeddings
+## Step 19 - Create Transcript Embeddings
 
 Creer les embeddings a partir des chunks:
 
@@ -389,7 +405,7 @@ Le script lit `chunks/<video_id>_chunks_corrected.json` quand il existe, sinon `
 
 - `chunks/<video_id>_chunk_<index>_embedding.json`
 
-## Step 17 - Upload Videos To S3
+## Step 20 - Upload Videos To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
@@ -423,7 +439,7 @@ python scripts/init/14_upload_s3.py --clean-init-prefix
 python scripts/init/14_upload_s3.py --force
 ```
 
-## Step 18 - Update SQL Assets
+## Step 21 - Update SQL Assets
 
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 

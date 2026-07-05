@@ -324,7 +324,8 @@ def is_graphic_image_name(image_name):
 
 
 def is_answer_image_name(image_name):
-    return str(image_name or "").replace("\\", "/").split("/", 1)[0] == "answers"
+    prefix = str(image_name or "").replace("\\", "/").split("/", 1)[0]
+    return prefix in {"answers", "footage", "mixture"}
 
 
 def graphic_sequence_key(image_name):

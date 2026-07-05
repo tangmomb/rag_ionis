@@ -4,17 +4,10 @@ from pathlib import Path
 
 from local_paddle_ocr import (
     LocalPaddleOCR,
-    collapse_answer_overlay_items,
-    collapse_graphic_sequence_items,
     configure_stdio,
-    deduplicate_items,
-    filter_decor_items,
     image_files,
     image_video_dirs,
     latest_video_dir,
-    mark_last_graphic_sequence_as_outro,
-    ocr_items_for_image,
-    refine_subtitle_kinds,
 )
 
 
@@ -25,12 +18,6 @@ DEFAULT_MIN_CONFIDENCE = 0.9
 configure_stdio()
 
 
-def write_outputs(transcript_dir, video_id, result):
-    json_path = transcript_dir / f"{video_id}_ocr_processed.json"
-    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"[write] {len(result.get('items', []))} items -> {json_path}", flush=True)
-
-
 def write_raw_outputs(transcript_dir, video_id, raw_result):
     json_path = transcript_dir / f"{video_id}_ocr_brut.json"
     json_path.write_text(json.dumps(raw_result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -39,7 +26,7 @@ def write_raw_outputs(transcript_dir, video_id, raw_result):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="OCR local des images contenant du texte avec PaddleOCR."
+        description="OCR local brut des images contenant du texte avec PaddleOCR."
     )
     parser.add_argument(
         "--video-dir",
@@ -74,7 +61,7 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenere le JSON OCR meme s'il existe deja.",
+        help="Regenere le JSON OCR brut meme s'il existe deja.",
     )
     parser.add_argument("--model", help=argparse.SUPPRESS)
     parser.add_argument("--detail", help=argparse.SUPPRESS)
@@ -103,7 +90,7 @@ def main():
         images_dir = video_path / "images"
         transcript_dir = video_path / "transcript"
         transcript_dir.mkdir(parents=True, exist_ok=True)
-        output_path = transcript_dir / f"{video_path.name}_ocr_processed.json"
+        output_path = transcript_dir / f"{video_path.name}_ocr_brut.json"
         if output_path.exists() and not args.force:
             print(f"[skip] {output_path.name} existe deja")
             continue
@@ -111,11 +98,19 @@ def main():
         images = image_files(images_dir)
         if not images:
             print(f"[skip] {video_path.name}: aucune image", flush=True)
-            write_outputs(transcript_dir, video_path.name, {"items": []})
+            write_raw_outputs(
+                transcript_dir,
+                video_path.name,
+                {
+                    "device": args.device,
+                    "lang": args.lang,
+                    "min_confidence": args.min_confidence,
+                    "items": [],
+                },
+            )
             continue
 
         print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
-        items = []
         raw_items = []
         for index, image_path in enumerate(images, start=1):
             image_name = image_path.relative_to(images_dir).as_posix()
@@ -126,19 +121,19 @@ def main():
                     "raw": raw_result,
                 }
             )
-            image_items = ocr_items_for_image(ocr, image_path, images_dir)
-            items.extend(image_items)
-            print(f"[ocr {index}/{len(images)}] {image_name}: {len(image_items)} texte(s)", flush=True)
+            print(f"[ocr {index}/{len(images)}] {image_name}: brut capture", flush=True)
 
-        write_raw_outputs(transcript_dir, video_path.name, {"items": raw_items})
-        refined_items = refine_subtitle_kinds(items, images_dir)
-        filtered_items = filter_decor_items(refined_items, images_dir)
-        graphic_collapsed_items = collapse_graphic_sequence_items(filtered_items)
-        outro_marked_items = mark_last_graphic_sequence_as_outro(graphic_collapsed_items, images_dir)
-        answer_collapsed_items = collapse_answer_overlay_items(outro_marked_items, images_dir)
-        processed_items = deduplicate_items(answer_collapsed_items, images_dir)
-        write_outputs(transcript_dir, video_path.name, {"items": processed_items})
-        print(f"[done] {video_path.name}: {len(items)} items bruts", flush=True)
+        write_raw_outputs(
+            transcript_dir,
+            video_path.name,
+            {
+                "device": args.device,
+                "lang": args.lang,
+                "min_confidence": args.min_confidence,
+                "items": raw_items,
+            },
+        )
+        print(f"[done] {video_path.name}: {len(raw_items)} images OCR brutes", flush=True)
 
 
 if __name__ == "__main__":

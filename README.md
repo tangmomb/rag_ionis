@@ -241,27 +241,25 @@ python scripts/init/04_classify_images.py --min-flat-images 2
 python scripts/init/04_classify_images.py --force
 ```
 
-## Step 05 - Image OCR
+## Step 05 - numero_ocr_brut
 
-Extraire localement les textes visibles avec PaddleOCR sur toutes les images:
-
-```powershell
-python scripts/init/05_images_ocr.py
-```
-
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; le dernier dossier graphique est conserve avec `kind: "outro"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur. Le brut est conserve en `transcript/<video_id>_ocr_brut.json`.
-
-## Step 06 - Validate OCR Subtitles
-
-Valider les items OCR `kind: "subtitle"` avec spaCy avant de les utiliser comme vrais sous-titres:
+Extraire localement l'OCR brut avec PaddleOCR sur toutes les images:
 
 ```powershell
-python scripts/init/06_validate_ocr_subtitles.py
+python scripts/init/05_numero_ocr_brut.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed.json`, extrait tous les `text` dont le `kind` vaut `subtitle`, puis les ecrit dans `transcript/<video_id>_ocr_subtitle_candidates.txt`. Il charge ensuite le modele spaCy francais `fr_dep_news_trf` et applique la regle `has_verb`: si le texte contient au moins un token `VERB` ou `AUX`, il reste `kind: "subtitle"`; sinon il est reclasse en `kind: "other"`.
+Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_brut.json`. Il ne produit plus directement le `processed.json`.
 
-Il ecrit `transcript/<video_id>_ocr_processed_corrected.json` avec la meme structure que `processed.json`: seuls certains champs `kind` changent. Les items valides restent `kind: "subtitle"`; les items rejetes deviennent `kind: "other"`. Le script ecrit aussi `transcript/<video_id>_ocr_subtitle_validation_log.json` avec l'analyse spaCy, les verbes detectes et le resultat `has_verb`.
+## Step 06 - Build OCR Processed
+
+Transformer l'OCR brut en OCR traite sans relancer PaddleOCR:
+
+```powershell
+python scripts/init/05b_images_ocr_postprocess.py
+```
+
+Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/graphic_XX/` sont conservees avec `kind: "graphic_XX"`; le dernier dossier graphique est conserve avec `kind: "outro"`; pour chaque dossier `graphic_XX`, le JSON traite ne garde que la frame qui produit le plus de texte OCR. Pour les detections non sous-titres venant de `images/answers/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur.
 
 ## Step 07 - OCR Subtitles
 
@@ -271,7 +269,7 @@ Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec un
 python scripts/init/06_ocr_subtitles.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
+Le script lit `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`. Dans le pipeline init, il s'appuie directement sur `transcript/<video_id>_ocr_processed.json`.
 
 ## Step 08 - Whisper Transcription
 

@@ -980,6 +980,100 @@ class LocalPaddleOCR:
         return self.engine.ocr(str(image_path), cls=False)
 
 
+def records_from_raw_result(raw_result, min_confidence=0.9):
+    records = []
+
+    if isinstance(raw_result, dict):
+        texts = list(raw_result.get("rec_texts") or [])
+        scores = list(raw_result.get("rec_scores") or [])
+        polys = list(raw_result.get("rec_polys") or raw_result.get("dt_polys") or [])
+        for index, text in enumerate(texts):
+            cleaned = normalize_detected_text(text)
+            score = float(scores[index]) if index < len(scores) else 0.0
+            if not cleaned or score < min_confidence:
+                continue
+            poly = polys[index] if index < len(polys) else None
+            records.append({"text": cleaned, "score": score, "poly": point_list(poly), "box": box_bounds(poly)})
+        return records
+
+    if isinstance(raw_result, list):
+        for page in raw_result:
+            if isinstance(page, dict):
+                records.extend(records_from_raw_result(page, min_confidence=min_confidence))
+                continue
+            lines = page or []
+            for line in lines:
+                if not line or len(line) < 2:
+                    continue
+                poly, value = line[0], line[1]
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                text, score = value[0], float(value[1] or 0.0)
+                cleaned = normalize_detected_text(text)
+                if not cleaned or score < min_confidence:
+                    continue
+                records.append({"text": cleaned, "score": score, "poly": point_list(poly), "box": box_bounds(poly)})
+        return records
+
+    return records
+
+
+def boxes_from_raw_result(raw_result):
+    boxes = []
+
+    if isinstance(raw_result, dict):
+        polys = list(raw_result.get("rec_polys") or raw_result.get("dt_polys") or [])
+        for poly in polys:
+            points = point_list(poly)
+            if points:
+                boxes.append(points)
+        return boxes
+
+    if isinstance(raw_result, list):
+        for page in raw_result:
+            if isinstance(page, dict):
+                boxes.extend(boxes_from_raw_result(page))
+                continue
+            lines = page or []
+            for line in lines:
+                if not line:
+                    continue
+                poly = line[0] if isinstance(line, (list, tuple)) and line else None
+                points = point_list(poly)
+                if points:
+                    boxes.append(points)
+        return boxes
+
+    return boxes
+
+
+def ocr_items_from_raw_result(raw_result, image_name, image_path=None, min_confidence=0.9):
+    size = image_size(image_path) if image_path is not None else None
+    second = seconds_from_image_name(Path(image_name).name)
+    image_kind = graphic_kind_for_image(image_name)
+    items = []
+    seen = set()
+    for record in records_from_raw_result(raw_result, min_confidence=min_confidence):
+        key = text_key(record["text"])
+        if not key or key in seen or key in IGNORED_TEXT_KEYS:
+            continue
+        seen.add(key)
+        item = {
+            "image": image_name,
+            "text": record["text"],
+            "kind": image_kind or classify_text(record["text"], record.get("box"), size),
+            "confidence": confidence_label(float(record.get("score") or 0.0)),
+            "score": round(float(record.get("score") or 0.0), 4),
+        }
+        if second is not None:
+            item["second"] = second
+            item["timecode"] = format_timecode(second)
+        if record.get("poly"):
+            item["box"] = record["poly"]
+        items.append(item)
+    return items
+
+
 def ocr_items_for_image(ocr, image_path, images_dir=None):
     size = image_size(image_path)
     second = seconds_from_image_name(image_path.name)

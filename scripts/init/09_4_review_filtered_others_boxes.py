@@ -242,6 +242,7 @@ def review_video(video_path, model, force=False, limit_images=None):
             json.dumps(
                 {
                     "crop": crop_name,
+                    "entry_id": item.get("entry_id"),
                     "timecode": item.get("timecode"),
                     "text": item.get("text"),
                     "image": item.get("image"),
@@ -258,6 +259,7 @@ def review_video(video_path, model, force=False, limit_images=None):
             {
                 "review_dir": review_name,
                 "crop": crop_name,
+                "entry_id": item.get("entry_id"),
                 "timecode": item.get("timecode"),
                 "text": item.get("text"),
                 "image": item.get("image"),

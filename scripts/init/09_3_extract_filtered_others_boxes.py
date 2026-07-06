@@ -66,7 +66,7 @@ def load_others_entries(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     details = payload.get("kinds_details", {}).get("others", {})
     entries = []
-    for timecode, item in sorted(details.items()):
+    for entry_id, item in sorted(details.items()):
         if not isinstance(item, dict):
             continue
         image_name = item.get("image")
@@ -75,7 +75,8 @@ def load_others_entries(path):
             continue
         entries.append(
             {
-                "timecode": timecode,
+                "entry_id": entry_id,
+                "timecode": item.get("timecode", entry_id),
                 "text": item.get("text", ""),
                 "image": image_name,
                 "box": box,
@@ -176,6 +177,7 @@ def extract_for_video(video_path, force=False):
 
         manifest_items.append(
             {
+                "entry_id": entry["entry_id"],
                 "timecode": entry["timecode"],
                 "text": entry["text"],
                 "image": entry["image"],

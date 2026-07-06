@@ -448,13 +448,19 @@ def group_items_by_kind(all_items, filtered_overlay_items):
             entries = filter_subtitle_entries(entries, image_orders)
         values = {}
         details = {}
+        timecode_counts = defaultdict(int)
         for entry in entries:
             timecode = format_timecode(entry["second"])
+            timecode_counts[timecode] += 1
+            entry_key = timecode
+            if timecode_counts[timecode] > 1:
+                entry_key = f"{timecode}#{timecode_counts[timecode]}"
             text = entry["text"]
-            previous = values.get(timecode)
+            previous = values.get(entry_key)
             if previous is None:
-                values[timecode] = text
-                details[timecode] = {
+                values[entry_key] = text
+                details[entry_key] = {
+                    "timecode": timecode,
                     "text": text,
                     "image": entry.get("image"),
                     "box": entry.get("box"),

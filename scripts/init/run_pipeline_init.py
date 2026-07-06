@@ -222,7 +222,7 @@ def main():
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 25
+    total_steps = 26
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
@@ -300,27 +300,32 @@ def main():
         step08.append("--force")
     run_step_numbered(8, total_steps, "Step 08 - Detect OCR Subtitles", step08, env)
 
-    step09 = step_command("09_images_ocr_postprocess.py", "--video-dir", video_dir)
+    step09 = step_command("09_1_images_ocr_postprocess.py", "--video-dir", video_dir)
     if video_limit is not None:
         step09 += ["--limit-videos", str(video_limit)]
     if args.force:
         step09.append("--force")
     run_step_numbered(9, total_steps, "Step 09 - Build OCR Processed", step09, env)
 
-    step13 = step_command("09bis_filter_ocr_processed.py", "--video-dir", video_dir)
+    step13 = step_command("09_2_filter_ocr_processed.py", "--video-dir", video_dir)
     if args.force:
         step13.append("--force")
     run_step_numbered(13, total_steps, "Step 13 - Filter OCR Processed", step13, env)
 
-    step09ter = step_command("09ter_extract_filtered_others_boxes.py", "--video-dir", video_dir)
+    step09ter = step_command("09_3_extract_filtered_others_boxes.py", "--video-dir", video_dir)
     if args.force:
         step09ter.append("--force")
     run_step("Step 09ter - Extract Filtered Others Boxes", step09ter, env)
 
-    step09quater = step_command("09quater_review_filtered_others_boxes.py", "--video-dir", video_dir)
+    step09quater = step_command("09_4_review_filtered_others_boxes.py", "--video-dir", video_dir)
     if args.force:
         step09quater.append("--force")
     run_step("Step 09quater - Review Filtered Others Boxes (OpenAI)", step09quater, env)
+
+    step09five = step_command("09_5_apply_review_filtered_others.py", "--video-dir", video_dir)
+    if args.force:
+        step09five.append("--force")
+    run_step("Step 09_5 - Apply Review To Filtered Others", step09five, env)
 
     step10 = step_command("10_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:

@@ -5,8 +5,10 @@ from pathlib import Path
 from analysed_infos import analysed_infos_path, update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
-OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
+OCR_DIR_NAME = "ocr"
+TRANSCRIPT_OCR_DIR_NAME = "transcript_ocr"
+OCR_PROCESSED_NAME = "ocr_processed.json"
+OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
 OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
 OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -38,19 +40,19 @@ def latest_video_dir(parent_dir):
 
 
 def processed_ocr_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
-    corrected = transcript_dir / f"{video_path.stem}{OCR_PROCESSED_CORRECTED_SUFFIX}"
+    ocr_dir = video_path.parent / OCR_DIR_NAME
+    corrected = ocr_dir / OCR_PROCESSED_CORRECTED_NAME
     if corrected.exists():
         return corrected
-    return transcript_dir / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
+    return ocr_dir / OCR_PROCESSED_NAME
 
 
 def subtitle_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_SUFFIX}"
+    return video_path.parent / TRANSCRIPT_OCR_DIR_NAME / f"{video_path.stem}{OCR_SUBTITLE_SUFFIX}"
 
 
 def subtitle_timecodes_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
+    return video_path.parent / TRANSCRIPT_OCR_DIR_NAME / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
 
 
 def load_processed_items(path):
@@ -228,9 +230,9 @@ def main():
             "ocr_subtitles",
             {
                 "status": "done",
-                "source": f"transcript/{source.name}",
-                "subtitle_file": f"transcript/{target.name}",
-                "subtitle_timecodes_file": f"transcript/{target_timecodes.name}",
+                "source": f"{OCR_DIR_NAME}/{source.name}",
+                "subtitle_file": f"{TRANSCRIPT_OCR_DIR_NAME}/{target.name}",
+                "subtitle_timecodes_file": f"{TRANSCRIPT_OCR_DIR_NAME}/{target_timecodes.name}",
                 "subtitle_count": len(subtitles),
             },
         )

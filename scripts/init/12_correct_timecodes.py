@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from analysed_infos import analysed_infos_path, update_analysed_infos
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -44,6 +44,18 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def analysed_has_subtitles(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("has_subtitles")
+    return value if isinstance(value, bool) else None
 
 
 def video_files(video_dir):
@@ -493,6 +505,10 @@ def main():
     print(f"Mode correction: {args.mode}")
     done = 0
     for video_path in videos:
+        has_subtitles = analysed_has_subtitles(video_path)
+        if has_subtitles is not False:
+            print(f"[skip] {video_path.name}: analysed_infos.has_subtitles n'est pas false")
+            continue
         if correct_file(video_path, force=args.force, mode=args.mode):
             done += 1
 

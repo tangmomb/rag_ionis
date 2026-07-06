@@ -1,11 +1,14 @@
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 
 
-OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
-OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
-OCR_PROCESSED_FILTERED_SUFFIX = "_ocr_processed_filtered.json"
+OCR_DIR_NAME = "ocr"
+OCR_PROCESSED_NAME = "ocr_processed.json"
+OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
+OCR_PROCESSED_FILTERED_NAME = "ocr_processed_filtered.json"
+SUBTITLE_REPEAT_IMAGE_WINDOW = 10
 MIN_OVERLAY_SCORE = 0.9
 GRAPHIC_SEQUENCE_GAP_SECONDS = 5
 ON_FOOTAGE_SEQUENCE_GAP_SECONDS = 1
@@ -14,6 +17,10 @@ OVERLAY_KINDS = {"name", "lower_third", "question_intertitle", "title"}
 
 def normalize_text(text):
     return re.sub(r"\W+", "", str(text).casefold())
+
+
+def normalize_kind(kind):
+    return str(kind or "").strip().lower()
 
 
 def parse_timecode(value):
@@ -50,6 +57,20 @@ def format_timecode(seconds):
     return f"{minutes:02d}:{seconds:02d}"
 
 
+def format_precise_timecode(seconds):
+    total_milliseconds = int(round(float(seconds or 0) * 1000))
+    total_seconds, milliseconds = divmod(total_milliseconds, 1000)
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        base = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        base = f"{minutes:02d}:{seconds:02d}"
+    if milliseconds:
+        return f"{base}.{milliseconds:03d}"
+    return base
+
+
 def confidence_score(item):
     try:
         return float(item.get("score"))
@@ -67,12 +88,12 @@ def confidence_score(item):
 
 
 def is_overlay_kind(kind):
-    normalized = str(kind or "").strip().lower()
+    normalized = normalize_kind(kind)
     return normalized in OVERLAY_KINDS or normalized in {"graphic", "outro"}
 
 
 def is_graphic_kind(kind):
-    normalized = str(kind or "").strip().lower()
+    normalized = normalize_kind(kind)
     return normalized in {"graphic", "outro"}
 
 
@@ -284,16 +305,16 @@ def collapse_on_footage_progressions(items, max_gap_seconds=ON_FOOTAGE_SEQUENCE_
 
 
 def processed_ocr_source_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
-    corrected = transcript_dir / f"{video_path.stem}{OCR_PROCESSED_CORRECTED_SUFFIX}"
+    ocr_dir = video_path.parent / OCR_DIR_NAME
+    corrected = ocr_dir / OCR_PROCESSED_CORRECTED_NAME
     if corrected.exists():
         return corrected
-    return transcript_dir / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
+    return ocr_dir / OCR_PROCESSED_NAME
 
 
 def filtered_ocr_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
-    return transcript_dir / f"{video_path.stem}{OCR_PROCESSED_FILTERED_SUFFIX}"
+    ocr_dir = video_path.parent / OCR_DIR_NAME
+    return ocr_dir / OCR_PROCESSED_FILTERED_NAME
 
 
 def load_overlay_items(path):
@@ -335,6 +356,34 @@ def load_overlay_items(path):
     return items, payload
 
 
+def load_groupable_items(path):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    items = []
+    for item in payload.get("items", []):
+        kind = normalize_kind(item.get("kind"))
+        text = " ".join(str(item.get("text", "")).split())
+        if not kind or not text:
+            continue
+        second = item.get("second")
+        if second is None:
+            timecode = str(item.get("timecode", "")).strip()
+            if timecode:
+                second = parse_timecode(timecode)
+            else:
+                second = parse_image_second(item.get("image"))
+        if second is None:
+            continue
+        items.append(
+            {
+                "kind": kind,
+                "second": float(second),
+                "text": text,
+                "image": item.get("image"),
+            }
+        )
+    return items, payload
+
+
 def filter_overlay_items(items):
     filtered_items = merge_question_parts(sorted(items, key=lambda item: item["second"]))
     filtered_items = collapse_on_footage_progressions(filtered_items)
@@ -343,7 +392,71 @@ def filter_overlay_items(items):
     return remove_exact_overlay_duplicates(merge_same_second_overlays(filtered_items))
 
 
-def build_filtered_payload(source_payload, source_name, filtered_items):
+def item_sort_key(item):
+    return (item["second"], item.get("image", ""), item["text"])
+
+
+def image_order_map(items):
+    order = {}
+    for item in sorted(items, key=item_sort_key):
+        image_name = item.get("image")
+        if image_name and image_name not in order:
+            order[image_name] = len(order)
+    return order
+
+
+def filter_subtitle_entries(entries, image_orders):
+    kept = []
+    last_seen_by_text = {}
+    for entry in sorted(entries, key=item_sort_key):
+        normalized = normalize_text(entry["text"])
+        if not normalized:
+            continue
+        image_name = entry.get("image")
+        image_index = image_orders.get(image_name)
+        last_seen = last_seen_by_text.get(normalized)
+        if (
+            last_seen is not None
+            and image_index is not None
+            and last_seen is not None
+            and image_index - last_seen <= SUBTITLE_REPEAT_IMAGE_WINDOW
+        ):
+            continue
+        kept.append(entry)
+        if image_index is not None:
+            last_seen_by_text[normalized] = image_index
+    return kept
+
+
+def group_items_by_kind(all_items, filtered_overlay_items):
+    grouped = defaultdict(list)
+    image_orders = image_order_map(all_items)
+    for item in all_items:
+        if is_overlay_kind(item.get("kind")):
+            continue
+        grouped[item["kind"]].append(item)
+    for item in filtered_overlay_items:
+        grouped[item["kind"]].append(item)
+
+    serialized = {}
+    for kind in sorted(grouped):
+        entries = sorted(grouped[kind], key=item_sort_key)
+        if kind == "subtitle":
+            entries = filter_subtitle_entries(entries, image_orders)
+        values = {}
+        for entry in entries:
+            timecode = format_timecode(entry["second"])
+            text = entry["text"]
+            previous = values.get(timecode)
+            if previous is None:
+                values[timecode] = text
+                continue
+            continue
+        serialized[kind] = values
+    return serialized
+
+
+def build_filtered_payload(source_payload, source_name, filtered_items, grouped_kinds):
     return {
         "source": source_name,
         "filtering": {
@@ -351,7 +464,7 @@ def build_filtered_payload(source_payload, source_name, filtered_items):
             "graphic_sequence_gap_seconds": GRAPHIC_SEQUENCE_GAP_SECONDS,
             "on_footage_sequence_gap_seconds": ON_FOOTAGE_SEQUENCE_GAP_SECONDS,
         },
-        "items": filtered_items,
+        "kinds": grouped_kinds,
         "source_item_count": len(source_payload.get("items", [])),
         "filtered_item_count": len(filtered_items),
     }

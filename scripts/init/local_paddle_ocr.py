@@ -10,7 +10,7 @@ from pathlib import Path
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 SECOND_PATTERN = re.compile(r"^seconde_(\d+(?:_\d+)?)$")
-TIMECODE_PATTERN = re.compile(r"^(?:(\d{2})_)?(\d{2})_(\d{2})$")
+TIMECODE_PATTERN = re.compile(r"^(?:(\d{2})_)?(\d{2})_(\d{2})(?:_(\d{3}))?$")
 IGNORED_TEXT_KEYS = {"ionis", "kionis", "<ionis", "stm"}
 DECOR_TEXT_KEYS = IGNORED_TEXT_KEYS | {"x", "in"}
 MIN_OVERLAY_RELATIVE_HEIGHT = 0.03
@@ -46,7 +46,8 @@ def seconds_from_image_name(name):
         hours = int(timecode_match.group(1) or 0)
         minutes = int(timecode_match.group(2))
         seconds = int(timecode_match.group(3))
-        return hours * 3600 + minutes * 60 + seconds
+        milliseconds = int(timecode_match.group(4) or 0)
+        return hours * 3600 + minutes * 60 + seconds + (milliseconds / 1000.0)
 
     second_match = SECOND_PATTERN.match(stem)
     if second_match:

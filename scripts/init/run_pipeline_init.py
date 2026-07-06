@@ -265,6 +265,13 @@ def main():
         step04.append("--force")
     run_step_numbered(4, total_steps, "Step 04 - Classify Images (model)", step04, env)
 
+    step04bis = step_command("04bis_detect_interviews.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step04bis += ["--limit-videos", str(video_limit)]
+    if args.force:
+        step04bis.append("--force")
+    run_step("Step 04bis - Detect Interviews", step04bis, env)
+
     step05 = step_command("05_infer_video_type.py", "--video-dir", video_dir)
     if video_limit is not None:
         step05 += ["--limit-videos", str(video_limit)]
@@ -300,6 +307,18 @@ def main():
         step09.append("--force")
     run_step_numbered(9, total_steps, "Step 09 - Build OCR Processed", step09, env)
 
+    step13 = step_command("09bis_filter_ocr_processed.py", "--video-dir", video_dir)
+    if args.force:
+        step13.append("--force")
+    run_step_numbered(13, total_steps, "Step 13 - Filter OCR Processed", step13, env)
+
+    step13bis = step_command("09ter_gpt_help_ocr.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step13bis += ["--limit-videos", str(video_limit)]
+    if args.force:
+        step13bis.append("--force")
+    run_step("Step 13bis - GPT Help OCR", step13bis, env)
+
     step10 = step_command("10_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:
         step10 += ["--limit-videos", str(video_limit)]
@@ -318,11 +337,6 @@ def main():
     if args.force:
         step12.append("--force")
     run_step_numbered(12, total_steps, "Step 12 - Correct Timecodes", step12, env)
-
-    step13 = step_command("13_filter_ocr_processed.py", "--video-dir", video_dir)
-    if args.force:
-        step13.append("--force")
-    run_step_numbered(13, total_steps, "Step 13 - Filter OCR Processed", step13, env)
 
     step14 = step_command("14_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:

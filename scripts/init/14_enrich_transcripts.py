@@ -95,7 +95,25 @@ def parse_timecoded_source(path):
 
 def load_filtered_overlays(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return sorted(payload.get("items", []), key=lambda item: item["second"])
+    kinds = payload.get("kinds", {})
+    overlays = []
+    for kind, values in kinds.items():
+        if kind == "subtitle":
+            continue
+        if not isinstance(values, dict):
+            continue
+        for timecode, text in values.items():
+            cleaned = " ".join(str(text).split())
+            if not cleaned:
+                continue
+            overlays.append(
+                {
+                    "kind": kind,
+                    "second": parse_timecode(timecode),
+                    "text": cleaned,
+                }
+            )
+    return sorted(overlays, key=lambda item: item["second"])
 
 
 def overlay_label_key(item):

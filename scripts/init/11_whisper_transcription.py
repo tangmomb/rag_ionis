@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
+TRANSCRIPT_WHISPER_DIR_NAME = "transcript_whisper"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 DEFAULT_TRANSCRIBE_MODEL = os.getenv("WHISPERX_MODEL", "large-v3")
 DEFAULT_TRANSCRIBE_LANGUAGE = os.getenv("WHISPERX_LANGUAGE", "fr")
@@ -207,7 +208,7 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
             "status": "done",
             "model": DEFAULT_TRANSCRIBE_MODEL,
             "device": DEFAULT_TRANSCRIBE_DEVICE,
-            "transcript_timecodes_file": f"transcript/{output_path.name}",
+            "transcript_timecodes_file": f"{TRANSCRIPT_WHISPER_DIR_NAME}/{output_path.name}",
             "char_count": len(text),
         },
     )
@@ -217,7 +218,7 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Transcrit localement avec whisperx les videos d'un dossier vers un sous-dossier transcript."
+        description="Transcrit localement avec whisperx les videos d'un dossier vers un sous-dossier transcript_whisper."
     )
     parser.add_argument(
         "--video-dir",
@@ -241,7 +242,7 @@ def parse_args():
     parser.add_argument(
         "--keep-audio",
         action="store_true",
-        help="Conserve les fichiers audio extraits dans transcript/audio.",
+        help="Conserve les fichiers audio extraits dans transcript_whisper/audio.",
     )
     return parser.parse_args()
 
@@ -278,7 +279,7 @@ def main():
     failed = []
     for video_path in runnable_videos:
         try:
-            transcript_dir = video_path.parent / "transcript"
+            transcript_dir = video_path.parent / TRANSCRIPT_WHISPER_DIR_NAME
             audio_dir = transcript_dir / "audio"
             transcript_dir.mkdir(parents=True, exist_ok=True)
             audio_dir.mkdir(parents=True, exist_ok=True)

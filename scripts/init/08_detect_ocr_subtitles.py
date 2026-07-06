@@ -19,14 +19,14 @@ from local_paddle_ocr import (
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-BOXES_SUFFIX = "_ocr_boxes.json"
+LOCATION_NAME = "ocr_location.json"
 
 
 configure_stdio()
 
 
-def boxes_path(transcript_dir, video_id):
-    return transcript_dir / f"{video_id}{BOXES_SUFFIX}"
+def location_path(ocr_dir):
+    return ocr_dir / LOCATION_NAME
 
 
 def load_json(path):
@@ -95,9 +95,9 @@ def has_stable_subtitle_anchor(entries):
 
 
 def detect_for_video(video_path, force=False):
-    transcript_dir = video_path / "transcript"
+    ocr_dir = video_path / "ocr"
     images_dir = video_path / "images"
-    source = boxes_path(transcript_dir, video_path.name)
+    source = location_path(ocr_dir)
     target = analysed_infos_path(video_path)
 
     if target.exists() and not force:
@@ -109,7 +109,7 @@ def detect_for_video(video_path, force=False):
             pass
 
     if not source.exists():
-        print(f"[skip] OCR boxes introuvable: {source}")
+        print(f"[skip] OCR location introuvable: {source}")
         return None
 
     payload = load_json(source)
@@ -122,7 +122,7 @@ def detect_for_video(video_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Detecte la presence probable de sous-titres OCR depuis les boxes extraites."
+        description="Detecte la presence probable de sous-titres OCR depuis ocr_location.json."
     )
     parser.add_argument(
         "--video-dir",

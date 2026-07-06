@@ -11,36 +11,49 @@ from local_paddle_ocr import (
     configure_stdio,
     deduplicate_items,
     filter_decor_items,
+    graphic_kind_for_image,
     image_video_dirs,
     image_size,
     latest_video_dir,
-    non_subtitle_kind,
     mark_last_graphic_sequence_as_outro,
     ocr_items_from_raw_result,
     refine_subtitle_kinds,
+    seconds_from_image_name,
     subtitle_text_signal,
 )
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MIN_CONFIDENCE = 0.9
-RAW_SUFFIX = "_ocr_brut.json"
-PROCESSED_SUFFIX = "_ocr_processed.json"
+RAW_GROUPS = ("footage", "graphic", "mixture")
+PROCESSED_NAME = "ocr_processed.json"
 
 
 configure_stdio()
 
 
-def raw_path(transcript_dir, video_id):
-    return transcript_dir / f"{video_id}{RAW_SUFFIX}"
+def raw_paths(ocr_dir):
+    return {
+        group_name: ocr_dir / f"ocr_{group_name}.json"
+        for group_name in RAW_GROUPS
+    }
 
 
-def processed_path(transcript_dir, video_id):
-    return transcript_dir / f"{video_id}{PROCESSED_SUFFIX}"
+def processed_path(ocr_dir):
+    return ocr_dir / PROCESSED_NAME
 
 
 def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def sort_key(item):
+    image_name = str(item.get("image", ""))
+    parsed_second = seconds_from_image_name(Path(image_name).name)
+    return (
+        parsed_second if parsed_second is not None else float("inf"),
+        image_name,
+    )
 
 
 def analysed_has_subtitles(video_path):
@@ -72,18 +85,27 @@ def strip_subtitle_kind(items, images_dir):
             geometry["relative_width"],
         )
         replacement = dict(item)
-        replacement["kind"] = non_subtitle_kind(
-            item.get("text", ""),
-            geometry,
-            word_count,
-            has_sentence_punctuation,
-        )
+        replacement["kind"] = "others"
         sanitized.append(replacement)
     return sanitized
 
 
-def write_outputs(transcript_dir, video_id, result):
-    json_path = processed_path(transcript_dir, video_id)
+def normalize_output_kinds(items):
+    normalized_items = []
+    for item in items:
+        replacement = dict(item)
+        if graphic_kind_for_image(item.get("image")) == "graphic":
+            replacement["kind"] = "graphic"
+        elif item.get("kind") == "subtitle":
+            replacement["kind"] = "subtitle"
+        else:
+            replacement["kind"] = "others"
+        normalized_items.append(replacement)
+    return normalized_items
+
+
+def write_outputs(ocr_dir, result):
+    json_path = processed_path(ocr_dir)
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[write] {len(result.get('items', []))} items -> {json_path}", flush=True)
 
@@ -134,25 +156,36 @@ def main():
     done = 0
     for video_path in videos:
         images_dir = video_path / "images"
-        transcript_dir = video_path / "transcript"
+        ocr_dir = video_path / "ocr"
         has_subtitles = analysed_has_subtitles(video_path)
-        transcript_dir.mkdir(parents=True, exist_ok=True)
-        source = raw_path(transcript_dir, video_path.name)
-        target = processed_path(transcript_dir, video_path.name)
+        ocr_dir.mkdir(parents=True, exist_ok=True)
+        sources = raw_paths(ocr_dir)
+        target = processed_path(ocr_dir)
         if target.exists() and not args.force:
             print(f"[skip] {target.name} existe deja")
             continue
-        if not source.exists():
-            print(f"[skip] OCR brut introuvable: {source}")
+        available_sources = {group_name: path for group_name, path in sources.items() if path.exists()}
+        if not available_sources:
+            print(f"[skip] OCR brut introuvable dans: {ocr_dir}")
             continue
 
-        payload = load_json(source)
         min_confidence = args.min_confidence
+        source_names = []
+        raw_items = []
+        for group_name in RAW_GROUPS:
+            source = available_sources.get(group_name)
+            if source is None:
+                continue
+            payload = load_json(source)
+            source_names.append(source.name)
+            if min_confidence is None:
+                min_confidence = float(payload.get("min_confidence", DEFAULT_MIN_CONFIDENCE))
+            raw_items.extend(payload.get("items", []))
         if min_confidence is None:
-            min_confidence = float(payload.get("min_confidence", DEFAULT_MIN_CONFIDENCE))
+            min_confidence = DEFAULT_MIN_CONFIDENCE
 
         items = []
-        raw_items = payload.get("items", [])
+        raw_items.sort(key=sort_key)
         for index, raw_item in enumerate(raw_items, start=1):
             image_name = raw_item.get("image")
             if not image_name:
@@ -175,11 +208,12 @@ def main():
         outro_marked_items = mark_last_graphic_sequence_as_outro(graphic_collapsed_items, images_dir)
         answer_collapsed_items = collapse_answer_overlay_items(outro_marked_items, images_dir)
         processed_items = deduplicate_items(answer_collapsed_items, images_dir)
+        processed_items = normalize_output_kinds(processed_items)
+        processed_items.sort(key=sort_key)
         write_outputs(
-            transcript_dir,
-            video_path.name,
+            ocr_dir,
             {
-                "source": source.name,
+                "sources": source_names,
                 "min_confidence": min_confidence,
                 "items": processed_items,
             },
@@ -189,8 +223,8 @@ def main():
             "ocr_processed",
             {
                 "status": "done",
-                "source": f"transcript/{source.name}",
-                "processed_file": f"transcript/{target.name}",
+                "sources": [f"ocr/{name}" for name in source_names],
+                "processed_file": f"ocr/{target.name}",
                 "item_count": len(processed_items),
                 "min_confidence": min_confidence,
             },

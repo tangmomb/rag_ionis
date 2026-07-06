@@ -8,6 +8,7 @@ from analysed_infos import update_analysed_infos
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 MANIFEST_NAME = "manifest.json"
+INTERVIEW_DIR_NAME = "is_interview"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -45,6 +46,10 @@ def manifest_path(video_path):
     return video_path.parent / "images" / MANIFEST_NAME
 
 
+def interview_manifest_path(video_path):
+    return video_path.parent / INTERVIEW_DIR_NAME / MANIFEST_NAME
+
+
 def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -55,7 +60,7 @@ def infer_video_type_from_manifest(payload):
         for item in payload.get("items", [])
         if str(item.get("pred_label", "")).strip()
     }
-    if labels and labels.issubset({"graphic", "mixture"}):
+    if labels and "footage" not in labels:
         return "motion_design"
     return "video_recording"
 
@@ -69,6 +74,15 @@ def infer_for_video(video_path, force=False):
     if not source.exists():
         print(f"[skip] manifest introuvable: {source}")
         return None
+
+    interview_source = interview_manifest_path(video_path)
+    if interview_source.exists():
+        interview_payload = load_json(interview_source)
+        if bool(interview_payload.get("is_interview")):
+            video_type = "interview"
+            write_analysed_infos(video_path, video_type)
+            print(f"[ok] {video_path.name}: video_type={video_type}", flush=True)
+            return True
 
     payload = load_json(source)
     video_type = infer_video_type_from_manifest(payload)

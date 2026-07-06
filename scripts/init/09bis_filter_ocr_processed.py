@@ -8,6 +8,8 @@ from ocr_processed_filtering import (
     build_filtered_payload,
     filter_overlay_items,
     filtered_ocr_path,
+    group_items_by_kind,
+    load_groupable_items,
     load_overlay_items,
     processed_ocr_source_path,
 )
@@ -60,18 +62,21 @@ def filter_processed_ocr(video_path, force=False):
         print(f"[skip] OCR processed introuvable: {source}")
         return None
 
-    items, payload = load_overlay_items(source)
-    filtered_items = filter_overlay_items(items)
-    filtered_payload = build_filtered_payload(payload, source.name, filtered_items)
+    all_items, payload = load_groupable_items(source)
+    overlay_items, _ = load_overlay_items(source)
+    filtered_items = filter_overlay_items(overlay_items)
+    grouped_kinds = group_items_by_kind(all_items, filtered_items)
+    filtered_payload = build_filtered_payload(payload, source.name, filtered_items, grouped_kinds)
     target.write_text(json.dumps(filtered_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     update_analysed_infos(
         video_path,
         "filter_ocr_processed",
         {
             "status": "done",
-            "source": f"transcript/{source.name}",
-            "filtered_file": f"transcript/{target.name}",
+            "source": f"ocr/{source.name}",
+            "filtered_file": f"ocr/{target.name}",
             "filtered_item_count": len(filtered_items),
+            "kind_count": len(grouped_kinds),
         },
     )
     print(f"[ok] {target}")

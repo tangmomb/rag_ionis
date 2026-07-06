@@ -351,6 +351,7 @@ def load_overlay_items(path):
                 "second": float(second),
                 "text": text,
                 "image": image_name,
+                "box": item.get("box"),
             }
         )
     return items, payload
@@ -379,6 +380,7 @@ def load_groupable_items(path):
                 "second": float(second),
                 "text": text,
                 "image": item.get("image"),
+                "box": item.get("box"),
             }
         )
     return items, payload
@@ -439,24 +441,32 @@ def group_items_by_kind(all_items, filtered_overlay_items):
         grouped[item["kind"]].append(item)
 
     serialized = {}
+    serialized_details = {}
     for kind in sorted(grouped):
         entries = sorted(grouped[kind], key=item_sort_key)
         if kind == "subtitle":
             entries = filter_subtitle_entries(entries, image_orders)
         values = {}
+        details = {}
         for entry in entries:
             timecode = format_timecode(entry["second"])
             text = entry["text"]
             previous = values.get(timecode)
             if previous is None:
                 values[timecode] = text
+                details[timecode] = {
+                    "text": text,
+                    "image": entry.get("image"),
+                    "box": entry.get("box"),
+                }
                 continue
             continue
         serialized[kind] = values
-    return serialized
+        serialized_details[kind] = details
+    return serialized, serialized_details
 
 
-def build_filtered_payload(source_payload, source_name, filtered_items, grouped_kinds):
+def build_filtered_payload(source_payload, source_name, filtered_items, grouped_kinds, grouped_kind_details):
     return {
         "source": source_name,
         "filtering": {
@@ -465,6 +475,7 @@ def build_filtered_payload(source_payload, source_name, filtered_items, grouped_
             "on_footage_sequence_gap_seconds": ON_FOOTAGE_SEQUENCE_GAP_SECONDS,
         },
         "kinds": grouped_kinds,
+        "kinds_details": grouped_kind_details,
         "source_item_count": len(source_payload.get("items", [])),
         "filtered_item_count": len(filtered_items),
     }

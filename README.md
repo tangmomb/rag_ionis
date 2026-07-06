@@ -255,7 +255,7 @@ Extraire les emplacements OCR depuis le JSON brut, sans refaire tourner PaddleOC
 python scripts/init/07_extract_ocr_boxes.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_boxes.json`.
+Le script lit les JSON OCR bruts dans `ocr/` et ecrit `ocr/ocr_location.json`.
 
 ## Step 08 - Detect OCR Subtitles
 
@@ -276,6 +276,26 @@ python scripts/init/09_images_ocr_postprocess.py
 ```
 
 Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/` sont conservees avec `kind: "graphic"`. Pour les detections non sous-titres venant de `images/footage/` ou `images/mixture/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur.
+
+## Step 09ter - Extract Filtered Others Boxes
+
+Exporter les images entieres des items `kind: "others"` depuis le JSON filtered, avec une box rouge autour de la zone OCR:
+
+```powershell
+python scripts/init/09ter_extract_filtered_others_boxes.py
+```
+
+Le script lit `ocr/ocr_processed_filtered.json`, recharge l'image source complete, dessine une box rouge autour de chaque zone `kinds_details.others` avec un padding de `5 px`, ecrit ces images annotees dans `ocr/ocr_processed_filtered_others_boxes/`, puis ajoute un manifeste `ocr/ocr_processed_filtered_others_boxes/manifest.json`.
+
+## Step 09quater - Review Filtered Others Boxes
+
+Demander a `gpt-5.4-nano` si le texte dans la zone rouge des images `others` ressemble a du texte ajoute au montage:
+
+```powershell
+python scripts/init/09quater_review_filtered_others_boxes.py
+```
+
+Le script lit `ocr/ocr_processed_filtered_others_boxes/manifest.json`, envoie chaque image annotee a OpenAI avec la consigne de se concentrer sur la zone encadree en rouge, puis ecrit les prompts, reponses et decisions parsees dans `ocr/ocr_processed_filtered_others_boxes_review/`, avec un resume global dans `summary.json`.
 
 ## Step 10 - OCR Subtitles
 

@@ -20,13 +20,24 @@ from local_paddle_ocr import (
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 LOCATION_NAME = "ocr_location.json"
+BOXES_DIRNAME = "ocr_boxes_images"
+LEGACY_BOXES_DIRNAME = "ocr_boxes"
 
 
 configure_stdio()
 
 
 def location_path(ocr_dir):
-    return ocr_dir / LOCATION_NAME
+    new_path = ocr_dir / BOXES_DIRNAME / LOCATION_NAME
+    legacy_boxes_path = ocr_dir / LEGACY_BOXES_DIRNAME / LOCATION_NAME
+    legacy_path = ocr_dir / LOCATION_NAME
+    if new_path.exists():
+        return new_path
+    if legacy_boxes_path.exists():
+        return legacy_boxes_path
+    if not legacy_path.exists():
+        return new_path
+    return legacy_path
 
 
 def load_json(path):

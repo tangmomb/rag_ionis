@@ -222,7 +222,7 @@ def main():
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 23
+    total_steps = 25
     run_step_numbered(0, total_steps, "Step 00 - Clear SQL Database", utils_command("99_clear_database.py"), env)
 
     if not args.skip_data:
@@ -312,12 +312,15 @@ def main():
         step13.append("--force")
     run_step_numbered(13, total_steps, "Step 13 - Filter OCR Processed", step13, env)
 
-    step13bis = step_command("09ter_gpt_help_ocr.py", "--video-dir", video_dir)
-    if video_limit is not None:
-        step13bis += ["--limit-videos", str(video_limit)]
+    step09ter = step_command("09ter_extract_filtered_others_boxes.py", "--video-dir", video_dir)
     if args.force:
-        step13bis.append("--force")
-    run_step("Step 13bis - GPT Help OCR", step13bis, env)
+        step09ter.append("--force")
+    run_step("Step 09ter - Extract Filtered Others Boxes", step09ter, env)
+
+    step09quater = step_command("09quater_review_filtered_others_boxes.py", "--video-dir", video_dir)
+    if args.force:
+        step09quater.append("--force")
+    run_step("Step 09quater - Review Filtered Others Boxes (OpenAI)", step09quater, env)
 
     step10 = step_command("10_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:

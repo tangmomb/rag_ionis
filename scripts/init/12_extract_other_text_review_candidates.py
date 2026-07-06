@@ -8,12 +8,15 @@ from PIL import Image, ImageDraw
 
 from ocr_processed_filtering import filtered_ocr_path
 from local_paddle_ocr import box_bounds, configure_stdio
+from pipeline_paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes"
-MANIFEST_NAME = "manifest.json"
+OUTPUT_DIRNAME = "other_text_review_candidates"
+LEGACY_OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes"
+MANIFEST_NAME = "review_candidates_manifest.json"
+LEGACY_MANIFEST_NAME = "manifest.json"
 BOX_PADDING_PX = 10
 BOX_OUTLINE_COLOR = (255, 0, 0)
 BOX_OUTLINE_WIDTH = 4
@@ -55,11 +58,21 @@ def latest_video_dir(parent_dir):
 
 
 def output_dir(video_path):
-    return video_path.parent / "ocr" / OUTPUT_DIRNAME
+    video_ocr_dir = existing_ocr_dir(video_path)
+    preferred = video_ocr_dir / OUTPUT_DIRNAME
+    legacy = video_ocr_dir / LEGACY_OUTPUT_DIRNAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def manifest_path(video_path):
-    return output_dir(video_path) / MANIFEST_NAME
+    directory = output_dir(video_path)
+    preferred = directory / MANIFEST_NAME
+    legacy = directory / LEGACY_MANIFEST_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_others_entries(path):
@@ -135,7 +148,7 @@ def extract_for_video(video_path, force=False):
         shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    images_dir = video_path.parent / "images"
+    images_dir = existing_images_dir(video_path)
     manifest_items = []
     written = 0
     for index, entry in enumerate(entries, start=1):
@@ -198,9 +211,9 @@ def extract_for_video(video_path, force=False):
         written += 1
 
     payload = {
-        "source": f"ocr/{source.name}",
+        "source": relative_to_video_dir(source, video_path),
         "kind": "others",
-        "output_dir": f"ocr/{OUTPUT_DIRNAME}",
+        "output_dir": relative_to_video_dir(target_dir, video_path),
         "image_count": written,
         "all_occurrence_image_count": sum(item["all_occurrence_count"] for item in manifest_items),
         "rendering": {

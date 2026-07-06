@@ -2,15 +2,20 @@ import argparse
 import json
 from pathlib import Path
 
-from analysed_infos import analysed_infos_path, update_analysed_infos
+from pipeline_analysis import analysed_infos_path, update_analysed_infos
+from pipeline_paths import existing_ocr_dir, relative_to_video_dir, transcripts_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 OCR_DIR_NAME = "ocr"
-TRANSCRIPT_OCR_DIR_NAME = "transcript_ocr"
-OCR_PROCESSED_NAME = "ocr_processed.json"
-OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
-OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
+TRANSCRIPT_OCR_DIR_NAME = "transcripts"
+OCR_PROCESSED_NAME = "processed_ocr_items.json"
+OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
+LEGACY_OCR_PROCESSED_NAME = "ocr_processed.json"
+LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
+OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
+OCR_SUBTITLE_TIMECODES_NAME = "ocr_subtitles_timecoded.txt"
+LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
+LEGACY_OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 
 
@@ -40,19 +45,36 @@ def latest_video_dir(parent_dir):
 
 
 def processed_ocr_path(video_path):
-    ocr_dir = video_path.parent / OCR_DIR_NAME
+    ocr_dir = existing_ocr_dir(video_path)
     corrected = ocr_dir / OCR_PROCESSED_CORRECTED_NAME
+    legacy_corrected = ocr_dir / LEGACY_OCR_PROCESSED_CORRECTED_NAME
     if corrected.exists():
         return corrected
-    return ocr_dir / OCR_PROCESSED_NAME
+    if legacy_corrected.exists():
+        return legacy_corrected
+    processed = ocr_dir / OCR_PROCESSED_NAME
+    legacy_processed = ocr_dir / LEGACY_OCR_PROCESSED_NAME
+    if legacy_processed.exists() and not processed.exists():
+        return legacy_processed
+    return processed
 
 
 def subtitle_path(video_path):
-    return video_path.parent / TRANSCRIPT_OCR_DIR_NAME / f"{video_path.stem}{OCR_SUBTITLE_SUFFIX}"
+    transcript_dir = transcripts_dir(video_path)
+    preferred = transcript_dir / OCR_SUBTITLE_NAME
+    legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def subtitle_timecodes_path(video_path):
-    return video_path.parent / TRANSCRIPT_OCR_DIR_NAME / f"{video_path.stem}{OCR_SUBTITLE_TIMECODES_SUFFIX}"
+    transcript_dir = transcripts_dir(video_path)
+    preferred = transcript_dir / OCR_SUBTITLE_TIMECODES_NAME
+    legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_TIMECODES_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_processed_items(path):
@@ -200,7 +222,7 @@ def main():
     for video_path in videos:
         has_subtitles = analysed_has_subtitles(video_path)
         if has_subtitles is not True:
-            print(f"[skip] {video_path.name}: analysed_infos.has_subtitles n'est pas true")
+            print(f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas true")
             continue
 
         source = processed_ocr_path(video_path)
@@ -230,9 +252,9 @@ def main():
             "ocr_subtitles",
             {
                 "status": "done",
-                "source": f"{OCR_DIR_NAME}/{source.name}",
-                "subtitle_file": f"{TRANSCRIPT_OCR_DIR_NAME}/{target.name}",
-                "subtitle_timecodes_file": f"{TRANSCRIPT_OCR_DIR_NAME}/{target_timecodes.name}",
+                "source": relative_to_video_dir(source, video_path),
+                "subtitle_file": relative_to_video_dir(target, video_path),
+                "subtitle_timecodes_file": relative_to_video_dir(target_timecodes, video_path),
                 "subtitle_count": len(subtitles),
             },
         )

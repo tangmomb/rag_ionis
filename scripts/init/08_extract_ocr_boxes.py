@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
 from local_paddle_ocr import (
     boxes_from_raw_result,
     configure_stdio,
@@ -10,25 +10,33 @@ from local_paddle_ocr import (
     latest_video_dir,
     seconds_from_image_name,
 )
+from pipeline_paths import existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 RAW_GROUPS = ("footage", "graphic", "mixture")
-LOCATION_NAME = "ocr_location.json"
+LOCATION_NAME = "ocr_box_locations.json"
+LEGACY_LOCATION_NAME = "ocr_location.json"
 
 
 configure_stdio()
 
 
 def raw_paths(ocr_dir):
-    return {
-        group_name: ocr_dir / f"ocr_{group_name}.json"
-        for group_name in RAW_GROUPS
-    }
+    paths = {}
+    for group_name in RAW_GROUPS:
+        preferred = ocr_dir / f"raw_ocr_{group_name}_frames.json"
+        legacy = ocr_dir / f"ocr_{group_name}.json"
+        paths[group_name] = legacy if legacy.exists() and not preferred.exists() else preferred
+    return paths
 
 
 def location_path(ocr_dir):
-    return ocr_dir / LOCATION_NAME
+    preferred = ocr_dir / LOCATION_NAME
+    legacy = ocr_dir / LEGACY_LOCATION_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_json(path):
@@ -77,11 +85,11 @@ def write_outputs(ocr_dir, result):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extrait les emplacements OCR depuis les JSON bruts et produit un ocr_location.json unique."
+        description="Extrait les emplacements OCR depuis les JSON bruts et produit un ocr_box_locations.json unique."
     )
     parser.add_argument(
         "--video-dir",
-        help="Dossier contenant images/. Defaut: dernier sous-dossier de downloads/youtube avec images/.",
+        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
     )
     parser.add_argument(
         "--download-dir",
@@ -115,7 +123,7 @@ def main():
     print(f"Dossier videos: {video_dir}")
     done = 0
     for video_path in videos:
-        ocr_dir = video_path / "ocr"
+        ocr_dir = existing_ocr_dir(video_path)
         ocr_dir.mkdir(parents=True, exist_ok=True)
         sources = raw_paths(ocr_dir)
         target = location_path(ocr_dir)
@@ -170,8 +178,8 @@ def main():
             "ocr_boxes",
             {
                 "status": "done",
-                "sources": [f"ocr/{name}" for name in source_names],
-                "boxes_file": f"ocr/{target.name}",
+                "sources": [relative_to_video_dir(ocr_dir / name, video_path) for name in source_names],
+                "boxes_file": relative_to_video_dir(target, video_path),
                 "image_count": total_images,
                 "box_count": total_boxes,
             },

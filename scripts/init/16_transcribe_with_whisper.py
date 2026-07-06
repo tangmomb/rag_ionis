@@ -6,9 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from analysed_infos import analysed_infos_path, update_analysed_infos
+from pipeline_analysis import analysed_infos_path, update_analysed_infos
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
+from pipeline_paths import relative_to_video_dir, transcripts_dir
 try:
     import torch
 except ImportError:  # pragma: no cover
@@ -17,7 +18,11 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
-TRANSCRIPT_WHISPER_DIR_NAME = "transcript_whisper"
+TRANSCRIPT_WHISPER_DIR_NAME = "transcripts"
+WHISPER_TRANSCRIPT_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
+LEGACY_TRANSCRIPT_TIMECODED_SUFFIX = "_transcript_timecodes.txt"
+OCR_SUBTITLES_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
+LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 DEFAULT_TRANSCRIBE_MODEL = os.getenv("WHISPERX_MODEL", "large-v3")
 DEFAULT_TRANSCRIBE_LANGUAGE = os.getenv("WHISPERX_LANGUAGE", "fr")
@@ -74,11 +79,19 @@ def video_files(video_dir):
 
 
 def transcript_path(transcript_dir, video_path):
-    return transcript_dir / f"{video_path.stem}_transcript_timecodes.txt"
+    preferred = transcript_dir / WHISPER_TRANSCRIPT_TIMECODED_NAME
+    legacy = transcript_dir / f"{video_path.stem}{LEGACY_TRANSCRIPT_TIMECODED_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def subtitle_timecodes_path(transcript_dir, video_path):
-    return transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes.txt"
+    preferred = transcript_dir / OCR_SUBTITLES_TIMECODED_NAME
+    legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def analysed_has_subtitles(video_path):
@@ -208,7 +221,7 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
             "status": "done",
             "model": DEFAULT_TRANSCRIBE_MODEL,
             "device": DEFAULT_TRANSCRIBE_DEVICE,
-            "transcript_timecodes_file": f"{TRANSCRIPT_WHISPER_DIR_NAME}/{output_path.name}",
+            "transcript_timecodes_file": relative_to_video_dir(output_path, video_path),
             "char_count": len(text),
         },
     )
@@ -218,7 +231,7 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Transcrit localement avec whisperx les videos d'un dossier vers un sous-dossier transcript_whisper."
+        description="Transcrit localement avec whisperx les videos d'un dossier vers outputs/transcripts."
     )
     parser.add_argument(
         "--video-dir",
@@ -242,7 +255,7 @@ def parse_args():
     parser.add_argument(
         "--keep-audio",
         action="store_true",
-        help="Conserve les fichiers audio extraits dans transcript_whisper/audio.",
+        help="Conserve les fichiers audio extraits dans outputs/transcripts/audio.",
     )
     return parser.parse_args()
 
@@ -265,7 +278,7 @@ def main():
     for video_path in videos:
         has_subtitles = analysed_has_subtitles(video_path)
         if has_subtitles is not False:
-            print(f"[skip] {video_path.name}: analysed_infos.has_subtitles n'est pas false")
+            print(f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas false")
             continue
         runnable_videos.append(video_path)
 
@@ -279,7 +292,7 @@ def main():
     failed = []
     for video_path in runnable_videos:
         try:
-            transcript_dir = video_path.parent / TRANSCRIPT_WHISPER_DIR_NAME
+            transcript_dir = transcripts_dir(video_path)
             audio_dir = transcript_dir / "audio"
             transcript_dir.mkdir(parents=True, exist_ok=True)
             audio_dir.mkdir(parents=True, exist_ok=True)

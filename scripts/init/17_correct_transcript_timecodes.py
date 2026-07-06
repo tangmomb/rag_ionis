@@ -7,15 +7,18 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from analysed_infos import analysed_infos_path, update_analysed_infos
+from pipeline_analysis import analysed_infos_path, update_analysed_infos
+from pipeline_paths import existing_ocr_dir, existing_transcripts_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-TIMECODED_SUFFIXES = ("_transcript_timecodes.txt", "_ocr_subtitle_timecodes.txt")
+TIMECODED_SOURCE_NAMES = ("whisper_transcript_timecoded.txt", "ocr_subtitles_timecoded.txt")
+LEGACY_TIMECODED_SUFFIXES = ("_transcript_timecodes.txt", "_ocr_subtitle_timecodes.txt")
 CORRECTED_SUFFIX = "_corrected.txt"
-CORRECTED_WORDS_SUFFIX = "_corrected_words.txt"
+CORRECTIONS_SUFFIX = "_corrections.tsv"
+LEGACY_CORRECTED_WORDS_SUFFIX = "_corrected_words.txt"
 WORD_PATTERN = re.compile(r"\w+|\W+", re.UNICODE)
-TOKEN_PATTERN = re.compile(r"\b[\w'’\-]+\b", re.UNICODE)
+TOKEN_PATTERN = re.compile(r"\b[\w'â€™\-]+\b", re.UNICODE)
 TIMECODE_PREFIX = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})(?:-((?:\d{2}:)?\d{2}:\d{2}))?\]\s*")
 COMMON_WORDS = {
     "je", "tu", "il", "elle", "on", "nous", "vous", "ils", "elles",
@@ -84,25 +87,49 @@ def latest_video_dir(parent_dir):
 
 
 def processed_ocr_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
-    corrected = transcript_dir / f"{video_path.stem}_ocr_processed_corrected.json"
-    if corrected.exists():
-        return corrected
-    return transcript_dir / f"{video_path.stem}_ocr_processed.json"
+    video_ocr_dir = existing_ocr_dir(video_path)
+    corrected_candidates = (
+        video_ocr_dir / "corrected_ocr_items.json",
+        video_ocr_dir / "ocr_processed_corrected.json",
+        video_ocr_dir / f"{video_path.stem}_ocr_processed_corrected.json",
+    )
+    for candidate in corrected_candidates:
+        if candidate.exists():
+            return candidate
+    legacy_transcript_dir = video_path.parent / "transcript"
+    legacy_corrected = legacy_transcript_dir / f"{video_path.stem}_ocr_processed_corrected.json"
+    if legacy_corrected.exists():
+        return legacy_corrected
+    processed_candidates = (
+        video_ocr_dir / "processed_ocr_items.json",
+        video_ocr_dir / "ocr_processed.json",
+        video_ocr_dir / f"{video_path.stem}_ocr_processed.json",
+    )
+    for candidate in processed_candidates:
+        if candidate.exists():
+            return candidate
+    return processed_candidates[0]
 
 
 def timecodes_source_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
+    transcript_dir = existing_transcripts_dir(video_path)
     candidates = []
-    for suffix in TIMECODED_SUFFIXES:
+    for name in TIMECODED_SOURCE_NAMES:
+        path = transcript_dir / name
+        if path.exists():
+            candidates.append(path)
+    for suffix in LEGACY_TIMECODED_SUFFIXES:
         candidates.extend(sorted(transcript_dir.glob(f"{video_path.stem}{suffix}")))
     if candidates:
         return candidates[0]
 
     generic_candidates = sorted(
         path
-        for path in transcript_dir.glob(f"{video_path.stem}*timecodes*.txt")
-        if not path.name.endswith(CORRECTED_SUFFIX) and not path.name.endswith(CORRECTED_WORDS_SUFFIX)
+        for pattern in ("*timecoded.txt", f"{video_path.stem}*timecodes*.txt")
+        for path in transcript_dir.glob(pattern)
+        if not path.name.endswith(CORRECTED_SUFFIX)
+        and not path.name.endswith(CORRECTIONS_SUFFIX)
+        and not path.name.endswith(LEGACY_CORRECTED_WORDS_SUFFIX)
     )
     if generic_candidates:
         return generic_candidates[0]
@@ -111,17 +138,21 @@ def timecodes_source_path(video_path):
 
 
 def corrected_path(source_path):
-    for suffix in TIMECODED_SUFFIXES:
+    if source_path.name in TIMECODED_SOURCE_NAMES:
+        return source_path.with_name(source_path.name[: -len(".txt")] + CORRECTED_SUFFIX)
+    for suffix in LEGACY_TIMECODED_SUFFIXES:
         if source_path.name.endswith(suffix):
             return source_path.with_name(source_path.name[: -len(".txt")] + CORRECTED_SUFFIX)
     return source_path.with_name(f"{source_path.stem}{CORRECTED_SUFFIX}")
 
 
 def corrected_words_path(source_path):
-    for suffix in TIMECODED_SUFFIXES:
+    if source_path.name in TIMECODED_SOURCE_NAMES:
+        return source_path.with_name(source_path.name[: -len(".txt")] + CORRECTIONS_SUFFIX)
+    for suffix in LEGACY_TIMECODED_SUFFIXES:
         if source_path.name.endswith(suffix):
-            return source_path.with_name(source_path.name[: -len(".txt")] + CORRECTED_WORDS_SUFFIX)
-    return source_path.with_name(f"{source_path.stem}{CORRECTED_WORDS_SUFFIX}")
+            return source_path.with_name(source_path.name[: -len(".txt")] + LEGACY_CORRECTED_WORDS_SUFFIX)
+    return source_path.with_name(f"{source_path.stem}{CORRECTIONS_SUFFIX}")
 
 
 def strip_accents(text):
@@ -453,10 +484,10 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
         "correct_timecodes",
         {
             "status": "done",
-            "source": f"transcript/{source.name}",
-            "analysis_source": f"transcript/{analyse.name}",
-            "corrected_file": f"transcript/{target.name}",
-            "corrected_words_file": f"transcript/{words_target.name}",
+            "source": relative_to_video_dir(source, video_path),
+            "analysis_source": relative_to_video_dir(analyse, video_path),
+            "corrected_file": relative_to_video_dir(target, video_path),
+            "corrected_words_file": relative_to_video_dir(words_target, video_path),
             "correction_count": len(correction_lines),
             "mode": mode,
         },
@@ -468,7 +499,7 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Corrige les timecodes en utilisant les noms propres trouves dans les OCR processed.json."
+        description="Corrige les timecodes en utilisant les noms propres trouves dans processed_ocr_items.json."
     )
     parser.add_argument(
         "--video-dir",
@@ -507,7 +538,7 @@ def main():
     for video_path in videos:
         has_subtitles = analysed_has_subtitles(video_path)
         if has_subtitles is not False:
-            print(f"[skip] {video_path.name}: analysed_infos.has_subtitles n'est pas false")
+            print(f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas false")
             continue
         if correct_file(video_path, force=args.force, mode=args.mode):
             done += 1

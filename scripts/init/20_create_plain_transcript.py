@@ -3,12 +3,15 @@ import re
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
+from pipeline_paths import existing_transcripts_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CORRECTED_TIMECODED_SUFFIX = "_transcript_timecodes_corrected.txt"
-PLAIN_SUFFIX = "_transcript.txt"
+CORRECTED_TIMECODED_NAMES = ("whisper_transcript_timecoded_corrected.txt",)
+LEGACY_CORRECTED_TIMECODED_SUFFIX = "_transcript_timecodes_corrected.txt"
+PLAIN_NAME = "plain_transcript.txt"
+LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 TIMECODE_PREFIX = re.compile(
     r"^\[(?:\d{2}:)?\d{2}:\d{2}-(?:\d{2}:)?\d{2}:\d{2}\]\s*(?:[A-Z][A-Z0-9_-]*:\s*)?"
 )
@@ -58,16 +61,19 @@ def strip_timecodes(text):
 
 
 def output_path(input_path):
+    if input_path.name in CORRECTED_TIMECODED_NAMES:
+        return input_path.with_name(PLAIN_NAME)
     name = input_path.name
-    if name.endswith(CORRECTED_TIMECODED_SUFFIX):
-        name = name[: -len(CORRECTED_TIMECODED_SUFFIX)] + PLAIN_SUFFIX
+    if name.endswith(LEGACY_CORRECTED_TIMECODED_SUFFIX):
+        name = name[: -len(LEGACY_CORRECTED_TIMECODED_SUFFIX)] + LEGACY_PLAIN_SUFFIX
     else:
-        name = input_path.stem + PLAIN_SUFFIX
+        name = input_path.stem + LEGACY_PLAIN_SUFFIX
     return input_path.with_name(name)
 
 
 def timecoded_inputs(transcript_dir):
-    return sorted(transcript_dir.glob(f"*{CORRECTED_TIMECODED_SUFFIX}"))
+    inputs = [transcript_dir / name for name in CORRECTED_TIMECODED_NAMES if (transcript_dir / name).exists()]
+    return inputs or sorted(transcript_dir.glob(f"*{LEGACY_CORRECTED_TIMECODED_SUFFIX}"))
 
 
 def convert_file(video_path, input_path, force=False):
@@ -84,8 +90,8 @@ def convert_file(video_path, input_path, force=False):
         "strip_timecodes",
         {
             "status": "done",
-            "source": f"transcript/{input_path.name}",
-            "plain_transcript_file": f"transcript/{target.name}",
+            "source": relative_to_video_dir(input_path, video_path),
+            "plain_transcript_file": relative_to_video_dir(target, video_path),
             "char_count": len(cleaned),
         },
     )
@@ -95,7 +101,7 @@ def convert_file(video_path, input_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Cree des transcriptions sans timecodes depuis les fichiers *_transcript_timecodes_corrected.txt."
+        description="Cree des transcriptions sans timecodes depuis les fichiers timecoded corrected."
     )
     parser.add_argument(
         "--video-dir",
@@ -121,12 +127,12 @@ def main():
     done = 0
     videos = list(video_files(video_dir))
     for video_path in videos:
-        for input_path in timecoded_inputs(video_path.parent / "transcript"):
+        for input_path in timecoded_inputs(existing_transcripts_dir(video_path)):
             convert_file(video_path, input_path, force=args.force)
             done += 1
 
     if not done:
-        print(f"Aucun fichier *{CORRECTED_TIMECODED_SUFFIX} trouve dans {video_dir}")
+        print(f"Aucun fichier timecoded corrected trouve dans {video_dir}")
         return
 
     print(f"{done} fichiers traites.")

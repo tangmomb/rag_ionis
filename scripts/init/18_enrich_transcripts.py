@@ -4,14 +4,16 @@ import re
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
 from ocr_processed_filtering import filtered_ocr_path, format_timecode
+from pipeline_paths import existing_transcripts_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CORRECTED_SUFFIX = "_corrected.txt"
-ENRICHED_SUFFIX = "_enrichi.txt"
+ENRICHED_SUFFIX = "_enriched.txt"
+LEGACY_ENRICHED_SUFFIX = "_enrichi.txt"
 TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 SUBTITLE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
@@ -58,8 +60,10 @@ def latest_video_dir(parent_dir):
 
 
 def timecodes_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
+    transcript_dir = existing_transcripts_dir(video_path)
     candidates = (
+        transcript_dir / "whisper_transcript_timecoded_corrected.txt",
+        transcript_dir / "ocr_subtitles_timecoded_corrected.txt",
         transcript_dir / f"{video_path.stem}_transcript_timecodes_corrected.txt",
         transcript_dir / f"{video_path.stem}_ocr_subtitle_timecodes_corrected.txt",
     )
@@ -179,9 +183,9 @@ def enrich_transcript(video_path, force=False):
         "enrich_transcripts",
         {
             "status": "done",
-            "source": f"transcript/{source.name}",
-            "analysis_source": f"transcript/{analyse.name}",
-            "enriched_file": f"transcript/{target.name}",
+            "source": relative_to_video_dir(source, video_path),
+            "analysis_source": relative_to_video_dir(analyse, video_path),
+            "enriched_file": relative_to_video_dir(target, video_path),
             "overlay_count": len(overlays),
         },
     )

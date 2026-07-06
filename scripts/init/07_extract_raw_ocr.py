@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
 from local_paddle_ocr import (
     LocalPaddleOCR,
     configure_stdio,
@@ -10,6 +10,7 @@ from local_paddle_ocr import (
     image_video_dirs,
     latest_video_dir,
 )
+from pipeline_paths import existing_images_dir, ocr_dir as output_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -20,8 +21,20 @@ IMAGE_GROUPS = ("footage", "graphic", "mixture")
 configure_stdio()
 
 
+def raw_ocr_name(group_name):
+    return f"raw_ocr_{group_name}_frames.json"
+
+
+def existing_raw_ocr_path(ocr_dir, group_name):
+    preferred = ocr_dir / raw_ocr_name(group_name)
+    legacy = ocr_dir / f"ocr_{group_name}.json"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
+
+
 def write_group_raw_outputs(ocr_dir, group_name, raw_result):
-    json_path = ocr_dir / f"ocr_{group_name}.json"
+    json_path = ocr_dir / raw_ocr_name(group_name)
     json_path.write_text(json.dumps(raw_result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[write] raw {group_name} -> {json_path}", flush=True)
     return json_path
@@ -42,7 +55,7 @@ def parse_args():
     )
     parser.add_argument(
         "--video-dir",
-        help="Dossier contenant images/. Defaut: dernier sous-dossier de downloads/youtube avec images/.",
+        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
     )
     parser.add_argument(
         "--download-dir",
@@ -99,11 +112,11 @@ def main():
     ocr = LocalPaddleOCR(device=args.device, lang=args.lang, min_confidence=args.min_confidence)
 
     for video_path in videos:
-        images_dir = video_path / "images"
-        ocr_dir = video_path / "ocr"
+        images_dir = existing_images_dir(video_path)
+        ocr_dir = output_ocr_dir(video_path)
         ocr_dir.mkdir(parents=True, exist_ok=True)
         group_output_paths = {
-            group_name: ocr_dir / f"ocr_{group_name}.json"
+            group_name: existing_raw_ocr_path(ocr_dir, group_name)
             for group_name in IMAGE_GROUPS
         }
         if all(path.exists() for path in group_output_paths.values()) and not args.force:
@@ -139,10 +152,10 @@ def main():
                 group_name,
                 base_payload(args, raw_items_by_group[group_name]),
             )
-            raw_files[group_name] = f"ocr/{group_path.name}"
+            raw_files[group_name] = relative_to_video_dir(group_path, video_path)
         update_analysed_infos(
             video_path,
-            "ocr_brut",
+            "extract_raw_ocr",
             {
                 "status": "done",
                 "raw_files": raw_files,

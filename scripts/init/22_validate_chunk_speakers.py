@@ -8,12 +8,16 @@ from copy import deepcopy
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pipeline_paths import chunks_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CHUNKS_SUFFIX = "_chunks.json"
-CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
+CHUNKS_NAME = "transcript_chunks.json"
+CHUNKS_SPEAKER_VALIDATED_NAME = "transcript_chunks_speaker_validated.json"
+SPEAKER_VALIDATION_LOG_NAME = "speaker_validation_log.json"
+LEGACY_CHUNKS_SUFFIX = "_chunks.json"
+LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 DEFAULT_MODEL = "gpt-5.4-nano"
 SYSTEM_PROMPT = (
     "Tu verifies une liste de speakers detectes automatiquement dans une video. "
@@ -55,15 +59,25 @@ def latest_video_dir(parent_dir):
 
 
 def chunks_path(video_path):
-    return video_path.parent / "chunks" / f"{video_path.stem}{CHUNKS_SUFFIX}"
+    video_chunks_dir = chunks_dir(video_path)
+    preferred = video_chunks_dir / CHUNKS_NAME
+    legacy = video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def corrected_chunks_path(video_path):
-    return video_path.parent / "chunks" / f"{video_path.stem}{CHUNKS_CORRECTED_SUFFIX}"
+    video_chunks_dir = chunks_dir(video_path)
+    preferred = video_chunks_dir / CHUNKS_SPEAKER_VALIDATED_NAME
+    legacy = video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_CORRECTED_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def validation_log_path(video_path):
-    return video_path.parent / "chunks" / f"{video_path.stem}_chunk_speaker_validation_log.json"
+    return chunks_dir(video_path) / SPEAKER_VALIDATION_LOG_NAME
 
 
 def load_json(path):

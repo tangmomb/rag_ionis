@@ -7,11 +7,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from pipeline_paths import chunks_dir, existing_chunks_dir, relative_to_video_dir
+
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CHUNKS_SUFFIX = "_chunks.json"
-CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
+CHUNKS_NAME = "transcript_chunks.json"
+CHUNKS_SPEAKER_VALIDATED_NAME = "transcript_chunks_speaker_validated.json"
+LEGACY_CHUNKS_SUFFIX = "_chunks.json"
+LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 EMBEDDING_SUFFIX = "_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
@@ -47,18 +51,24 @@ def latest_video_dir(parent_dir):
 
 
 def chunks_path(video_path):
-    chunks_dir = video_path.parent / "chunks"
-    corrected = chunks_dir / f"{video_path.stem}{CHUNKS_CORRECTED_SUFFIX}"
-    if corrected.exists():
-        return corrected
-    return chunks_dir / f"{video_path.stem}{CHUNKS_SUFFIX}"
+    video_chunks_dir = existing_chunks_dir(video_path)
+    candidates = (
+        video_chunks_dir / CHUNKS_SPEAKER_VALIDATED_NAME,
+        video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_CORRECTED_SUFFIX}",
+        video_chunks_dir / CHUNKS_NAME,
+        video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_SUFFIX}",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return video_chunks_dir / CHUNKS_NAME
 
 
 def embedding_path(video_path, chunk_index):
     chunk_label = str(chunk_index).replace(".", "_")
     if chunk_label.isdigit():
         chunk_label = f"{int(chunk_label):02d}"
-    return video_path.parent / "chunks" / f"{video_path.stem}_chunk_{chunk_label}{EMBEDDING_SUFFIX}"
+    return chunks_dir(video_path) / f"chunk_{chunk_label}{EMBEDDING_SUFFIX}"
 
 
 def load_chunks(path):
@@ -77,7 +87,7 @@ def create_embeddings(client, model, video_path, force=False):
         print(f"[skip] aucun chunk dans: {source}")
         return None
 
-    target_dir = video_path.parent / "chunks"
+    target_dir = chunks_dir(video_path)
     target_dir.mkdir(parents=True, exist_ok=True)
     written = 0
     for chunk in chunks:
@@ -93,7 +103,7 @@ def create_embeddings(client, model, video_path, force=False):
         embedding = response.data[0].embedding
         payload = {
             "model": model,
-            "source": str(source.relative_to(video_path.parent)),
+            "source": relative_to_video_dir(source, video_path),
             "chunk_count": len(chunks),
             "chunk_index": chunk_index,
             "char_count": chunk.get("char_count"),

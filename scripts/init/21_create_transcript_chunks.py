@@ -11,29 +11,41 @@ from urllib.parse import urlencode
 
 import requests
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
+from pipeline_paths import (
+    chunks_dir,
+    existing_ocr_dir,
+    existing_transcripts_dir,
+    existing_youtube_api_infos_path,
+    relative_to_video_dir,
+)
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-PLAIN_SUFFIX = "_transcript.txt"
-OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
-OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
-CHUNKS_SUFFIX = "_chunks.json"
+PLAIN_NAME = "plain_transcript.txt"
+LEGACY_PLAIN_SUFFIX = "_transcript.txt"
+OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
+LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
+OCR_PROCESSED_NAME = "processed_ocr_items.json"
+OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
+LEGACY_OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
+LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
+CHUNKS_NAME = "transcript_chunks.json"
+LEGACY_CHUNKS_SUFFIX = "_chunks.json"
 DEFAULT_MAX_CHARS = 1000
 ALERT_WORD_THRESHOLD = 3000
 API = "https://www.googleapis.com/youtube/v3"
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
 OCR_LOWER_THIRD_MIN_TOP = 320
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
-SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+")
+SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÃ€-Ã–Ã˜-Ã¶Ã¸-Ã¿'â€™-]+")
 SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", "fr_dep_news_trf")
 SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "0").strip().lower() not in {"0", "false", "no"}
 SPACY_PERSON_LABELS = {"PER", "PERSON"}
 SPACY_ORG_LABELS = {"ORG"}
 
-LOWERCASE_CONNECTORS = {"d", "d'", "d’", "de", "du", "des", "la", "le"}
-SPEAKER_NAME_STOP_WORDS = {"je", "j'ai", "j’ai", "j", "moi"}
+LOWERCASE_CONNECTORS = {"d", "d'", "dâ€™", "de", "du", "des", "la", "le"}
+SPEAKER_NAME_STOP_WORDS = {"je", "j'ai", "jâ€™ai", "j", "moi"}
 NON_PERSON_NAME_KEYWORDS = {
     "analyst",
     "bi",
@@ -99,23 +111,53 @@ def latest_video_dir(parent_dir):
 
 
 def transcript_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{PLAIN_SUFFIX}"
+    transcript_dir = existing_transcripts_dir(video_path)
+    preferred = transcript_dir / PLAIN_NAME
+    legacy = transcript_dir / f"{video_path.stem}{LEGACY_PLAIN_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def ocr_subtitle_path(video_path):
-    return video_path.parent / "transcript" / f"{video_path.stem}{OCR_SUBTITLE_SUFFIX}"
+    transcript_dir = existing_transcripts_dir(video_path)
+    preferred = transcript_dir / OCR_SUBTITLE_NAME
+    legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def ocr_processed_path(video_path):
-    transcript_dir = video_path.parent / "transcript"
-    corrected = transcript_dir / f"{video_path.stem}{OCR_PROCESSED_CORRECTED_SUFFIX}"
+    video_ocr_dir = existing_ocr_dir(video_path)
+    corrected = video_ocr_dir / OCR_PROCESSED_CORRECTED_NAME
+    legacy_corrected = video_ocr_dir / f"{video_path.stem}{LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX}"
+    generic_legacy_corrected = video_ocr_dir / "ocr_processed_corrected.json"
     if corrected.exists():
         return corrected
-    return transcript_dir / f"{video_path.stem}{OCR_PROCESSED_SUFFIX}"
+    if legacy_corrected.exists():
+        return legacy_corrected
+    if generic_legacy_corrected.exists():
+        return generic_legacy_corrected
+    processed = video_ocr_dir / OCR_PROCESSED_NAME
+    generic_legacy_processed = video_ocr_dir / "ocr_processed.json"
+    legacy_processed = video_ocr_dir / f"{video_path.stem}{LEGACY_OCR_PROCESSED_SUFFIX}"
+    if processed.exists():
+        return processed
+    if generic_legacy_processed.exists():
+        return generic_legacy_processed
+    if legacy_processed.exists():
+        return legacy_processed
+    return processed
 
 
 def chunks_path(video_path):
-    return video_path.parent / "chunks" / f"{video_path.stem}{CHUNKS_SUFFIX}"
+    video_chunks_dir = chunks_dir(video_path)
+    preferred = video_chunks_dir / CHUNKS_NAME
+    legacy = video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_SUFFIX}"
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def source_text_path(video_path):
@@ -142,6 +184,7 @@ def youtube(endpoint, **params):
 
 def video_info_path(video_path):
     candidates = [
+        existing_youtube_api_infos_path(video_path),
         video_path.with_name(f"{video_path.stem}{YOUTUBE_API_INFOS_SUFFIX}"),
         video_path.with_name(f"{video_path.stem}{LEGACY_INFO_SUFFIX}"),
     ]
@@ -193,11 +236,11 @@ def speaker_words(name):
 
 
 def normalize_speaker_name(words):
-    return " ".join(words).strip(" ,.;:!?-–—")
+    return " ".join(words).strip(" ,.;:!?-â€“â€”")
 
 
 def normalize_speaker_text(text):
-    return re.sub(r"\s+", " ", str(text)).strip(" ,.;:!?-–—")
+    return re.sub(r"\s+", " ", str(text)).strip(" ,.;:!?-â€“â€”")
 
 
 def titlecase_all_caps_name(name):
@@ -384,7 +427,7 @@ def extract_proper_noun_speakers(doc):
             current.append(token.text)
             continue
 
-        if token.text in {"-", "–", "—"} and current:
+        if token.text in {"-", "â€“", "â€”"} and current:
             current.append(token.text)
             continue
 
@@ -724,7 +767,7 @@ def create_chunks(video_path, force=False):
         ),
     }
     payload = build_chunks_payload(normalized, meta_data)
-    payload["source"] = str(source.relative_to(video_path.parent))
+    payload["source"] = relative_to_video_dir(source, video_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     update_analysed_infos(
@@ -732,8 +775,8 @@ def create_chunks(video_path, force=False):
         "create_chunks",
         {
             "status": "done",
-            "source": str(source.relative_to(video_path.parent)).replace("\\", "/"),
-            "chunks_file": str(target.relative_to(video_path.parent)).replace("\\", "/"),
+            "source": relative_to_video_dir(source, video_path),
+            "chunks_file": relative_to_video_dir(target, video_path),
             "chunk_count": len(payload["chunks"]),
             "speakers": meta_data.get("speakers", []),
         },

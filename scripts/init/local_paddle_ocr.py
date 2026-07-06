@@ -7,6 +7,8 @@ import types
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from pipeline_paths import existing_images_dir
+
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 SECOND_PATTERN = re.compile(r"^seconde_(\d+(?:_\d+)?)$")
@@ -77,11 +79,13 @@ def image_files(video_images_dir):
 def image_video_dirs(video_dir):
     candidates = []
 
-    if (video_dir / "images").is_dir() and any(image_files(video_dir / "images")):
+    direct_images_dir = existing_images_dir(video_dir)
+    if direct_images_dir.is_dir() and any(image_files(direct_images_dir)):
         candidates.append(video_dir)
 
     for child in sorted(video_dir.iterdir()):
-        if child.is_dir() and (child / "images").is_dir() and any(image_files(child / "images")):
+        child_images_dir = existing_images_dir(child)
+        if child.is_dir() and child_images_dir.is_dir() and any(image_files(child_images_dir)):
             candidates.append(child)
 
     return candidates

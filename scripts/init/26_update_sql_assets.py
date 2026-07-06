@@ -5,20 +5,29 @@ from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
+from pipeline_paths import existing_transcripts_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_S3_ROOT_PREFIX = "youtube"
 DEFAULT_S3_BUCKET_NAME = ""
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected_enrichi.txt"
-TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected.txt"
-LEGACY_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
-PLAIN_TRANSCRIPT_SUFFIX = "_transcript.txt"
-OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
-OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
-OCR_SUBTITLE_ENRICHED_SUFFIX = "_ocr_subtitle_timecodes_corrected_enrichi.txt"
+PLAIN_TRANSCRIPT_NAME = "plain_transcript.txt"
+WHISPER_TRANSCRIPT_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
+WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME = "whisper_transcript_timecoded_corrected.txt"
+WHISPER_TRANSCRIPT_ENRICHED_NAME = "whisper_transcript_timecoded_corrected_enriched.txt"
+OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
+OCR_SUBTITLE_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
+OCR_SUBTITLE_TIMECODED_CORRECTED_NAME = "ocr_subtitles_timecoded_corrected.txt"
+OCR_SUBTITLE_ENRICHED_NAME = "ocr_subtitles_timecoded_corrected_enriched.txt"
+LEGACY_ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected_enrichi.txt"
+LEGACY_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected.txt"
+LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
+LEGACY_PLAIN_TRANSCRIPT_SUFFIX = "_transcript.txt"
+LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
+LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
+LEGACY_OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
+LEGACY_OCR_SUBTITLE_ENRICHED_SUFFIX = "_ocr_subtitle_timecodes_corrected_enrichi.txt"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -358,17 +367,25 @@ def asset_type(path):
 
     if suffix in VIDEO_EXTENSIONS:
         return "video"
-    if name.endswith(OCR_SUBTITLE_ENRICHED_SUFFIX):
+    if name == OCR_SUBTITLE_ENRICHED_NAME or name.endswith(LEGACY_OCR_SUBTITLE_ENRICHED_SUFFIX):
         return "ocr_subtitle_enriched"
-    if name.endswith(OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX) or name.endswith(OCR_SUBTITLE_TIMECODED_SUFFIX):
+    if (
+        name in {OCR_SUBTITLE_TIMECODED_CORRECTED_NAME, OCR_SUBTITLE_TIMECODED_NAME}
+        or name.endswith(LEGACY_OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX)
+        or name.endswith(LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX)
+    ):
         return "ocr_subtitle_timecoded"
-    if name.endswith(OCR_SUBTITLE_SUFFIX):
+    if name == OCR_SUBTITLE_NAME or name.endswith(LEGACY_OCR_SUBTITLE_SUFFIX):
         return "ocr_subtitle"
-    if name.endswith(ENRICHED_TRANSCRIPT_SUFFIX):
+    if name == WHISPER_TRANSCRIPT_ENRICHED_NAME or name.endswith(LEGACY_ENRICHED_TRANSCRIPT_SUFFIX):
         return "transcript_enriched"
-    if name.endswith(TIMECODED_TRANSCRIPT_SUFFIX) or name.endswith(LEGACY_TIMECODED_TRANSCRIPT_SUFFIX):
+    if (
+        name in {WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME, WHISPER_TRANSCRIPT_TIMECODED_NAME}
+        or name.endswith(LEGACY_TIMECODED_TRANSCRIPT_SUFFIX)
+        or name.endswith(LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX)
+    ):
         return "transcript_timecoded"
-    if name.endswith(PLAIN_TRANSCRIPT_SUFFIX):
+    if name == PLAIN_TRANSCRIPT_NAME or name.endswith(LEGACY_PLAIN_TRANSCRIPT_SUFFIX):
         return "transcript"
     if "analyse" in parts and suffix == ".json":
         return "image_text_analysis_json"
@@ -417,22 +434,42 @@ def upsert_asset(cursor, video_id, path, root_dir, bucket, prefix):
 
 
 def transcript_paths(video_dir):
-    transcript_dir = video_dir / "transcript"
+    transcript_dir = existing_transcripts_dir(video_dir)
     if not transcript_dir.exists():
         return []
 
-    candidates = (
-        ("plain", (f"*{PLAIN_TRANSCRIPT_SUFFIX}",)),
-        ("timecoded", (f"*{TIMECODED_TRANSCRIPT_SUFFIX}", f"*{LEGACY_TIMECODED_TRANSCRIPT_SUFFIX}")),
-        ("enriched", (f"*{ENRICHED_TRANSCRIPT_SUFFIX}",)),
-    )
-    found = []
-    for transcript_type, patterns in candidates:
+    def first_existing(names=(), patterns=()):
+        for name in names:
+            candidate = transcript_dir / name
+            if candidate.exists():
+                return candidate
         for pattern in patterns:
             matches = sorted(transcript_dir.glob(pattern))
             if matches:
-                found.append((transcript_type, matches[0]))
-                break
+                return matches[0]
+        return None
+
+    candidates = (
+        ("plain", (PLAIN_TRANSCRIPT_NAME,), (f"*{LEGACY_PLAIN_TRANSCRIPT_SUFFIX}",)),
+        (
+            "timecoded",
+            (WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME, WHISPER_TRANSCRIPT_TIMECODED_NAME),
+            (
+                f"*{LEGACY_TIMECODED_TRANSCRIPT_SUFFIX}",
+                f"*{LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX}",
+            ),
+        ),
+        (
+            "enriched",
+            (WHISPER_TRANSCRIPT_ENRICHED_NAME,),
+            (f"*{LEGACY_ENRICHED_TRANSCRIPT_SUFFIX}",),
+        ),
+    )
+    found = []
+    for transcript_type, names, patterns in candidates:
+        candidate = first_existing(names, patterns)
+        if candidate:
+            found.append((transcript_type, candidate))
     return found
 
 
@@ -485,7 +522,7 @@ def parse_args():
     )
     parser.add_argument(
         "--prefix",
-        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 17",
+        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 25",
     )
     parser.add_argument(
         "--no-prefix",

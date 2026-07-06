@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from analysed_infos import analysed_infos_path, update_analysed_infos
+from pipeline_analysis import analysed_infos_path, update_analysed_infos
 from local_paddle_ocr import (
     box_bounds,
     box_geometry,
@@ -21,26 +21,34 @@ from local_paddle_ocr import (
     seconds_from_image_name,
     subtitle_text_signal,
 )
+from pipeline_paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MIN_CONFIDENCE = 0.9
 RAW_GROUPS = ("footage", "graphic", "mixture")
-PROCESSED_NAME = "ocr_processed.json"
+PROCESSED_NAME = "processed_ocr_items.json"
+LEGACY_PROCESSED_NAME = "ocr_processed.json"
 
 
 configure_stdio()
 
 
 def raw_paths(ocr_dir):
-    return {
-        group_name: ocr_dir / f"ocr_{group_name}.json"
-        for group_name in RAW_GROUPS
-    }
+    paths = {}
+    for group_name in RAW_GROUPS:
+        preferred = ocr_dir / f"raw_ocr_{group_name}_frames.json"
+        legacy = ocr_dir / f"ocr_{group_name}.json"
+        paths[group_name] = legacy if legacy.exists() and not preferred.exists() else preferred
+    return paths
 
 
 def processed_path(ocr_dir):
-    return ocr_dir / PROCESSED_NAME
+    preferred = ocr_dir / PROCESSED_NAME
+    legacy = ocr_dir / LEGACY_PROCESSED_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_json(path):
@@ -116,7 +124,7 @@ def parse_args():
     )
     parser.add_argument(
         "--video-dir",
-        help="Dossier contenant images/. Defaut: dernier sous-dossier de downloads/youtube avec images/.",
+        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
     )
     parser.add_argument(
         "--download-dir",
@@ -155,8 +163,8 @@ def main():
     print(f"Dossier videos: {video_dir}")
     done = 0
     for video_path in videos:
-        images_dir = video_path / "images"
-        ocr_dir = video_path / "ocr"
+        images_dir = existing_images_dir(video_path)
+        ocr_dir = existing_ocr_dir(video_path)
         has_subtitles = analysed_has_subtitles(video_path)
         ocr_dir.mkdir(parents=True, exist_ok=True)
         sources = raw_paths(ocr_dir)
@@ -223,8 +231,8 @@ def main():
             "ocr_processed",
             {
                 "status": "done",
-                "sources": [f"ocr/{name}" for name in source_names],
-                "processed_file": f"ocr/{target.name}",
+                "sources": [relative_to_video_dir(ocr_dir / name, video_path) for name in source_names],
+                "processed_file": relative_to_video_dir(target, video_path),
                 "item_count": len(processed_items),
                 "min_confidence": min_confidence,
             },

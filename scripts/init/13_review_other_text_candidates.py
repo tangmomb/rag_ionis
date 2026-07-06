@@ -8,13 +8,19 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pipeline_paths import existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-SOURCE_DIRNAME = "ocr_processed_filtered_others_boxes"
-SOURCE_MANIFEST_NAME = "manifest.json"
-OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes_review"
+SOURCE_DIRNAME = "other_text_review_candidates"
+LEGACY_SOURCE_DIRNAME = "ocr_processed_filtered_others_boxes"
+SOURCE_MANIFEST_NAME = "review_candidates_manifest.json"
+LEGACY_SOURCE_MANIFEST_NAME = "manifest.json"
+OUTPUT_DIRNAME = "other_text_gpt_review"
+LEGACY_OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes_review"
+SUMMARY_NAME = "review_summary.json"
+LEGACY_SUMMARY_NAME = "summary.json"
 DEFAULT_MODEL = "gpt-5.2"
 SYSTEM_PROMPT = (
     "Tu analyses une image complete provenant d'une video. "
@@ -68,15 +74,30 @@ def latest_video_dir(parent_dir):
 
 
 def source_dir(video_path):
-    return video_path.parent / "ocr" / SOURCE_DIRNAME
+    video_ocr_dir = existing_ocr_dir(video_path)
+    preferred = video_ocr_dir / SOURCE_DIRNAME
+    legacy = video_ocr_dir / LEGACY_SOURCE_DIRNAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def source_manifest_path(video_path):
-    return source_dir(video_path) / SOURCE_MANIFEST_NAME
+    directory = source_dir(video_path)
+    preferred = directory / SOURCE_MANIFEST_NAME
+    legacy = directory / LEGACY_SOURCE_MANIFEST_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def output_dir(video_path):
-    return video_path.parent / "ocr" / OUTPUT_DIRNAME
+    video_ocr_dir = existing_ocr_dir(video_path)
+    preferred = video_ocr_dir / OUTPUT_DIRNAME
+    legacy = video_ocr_dir / LEGACY_OUTPUT_DIRNAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def openai_client():
@@ -203,7 +224,10 @@ def review_video(video_path, model, force=False, limit_images=None):
 
     target_dir = output_dir(video_path)
     target_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = target_dir / "summary.json"
+    summary_path = target_dir / SUMMARY_NAME
+    legacy_summary_path = target_dir / LEGACY_SUMMARY_NAME
+    if legacy_summary_path.exists() and not summary_path.exists():
+        summary_path = legacy_summary_path
     if summary_path.exists() and not force:
         print(f"[skip] {summary_path.name} existe deja")
         return summary_path
@@ -232,13 +256,13 @@ def review_video(video_path, model, force=False, limit_images=None):
         parsed = parse_json_answer(answer)
         if not parsed["corrected_text"]:
             parsed["corrected_text"] = " ".join(str(item.get("text", "")).split()).strip()
-        write_text(review_dir / "prompt.txt", request_log["messages"][1]["content"])
-        write_text(review_dir / "response.txt", answer)
-        (review_dir / "request.json").write_text(
+        write_text(review_dir / "model_prompt.txt", request_log["messages"][1]["content"])
+        write_text(review_dir / "model_response.txt", answer)
+        (review_dir / "api_request.json").write_text(
             json.dumps(request_log, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        (review_dir / "decision.json").write_text(
+        (review_dir / "review_decision.json").write_text(
             json.dumps(
                 {
                     "crop": crop_name,
@@ -274,9 +298,9 @@ def review_video(video_path, model, force=False, limit_images=None):
 
     summary_payload = {
         "model": model,
-        "source_dir": f"ocr/{SOURCE_DIRNAME}",
-        "source_manifest": f"ocr/{SOURCE_DIRNAME}/{SOURCE_MANIFEST_NAME}",
-        "output_dir": f"ocr/{OUTPUT_DIRNAME}",
+        "source_dir": relative_to_video_dir(source_dir(video_path), video_path),
+        "source_manifest": relative_to_video_dir(source_manifest, video_path),
+        "output_dir": relative_to_video_dir(target_dir, video_path),
         "reviewed_count": len(decisions),
         "added_in_edit_count": sum(1 for item in decisions if item["is_added_in_edit"]),
         "not_added_count": sum(1 for item in decisions if not item["is_added_in_edit"]),

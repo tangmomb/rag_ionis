@@ -5,7 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
+from pipeline_paths import existing_images_dir, images_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MODEL_PATH = Path("models/frame_filter_2026-07-02_21-30-31.joblib")
@@ -16,8 +17,10 @@ VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 FOOTAGE_DIR_NAME = "footage"
 GRAPHIC_DIR_NAME = "graphic"
 MIXTURE_DIR_NAME = "mixture"
-MANIFEST_NAME = "manifest.json"
-FEATURES_NAME = "cv_features.json"
+MANIFEST_NAME = "frame_classification_manifest.json"
+FEATURES_NAME = "frame_classification_features.json"
+LEGACY_MANIFEST_NAME = "manifest.json"
+LEGACY_FEATURES_NAME = "cv_features.json"
 OLD_EMBEDDINGS_NAME = "dinov2_embeddings.json"
 STAGING_DIR_NAME = ".classify_tmp"
 LEGACY_STAGING_DIR_NAME = ".cluster_tmp"
@@ -147,6 +150,14 @@ def clear_classification_dirs(images_dir, class_names):
     old_embeddings_path = images_dir / OLD_EMBEDDINGS_NAME
     if old_embeddings_path.exists():
         old_embeddings_path.unlink()
+
+
+def existing_manifest_path(images_dir):
+    preferred = images_dir / MANIFEST_NAME
+    legacy = images_dir / LEGACY_MANIFEST_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_image_rgb(path, crop_bottom=0.0):
@@ -411,7 +422,7 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
         shutil.move(path, target)
         relative_image = target.relative_to(images_dir).as_posix()
         role_images[role].append(path.name)
-        relative_target = target.relative_to(video_path.parent).as_posix()
+        relative_target = relative_to_video_dir(target, video_path)
         prediction_item = dict(prediction_payload["items"][index])
         prediction_item["image"] = relative_image
         prediction_item["target"] = relative_target
@@ -424,7 +435,7 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
     features_path = images_dir / FEATURES_NAME
     features_payload = {
         "method": "frame_filter_model",
-        "source": "images",
+        "source": relative_to_video_dir(images_dir, video_path),
         "model": str(Path(model_path).as_posix()),
         "class_names": class_names,
         "crop_bottom": prediction_payload["crop_bottom"],
@@ -435,8 +446,8 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
 
     manifest = {
         "method": "frame_filter_model",
-        "source": "images",
-        "output_dir": "images",
+        "source": relative_to_video_dir(images_dir, video_path),
+        "output_dir": relative_to_video_dir(images_dir, video_path),
         "model": str(Path(model_path).as_posix()),
         "class_names": class_names,
         "crop_bottom": prediction_payload["crop_bottom"],
@@ -446,7 +457,7 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
         "footage_count": role_counts.get("footage", 0),
         "graphic_count": role_counts.get("graphic", 0),
         "mixture_count": role_counts.get("mixture", 0),
-        "features": features_path.relative_to(video_path.parent).as_posix(),
+        "features": relative_to_video_dir(features_path, video_path),
         "classes": [
             {"label": class_name, "count": role_counts[class_name], "images": role_images[class_name]}
             for class_name in class_names
@@ -463,8 +474,8 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
             "footage_count": role_counts.get("footage", 0),
             "graphic_count": role_counts.get("graphic", 0),
             "mixture_count": role_counts.get("mixture", 0),
-            "manifest": "images/manifest.json",
-            "features": "images/cv_features.json",
+            "manifest": relative_to_video_dir(manifest_path, video_path),
+            "features": relative_to_video_dir(features_path, video_path),
         },
     )
     print(
@@ -475,13 +486,13 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
 
 
 def classify_video_images(video_path, args):
-    images_dir = video_path.parent / "images"
-    paths = image_files(images_dir)
+    video_images_dir = existing_images_dir(video_path)
+    paths = image_files(video_images_dir)
     if not paths:
-        print(f"[skip] {video_path.name}: aucune image dans {images_dir}")
+        print(f"[skip] {video_path.name}: aucune image dans {video_images_dir}")
         return None
 
-    manifest_path = images_dir / MANIFEST_NAME
+    manifest_path = existing_manifest_path(video_images_dir)
     if manifest_path.exists() and not args.force:
         print(f"[skip] {video_path.name}: {manifest_path} existe deja")
         return manifest_path
@@ -492,7 +503,7 @@ def classify_video_images(video_path, args):
 
     print(f"[analyse] {video_path.name}: {len(paths)} images, model={model_path.name}", flush=True)
     prediction_payload = classify_paths(paths, args)
-    return write_outputs(video_path, paths, images_dir, args.force, prediction_payload, model_path)
+    return write_outputs(video_path, paths, video_images_dir, args.force, prediction_payload, model_path)
 
 
 def parse_args():
@@ -501,7 +512,7 @@ def parse_args():
     )
     parser.add_argument(
         "--video-dir",
-        help="Dossier contenant images/. Defaut: dernier sous-dossier de downloads/youtube avec videos.",
+        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec videos.",
     )
     parser.add_argument(
         "--download-dir",
@@ -532,7 +543,7 @@ def parse_args():
     )
     parser.add_argument(
         "--cache-dir",
-        help="Dossier de cache des embeddings. Defaut: images/.embedding_cache",
+        help="Dossier de cache des embeddings. Defaut: outputs/images/.embedding_cache",
     )
     parser.add_argument(
         "--force",
@@ -560,7 +571,7 @@ def main():
         if args.cache_dir:
             cache_dir = Path(args.cache_dir)
         else:
-            cache_dir = video_path.parent / "images" / DEFAULT_EMBEDDING_CACHE_DIRNAME
+            cache_dir = existing_images_dir(video_path) / DEFAULT_EMBEDDING_CACHE_DIRNAME
         args.cache_dir = str(cache_dir)
         if classify_video_images(video_path, args):
             done += 1

@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 from yt_dlp.utils import DownloadError
 
+from pipeline_paths import youtube_api_infos_path
+
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
@@ -132,7 +134,8 @@ def copy_video_info(video_dir, youtube_video_id, parent_dir):
     source = next((path for path in info_candidates(info_cache_dir(parent_dir), youtube_video_id) if path.exists()), None)
     if source is None:
         return None
-    target = video_dir / f"{youtube_video_id}{YOUTUBE_API_INFOS_SUFFIX}"
+    target = youtube_api_infos_path(video_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
     return target
 
@@ -140,9 +143,10 @@ def copy_video_info(video_dir, youtube_video_id, parent_dir):
 def write_video_info(video_dir, youtube_video_id, payload):
     if not payload:
         return None
-    target = video_dir / f"{youtube_video_id}{YOUTUBE_API_INFOS_SUFFIX}"
+    target = youtube_api_infos_path(video_dir)
     if target.exists():
         return target
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target
 

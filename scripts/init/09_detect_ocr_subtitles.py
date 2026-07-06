@@ -3,7 +3,7 @@ import json
 import statistics
 from pathlib import Path
 
-from analysed_infos import analysed_infos_path, update_analysed_infos
+from pipeline_analysis import analysed_infos_path, update_analysed_infos
 from local_paddle_ocr import (
     anchored_subtitle_match,
     box_bounds,
@@ -16,10 +16,12 @@ from local_paddle_ocr import (
     latest_video_dir,
     seconds_from_image_name,
 )
+from pipeline_paths import existing_images_dir, existing_ocr_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-LOCATION_NAME = "ocr_location.json"
+LOCATION_NAME = "ocr_box_locations.json"
+LEGACY_LOCATION_NAME = "ocr_location.json"
 BOXES_DIRNAME = "ocr_boxes_images"
 LEGACY_BOXES_DIRNAME = "ocr_boxes"
 
@@ -30,13 +32,16 @@ configure_stdio()
 def location_path(ocr_dir):
     new_path = ocr_dir / BOXES_DIRNAME / LOCATION_NAME
     legacy_boxes_path = ocr_dir / LEGACY_BOXES_DIRNAME / LOCATION_NAME
-    legacy_path = ocr_dir / LOCATION_NAME
+    legacy_path = ocr_dir / LEGACY_LOCATION_NAME
+    direct_path = ocr_dir / LOCATION_NAME
     if new_path.exists():
         return new_path
     if legacy_boxes_path.exists():
         return legacy_boxes_path
+    if direct_path.exists():
+        return direct_path
     if not legacy_path.exists():
-        return new_path
+        return direct_path
     return legacy_path
 
 
@@ -45,7 +50,7 @@ def load_json(path):
 
 
 def write_has_subtitles(video_path, has_subtitles):
-    return update_analysed_infos(video_path, "08_detect_ocr_subtitles", {"has_subtitles": bool(has_subtitles)})
+    return update_analysed_infos(video_path, "09_detect_ocr_subtitles", {"has_subtitles": bool(has_subtitles)})
 
 
 def subtitle_entries_from_boxes(payload, images_dir):
@@ -106,8 +111,8 @@ def has_stable_subtitle_anchor(entries):
 
 
 def detect_for_video(video_path, force=False):
-    ocr_dir = video_path / "ocr"
-    images_dir = video_path / "images"
+    ocr_dir = existing_ocr_dir(video_path)
+    images_dir = existing_images_dir(video_path)
     source = location_path(ocr_dir)
     target = analysed_infos_path(video_path)
 
@@ -133,11 +138,11 @@ def detect_for_video(video_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Detecte la presence probable de sous-titres OCR depuis ocr_location.json."
+        description="Detecte la presence probable de sous-titres OCR depuis ocr_box_locations.json."
     )
     parser.add_argument(
         "--video-dir",
-        help="Dossier contenant images/. Defaut: dernier sous-dossier de downloads/youtube avec images/.",
+        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
     )
     parser.add_argument(
         "--download-dir",

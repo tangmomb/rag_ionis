@@ -3,12 +3,14 @@ import json
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
+from pipeline_paths import existing_images_dir, existing_interview_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-MANIFEST_NAME = "manifest.json"
-INTERVIEW_DIR_NAME = "is_interview"
+MANIFEST_NAME = "frame_classification_manifest.json"
+LEGACY_MANIFEST_NAME = "manifest.json"
+INTERVIEW_MANIFEST_NAME = "interview_detection_manifest.json"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -43,11 +45,21 @@ def latest_video_dir(parent_dir):
 
 
 def manifest_path(video_path):
-    return video_path.parent / "images" / MANIFEST_NAME
+    images_dir = existing_images_dir(video_path)
+    preferred = images_dir / MANIFEST_NAME
+    legacy = images_dir / LEGACY_MANIFEST_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def interview_manifest_path(video_path):
-    return video_path.parent / INTERVIEW_DIR_NAME / MANIFEST_NAME
+    interview_dir = existing_interview_dir(video_path)
+    preferred = interview_dir / INTERVIEW_MANIFEST_NAME
+    legacy = interview_dir / LEGACY_MANIFEST_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_json(path):
@@ -66,7 +78,7 @@ def infer_video_type_from_manifest(payload):
 
 
 def write_analysed_infos(video_path, video_type):
-    return update_analysed_infos(video_path, "05_infer_video_type", {"video_type": video_type})
+    return update_analysed_infos(video_path, "06_infer_video_type", {"video_type": video_type})
 
 
 def infer_for_video(video_path, force=False):
@@ -112,7 +124,7 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Reecrit analysed_infos meme si les donnees existent deja.",
+        help="Reecrit pipeline_analysis meme si les donnees existent deja.",
     )
     return parser.parse_args()
 

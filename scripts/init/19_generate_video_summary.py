@@ -4,12 +4,20 @@ import re
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
+from pipeline_paths import (
+    OUTPUTS_DIR_NAME,
+    TRANSCRIPTS_DIR_NAME,
+    existing_transcripts_dir,
+    existing_youtube_api_infos_path,
+    relative_to_video_dir,
+)
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-ENRICHED_SUFFIX = "_enrichi.txt"
-SUMMARY_SUFFIX = "_video_summary.md"
+ENRICHED_SUFFIX = "_enriched.txt"
+LEGACY_ENRICHED_SUFFIX = "_enrichi.txt"
+SUMMARY_NAME = "video_summary.md"
 TIMECODE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 TIMECODE_WITH_RANGE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 INSERT_LINE = re.compile(r"^INSERT:\s*(.*)$", re.IGNORECASE)
@@ -47,22 +55,39 @@ def latest_video_dir(parent_dir):
 
 
 def enriched_inputs(transcript_dir):
-    return sorted(transcript_dir.glob(f"*{ENRICHED_SUFFIX}"))
+    return sorted(transcript_dir.glob(f"*{ENRICHED_SUFFIX}")) or sorted(transcript_dir.glob(f"*{LEGACY_ENRICHED_SUFFIX}"))
+
+
+def video_dir_for_input(input_path):
+    if (
+        input_path.parent.name == TRANSCRIPTS_DIR_NAME
+        and input_path.parent.parent.name == OUTPUTS_DIR_NAME
+    ):
+        return input_path.parent.parent.parent
+    return input_path.parent.parent
+
+
+def video_file_for_dir(video_dir):
+    matches = sorted(
+        path
+        for path in video_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+    )
+    return matches[0] if matches else video_dir
 
 
 def summary_path(input_path):
-    video_id = input_path.name
-    if video_id.endswith(ENRICHED_SUFFIX):
-        video_id = video_id[: -len(ENRICHED_SUFFIX)]
-    return input_path.with_name(f"{video_id.split('_')[0]}{SUMMARY_SUFFIX}")
+    return input_path.with_name(SUMMARY_NAME)
 
 
 def video_title_for_input(input_path):
+    video_dir = video_dir_for_input(input_path)
     candidates = [
-        input_path.parent.parent / f"{input_path.parent.parent.name}{YOUTUBE_API_INFOS_SUFFIX}",
-        input_path.parent / f"{input_path.parent.parent.name}{YOUTUBE_API_INFOS_SUFFIX}",
-        input_path.parent.parent / f"{input_path.parent.parent.name}{LEGACY_INFO_SUFFIX}",
-        input_path.parent / f"{input_path.parent.parent.name}{LEGACY_INFO_SUFFIX}",
+        existing_youtube_api_infos_path(video_dir),
+        video_dir / f"{video_dir.name}{YOUTUBE_API_INFOS_SUFFIX}",
+        input_path.parent / f"{video_dir.name}{YOUTUBE_API_INFOS_SUFFIX}",
+        video_dir / f"{video_dir.name}{LEGACY_INFO_SUFFIX}",
+        input_path.parent / f"{video_dir.name}{LEGACY_INFO_SUFFIX}",
     ]
     for info_path in candidates:
         if not info_path.exists():
@@ -152,7 +177,7 @@ def split_chapters(rows):
         chapters.append(current)
 
     if chapters and not first_chapter_has_insert:
-        chapters[0]["title"] = "Début de la vidéo"
+        chapters[0]["title"] = "DÃ©but de la vidÃ©o"
         chapters[0]["is_intro"] = True
 
     return chapters
@@ -160,7 +185,7 @@ def split_chapters(rows):
 
 def render_table(chapter_index, chapter):
     if chapter.get("is_intro"):
-        heading = "## Début de la vidéo"
+        heading = "## DÃ©but de la vidÃ©o"
     else:
         heading = f"## Intercalaire {chapter_index:02d} : *{escape_markdown(chapter['title'])}*"
     lines = [heading, ""]
@@ -177,11 +202,11 @@ def render_table(chapter_index, chapter):
 
 
 def render_summary(rows, video_title):
-    lines = [f"# Sommaire de la vidéo", f"# {escape_markdown(video_title)}", ""]
+    lines = [f"# Sommaire de la vidÃ©o", f"# {escape_markdown(video_title)}", ""]
     chapters = split_chapters(rows)
     if not chapters:
         lines.extend([
-            "## début de la vidéo",
+            "## dÃ©but de la vidÃ©o",
             "",
             "| Timecode | Parole | Animation |",
             "| --- | --- | --- |",
@@ -202,15 +227,15 @@ def summarize_file(input_path, force=False):
 
     rows = parse_enriched_lines(input_path.read_text(encoding="utf-8"))
     target.write_text(render_summary(rows, video_title_for_input(input_path)), encoding="utf-8")
-    video_dir = input_path.parent.parent
-    video_path = video_dir / f"{video_dir.name}.mp4"
+    video_dir = video_dir_for_input(input_path)
+    video_path = video_file_for_dir(video_dir)
     update_analysed_infos(
         video_path,
         "video_summary",
         {
             "status": "done",
-            "source": f"transcript/{input_path.name}",
-            "summary_file": f"transcript/{target.name}",
+            "source": relative_to_video_dir(input_path, video_path),
+            "summary_file": relative_to_video_dir(target, video_path),
             "row_count": len(rows),
         },
     )
@@ -219,7 +244,7 @@ def summarize_file(input_path, force=False):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Cree un resume Markdown a partir des fichiers *_enrichi.txt.")
+    parser = argparse.ArgumentParser(description="Cree un resume Markdown a partir des fichiers *_enriched.txt.")
     parser.add_argument(
         "--video-dir",
         help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
@@ -240,7 +265,7 @@ def parse_args():
 def main():
     args = parse_args()
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    transcript_dirs = sorted({video_path.parent / "transcript" for video_path in video_files(video_dir)})
+    transcript_dirs = sorted({existing_transcripts_dir(video_path) for video_path in video_files(video_dir)})
     inputs = []
     for transcript_dir in transcript_dirs:
         inputs.extend(enriched_inputs(transcript_dir))
@@ -255,7 +280,7 @@ def main():
         if summarize_file(input_path, force=args.force):
             done += 1
 
-    print(f"{done} fichiers résumés.")
+    print(f"{done} fichiers rÃ©sumÃ©s.")
 
 
 if __name__ == "__main__":

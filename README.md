@@ -163,7 +163,7 @@ Tester le pipeline sur une video precise:
 .\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-Le script lance les steps 00 a 22. Au demarrage, il vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. La Step 02 cree ensuite un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
+Au demarrage, le script vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. Il lance ensuite les steps 01 a 26. La Step 02 cree un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
 
 Un run d'initialisation remplace le precedent:
 
@@ -194,7 +194,18 @@ Chaque lancement cree un sous-dossier date suffixe `_init` dans `downloads/youtu
 downloads/youtube/20260628_1312_init/
   LJ-W6BjSJRo/
     LJ-W6BjSJRo.mp4
+    metadata/
+      youtube_video_metadata.json
+      pipeline_analysis.json
+    outputs/
+      images/
+      interview/
+      ocr/
+      transcripts/
+      chunks/
 ```
+
+Le fichier video reste a la racine du dossier video. Les metadonnees vont dans `metadata/`, et tous les fichiers generes par le pipeline vont dans `outputs/` pour eviter de melanger frames, OCR, transcripts et chunks.
 
 ## Step 03 - Extract Images
 
@@ -204,7 +215,7 @@ Extraire une image toutes les 2 secondes pour chaque video:
 python scripts/init/03_extract_images.py
 ```
 
-Le script cree un dossier `images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
+Le script cree `outputs/images/` dans chaque dossier video. Les images sont nommees par timecode minute/seconde, par exemple `00_00.jpg`, `00_02.jpg`, `01_00.jpg`.
 
 ## Step 04 - Classify Images
 
@@ -214,9 +225,9 @@ Classer localement les images extraites avec le modele DINO+CLIP entraine:
 python scripts/init/04_classify_images.py
 ```
 
-Le script lit `images/`, calcule les embeddings attendus par le modele, appelle le classifieur, puis reorganise directement les fichiers selon les trois sorties du modele: `images/footage/`, `images/graphic/` et `images/mixture/`. Il ne lance pas de k-means et ne cree pas de sous-dossiers `graphic_XX`.
+Le script lit `outputs/images/`, calcule les embeddings attendus par le modele, appelle le classifieur, puis reorganise directement les fichiers selon les trois sorties du modele: `outputs/images/footage/`, `outputs/images/graphic/` et `outputs/images/mixture/`. Il ne lance pas de k-means et ne cree pas de sous-dossiers `graphic_XX`.
 
-Il ecrit aussi `images/manifest.json` avec le label predit de chaque image et `images/cv_features.json` avec les memes predictions pour compatibilite avec les etapes suivantes. La Step 06 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
+Il ecrit aussi `outputs/images/frame_classification_manifest.json` avec le label predit de chaque image et `outputs/images/frame_classification_features.json` avec les memes predictions pour compatibilite avec les etapes suivantes. La Step 07 OCR lit ensuite les images recursivement et conserve ces chemins relatifs dans ses JSON.
 
 Options utiles:
 
@@ -227,230 +238,240 @@ python scripts/init/04_classify_images.py --device cuda
 python scripts/init/04_classify_images.py --force
 ```
 
-## Step 05 - Infer Video Type
+## Step 05 - Detect Interviews
+
+Detecter les videos de type interview a partir des frames `footage/` consecutives:
+
+```powershell
+python scripts/init/05_detect_interviews.py
+```
+
+Le script ecrit un manifeste `outputs/interview/interview_detection_manifest.json`, utilise ensuite par l'inference du type de video.
+
+## Step 06 - Infer Video Type
 
 Deduir le type de video depuis le manifeste de classification images:
 
 ```powershell
-python scripts/init/05_infer_video_type.py
+python scripts/init/06_infer_video_type.py
 ```
 
-Le script ecrit `video_type` dans `<video_id>_analysed_infos.json`.
+Le script ecrit `video_type` dans `metadata/pipeline_analysis.json`.
 
-## Step 06 - ocr_brut
+## Step 07 - Extract Raw OCR
 
 Extraire localement l'OCR brut avec PaddleOCR sur toutes les images:
 
 ```powershell
-python scripts/init/06_ocr_brut.py
+python scripts/init/07_extract_raw_ocr.py
 ```
 
-Le script lit toutes les images dans `images/` et ecrit `transcript/<video_id>_ocr_brut.json`. Il ne produit plus directement le `processed.json`.
+Le script lit toutes les images dans `outputs/images/` et ecrit les JSON OCR bruts dans `outputs/ocr/raw_ocr_<group>_frames.json`. Il ne produit plus directement le fichier processed.
 
-## Step 07 - Extract OCR Boxes
+## Step 08 - Extract OCR Boxes
 
 Extraire les emplacements OCR depuis le JSON brut, sans refaire tourner PaddleOCR:
 
 ```powershell
-python scripts/init/07_extract_ocr_boxes.py
+python scripts/init/08_extract_ocr_boxes.py
 ```
 
-Le script lit les JSON OCR bruts dans `ocr/` et ecrit `ocr/ocr_location.json`.
+Le script lit les JSON OCR bruts dans `outputs/ocr/` et ecrit `outputs/ocr/ocr_box_locations.json`.
 
-## Step 08 - Detect OCR Subtitles
+## Step 09 - Detect OCR Subtitles
 
 Detecter si la video contient probablement des sous-titres OCR a partir des boxes:
 
 ```powershell
-python scripts/init/08_detect_ocr_subtitles.py
+python scripts/init/09_detect_ocr_subtitles.py
 ```
 
-Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif se repete sur plusieurs secondes. Il ecrit `has_subtitles` dans `<video_id>_analysed_infos.json`.
+Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif se repete sur plusieurs secondes. Il ecrit `has_subtitles` dans `metadata/pipeline_analysis.json`.
 
-## Step 09 - Build OCR Processed
+## Step 10 - Build Processed OCR
 
 Transformer l'OCR brut en OCR traite sans relancer PaddleOCR:
 
 ```powershell
-python scripts/init/09_1_images_ocr_postprocess.py
+python scripts/init/10_build_processed_ocr.py
 ```
 
-Le script lit `transcript/<video_id>_ocr_brut.json` et ecrit `transcript/<video_id>_ocr_processed.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `images/graphic/` sont conservees avec `kind: "graphic"`. Pour les detections non sous-titres venant de `images/footage/` ou `images/mixture/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur.
+Le script lit les JSON bruts de `outputs/ocr/` et ecrit `outputs/ocr/processed_ocr_items.json`. Par defaut, seules les detections OCR avec `rec_score >= 0.9` sont conservees dans le JSON traite, puis les textes de decor probables sont filtres par taille, isolement, persistance statique avec variantes OCR proches, fragments progressifs et liste d'exclusion legere. Les detections provenant de `outputs/images/graphic/` sont conservees avec `kind: "graphic"`. Pour les detections non sous-titres venant de `outputs/images/footage/` ou `outputs/images/mixture/`, un meme mot ou une meme phrase repete dans une fenetre de 20 frames ne garde que sa derniere occurrence. Les textes non sous-titres finissant par `?` sont classes comme `question_intertitle`. Les sous-titres OCR sont detectes par une ligne de position relative recurrente, principalement le centre X commun des boites, avec des garde-fous geometriques sur Y, largeur et hauteur.
 
-## Step 09_3 - Extract Filtered Others Boxes
+## Step 11 - Filter Processed OCR
+
+Filtrer et consolider les items OCR traites:
+
+```powershell
+python scripts/init/11_filter_processed_ocr.py
+```
+
+Le script lit `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, puis ecrit `outputs/ocr/filtered_ocr_overlays.json`.
+
+## Step 12 - Extract Other Text Review Candidates
 
 Exporter les images entieres des items `kind: "others"` depuis le JSON filtered, avec une box rouge autour de la zone OCR:
 
 ```powershell
-python scripts/init/09_3_extract_filtered_others_boxes.py
+python scripts/init/12_extract_other_text_review_candidates.py
 ```
 
-Le script lit `ocr/ocr_processed_filtered.json`, recharge l'image source complete, dessine une box rouge autour de chaque zone `kinds_details.others` avec un padding de `5 px`, ecrit ces images annotees dans `ocr/ocr_processed_filtered_others_boxes/`, puis ajoute un manifeste `ocr/ocr_processed_filtered_others_boxes/manifest.json`.
+Le script lit `outputs/ocr/filtered_ocr_overlays.json`, recharge l'image source complete, dessine une box rouge autour de chaque zone `kinds_details.others` avec un padding de `5 px`, ecrit ces images annotees dans `outputs/ocr/other_text_review_candidates/`, puis ajoute un manifeste `outputs/ocr/other_text_review_candidates/review_candidates_manifest.json`.
 
-## Step 09_4 - Review Filtered Others Boxes
+## Step 13 - Review Other Text Candidates
 
 Demander a `gpt-5.4-nano` si le texte dans la zone rouge des images `others` ressemble a du texte ajoute au montage:
 
 ```powershell
-python scripts/init/09_4_review_filtered_others_boxes.py
+python scripts/init/13_review_other_text_candidates.py
 ```
 
-Le script lit `ocr/ocr_processed_filtered_others_boxes/manifest.json`, envoie chaque image annotee a OpenAI avec la consigne de se concentrer sur la zone encadree en rouge, puis ecrit les prompts, reponses et decisions parsees dans `ocr/ocr_processed_filtered_others_boxes_review/`, avec un resume global dans `summary.json`.
+Le script lit `outputs/ocr/other_text_review_candidates/review_candidates_manifest.json`, envoie chaque image annotee a OpenAI avec la consigne de se concentrer sur la zone encadree en rouge, puis ecrit les prompts, reponses et decisions parsees dans `outputs/ocr/other_text_gpt_review/`, avec un resume global dans `review_summary.json`.
 
-## Step 09_5 - Apply Review To Filtered Others
+## Step 14 - Apply Other Text Review
 
-Appliquer le `summary.json` de review GPT pour produire une nouvelle version du filtered sans ecraser l'original :
+Appliquer le `review_summary.json` de review GPT pour produire une nouvelle version du filtered sans ecraser l'original :
 
 ```bash
-python scripts/init/09_5_apply_review_filtered_others.py
+python scripts/init/14_apply_other_text_review.py
 ```
 
-Le script lit `ocr/ocr_processed_filtered.json` et `ocr/ocr_processed_filtered_others_boxes_review/summary.json`, puis ecrit `ocr/ocr_processed_filtered_reviewed.json`. Les items `others` avec `is_added_in_edit: false` sont supprimes, et ceux avec `has_ocr_error: true` voient leur texte remplace par `corrected_text`.
+Le script lit `outputs/ocr/filtered_ocr_overlays.json` et `outputs/ocr/other_text_gpt_review/review_summary.json`, puis ecrit `outputs/ocr/reviewed_ocr_overlays.json`. Les items `others` avec `is_added_in_edit: false` sont supprimes, et ceux avec `has_ocr_error: true` voient leur texte remplace par `corrected_text`.
 
-## Step 10 - OCR Subtitles
+## Step 15 - OCR Subtitles
 
 Concatener les items OCR de type `subtitle` dans un fichier texte dedie, avec une version timecodee en parallele:
 
 ```powershell
-python scripts/init/10_ocr_subtitles.py
+python scripts/init/15_extract_ocr_subtitles.py
 ```
 
-Le script ne traite une video que si `<video_id>_analysed_infos.json` contient `has_subtitles: true`. Il lit alors `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, et ecrit `transcript/<video_id>_ocr_subtitle.txt` ainsi que `transcript/<video_id>_ocr_subtitle_timecodes.txt`.
+Le script ne traite une video que si `metadata/pipeline_analysis.json` contient `has_subtitles: true`. Il lit alors `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, et ecrit `outputs/transcripts/ocr_subtitles.txt` ainsi que `outputs/transcripts/ocr_subtitles_timecoded.txt`.
 
-## Step 11 - Whisper Transcription
+## Step 16 - Transcribe With Whisper
 
-Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement uniquement si `<video_id>_analysed_infos.json` contient `has_subtitles: false`:
+Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement uniquement si `metadata/pipeline_analysis.json` contient `has_subtitles: false`:
 
 ```powershell
-python scripts/init/11_whisper_transcription.py
+python scripts/init/16_transcribe_with_whisper.py
 ```
 
-Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il cree un dossier `transcript/` dans chaque dossier video et produit un fichier horodate, par exemple `hGUkhjssd_transcript_timecodes.txt`.
+Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il ecrit `outputs/transcripts/whisper_transcript_timecoded.txt`.
 
 Les parametres utiles se reglant via `.env` sont `WHISPERX_MODEL`, `WHISPERX_LANGUAGE`, `WHISPERX_DEVICE`, `WHISPERX_COMPUTE_TYPE` et `WHISPERX_BATCH_SIZE`.
 
 Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE=float16`. Pour des machines plus legeres, `WHISPERX_DEVICE=cpu` et `WHISPERX_COMPUTE_TYPE=int8` restent possibles. Le modele par defaut est maintenant `large-v3`.
 
-Quand la transcription produit des timecodes, le fichier se termine par `_transcript_timecodes.txt`.
+Quand la transcription produit des timecodes, le fichier attendu par les steps suivantes est `whisper_transcript_timecoded.txt`.
 
-## Step 12 - Correct Timecodes
+## Step 17 - Correct Transcript Timecodes
 
-Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
+Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed_ocr_items.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
 
 ```powershell
-python scripts/init/12_correct_timecodes.py
+python scripts/init/17_correct_transcript_timecodes.py
 ```
 
-Le script lit soit `transcript/*_transcript_timecodes.txt`, soit `transcript/*_ocr_subtitle_timecodes.txt` quand le premier n'existe pas, puis ecrit un nouveau fichier avec `_corrected.txt` a la fin. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic` pour limiter les faux positifs.
+Le script lit `outputs/transcripts/whisper_transcript_timecoded.txt` ou `outputs/transcripts/ocr_subtitles_timecoded.txt`, puis ecrit `whisper_transcript_timecoded_corrected.txt` ou `ocr_subtitles_timecoded_corrected.txt`. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic` pour limiter les faux positifs.
 
 Le niveau de correction est ajustable:
 
 ```powershell
-python scripts/init/12_correct_timecodes.py --mode conservative
-python scripts/init/12_correct_timecodes.py --mode balanced
-python scripts/init/12_correct_timecodes.py --mode aggressive
+python scripts/init/17_correct_transcript_timecodes.py --mode conservative
+python scripts/init/17_correct_transcript_timecodes.py --mode balanced
+python scripts/init/17_correct_transcript_timecodes.py --mode aggressive
 ```
 
 `conservative` corrige peu, `aggressive` accepte plus de noms proches, et `balanced` est le defaut.
 
-## Step 13 - Filter OCR Processed
-
-Filtrer et consolider les items OCR traites:
-
-```powershell
-python scripts/init/13_filter_ocr_processed.py
-```
-
-Le script lit `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, puis ecrit `transcript/<video_id>_ocr_processed_filtered.json`.
-
-## Step 14 - Enrich Timecodes
+## Step 18 - Enrich Timecodes
 
 Ajouter les textes visibles a l'ecran dans les timecodes corriges:
 
 ```powershell
-python scripts/init/14_enrich_transcripts.py
+python scripts/init/18_enrich_transcripts.py
 ```
 
-Le script n'appelle aucune API. Il combine les fichiers corriges avec `transcript/*_ocr_processed_corrected.json` quand il existe, sinon `transcript/*_ocr_processed.json`, et ajoute seulement le suffixe `_enrichi.txt` au fichier source. Un fichier `*_transcript_timecodes_corrected.txt` produit donc `*_transcript_timecodes_corrected_enrichi.txt`; un fichier `*_ocr_subtitle_timecodes_corrected.txt` produit `*_ocr_subtitle_timecodes_corrected_enrichi.txt`, sans creer de faux fichier `transcript`.
+Le script n'appelle aucune API. Il combine les fichiers corriges avec les overlays filtres de `outputs/ocr/`, et ajoute le suffixe `_enriched.txt` au fichier source. Un fichier `whisper_transcript_timecoded_corrected.txt` produit donc `whisper_transcript_timecoded_corrected_enriched.txt`; un fichier `ocr_subtitles_timecoded_corrected.txt` produit `ocr_subtitles_timecoded_corrected_enriched.txt`.
 
-## Step 15 - Video Summary
+## Step 19 - Video Summary
 
 Produire un resume Markdown depuis le fichier enrichi, sous forme de tableau timecode/fait associe:
 
 ```powershell
-python scripts/init/15_generate_video_summary.py
+python scripts/init/19_generate_video_summary.py
 ```
 
-Le script lit `transcript/*_enrichi.txt` et ecrit `transcript/*_video_summary.md`. Il conserve les lignes timecodees du fichier enrichi et les transforme en tableau Markdown avec une colonne `Timecode` et une colonne `Fait associé`.
+Le script lit `outputs/transcripts/*_enriched.txt` et ecrit `outputs/transcripts/video_summary.md`. Il conserve les lignes timecodees du fichier enrichi et les transforme en tableau Markdown avec une colonne `Timecode` et une colonne `Fait associe`.
 
-La step suivante `16_strip_timecodes.py` produit le fichier sans timecodes uniquement depuis `*_transcript_timecodes_corrected.txt`.
+La step suivante `20_create_plain_transcript.py` produit le fichier sans timecodes uniquement depuis `whisper_transcript_timecoded_corrected.txt`.
 
-## Step 16 - Strip Timecodes
+## Step 20 - Create Plain Transcript
 
 Creer le transcript sans timecodes depuis la version corrigee:
 
 ```powershell
-python scripts/init/16_strip_timecodes.py
+python scripts/init/20_create_plain_transcript.py
 ```
 
-Le script lit uniquement `*_transcript_timecodes_corrected.txt` et produit `*_transcript.txt`. Les fichiers `*_ocr_subtitle_timecodes_corrected.txt` ne generent pas de transcript plain.
+Le script lit uniquement `whisper_transcript_timecoded_corrected.txt` et produit `plain_transcript.txt`. Les fichiers `ocr_subtitles_timecoded_corrected.txt` ne generent pas de transcript plain.
 
-## Step 17 - Create Transcript Chunks
+## Step 21 - Create Transcript Chunks
 
 Decouper les transcripts sans timecodes en chunks JSON, avec une limite de 1000 caracteres espaces compris et une coupe au prochain point apres depassement:
 
 ```powershell
-python scripts/init/17_create_chunks.py
+python scripts/init/21_create_transcript_chunks.py
 ```
 
-Le script lit d'abord `transcript/<video_id>_transcript.txt`, sinon `transcript/<video_id>_ocr_subtitle.txt`, et ecrit `chunks/<video_id>_chunks.json`.
+Le script lit d'abord `outputs/transcripts/plain_transcript.txt`, sinon `outputs/transcripts/ocr_subtitles.txt`, et ecrit `outputs/chunks/transcript_chunks.json`.
 
-La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `transcript/<video_id>_ocr_processed_corrected.json` quand il existe, sinon `transcript/<video_id>_ocr_processed.json`, quand ils apparaissent dans un item OCR dont `kind` n'est ni `subtitle` ni `ocr_error`. Le modele transformer francais `fr_dep_news_trf` est charge sur GPU par defaut, et le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele et CuPy CUDA 12 sont declares dans `requirements.txt`; si l'environnement ne trouve pas le modele, le reinstaller avec:
+La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, quand ils apparaissent dans un item OCR dont `kind` n'est ni `subtitle` ni `ocr_error`. Le modele transformer francais `fr_dep_news_trf` est charge sur GPU par defaut, et le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele et CuPy CUDA 12 sont declares dans `requirements.txt`; si l'environnement ne trouve pas le modele, le reinstaller avec:
 
 ```powershell
 python -m spacy download fr_dep_news_trf
 ```
 
-## Step 18 - Validate Chunk Speakers
+## Step 22 - Validate Chunk Speakers
 
 Valider la liste des speakers detectes dans les chunks avec OpenAI:
 
 ```powershell
-python scripts/init/18_validate_chunk_speakers.py
+python scripts/init/22_validate_chunk_speakers.py
 ```
 
-Le script lit `chunks/<video_id>_chunks.json`, recupere les valeurs `meta_data.speakers`, demande au modele quels speakers sont vraiment des personnes physiques, puis ecrit `chunks/<video_id>_chunks_corrected.json`. Par defaut, le modele est `gpt-5.4-nano`, configurable avec `--model` ou `CHUNK_SPEAKER_VALIDATION_MODEL`; l'alias compact `gpt5.4nano` est aussi accepte.
+Le script lit `outputs/chunks/transcript_chunks.json`, recupere les valeurs `meta_data.speakers`, demande au modele quels speakers sont vraiment des personnes physiques, puis ecrit `outputs/chunks/transcript_chunks_speaker_validated.json`. Par defaut, le modele est `gpt-5.4-nano`, configurable avec `--model` ou `CHUNK_SPEAKER_VALIDATION_MODEL`; l'alias compact `gpt5.4nano` est aussi accepte.
 
-Les chunks conservent leur contenu; seule la liste `speakers` est filtree. Une trace `speaker_validation` est ajoutee au JSON corrige avec les noms gardes et le nombre de rejets. Le script ecrit aussi `chunks/<video_id>_chunk_speaker_validation_log.json` avec la demande envoyee a GPT et sa reponse brute.
+Les chunks conservent leur contenu; seule la liste `speakers` est filtree. Une trace `speaker_validation` est ajoutee au JSON corrige avec les noms gardes et le nombre de rejets. Le script ecrit aussi `outputs/chunks/speaker_validation_log.json` avec la demande envoyee a GPT et sa reponse brute.
 
-## Step 19 - Split Alert Chunks
+## Step 23 - Split Alert Chunks
 
 Redecouper les chunks trop longs marques `ALERT`:
 
 ```powershell
-python scripts/init/19_split_alert_chunks.py
+python scripts/init/23_split_alert_chunks.py
 ```
 
-Le script lit `chunks/*_chunks_corrected.json` quand il existe, sinon `chunks/*_chunks.json`, et met a jour le fichier choisi en place.
+Le script lit `outputs/chunks/transcript_chunks_speaker_validated.json` quand il existe, sinon `outputs/chunks/transcript_chunks.json`, et met a jour le fichier choisi en place.
 
-## Step 20 - Create Transcript Embeddings
+## Step 24 - Create Transcript Embeddings
 
 Creer les embeddings a partir des chunks:
 
 ```powershell
-python scripts/init/20_create_embeddings.py
+python scripts/init/24_create_chunk_embeddings.py
 ```
 
-Le script lit `chunks/<video_id>_chunks_corrected.json` quand il existe, sinon `chunks/<video_id>_chunks.json`, et ecrit un fichier JSON par chunk dans `chunks/`:
+Le script lit `outputs/chunks/transcript_chunks_speaker_validated.json` quand il existe, sinon `outputs/chunks/transcript_chunks.json`, et ecrit un fichier JSON par chunk dans `outputs/chunks/`:
 
-- `chunks/<video_id>_chunk_<index>_embedding.json`
+- `outputs/chunks/chunk_<index>_embedding.json`
 
-## Step 21 - Upload Videos To S3
+## Step 25 - Upload Outputs To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
 ```powershell
-python scripts/init/21_upload_s3.py
+python scripts/init/25_upload_outputs_to_s3.py
 ```
 
 Configuration requise dans `.env`:
@@ -472,47 +493,47 @@ downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 Options utiles:
 
 ```powershell
-python scripts/init/21_upload_s3.py --dry-run
-python scripts/init/21_upload_s3.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/21_upload_s3.py --prefix youtube/20260628_1312_init
-python scripts/init/21_upload_s3.py --clean-init-prefix
-python scripts/init/21_upload_s3.py --force
+python scripts/init/25_upload_outputs_to_s3.py --dry-run
+python scripts/init/25_upload_outputs_to_s3.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/25_upload_outputs_to_s3.py --prefix youtube/20260628_1312_init
+python scripts/init/25_upload_outputs_to_s3.py --clean-init-prefix
+python scripts/init/25_upload_outputs_to_s3.py --force
 ```
 
-## Step 22 - Update SQL Assets
+## Step 26 - Update SQL Assets
 
 Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
 
 ```powershell
-python scripts/init/22_upload_sql.py
+python scripts/init/26_update_sql_assets.py
 ```
 
-Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 21 par defaut:
+Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 25 par defaut:
 
 ```text
 downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 -> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 ```
 
-Il met aussi a jour une seule ligne `video_transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `transcript/`:
+Il met aussi a jour une seule ligne `video_transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `outputs/transcripts/`:
 
 ```text
-transcript                  -> *_transcript.txt
-transcript_timecodes        -> *_transcript_timecodes_corrected.txt
-transcript_timecodes_enrichi -> *_transcript_timecodes_corrected_enrichi.txt
+transcript                   -> plain_transcript.txt
+transcript_timecodes         -> whisper_transcript_timecoded_corrected.txt
+transcript_timecodes_enrichi -> whisper_transcript_timecoded_corrected_enriched.txt
 ```
 
 Options utiles:
 
 ```powershell
-python scripts/init/22_upload_sql.py --dry-run
-python scripts/init/22_upload_sql.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/22_upload_sql.py --prefix youtube/20260628_1312_init
-python scripts/init/22_upload_sql.py --clean-init-assets
-python scripts/init/22_upload_sql.py --skip-transcripts
+python scripts/init/26_update_sql_assets.py --dry-run
+python scripts/init/26_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
+python scripts/init/26_update_sql_assets.py --prefix youtube/20260628_1312_init
+python scripts/init/26_update_sql_assets.py --clean-init-assets
+python scripts/init/26_update_sql_assets.py --skip-transcripts
 ```
 
-## Step 99 - Clear Database
+## Clear Database
 
 Recreer la base SQL depuis le schema. Attention: cette commande supprime toutes les donnees des tables applicatives avant de recharger `docker/postgres/init/001_schema.sql`.
 
@@ -523,7 +544,7 @@ python utils/reset_database.py
 Vider les tables applicatives sans supprimer le schema:
 
 ```powershell
-python utils/99_clear_database.py
+python utils/clear_database.py
 ```
 
 ## Outils locaux

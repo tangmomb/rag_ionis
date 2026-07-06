@@ -3,11 +3,15 @@ import json
 import sys
 from pathlib import Path
 
+from pipeline_paths import existing_chunks_dir
+
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CHUNKS_SUFFIX = "_chunks.json"
-CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
+CHUNKS_NAME = "transcript_chunks.json"
+CHUNKS_SPEAKER_VALIDATED_NAME = "transcript_chunks_speaker_validated.json"
+LEGACY_CHUNKS_SUFFIX = "_chunks.json"
+LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 ALERT_WORD_THRESHOLD = 3000
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -42,11 +46,17 @@ def latest_video_dir(parent_dir):
 
 
 def chunks_path(video_path):
-    chunks_dir = video_path.parent / "chunks"
-    corrected = chunks_dir / f"{video_path.stem}{CHUNKS_CORRECTED_SUFFIX}"
-    if corrected.exists():
-        return corrected
-    return chunks_dir / f"{video_path.stem}{CHUNKS_SUFFIX}"
+    video_chunks_dir = existing_chunks_dir(video_path)
+    candidates = (
+        video_chunks_dir / CHUNKS_SPEAKER_VALIDATED_NAME,
+        video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_CORRECTED_SUFFIX}",
+        video_chunks_dir / CHUNKS_NAME,
+        video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_SUFFIX}",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return video_chunks_dir / CHUNKS_NAME
 
 
 def word_count(text):
@@ -130,7 +140,7 @@ def rewrite_chunks(video_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Decoupe les chunks marqués ALERT dans le dossier chunks/."
+        description="Decoupe les chunks marques ALERT dans outputs/chunks/."
     )
     parser.add_argument(
         "--video-dir",

@@ -6,14 +6,16 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from pipeline_paths import existing_images_dir, existing_interview_dir, interview_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 SOURCE_DIR_NAMES = ("footage",)
-OUTPUT_DIR_NAME = "is_interview"
-MANIFEST_NAME = "manifest.json"
+OUTPUT_DIR_NAME = "interview"
+MANIFEST_NAME = "interview_detection_manifest.json"
+LEGACY_MANIFEST_NAME = "manifest.json"
 DEFAULT_MAX_INTERVIEW_SEQUENCES = 5
 
 
@@ -263,7 +265,7 @@ def build_sequences(image_paths, args):
 
 
 def write_outputs(video_path, image_paths, pair_results, sequences, args):
-    output_dir = ensure_clean_dir(video_path.parent / OUTPUT_DIR_NAME)
+    output_dir = ensure_clean_dir(interview_dir(video_path))
 
     selected_names = []
     seen = set()
@@ -278,7 +280,7 @@ def write_outputs(video_path, image_paths, pair_results, sequences, args):
             frame_items.append(
                 {
                     "name": frame_name,
-                    "source": source_path.relative_to(video_path.parent).as_posix(),
+                    "source": relative_to_video_dir(source_path, video_path),
                 }
             )
         sequence["frames"] = frame_items
@@ -307,8 +309,12 @@ def write_outputs(video_path, image_paths, pair_results, sequences, args):
 
 
 def detect_for_video(video_path, args):
-    images_dir = video_path.parent / "images"
-    output_manifest = video_path.parent / OUTPUT_DIR_NAME / MANIFEST_NAME
+    images_dir = existing_images_dir(video_path)
+    output_dir = existing_interview_dir(video_path)
+    output_manifest = output_dir / MANIFEST_NAME
+    legacy_output_manifest = output_dir / LEGACY_MANIFEST_NAME
+    if legacy_output_manifest.exists() and not output_manifest.exists():
+        output_manifest = legacy_output_manifest
     if output_manifest.exists() and not args.force:
         print(f"[skip] {video_path.name}: {output_manifest} existe deja")
         return output_manifest
@@ -385,7 +391,7 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenere le dossier is_interview meme si le manifeste existe deja.",
+        help="Regenere le dossier outputs/interview meme si le manifeste existe deja.",
     )
     parser.add_argument(
         "--max-interview-sequences",

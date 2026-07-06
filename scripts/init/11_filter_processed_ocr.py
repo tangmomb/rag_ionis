@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
 from ocr_processed_filtering import (
     build_filtered_payload,
     filter_overlay_items,
@@ -14,11 +14,13 @@ from ocr_processed_filtering import (
     normalize_text,
     processed_ocr_source_path,
 )
+from pipeline_paths import existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-OCR_FOOTAGE_NAME = "ocr_footage.json"
+OCR_FOOTAGE_NAME = "raw_ocr_footage_frames.json"
+LEGACY_OCR_FOOTAGE_NAME = "ocr_footage.json"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -54,7 +56,12 @@ def latest_video_dir(parent_dir):
 
 
 def footage_ocr_path(video_path):
-    return video_path.parent / "ocr" / OCR_FOOTAGE_NAME
+    video_ocr_dir = existing_ocr_dir(video_path)
+    preferred = video_ocr_dir / OCR_FOOTAGE_NAME
+    legacy = video_ocr_dir / LEGACY_OCR_FOOTAGE_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_footage_occurrences(path):
@@ -110,7 +117,7 @@ def enrich_others_with_footage_occurrences(grouped_kind_details, video_path):
         occurrences = list(occurrences_by_text.get(normalized, []))
         detail["all_occurrences"] = occurrences
         detail["all_occurrence_count"] = len(occurrences)
-        detail["all_occurrences_source"] = f"ocr/{OCR_FOOTAGE_NAME}"
+        detail["all_occurrences_source"] = relative_to_video_dir(footage_path, video_path)
 
 
 def filter_processed_ocr(video_path, force=False):
@@ -142,8 +149,8 @@ def filter_processed_ocr(video_path, force=False):
         "filter_ocr_processed",
         {
             "status": "done",
-            "source": f"ocr/{source.name}",
-            "filtered_file": f"ocr/{target.name}",
+            "source": relative_to_video_dir(source, video_path),
+            "filtered_file": relative_to_video_dir(target, video_path),
             "filtered_item_count": len(filtered_items),
             "kind_count": len(grouped_kinds),
         },
@@ -154,7 +161,7 @@ def filter_processed_ocr(video_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Filtre les overlays OCR et produit un ocr_processed_filtered.json."
+        description="Filtre les overlays OCR et produit filtered_ocr_overlays.json."
     )
     parser.add_argument(
         "--video-dir",

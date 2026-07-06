@@ -5,8 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from analysed_infos import update_analysed_infos
+from pipeline_analysis import update_analysed_infos
 from imageio_ffmpeg import get_ffmpeg_exe
+from pipeline_paths import images_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -58,7 +59,7 @@ def latest_video_dir(parent_dir):
 
 
 def extract_images(video_path, interval_seconds, force=False):
-    video_images_dir = video_path.parent / "images"
+    video_images_dir = images_dir(video_path)
     existing = sorted(video_images_dir.glob("*.jpg")) if video_images_dir.exists() else []
     if existing and not force:
         print(f"[skip] {video_path.name}: {len(existing)} images existent deja")
@@ -93,7 +94,7 @@ def extract_images(video_path, interval_seconds, force=False):
             "status": "done",
             "interval_seconds": interval_seconds,
             "image_count": count,
-            "images_dir": "images",
+            "images_dir": relative_to_video_dir(video_images_dir, video_path),
         },
     )
     return count

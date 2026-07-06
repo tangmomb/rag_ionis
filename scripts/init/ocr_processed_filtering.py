@@ -3,11 +3,16 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from pipeline_paths import existing_ocr_dir
+
 
 OCR_DIR_NAME = "ocr"
-OCR_PROCESSED_NAME = "ocr_processed.json"
-OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
-OCR_PROCESSED_FILTERED_NAME = "ocr_processed_filtered.json"
+OCR_PROCESSED_NAME = "processed_ocr_items.json"
+OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
+OCR_PROCESSED_FILTERED_NAME = "filtered_ocr_overlays.json"
+LEGACY_OCR_PROCESSED_NAME = "ocr_processed.json"
+LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
+LEGACY_OCR_PROCESSED_FILTERED_NAME = "ocr_processed_filtered.json"
 SUBTITLE_REPEAT_IMAGE_WINDOW = 10
 MIN_OVERLAY_SCORE = 0.9
 GRAPHIC_SEQUENCE_GAP_SECONDS = 5
@@ -305,16 +310,27 @@ def collapse_on_footage_progressions(items, max_gap_seconds=ON_FOOTAGE_SEQUENCE_
 
 
 def processed_ocr_source_path(video_path):
-    ocr_dir = video_path.parent / OCR_DIR_NAME
-    corrected = ocr_dir / OCR_PROCESSED_CORRECTED_NAME
+    video_ocr_dir = existing_ocr_dir(video_path)
+    corrected = video_ocr_dir / OCR_PROCESSED_CORRECTED_NAME
+    legacy_corrected = video_ocr_dir / LEGACY_OCR_PROCESSED_CORRECTED_NAME
     if corrected.exists():
         return corrected
-    return ocr_dir / OCR_PROCESSED_NAME
+    if legacy_corrected.exists():
+        return legacy_corrected
+    processed = video_ocr_dir / OCR_PROCESSED_NAME
+    legacy_processed = video_ocr_dir / LEGACY_OCR_PROCESSED_NAME
+    if legacy_processed.exists() and not processed.exists():
+        return legacy_processed
+    return processed
 
 
 def filtered_ocr_path(video_path):
-    ocr_dir = video_path.parent / OCR_DIR_NAME
-    return ocr_dir / OCR_PROCESSED_FILTERED_NAME
+    video_ocr_dir = existing_ocr_dir(video_path)
+    preferred = video_ocr_dir / OCR_PROCESSED_FILTERED_NAME
+    legacy = video_ocr_dir / LEGACY_OCR_PROCESSED_FILTERED_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
 
 
 def load_overlay_items(path):

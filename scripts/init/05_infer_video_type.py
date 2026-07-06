@@ -61,7 +61,7 @@ def infer_video_type_from_manifest(payload):
 
 
 def write_analysed_infos(video_path, video_type):
-    return update_analysed_infos(video_path, "04b_infer_video_type", {"video_type": video_type})
+    return update_analysed_infos(video_path, "05_infer_video_type", {"video_type": video_type})
 
 
 def infer_for_video(video_path, force=False):

@@ -34,7 +34,7 @@ def load_json(path):
 
 
 def write_has_subtitles(video_path, has_subtitles):
-    return update_analysed_infos(video_path, "05a_detect_ocr_subtitles", {"has_subtitles": bool(has_subtitles)})
+    return update_analysed_infos(video_path, "08_detect_ocr_subtitles", {"has_subtitles": bool(has_subtitles)})
 
 
 def subtitle_entries_from_boxes(payload, images_dir):

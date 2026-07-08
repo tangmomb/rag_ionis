@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
@@ -17,11 +18,18 @@ SUBTITLE_REPEAT_IMAGE_WINDOW = 10
 MIN_OVERLAY_SCORE = 0.9
 GRAPHIC_SEQUENCE_GAP_SECONDS = 5
 ON_FOOTAGE_SEQUENCE_GAP_SECONDS = 1
+OTHERS_PROGRESSION_IMAGE_GAP = 10
 OVERLAY_KINDS = {"name", "lower_third", "question_intertitle", "title"}
 
 
 def normalize_text(text):
     return re.sub(r"\W+", "", str(text).casefold())
+
+
+def fold_text(text):
+    decomposed = unicodedata.normalize("NFKD", str(text).casefold())
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return re.sub(r"\W+", "", without_marks)
 
 
 def normalize_kind(kind):
@@ -206,6 +214,70 @@ def texts_are_progressive(text_a, text_b):
     if not normalized_a or not normalized_b:
         return False
     return normalized_a in normalized_b or normalized_b in normalized_a
+
+
+def text_extends_or_repeats(previous_text, candidate_text):
+    previous_normalized = fold_text(previous_text)
+    candidate_normalized = fold_text(candidate_text)
+    if not previous_normalized or not candidate_normalized:
+        return False
+    if previous_normalized == candidate_normalized:
+        return True
+    if len(previous_normalized) < 2 or len(candidate_normalized) <= len(previous_normalized):
+        return False
+    return candidate_normalized.startswith(previous_normalized)
+
+
+def edit_distance_at_most(left, right, limit=2):
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > limit:
+        return False
+
+    previous = list(range(len(right) + 1))
+    for i, left_char in enumerate(left, start=1):
+        current = [i]
+        row_min = current[0]
+        for j, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            value = min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + cost,
+            )
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > limit:
+            return False
+        previous = current
+    return previous[-1] <= limit
+
+
+def are_minor_ocr_variants(left_text, right_text, max_distance=2):
+    left_folded = fold_text(left_text)
+    right_folded = fold_text(right_text)
+    if not left_folded or not right_folded:
+        return False
+    if left_folded == right_folded:
+        return True
+    if len(left_folded) < 6 or len(right_folded) < 6:
+        return False
+    return edit_distance_at_most(left_folded, right_folded, limit=max_distance)
+
+
+def other_entry_quality(entry):
+    text = str(entry.get("text", ""))
+    normalized = fold_text(text)
+    spaced_words = len(text.split())
+    has_spacing = 1 if " " in text else 0
+    has_separator = 1 if any(char in text for char in {"&", "-", "/"} ) else 0
+    return (
+        len(normalized),
+        spaced_words,
+        has_spacing,
+        has_separator,
+        -entry["second"],
+    )
 
 
 def group_items_by_image(items):
@@ -446,6 +518,105 @@ def filter_subtitle_entries(entries, image_orders):
     return kept
 
 
+def filter_other_progressive_entries(entries, image_orders, max_image_gap=OTHERS_PROGRESSION_IMAGE_GAP):
+    if not entries:
+        return entries
+
+    sorted_entries = sorted(entries, key=item_sort_key)
+    kept = []
+    consumed = set()
+
+    def within_gap(left, right):
+        left_index = image_orders.get(left.get("image"))
+        right_index = image_orders.get(right.get("image"))
+        if left_index is not None and right_index is not None:
+            return 0 < right_index - left_index <= max_image_gap
+        return 0 < right["second"] - left["second"] <= max_image_gap
+
+    for index, entry in enumerate(sorted_entries):
+        if index in consumed:
+            continue
+
+        run_indexes = [index]
+        run_changed = True
+        while run_changed:
+            run_changed = False
+            for candidate_index in range(run_indexes[-1] + 1, len(sorted_entries)):
+                if candidate_index in run_indexes:
+                    continue
+                candidate = sorted_entries[candidate_index]
+                if any(
+                    within_gap(sorted_entries[run_index], candidate)
+                    and text_extends_or_repeats(sorted_entries[run_index]["text"], candidate["text"])
+                    for run_index in run_indexes
+                ):
+                    run_indexes.append(candidate_index)
+                    run_changed = True
+
+        run = [sorted_entries[run_index] for run_index in run_indexes]
+        if len(run) == 1:
+            kept.append(run[0])
+            consumed.add(index)
+            continue
+
+        best_entry = max(
+            run,
+            key=lambda candidate: (
+                len(normalize_text(candidate["text"])),
+                len(candidate["text"].split()),
+                candidate["second"],
+            ),
+        )
+        last_entry = run[-1]
+        kept.append(best_entry)
+        if last_entry is not best_entry:
+            kept.append(last_entry)
+        consumed.update(run_indexes)
+
+    return sorted(kept, key=item_sort_key)
+
+
+def filter_other_minor_variants(entries, image_orders, max_image_gap=OTHERS_PROGRESSION_IMAGE_GAP):
+    if not entries:
+        return entries
+
+    sorted_entries = sorted(entries, key=item_sort_key)
+    kept = []
+    consumed = set()
+
+    def within_gap(left, right):
+        left_index = image_orders.get(left.get("image"))
+        right_index = image_orders.get(right.get("image"))
+        if left_index is not None and right_index is not None:
+            return abs(right_index - left_index) <= max_image_gap
+        return abs(right["second"] - left["second"]) <= max_image_gap
+
+    for index, entry in enumerate(sorted_entries):
+        if index in consumed:
+            continue
+
+        variant_indexes = [index]
+        for candidate_index in range(index + 1, len(sorted_entries)):
+            if candidate_index in consumed:
+                continue
+            candidate = sorted_entries[candidate_index]
+            if not within_gap(entry, candidate):
+                if candidate["second"] - entry["second"] > max_image_gap:
+                    break
+                continue
+            if are_minor_ocr_variants(entry["text"], candidate["text"]):
+                variant_indexes.append(candidate_index)
+                continue
+            if text_extends_or_repeats(entry["text"], candidate["text"]) or text_extends_or_repeats(candidate["text"], entry["text"]):
+                continue
+
+        best_entry = max((sorted_entries[i] for i in variant_indexes), key=other_entry_quality)
+        kept.append(best_entry)
+        consumed.update(variant_indexes)
+
+    return sorted(kept, key=item_sort_key)
+
+
 def group_items_by_kind(all_items, filtered_overlay_items):
     grouped = defaultdict(list)
     image_orders = image_order_map(all_items)
@@ -462,6 +633,9 @@ def group_items_by_kind(all_items, filtered_overlay_items):
         entries = sorted(grouped[kind], key=item_sort_key)
         if kind == "subtitle":
             entries = filter_subtitle_entries(entries, image_orders)
+        elif kind == "others":
+            entries = filter_other_progressive_entries(entries, image_orders)
+            entries = filter_other_minor_variants(entries, image_orders)
         values = {}
         details = {}
         timecode_counts = defaultdict(int)
@@ -495,6 +669,7 @@ def build_filtered_payload(source_payload, source_name, filtered_items, grouped_
             "min_overlay_score": MIN_OVERLAY_SCORE,
             "graphic_sequence_gap_seconds": GRAPHIC_SEQUENCE_GAP_SECONDS,
             "on_footage_sequence_gap_seconds": ON_FOOTAGE_SEQUENCE_GAP_SECONDS,
+            "others_progression_image_gap": OTHERS_PROGRESSION_IMAGE_GAP,
         },
         "kinds": grouped_kinds,
         "kinds_details": grouped_kind_details,

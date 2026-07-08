@@ -9,7 +9,6 @@ from local_paddle_ocr import (
     box_bounds,
     box_geometry,
     configure_stdio,
-    graphic_kind_for_image,
     image_size,
     image_video_dirs,
     infer_subtitle_anchors,
@@ -59,7 +58,7 @@ def subtitle_entries_from_boxes(payload, images_dir):
 
     for item in payload.get("items", []):
         image_name = item.get("image")
-        if not image_name or graphic_kind_for_image(image_name):
+        if not image_name:
             continue
 
         image_path = images_dir / image_name

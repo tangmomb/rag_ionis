@@ -93,7 +93,10 @@ def strip_subtitle_kind(items, images_dir):
             geometry["relative_width"],
         )
         replacement = dict(item)
-        replacement["kind"] = "others"
+        if graphic_kind_for_image(image_name) == "graphic":
+            replacement["kind"] = "graphic"
+        else:
+            replacement["kind"] = "others"
         sanitized.append(replacement)
     return sanitized
 
@@ -102,10 +105,10 @@ def normalize_output_kinds(items):
     normalized_items = []
     for item in items:
         replacement = dict(item)
-        if graphic_kind_for_image(item.get("image")) == "graphic":
-            replacement["kind"] = "graphic"
-        elif item.get("kind") == "subtitle":
+        if item.get("kind") == "subtitle":
             replacement["kind"] = "subtitle"
+        elif graphic_kind_for_image(item.get("image")) == "graphic":
+            replacement["kind"] = "graphic"
         else:
             replacement["kind"] = "others"
         normalized_items.append(replacement)

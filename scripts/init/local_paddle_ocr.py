@@ -361,16 +361,9 @@ def last_graphic_sequence_key(images_dir):
 def refine_subtitle_kinds(items, images_dir):
     geometries = []
     sizes = {}
-    passthrough_items = []
 
     for item in items:
         graphic_kind = graphic_kind_for_image(item.get("image"))
-        if is_graphic_kind(item.get("kind")) or graphic_kind:
-            item = dict(item)
-            item["kind"] = graphic_kind or item.get("kind")
-            passthrough_items.append(item)
-            continue
-
         image_name = item.get("image")
         size = None
         if image_name and image_name not in sizes:
@@ -392,22 +385,26 @@ def refine_subtitle_kinds(items, images_dir):
                 "has_subtitle_signal": has_subtitle_signal,
                 "key": text_key(item.get("text", "")),
                 "second": item.get("second"),
+                "fallback_kind": graphic_kind or item.get("kind"),
             }
         )
 
     anchors = infer_subtitle_anchors(geometries)
 
     if len(anchors) < 2:
-        refined = list(passthrough_items)
+        refined = []
         for entry in geometries:
             item = dict(entry["item"])
-            if item.get("kind") == "subtitle":
+            fallback_kind = entry["fallback_kind"]
+            if fallback_kind == "subtitle":
                 item["kind"] = non_subtitle_kind(
                     item.get("text", ""),
                     entry["geometry"],
                     entry["word_count"],
                     entry["has_sentence_punctuation"],
                 )
+            elif fallback_kind is not None:
+                item["kind"] = fallback_kind
             refined.append(item)
         return refined
 
@@ -418,10 +415,11 @@ def refine_subtitle_kinds(items, images_dir):
     x_tolerance = max(0.06, min(0.16, statistics.median(anchor_widths) * 0.25))
     y_tolerance = max(0.04, min(0.075, anchor_height * 1.6))
 
-    refined = list(passthrough_items)
+    refined = []
     for entry in geometries:
         item = dict(entry["item"])
         geometry = entry["geometry"]
+        fallback_kind = entry["fallback_kind"]
         is_near_anchor = anchored_subtitle_match(
             geometry,
             anchor_cx,
@@ -431,13 +429,15 @@ def refine_subtitle_kinds(items, images_dir):
         )
         if is_near_anchor:
             item["kind"] = "subtitle"
-        elif item.get("kind") == "subtitle":
+        elif fallback_kind == "subtitle":
             item["kind"] = non_subtitle_kind(
                 item.get("text", ""),
                 geometry,
                 entry["word_count"],
                 entry["has_sentence_punctuation"],
             )
+        elif fallback_kind is not None:
+            item["kind"] = fallback_kind
         refined.append(item)
 
     return refined
@@ -599,6 +599,9 @@ def filter_decor_items(items, images_dir):
 
     for item in items:
         graphic_kind = graphic_kind_for_image(item.get("image"))
+        if item.get("kind") == "subtitle":
+            passthrough_items.append(item)
+            continue
         if is_graphic_kind(item.get("kind")) or graphic_kind:
             item = dict(item)
             item["kind"] = graphic_kind or item.get("kind")

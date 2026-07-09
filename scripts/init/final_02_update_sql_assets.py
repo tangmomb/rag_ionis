@@ -247,11 +247,7 @@ def ensure_chunks_schema(cursor):
             video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
             content TEXT NOT NULL,
-            char_count INTEGER,
-            alert BOOLEAN,
-            alert_reason TEXT,
             speakers TEXT[],
-            source_file TEXT,
             embedding_model TEXT,
             embedding vector(3072),
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -260,13 +256,13 @@ def ensure_chunks_schema(cursor):
         """
     )
     ensure_data_collected_date_column(cursor, "chunks")
-    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS char_count INTEGER")
-    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS alert BOOLEAN")
-    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS alert_reason TEXT")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers TEXT[]")
-    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS source_file TEXT")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(3072)")
+    cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS char_count")
+    cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS alert")
+    cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS alert_reason")
+    cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS source_file")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index)")
 
@@ -591,7 +587,7 @@ def load_video_summary(video_path):
     return text or None
 
 
-def upsert_chunk(cursor, video_id, chunk_payload, source_file, embedding_payload=None):
+def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
     chunk_index = parse_int(chunk_payload.get("chunk_index"))
     content = str(chunk_payload.get("content") or "").strip()
     if chunk_index is None or not content:
@@ -610,23 +606,15 @@ def upsert_chunk(cursor, video_id, chunk_payload, source_file, embedding_payload
                 video_id,
                 chunk_index,
                 content,
-                char_count,
-                alert,
-                alert_reason,
                 speakers,
-                source_file,
                 embedding_model,
                 embedding,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, now())
+            VALUES (%s, %s, %s, %s, %s, %s::vector, now())
             ON CONFLICT (video_id, chunk_index) DO UPDATE SET
                 content = EXCLUDED.content,
-                char_count = EXCLUDED.char_count,
-                alert = EXCLUDED.alert,
-                alert_reason = EXCLUDED.alert_reason,
                 speakers = EXCLUDED.speakers,
-                source_file = EXCLUDED.source_file,
                 embedding_model = EXCLUDED.embedding_model,
                 embedding = EXCLUDED.embedding,
                 data_collected_date = now()
@@ -635,11 +623,7 @@ def upsert_chunk(cursor, video_id, chunk_payload, source_file, embedding_payload
                 video_id,
                 chunk_index,
                 content,
-                parse_int(chunk_payload.get("char_count")),
-                chunk_payload.get("alert") if isinstance(chunk_payload.get("alert"), bool) else None,
-                chunk_payload.get("alert_reason"),
                 speakers,
-                source_file,
                 embedding_model,
                 embedding_literal,
             ),
@@ -651,22 +635,14 @@ def upsert_chunk(cursor, video_id, chunk_payload, source_file, embedding_payload
                 video_id,
                 chunk_index,
                 content,
-                char_count,
-                alert,
-                alert_reason,
                 speakers,
-                source_file,
                 embedding_model,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            VALUES (%s, %s, %s, %s, %s, now())
             ON CONFLICT (video_id, chunk_index) DO UPDATE SET
                 content = EXCLUDED.content,
-                char_count = EXCLUDED.char_count,
-                alert = EXCLUDED.alert,
-                alert_reason = EXCLUDED.alert_reason,
                 speakers = EXCLUDED.speakers,
-                source_file = EXCLUDED.source_file,
                 embedding_model = EXCLUDED.embedding_model,
                 data_collected_date = now()
             """,
@@ -674,11 +650,7 @@ def upsert_chunk(cursor, video_id, chunk_payload, source_file, embedding_payload
                 video_id,
                 chunk_index,
                 content,
-                parse_int(chunk_payload.get("char_count")),
-                chunk_payload.get("alert") if isinstance(chunk_payload.get("alert"), bool) else None,
-                chunk_payload.get("alert_reason"),
                 speakers,
-                source_file,
                 embedding_model,
             ),
         )
@@ -990,14 +962,12 @@ def main():
                         continue
                     chunks_payload, chunks_source = load_chunks_payload(current_video_dir)
                     if chunks_payload and chunks_source:
-                        source_file = chunks_source.relative_to(current_video_dir).as_posix()
                         for chunk_payload in chunks_payload.get("chunks", []):
                             embedding_payload = load_chunk_embedding_payload(current_video_dir, chunk_payload.get("chunk_index"))
                             if not args.dry_run and upsert_chunk(
                                 cursor,
                                 video_id,
                                 chunk_payload,
-                                source_file,
                                 embedding_payload=embedding_payload,
                             ):
                                 chunks_count += 1

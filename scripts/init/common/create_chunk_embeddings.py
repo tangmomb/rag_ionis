@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from pipeline_paths import chunks_dir, existing_chunks_dir, relative_to_video_dir
+from common.pipeline_paths import chunks_dir, existing_chunks_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")

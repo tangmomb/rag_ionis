@@ -3,8 +3,8 @@ import json
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from ocr_processed_filtering import (
+from common.pipeline_analysis import update_analysed_infos
+from common.ocr_processed_filtering import (
     build_filtered_payload,
     filter_overlay_items,
     filtered_ocr_path,
@@ -14,7 +14,7 @@ from ocr_processed_filtering import (
     normalize_text,
     processed_ocr_source_path,
 )
-from pipeline_paths import existing_ocr_dir, relative_to_video_dir
+from common.pipeline_paths import existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -57,7 +57,7 @@ def latest_video_dir(parent_dir):
 
 def footage_ocr_path(video_path):
     video_ocr_dir = existing_ocr_dir(video_path)
-    preferred = video_ocr_dir / OCR_FOOTAGE_NAME
+    preferred = video_ocr_dir / "raw" / OCR_FOOTAGE_NAME
     legacy = video_ocr_dir / LEGACY_OCR_FOOTAGE_NAME
     if legacy.exists() and not preferred.exists():
         return legacy
@@ -161,7 +161,7 @@ def filter_processed_ocr(video_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Filtre les overlays OCR et produit filtered_ocr_overlays.json."
+        description="Filtre les overlays OCR et produit 02_filtered_ocr_overlays.json."
     )
     parser.add_argument(
         "--video-dir",

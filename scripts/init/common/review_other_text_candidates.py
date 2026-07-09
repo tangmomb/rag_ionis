@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pipeline_paths import existing_ocr_dir, relative_to_video_dir
+from common.pipeline_paths import existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -76,6 +76,15 @@ def latest_video_dir(parent_dir):
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
     return candidates[-1]
+
+
+def normalize_openai_mode(value):
+    normalized = str(value).strip().lower()
+    if normalized in {"normal", "live"}:
+        return "live"
+    if normalized == "batch":
+        return "batch"
+    return DEFAULT_MODE
 
 
 def source_dir(video_path):
@@ -630,7 +639,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         choices=("live", "batch"),
-        default=DEFAULT_MODE,
+        default=normalize_openai_mode(os.getenv("PIPELINE_OPENAI_MODE", DEFAULT_MODE)),
         help=f"Mode d'execution OpenAI. Defaut: {DEFAULT_MODE}.",
     )
     parser.add_argument(

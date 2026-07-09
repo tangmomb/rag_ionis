@@ -7,7 +7,7 @@ import types
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from pipeline_paths import existing_images_dir
+from common.pipeline_paths import existing_images_dir
 
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
@@ -272,7 +272,7 @@ def non_subtitle_kind(text, geometry, word_count, has_sentence_punctuation):
     relative_width = geometry["relative_width"]
 
     if cleaned.endswith("?"):
-        return "question_intertitle"
+        return "title"
     if len(cleaned) <= 20 and cy <= 0.18 and relative_width <= 0.28:
         return "logo"
     if cy >= 0.78:
@@ -309,7 +309,7 @@ def classify_text(text, box, image_size):
     mostly_upper = cleaned.isupper() and len(cleaned) >= 3
     title_like = word_count <= 8 and (mostly_upper or cleaned[:1].isupper())
     if cleaned.endswith("?"):
-        return "question_intertitle"
+        return "title"
     if word_count <= 4 and title_like and not has_sentence_punctuation and "'" not in cleaned and "," not in cleaned and not any(char.isdigit() for char in cleaned):
         return "name"
     if len(cleaned) <= 20 and cy <= 0.18 and relative_width <= 0.28:
@@ -701,17 +701,8 @@ def collapse_graphic_sequence_items(items):
 
 
 def mark_last_graphic_sequence_as_outro(items, images_dir):
-    outro_sequence = last_graphic_sequence_key(images_dir)
-    if not outro_sequence:
-        return list(items)
-
-    marked = []
-    for item in items:
-        item = dict(item)
-        if graphic_sequence_key(item.get("image")) == outro_sequence:
-            item["kind"] = "outro"
-        marked.append(item)
-    return marked
+    del images_dir
+    return list(items)
 
 
 def image_order_map(images_dir):

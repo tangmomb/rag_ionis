@@ -2,15 +2,15 @@ import argparse
 import json
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from local_paddle_ocr import (
+from common.pipeline_analysis import update_analysed_infos
+from common.local_paddle_ocr import (
     LocalPaddleOCR,
     configure_stdio,
     image_files,
     image_video_dirs,
     latest_video_dir,
 )
-from pipeline_paths import existing_images_dir, ocr_dir as output_ocr_dir, relative_to_video_dir
+from common.pipeline_paths import existing_images_dir, ocr_raw_dir as output_ocr_raw_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -27,7 +27,7 @@ def raw_ocr_name(group_name):
 
 def existing_raw_ocr_path(ocr_dir, group_name):
     preferred = ocr_dir / raw_ocr_name(group_name)
-    legacy = ocr_dir / f"ocr_{group_name}.json"
+    legacy = ocr_dir.parent / f"ocr_{group_name}.json"
     if legacy.exists() and not preferred.exists():
         return legacy
     return preferred
@@ -113,7 +113,7 @@ def main():
 
     for video_path in videos:
         images_dir = existing_images_dir(video_path)
-        ocr_dir = output_ocr_dir(video_path)
+        ocr_dir = output_ocr_raw_dir(video_path)
         ocr_dir.mkdir(parents=True, exist_ok=True)
         group_output_paths = {
             group_name: existing_raw_ocr_path(ocr_dir, group_name)

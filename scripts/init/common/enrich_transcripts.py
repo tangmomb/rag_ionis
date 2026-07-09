@@ -4,9 +4,9 @@ import re
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from ocr_processed_filtering import filtered_ocr_path, format_timecode
-from pipeline_paths import existing_transcripts_dir, relative_to_video_dir
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
+from common.ocr_processed_filtering import enriched_ocr_source_path, format_timecode
+from common.pipeline_paths import existing_transcripts_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -57,6 +57,18 @@ def latest_video_dir(parent_dir):
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
     return candidates[-1]
+
+
+def analysed_has_subtitles(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("has_subtitles")
+    return value if isinstance(value, bool) else None
 
 
 def timecodes_path(video_path):
@@ -122,10 +134,6 @@ def load_filtered_overlays(path):
 
 def overlay_label_key(item):
     kind = item.get("kind")
-    if kind == "question_intertitle":
-        return "question_intertitle"
-    if kind == "outro":
-        return "outro"
     if kind == "graphic":
         return "graphic"
     return "on_footage"
@@ -134,9 +142,7 @@ def overlay_label_key(item):
 def format_overlay_line(overlay):
     timecode = format_timecode(overlay["second"])
     labels = {
-        "question_intertitle": "INTERCALAIRE QUESTION",
         "on_footage": "ON_FOOTAGE",
-        "outro": "OUTRO",
         "graphic": "GRAPHIC",
     }
     label = labels[overlay_label_key(overlay)]
@@ -145,7 +151,7 @@ def format_overlay_line(overlay):
 
 def enrich_transcript(video_path, force=False):
     source = timecodes_path(video_path)
-    analyse = filtered_ocr_path(video_path)
+    analyse = enriched_ocr_source_path(video_path)
     target = enriched_path(source)
 
     if target.exists() and not force:
@@ -211,6 +217,12 @@ def parse_args():
         action="store_true",
         help="Regenere les fichiers enrichis meme s'ils existent deja.",
     )
+    parser.add_argument(
+        "--has-subtitles",
+        choices=("true", "false", "all"),
+        default="all",
+        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: all.",
+    )
     return parser.parse_args()
 
 
@@ -224,7 +236,14 @@ def main():
 
     print(f"Dossier videos: {video_dir}")
     done = 0
+    expected_has_subtitles = None if args.has_subtitles == "all" else args.has_subtitles == "true"
     for video_path in videos:
+        has_subtitles = analysed_has_subtitles(video_path)
+        if expected_has_subtitles is not None and has_subtitles is not expected_has_subtitles:
+            print(
+                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
+            )
+            continue
         if enrich_transcript(video_path, force=args.force):
             done += 1
 

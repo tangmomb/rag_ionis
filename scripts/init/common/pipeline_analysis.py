@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
 
-from pipeline_paths import ANALYSED_INFOS_NAME
-from pipeline_paths import analysed_infos_path as pipeline_analysed_infos_path
-from pipeline_paths import metadata_dir
-from pipeline_paths import video_base_dir, video_id
+from common.pipeline_paths import ANALYSED_INFOS_NAME
+from common.pipeline_paths import analysed_infos_path as pipeline_analysed_infos_path
+from common.pipeline_paths import metadata_dir
+from common.pipeline_paths import video_base_dir, video_id
 
 
 ANALYSED_INFOS_SUFFIX = "_analysed_infos.json"

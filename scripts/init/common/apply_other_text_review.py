@@ -3,19 +3,17 @@ import json
 import sys
 from pathlib import Path
 
-from pipeline_paths import existing_ocr_dir, relative_to_video_dir
+from common.pipeline_paths import existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-SOURCE_FILTERED_NAME = "filtered_ocr_overlays.json"
-LEGACY_SOURCE_FILTERED_NAME = "ocr_processed_filtered.json"
+SOURCE_FILTERED_NAME = "02_filtered_ocr_overlays.json"
 SOURCE_REVIEW_DIRNAME = "other_text_gpt_review"
 LEGACY_SOURCE_REVIEW_DIRNAME = "ocr_processed_filtered_others_boxes_review"
 SOURCE_REVIEW_SUMMARY_NAME = "review_summary.json"
 LEGACY_SOURCE_REVIEW_SUMMARY_NAME = "summary.json"
-OUTPUT_FILTERED_NAME = "reviewed_ocr_overlays.json"
-LEGACY_OUTPUT_FILTERED_NAME = "ocr_processed_filtered_reviewed.json"
+OUTPUT_FILTERED_NAME = "03_reviewed_ocr_overlays.json"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -52,11 +50,7 @@ def latest_video_dir(parent_dir):
 
 def filtered_path(video_path):
     video_ocr_dir = existing_ocr_dir(video_path)
-    preferred = video_ocr_dir / SOURCE_FILTERED_NAME
-    legacy = video_ocr_dir / LEGACY_SOURCE_FILTERED_NAME
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
+    return video_ocr_dir / SOURCE_FILTERED_NAME
 
 
 def review_summary_path(video_path):
@@ -70,11 +64,7 @@ def review_summary_path(video_path):
 
 def output_path(video_path):
     video_ocr_dir = existing_ocr_dir(video_path)
-    preferred = video_ocr_dir / OUTPUT_FILTERED_NAME
-    legacy = video_ocr_dir / LEGACY_OUTPUT_FILTERED_NAME
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
+    return video_ocr_dir / OUTPUT_FILTERED_NAME
 
 
 def load_json(path):
@@ -184,7 +174,7 @@ def apply_review(video_path, force=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Produit reviewed_ocr_overlays.json en appliquant les decisions GPT sur les items others."
+        description="Produit 03_reviewed_ocr_overlays.json en appliquant les decisions GPT sur les items others."
     )
     parser.add_argument(
         "--video-dir",

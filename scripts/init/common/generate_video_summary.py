@@ -4,8 +4,8 @@ import re
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from pipeline_paths import (
+from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_paths import (
     OUTPUTS_DIR_NAME,
     TRANSCRIPTS_DIR_NAME,
     existing_transcripts_dir,
@@ -22,6 +22,7 @@ TIMECODE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 TIMECODE_WITH_RANGE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 INSERT_LINE = re.compile(r"^INSERT:\s*(.*)$", re.IGNORECASE)
 GRAPHIC_LINE = re.compile(r"^GRAPHIC:\s*(.*)$", re.IGNORECASE)
+ON_FOOTAGE_LINE = re.compile(r"^ON_FOOTAGE:\s*(.*)$", re.IGNORECASE)
 YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
 LEGACY_INFO_SUFFIX = ".info.json"
 
@@ -55,12 +56,14 @@ def latest_video_dir(parent_dir):
 
 
 def enriched_inputs(transcript_dir):
-    return sorted(transcript_dir.glob(f"*{ENRICHED_SUFFIX}")) or sorted(transcript_dir.glob(f"*{LEGACY_ENRICHED_SUFFIX}"))
+    return sorted(transcript_dir.glob(f"*{ENRICHED_SUFFIX}")) or sorted(
+        transcript_dir.glob(f"*{LEGACY_ENRICHED_SUFFIX}")
+    )
 
 
 def video_dir_for_input(input_path):
     if (
-        input_path.parent.name == TRANSCRIPTS_DIR_NAME
+        input_path.parent.name.startswith(TRANSCRIPTS_DIR_NAME)
         and input_path.parent.parent.name == OUTPUTS_DIR_NAME
     ):
         return input_path.parent.parent.parent
@@ -78,6 +81,25 @@ def video_file_for_dir(video_dir):
 
 def summary_path(input_path):
     return input_path.with_name(SUMMARY_NAME)
+
+
+def repair_mojibake(text):
+    value = str(text)
+    markers = ("Ã", "â", "ðŸ", "ï¸", "œ", "�")
+    if not any(marker in value for marker in markers):
+        return value
+    for source_encoding in ("latin-1", "cp1252"):
+        try:
+            repaired = value.encode(source_encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if repaired != value:
+            return repaired
+    return value
+
+
+def normalize_text(text):
+    return " ".join(repair_mojibake(text).split()).strip()
 
 
 def video_title_for_input(input_path):
@@ -99,7 +121,7 @@ def video_title_for_input(input_path):
         title = payload.get("title")
         if title:
             return normalize_text(title)
-    return input_path.stem
+    return normalize_text(input_path.stem)
 
 
 def parse_enriched_lines(text):
@@ -123,18 +145,23 @@ def escape_markdown(text):
     return str(text).replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
 
 
-def normalize_text(text):
-    return " ".join(str(text).split()).strip()
-
-
 def normalize_chapter_title(text):
-    return normalize_text(text).replace("/", " ").strip()
+    normalized = normalize_text(text).replace("/", " ").strip()
+    if normalized == "Suivez notre actualité sur":
+        return "Suivez notre actualité sur les réseaux sociaux"
+    if normalized.endswith("Suivez notre actualité sur"):
+        prefix = normalized[: -len("Suivez notre actualité sur")].rstrip()
+        if prefix:
+            return f"{prefix} Suivez notre actualité sur les réseaux sociaux"
+        return "Suivez notre actualité sur les réseaux sociaux"
+    return normalized
 
 
 def split_chapters(rows):
     chapters = []
     current = None
     first_chapter_has_insert = False
+    last_body_was_graphic = False
 
     for start, end, body in rows:
         insert_match = INSERT_LINE.match(body)
@@ -150,7 +177,9 @@ def split_chapters(rows):
                 "speech": [],
                 "animations": [],
                 "is_intro": False,
+                "is_outro": False,
             }
+            last_body_was_graphic = False
             continue
 
         if current is None:
@@ -161,23 +190,47 @@ def split_chapters(rows):
                 "speech": [],
                 "animations": [],
                 "is_intro": False,
+                "is_outro": False,
             }
 
         current["end"] = end
 
         graphic_match = GRAPHIC_LINE.match(body)
         if graphic_match:
-            current["animations"].append(normalize_text(graphic_match.group(1)))
+            graphic_text = normalize_text(graphic_match.group(1))
+            if current:
+                chapters.append(current)
+            if not chapters:
+                first_chapter_has_insert = True
+            current = {
+                "title": normalize_chapter_title(graphic_text) or "Sans titre",
+                "start": start,
+                "end": end,
+                "speech": [],
+                "animations": [],
+                "is_intro": False,
+                "is_outro": False,
+            }
+            last_body_was_graphic = True
+            continue
+
+        on_footage_match = ON_FOOTAGE_LINE.match(body)
+        if on_footage_match:
+            current["animations"].append(normalize_text(on_footage_match.group(1)))
+            last_body_was_graphic = False
             continue
 
         if body:
             current["speech"].append(normalize_text(body))
+            last_body_was_graphic = False
 
     if current:
+        if last_body_was_graphic:
+            current["is_outro"] = True
         chapters.append(current)
 
     if chapters and not first_chapter_has_insert:
-        chapters[0]["title"] = "DÃ©but de la vidÃ©o"
+        chapters[0]["title"] = "Début de la vidéo"
         chapters[0]["is_intro"] = True
 
     return chapters
@@ -185,14 +238,21 @@ def split_chapters(rows):
 
 def render_table(chapter_index, chapter):
     if chapter.get("is_intro"):
-        heading = "## DÃ©but de la vidÃ©o"
+        heading = "## Début de la vidéo"
+    elif chapter.get("is_outro"):
+        heading = f"## Outro : *{escape_markdown(chapter['title'])}*"
     else:
         heading = f"## Intercalaire {chapter_index:02d} : *{escape_markdown(chapter['title'])}*"
+    if chapter.get("is_outro"):
+        return [heading, ""]
+
     lines = [heading, ""]
-    lines.extend([
-        "| Timecode | Parole | Animation |",
-        "| --- | --- | --- |",
-    ])
+    lines.extend(
+        [
+            "| Timecode | Parole | Animation |",
+            "| --- | --- | --- |",
+        ]
+    )
     timecode = chapter["start"] if chapter["start"] == chapter["end"] else f"{chapter['start']} - {chapter['end']}"
     speech = " ".join(chapter["speech"]) if chapter["speech"] else ""
     animation = " / ".join(chapter["animations"]) if chapter["animations"] else ""
@@ -202,16 +262,18 @@ def render_table(chapter_index, chapter):
 
 
 def render_summary(rows, video_title):
-    lines = [f"# Sommaire de la vidÃ©o", f"# {escape_markdown(video_title)}", ""]
+    lines = ["# Sommaire de la vidéo", f"# {escape_markdown(video_title)}", ""]
     chapters = split_chapters(rows)
     if not chapters:
-        lines.extend([
-            "## dÃ©but de la vidÃ©o",
-            "",
-            "| Timecode | Parole | Animation |",
-            "| --- | --- | --- |",
-            "|  |  |  |",
-        ])
+        lines.extend(
+            [
+                "## Début de la vidéo",
+                "",
+                "| Timecode | Parole | Animation |",
+                "| --- | --- | --- |",
+                "|  |  |  |",
+            ]
+        )
         return "\n".join(lines) + "\n"
 
     for index, chapter in enumerate(chapters, start=1):
@@ -280,7 +342,7 @@ def main():
         if summarize_file(input_path, force=args.force):
             done += 1
 
-    print(f"{done} fichiers rÃ©sumÃ©s.")
+    print(f"{done} fichiers résumés.")
 
 
 if __name__ == "__main__":

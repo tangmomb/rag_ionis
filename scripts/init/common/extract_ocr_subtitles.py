@@ -1,16 +1,16 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from pipeline_analysis import analysed_infos_path, update_analysed_infos
-from pipeline_paths import existing_ocr_dir, relative_to_video_dir, transcripts_dir
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
+from common.pipeline_paths import existing_ocr_dir, relative_to_video_dir, transcripts_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 OCR_DIR_NAME = "ocr"
 TRANSCRIPT_OCR_DIR_NAME = "transcripts"
-OCR_PROCESSED_NAME = "processed_ocr_items.json"
+OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
-LEGACY_OCR_PROCESSED_NAME = "ocr_processed.json"
 LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
 OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
 OCR_SUBTITLE_TIMECODES_NAME = "ocr_subtitles_timecoded.txt"
@@ -52,11 +52,7 @@ def processed_ocr_path(video_path):
         return corrected
     if legacy_corrected.exists():
         return legacy_corrected
-    processed = ocr_dir / OCR_PROCESSED_NAME
-    legacy_processed = ocr_dir / LEGACY_OCR_PROCESSED_NAME
-    if legacy_processed.exists() and not processed.exists():
-        return legacy_processed
-    return processed
+    return ocr_dir / OCR_PROCESSED_NAME
 
 
 def subtitle_path(video_path):
@@ -203,6 +199,12 @@ def parse_args():
         action="store_true",
         help="Regenere le fichier OCR subtitle meme s'il existe deja.",
     )
+    parser.add_argument(
+        "--has-subtitles",
+        choices=("true", "false"),
+        default="true",
+        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: true.",
+    )
     return parser.parse_args()
 
 
@@ -221,18 +223,19 @@ def main():
     done = 0
     for video_path in videos:
         has_subtitles = analysed_has_subtitles(video_path)
-        if has_subtitles is not True:
-            print(f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas true")
+        expected_has_subtitles = args.has_subtitles == "true"
+        if has_subtitles is not expected_has_subtitles:
+            print(
+                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
+            )
             continue
 
         source = processed_ocr_path(video_path)
-        target = subtitle_path(video_path)
         target_timecodes = subtitle_timecodes_path(video_path)
-        if target.exists() and not args.force:
-            print(f"[skip] {target.name} existe deja")
-            if target_timecodes.exists() and not args.force:
-                done += 1
-                continue
+        if target_timecodes.exists() and not args.force:
+            print(f"[skip] {target_timecodes.name} existe deja")
+            done += 1
+            continue
         if not source.exists():
             print(f"[skip] OCR traite introuvable: {source}")
             continue
@@ -242,23 +245,19 @@ def main():
             print(f"[skip] aucun kind=subtitle dans {source.name}")
             continue
         subtitles = collect_subtitles(items)
-        text = render_subtitles(subtitles)
         timecoded_text = render_subtitles_timecodes(subtitles)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text + ("\n" if text else ""), encoding="utf-8")
+        target_timecodes.parent.mkdir(parents=True, exist_ok=True)
         target_timecodes.write_text(timecoded_text + ("\n" if timecoded_text else ""), encoding="utf-8")
         update_analysed_infos(
             video_path,
             "ocr_subtitles",
             {
-                "status": "done",
-                "source": relative_to_video_dir(source, video_path),
-                "subtitle_file": relative_to_video_dir(target, video_path),
-                "subtitle_timecodes_file": relative_to_video_dir(target_timecodes, video_path),
-                "subtitle_count": len(subtitles),
+            "status": "done",
+            "source": relative_to_video_dir(source, video_path),
+            "subtitle_timecodes_file": relative_to_video_dir(target_timecodes, video_path),
+            "subtitle_count": len(subtitles),
             },
         )
-        print(f"[ok] {target}")
         print(f"[ok] {target_timecodes}")
         done += 1
 

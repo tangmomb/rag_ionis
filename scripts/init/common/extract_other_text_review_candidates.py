@@ -6,9 +6,9 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from ocr_processed_filtering import filtered_ocr_path
-from local_paddle_ocr import box_bounds, configure_stdio, image_files
-from pipeline_paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
+from common.ocr_processed_filtering import filtered_ocr_path
+from common.local_paddle_ocr import box_bounds, configure_stdio, image_files
+from common.pipeline_paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")

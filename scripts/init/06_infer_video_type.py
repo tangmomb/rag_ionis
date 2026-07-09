@@ -3,8 +3,8 @@ import json
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from pipeline_paths import existing_images_dir, existing_interview_dir
+from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_paths import existing_images_dir, existing_interview_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
-from pipeline_paths import existing_transcripts_dir
+from common.pipeline_paths import existing_transcripts_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -522,7 +522,7 @@ def parse_args():
     )
     parser.add_argument(
         "--prefix",
-        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step 25",
+        help="Prefixe S3. Defaut: youtube/nom_du_dossier_traite, comme la Step final_01",
     )
     parser.add_argument(
         "--no-prefix",

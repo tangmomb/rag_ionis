@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 from yt_dlp.utils import DownloadError
 
-from pipeline_paths import youtube_api_infos_path
+from common.pipeline_paths import youtube_api_infos_path
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")

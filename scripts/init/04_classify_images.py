@@ -5,8 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from pipeline_paths import existing_images_dir, images_dir, relative_to_video_dir
+from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_paths import existing_images_dir, images_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MODEL_PATH = Path("models/frame_filter_2026-07-02_21-30-31.joblib")

@@ -8,7 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pipeline_paths import chunks_dir
+from common.pipeline_paths import chunks_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -56,6 +56,13 @@ def latest_video_dir(parent_dir):
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
     return candidates[-1]
+
+
+def current_openai_mode():
+    normalized = str(os.getenv("PIPELINE_OPENAI_MODE", "normal")).strip().lower()
+    if normalized in {"batch", "normal"}:
+        return normalized
+    return "normal"
 
 
 def chunks_path(video_path):
@@ -298,6 +305,7 @@ def main():
     load_dotenv(override=True)
     args = parse_args()
     args.model = normalize_model_name(args.model)
+    openai_mode = current_openai_mode()
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))
     if not videos:
@@ -306,6 +314,8 @@ def main():
 
     print(f"Dossier videos: {video_dir}")
     print(f"Modele validation speakers: {args.model}", flush=True)
+    if openai_mode == "batch":
+        print("[warn] mode OpenAI global=batch, mais cette step utilise actuellement le mode normal.", flush=True)
     done = 0
     for video_path in videos:
         if validate_file(args.model, video_path, force=args.force):

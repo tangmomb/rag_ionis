@@ -5,9 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
+from common.pipeline_analysis import update_analysed_infos
 from imageio_ffmpeg import get_ffmpeg_exe
-from pipeline_paths import images_dir, relative_to_video_dir
+from common.pipeline_paths import images_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")

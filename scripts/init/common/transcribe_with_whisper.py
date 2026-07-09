@@ -6,10 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pipeline_analysis import analysed_infos_path, update_analysed_infos
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
-from pipeline_paths import relative_to_video_dir, transcripts_dir
+from common.pipeline_paths import relative_to_video_dir, transcripts_dir
 try:
     import torch
 except ImportError:  # pragma: no cover
@@ -257,6 +257,12 @@ def parse_args():
         action="store_true",
         help="Conserve les fichiers audio extraits dans outputs/transcripts/audio.",
     )
+    parser.add_argument(
+        "--has-subtitles",
+        choices=("true", "false"),
+        default="false",
+        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: false.",
+    )
     return parser.parse_args()
 
 
@@ -275,10 +281,13 @@ def main():
 
     print(f"Dossier videos: {video_dir}")
     runnable_videos = []
+    expected_has_subtitles = args.has_subtitles == "true"
     for video_path in videos:
         has_subtitles = analysed_has_subtitles(video_path)
-        if has_subtitles is not False:
-            print(f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas false")
+        if has_subtitles is not expected_has_subtitles:
+            print(
+                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
+            )
             continue
         runnable_videos.append(video_path)
 

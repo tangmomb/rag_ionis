@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -6,6 +7,7 @@ METADATA_DIR_NAME = "metadata"
 IMAGES_DIR_NAME = "images"
 INTERVIEW_DIR_NAME = "interview"
 OCR_DIR_NAME = "ocr"
+OCR_RAW_DIR_NAME = "raw"
 TRANSCRIPTS_DIR_NAME = "transcripts"
 CHUNKS_DIR_NAME = "chunks"
 ANALYSED_INFOS_NAME = "pipeline_analysis.json"
@@ -46,8 +48,12 @@ def ocr_dir(video_path):
     return outputs_dir(video_path) / OCR_DIR_NAME
 
 
+def ocr_raw_dir(video_path):
+    return ocr_dir(video_path) / OCR_RAW_DIR_NAME
+
+
 def transcripts_dir(video_path):
-    return outputs_dir(video_path) / TRANSCRIPTS_DIR_NAME
+    return outputs_dir(video_path) / os.environ.get("PIPELINE_TRANSCRIPTS_DIR_NAME", TRANSCRIPTS_DIR_NAME)
 
 
 def chunks_dir(video_path):
@@ -70,10 +76,18 @@ def existing_ocr_dir(video_path):
     return _existing(ocr_dir(video_path), video_base_dir(video_path) / OCR_DIR_NAME)
 
 
+def existing_ocr_raw_dir(video_path):
+    video_ocr_dir = existing_ocr_dir(video_path)
+    preferred = video_ocr_dir / OCR_RAW_DIR_NAME
+    if preferred.exists():
+        return preferred
+    return video_ocr_dir
+
+
 def existing_transcripts_dir(video_path):
     base_dir = video_base_dir(video_path)
     preferred = transcripts_dir(video_path)
-    for legacy_name in ("transcript", "transcript_whisper", "transcript_ocr"):
+    for legacy_name in ("transcript", "transcript_whisper", "transcript_ocr", "transcripts", "transcripts_whisper", "transcripts_ocr"):
         legacy = base_dir / legacy_name
         if legacy.exists() and not preferred.exists():
             return legacy

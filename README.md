@@ -145,8 +145,8 @@ Le script travaille sur `https://www.youtube.com/@IONIS-STM/videos` et remplit l
 Executer toutes les steps dans l'ordre:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py all
 ```
 
 Sans argument, le script demande quoi traiter: `all` pour toute la chaine, un nombre pour tester, ou un lien YouTube precis.
@@ -154,13 +154,13 @@ Sans argument, le script demande quoi traiter: `all` pour toute la chaine, un no
 Tester le pipeline sur un nombre limite de videos:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3
 ```
 
 Tester le pipeline sur une video precise:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py "https://www.youtube.com/watch?v=VIDEO_ID"
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 Au demarrage, le script vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. Il lance ensuite les steps 01 a 26. La Step 02 cree un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
@@ -174,10 +174,10 @@ Un run d'initialisation remplace le precedent:
 Options utiles:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --dry-run-upload --dry-run-sql
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --skip-upload
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py all --skip-data
-.\.venv\Scripts\python.exe scripts/init/run_pipeline_init.py 3 --force
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --dry-run-upload --dry-run-sql
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --skip-upload
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py all --skip-data
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --force
 ```
 
 ## Step 02 - Download Videos

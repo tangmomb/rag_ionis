@@ -3,8 +3,8 @@ import json
 import statistics
 from pathlib import Path
 
-from pipeline_analysis import analysed_infos_path, update_analysed_infos
-from local_paddle_ocr import (
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
+from common.local_paddle_ocr import (
     anchored_subtitle_match,
     box_bounds,
     box_geometry,
@@ -15,7 +15,7 @@ from local_paddle_ocr import (
     latest_video_dir,
     seconds_from_image_name,
 )
-from pipeline_paths import existing_images_dir, existing_ocr_dir
+from common.pipeline_paths import existing_images_dir, existing_ocr_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")

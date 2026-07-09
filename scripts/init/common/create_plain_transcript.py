@@ -3,13 +3,19 @@ import re
 import sys
 from pathlib import Path
 
-from pipeline_analysis import update_analysed_infos
-from pipeline_paths import existing_transcripts_dir, relative_to_video_dir
+from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_paths import existing_transcripts_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CORRECTED_TIMECODED_NAMES = ("whisper_transcript_timecoded_corrected.txt",)
-LEGACY_CORRECTED_TIMECODED_SUFFIX = "_transcript_timecodes_corrected.txt"
+CORRECTED_TIMECODED_NAMES = (
+    "whisper_transcript_timecoded_corrected.txt",
+    "ocr_subtitles_timecoded_corrected.txt",
+)
+LEGACY_CORRECTED_TIMECODED_SUFFIXES = (
+    "_transcript_timecodes_corrected.txt",
+    "_ocr_subtitle_timecodes_corrected.txt",
+)
 PLAIN_NAME = "plain_transcript.txt"
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 TIMECODE_PREFIX = re.compile(
@@ -64,8 +70,10 @@ def output_path(input_path):
     if input_path.name in CORRECTED_TIMECODED_NAMES:
         return input_path.with_name(PLAIN_NAME)
     name = input_path.name
-    if name.endswith(LEGACY_CORRECTED_TIMECODED_SUFFIX):
-        name = name[: -len(LEGACY_CORRECTED_TIMECODED_SUFFIX)] + LEGACY_PLAIN_SUFFIX
+    for suffix in LEGACY_CORRECTED_TIMECODED_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)] + LEGACY_PLAIN_SUFFIX
+            break
     else:
         name = input_path.stem + LEGACY_PLAIN_SUFFIX
     return input_path.with_name(name)
@@ -73,7 +81,13 @@ def output_path(input_path):
 
 def timecoded_inputs(transcript_dir):
     inputs = [transcript_dir / name for name in CORRECTED_TIMECODED_NAMES if (transcript_dir / name).exists()]
-    return inputs or sorted(transcript_dir.glob(f"*{LEGACY_CORRECTED_TIMECODED_SUFFIX}"))
+    if inputs:
+        return inputs
+
+    legacy_inputs = []
+    for suffix in LEGACY_CORRECTED_TIMECODED_SUFFIXES:
+        legacy_inputs.extend(sorted(transcript_dir.glob(f"*{suffix}")))
+    return legacy_inputs
 
 
 def convert_file(video_path, input_path, force=False):

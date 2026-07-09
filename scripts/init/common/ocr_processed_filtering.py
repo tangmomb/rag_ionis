@@ -4,23 +4,22 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
-from pipeline_paths import existing_ocr_dir
+from common.pipeline_paths import existing_ocr_dir
 
 
 OCR_DIR_NAME = "ocr"
-OCR_PROCESSED_NAME = "processed_ocr_items.json"
+OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
-OCR_PROCESSED_FILTERED_NAME = "filtered_ocr_overlays.json"
-LEGACY_OCR_PROCESSED_NAME = "ocr_processed.json"
+OCR_PROCESSED_FILTERED_NAME = "02_filtered_ocr_overlays.json"
+OCR_PROCESSED_REVIEWED_NAME = "03_reviewed_ocr_overlays.json"
 LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
-LEGACY_OCR_PROCESSED_FILTERED_NAME = "ocr_processed_filtered.json"
 SUBTITLE_REPEAT_IMAGE_WINDOW = 10
 SUBTITLE_NEIGHBOR_IMAGE_GAP = 3
 MIN_OVERLAY_SCORE = 0.9
 GRAPHIC_SEQUENCE_GAP_SECONDS = 5
 ON_FOOTAGE_SEQUENCE_GAP_SECONDS = 1
 OTHERS_PROGRESSION_IMAGE_GAP = 10
-OVERLAY_KINDS = {"name", "lower_third", "question_intertitle", "title"}
+OVERLAY_KINDS = {"name", "lower_third", "title"}
 
 
 def normalize_text(text):
@@ -103,39 +102,22 @@ def confidence_score(item):
 
 def is_overlay_kind(kind):
     normalized = normalize_kind(kind)
-    return normalized in OVERLAY_KINDS or normalized in {"graphic", "outro"}
+    return normalized in OVERLAY_KINDS or normalized == "graphic"
 
 
 def is_graphic_kind(kind):
     normalized = normalize_kind(kind)
-    return normalized in {"graphic", "outro"}
+    return normalized == "graphic"
 
 
 def overlay_label_key(item):
-    if item.get("kind") == "question_intertitle":
-        return "question_intertitle"
-    if item.get("kind") == "outro":
-        return "outro"
     if is_graphic_kind(item.get("kind")):
         return "graphic"
     return "on_footage"
 
 
 def merge_question_parts(items):
-    merged = []
-    for item in items:
-        if (
-            item.get("kind") == "question_intertitle"
-            and merged
-            and merged[-1].get("kind") != "question_intertitle"
-            and item["second"] - merged[-1]["second"] <= 1
-        ):
-            previous = merged.pop()
-            item = dict(item)
-            item["second"] = previous["second"]
-            item["text"] = f"{previous['text']} {item['text']}"
-        merged.append(item)
-    return merged
+    return list(items)
 
 
 def remove_overlay_fragments(items):
@@ -321,7 +303,7 @@ def collapse_graphic_time_groups(items, min_separator_seconds=GRAPHIC_SEQUENCE_G
         visual_group = []
 
     for item in items:
-        if item.get("kind") not in {"graphic", "outro"}:
+        if item.get("kind") != "graphic":
             flush_visual_group()
             collapsed.append(item)
             continue
@@ -351,7 +333,7 @@ def collapse_on_footage_progressions(items, max_gap_seconds=ON_FOOTAGE_SEQUENCE_
     while index < len(groups):
         group = groups[index]
         kind = group[0].get("kind")
-        if kind not in OVERLAY_KINDS or kind == "question_intertitle":
+        if kind not in OVERLAY_KINDS:
             collapsed.extend(group)
             index += 1
             continue
@@ -390,20 +372,24 @@ def processed_ocr_source_path(video_path):
         return corrected
     if legacy_corrected.exists():
         return legacy_corrected
-    processed = video_ocr_dir / OCR_PROCESSED_NAME
-    legacy_processed = video_ocr_dir / LEGACY_OCR_PROCESSED_NAME
-    if legacy_processed.exists() and not processed.exists():
-        return legacy_processed
-    return processed
+    return video_ocr_dir / OCR_PROCESSED_NAME
 
 
 def filtered_ocr_path(video_path):
     video_ocr_dir = existing_ocr_dir(video_path)
-    preferred = video_ocr_dir / OCR_PROCESSED_FILTERED_NAME
-    legacy = video_ocr_dir / LEGACY_OCR_PROCESSED_FILTERED_NAME
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
+    return video_ocr_dir / OCR_PROCESSED_FILTERED_NAME
+
+
+def reviewed_ocr_path(video_path):
+    video_ocr_dir = existing_ocr_dir(video_path)
+    return video_ocr_dir / OCR_PROCESSED_REVIEWED_NAME
+
+
+def enriched_ocr_source_path(video_path):
+    reviewed = reviewed_ocr_path(video_path)
+    if reviewed.exists():
+        return reviewed
+    return filtered_ocr_path(video_path)
 
 
 def load_overlay_items(path):

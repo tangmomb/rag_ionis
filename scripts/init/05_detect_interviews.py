@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from pipeline_paths import existing_images_dir, existing_interview_dir, interview_dir, relative_to_video_dir
+from common.pipeline_paths import existing_images_dir, existing_interview_dir, interview_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")

@@ -7,8 +7,8 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from pipeline_analysis import analysed_infos_path, update_analysed_infos
-from pipeline_paths import existing_ocr_dir, existing_transcripts_dir, relative_to_video_dir
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
+from common.pipeline_paths import existing_ocr_dir, existing_transcripts_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -100,11 +100,7 @@ def processed_ocr_path(video_path):
     legacy_corrected = legacy_transcript_dir / f"{video_path.stem}_ocr_processed_corrected.json"
     if legacy_corrected.exists():
         return legacy_corrected
-    processed_candidates = (
-        video_ocr_dir / "processed_ocr_items.json",
-        video_ocr_dir / "ocr_processed.json",
-        video_ocr_dir / f"{video_path.stem}_ocr_processed.json",
-    )
+    processed_candidates = (video_ocr_dir / "01_processed_ocr_items.json",)
     for candidate in processed_candidates:
         if candidate.exists():
             return candidate
@@ -499,7 +495,7 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Corrige les timecodes en utilisant les noms propres trouves dans processed_ocr_items.json."
+        description="Corrige les timecodes en utilisant les noms propres trouves dans 01_processed_ocr_items.json."
     )
     parser.add_argument(
         "--video-dir",
@@ -521,6 +517,12 @@ def parse_args():
         default=DEFAULT_CORRECTION_MODE,
         help="Sensibilite des corrections: conservative evite les faux positifs, aggressive recupere plus de noms. Defaut: balanced.",
     )
+    parser.add_argument(
+        "--has-subtitles",
+        choices=("true", "false"),
+        default="false",
+        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: false.",
+    )
     return parser.parse_args()
 
 
@@ -535,10 +537,13 @@ def main():
     print(f"Dossier videos: {video_dir}")
     print(f"Mode correction: {args.mode}")
     done = 0
+    expected_has_subtitles = args.has_subtitles == "true"
     for video_path in videos:
         has_subtitles = analysed_has_subtitles(video_path)
-        if has_subtitles is not False:
-            print(f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas false")
+        if has_subtitles is not expected_has_subtitles:
+            print(
+                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
+            )
             continue
         if correct_file(video_path, force=args.force, mode=args.mode):
             done += 1

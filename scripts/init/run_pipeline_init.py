@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -24,6 +25,15 @@ if hasattr(sys.stderr, "reconfigure"):
 class VideoSelection:
     mode: str
     value: object = None
+
+
+def normalize_openai_mode(value):
+    normalized = str(value).strip().lower()
+    if normalized in {"normal", "live"}:
+        return "normal"
+    if normalized == "batch":
+        return "batch"
+    raise ValueError("Mode OpenAI invalide. Utilise 'batch' ou 'normal'.")
 
 
 def video_files(video_dir):
@@ -53,6 +63,66 @@ def latest_video_dir(parent_dir):
     if not candidates:
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
     return candidates[-1]
+
+
+def analysed_infos_path(video_path):
+    video_path = Path(video_path)
+    preferred = video_path.parent / "metadata" / "pipeline_analysis.json"
+    legacy_candidates = (
+        video_path.parent / "metadata" / "analysed_infos.json",
+        video_path.parent / f"{video_path.stem}_analysed_infos.json",
+        video_path.parent / "analysed_infos.json",
+    )
+    for legacy in legacy_candidates:
+        if legacy.exists() and not preferred.exists():
+            return legacy
+    return preferred
+
+
+def analysed_has_subtitles(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("has_subtitles")
+    return value if isinstance(value, bool) else None
+
+
+def print_post_step09_routing(video_dir, video_limit=None):
+    videos = list(video_files(video_dir))
+    if video_limit is not None:
+        videos = videos[:video_limit]
+
+    has_sub_videos = []
+    no_sub_videos = []
+    unknown_videos = []
+    for video_path in videos:
+        has_subtitles = analysed_has_subtitles(video_path)
+        if has_subtitles is True:
+            has_sub_videos.append(video_path.name)
+        elif has_subtitles is False:
+            no_sub_videos.append(video_path.name)
+        else:
+            unknown_videos.append(video_path.name)
+
+    print("\n" + "=" * 72, flush=True)
+    print("BRANCHEMENT APRES STEP 09", flush=True)
+    print("=" * 72, flush=True)
+    print(f"has_sub -> scripts/init/has_sub ({len(has_sub_videos)} video(s))", flush=True)
+    print(f"no_sub  -> scripts/init/no_sub  ({len(no_sub_videos)} video(s))", flush=True)
+    if unknown_videos:
+        print(f"inconnu -> aucune branche claire ({len(unknown_videos)} video(s))", flush=True)
+
+    if 0 < len(has_sub_videos) <= 10:
+        print("videos has_sub: " + ", ".join(has_sub_videos), flush=True)
+    if 0 < len(no_sub_videos) <= 10:
+        print("videos no_sub: " + ", ".join(no_sub_videos), flush=True)
+    if 0 < len(unknown_videos) <= 10:
+        print("videos inconnues: " + ", ".join(unknown_videos), flush=True)
+    print("=" * 72, flush=True)
 
 
 def extract_youtube_video_id(value):
@@ -103,6 +173,15 @@ def ask_video_selection():
         try:
             return parse_video_selection(value)
         except argparse.ArgumentTypeError as error:
+            print(error)
+
+
+def ask_openai_mode():
+    while True:
+        value = input("Mode des appels OpenAI ('batch' ou 'normal'): ").strip()
+        try:
+            return normalize_openai_mode(value)
+        except ValueError as error:
             print(error)
 
 
@@ -194,6 +273,11 @@ def parse_args():
         action="store_true",
         help="Simule la mise a jour SQL pendant la Step 26.",
     )
+    parser.add_argument(
+        "--openai-mode",
+        choices=("batch", "normal"),
+        help="Mode global des appels OpenAI pour tout le pipeline.",
+    )
     return parser.parse_args()
 
 
@@ -202,12 +286,15 @@ def main():
     args = parse_args()
     if args.videos is None:
         args.videos = ask_video_selection()
+    if args.openai_mode is None:
+        args.openai_mode = ask_openai_mode()
 
     video_limit = args.videos.value if args.videos.mode == "count" else None
     video_url = args.videos.value if args.videos.mode == "url" else None
 
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
+    env["PIPELINE_OPENAI_MODE"] = args.openai_mode
 
     download_parent = Path(args.download_dir)
     if not download_parent.is_absolute():
@@ -219,10 +306,11 @@ def main():
         print(f"Mode pipeline: test sur la video {video_url}", flush=True)
     else:
         print(f"Mode pipeline: test sur {video_limit} video(s)", flush=True)
+    print(f"Mode OpenAI global: {args.openai_mode}", flush=True)
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 26
+    total_steps = 25
     run_step("Initial cleanup - Clear SQL Database", utils_command("clear_database.py"), env)
 
     if not args.skip_data:
@@ -299,75 +387,105 @@ def main():
     if args.force:
         step09.append("--force")
     run_step_numbered(9, total_steps, "Step 09 - Detect OCR Subtitles", step09, env)
+    print_post_step09_routing(video_dir, video_limit=video_limit)
 
-    step10 = step_command("10_build_processed_ocr.py", "--video-dir", video_dir)
+    step10_has_sub = step_command(Path("has_sub") / "10_build_processed_ocr.py", "--video-dir", video_dir)
     if video_limit is not None:
-        step10 += ["--limit-videos", str(video_limit)]
+        step10_has_sub += ["--limit-videos", str(video_limit)]
     if args.force:
-        step10.append("--force")
-    run_step_numbered(10, total_steps, "Step 10 - Build Processed OCR", step10, env)
+        step10_has_sub.append("--force")
+    run_step_numbered(10, total_steps, "Step 10A - Build Processed OCR (has_sub)", step10_has_sub, env)
 
-    step11 = step_command("11_filter_processed_ocr.py", "--video-dir", video_dir)
+    step10_no_sub = step_command(Path("no_sub") / "10_build_processed_ocr.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step10_no_sub += ["--limit-videos", str(video_limit)]
+    if args.force:
+        step10_no_sub.append("--force")
+    run_step("Step 10B - Build Processed OCR (no_sub)", step10_no_sub, env)
+
+    step11 = step_command(Path("has_sub") / "11_filter_processed_ocr.py", "--video-dir", video_dir)
     if args.force:
         step11.append("--force")
     run_step_numbered(11, total_steps, "Step 11 - Filter Processed OCR", step11, env)
 
-    step12 = step_command("12_extract_other_text_review_candidates.py", "--video-dir", video_dir)
+    step12 = step_command(Path("has_sub") / "12_extract_other_text_review_candidates.py", "--video-dir", video_dir)
     if args.force:
         step12.append("--force")
     run_step_numbered(12, total_steps, "Step 12 - Extract Other Text Review Candidates", step12, env)
 
-    step13 = step_command("13_review_other_text_candidates.py", "--video-dir", video_dir)
+    step13 = step_command(Path("has_sub") / "13_review_other_text_candidates.py", "--video-dir", video_dir)
     if args.force:
         step13.append("--force")
     run_step_numbered(13, total_steps, "Step 13 - Review Other Text Candidates (OpenAI)", step13, env)
 
-    step14 = step_command("14_apply_other_text_review.py", "--video-dir", video_dir)
+    step14 = step_command(Path("has_sub") / "14_apply_other_text_review.py", "--video-dir", video_dir)
     if args.force:
         step14.append("--force")
     run_step_numbered(14, total_steps, "Step 14 - Apply Other Text Review", step14, env)
 
-    step15 = step_command("15_extract_ocr_subtitles.py", "--video-dir", video_dir)
+    step15 = step_command(Path("has_sub") / "15_extract_ocr_subtitles.py", "--video-dir", video_dir)
     if video_limit is not None:
         step15 += ["--limit-videos", str(video_limit)]
     if args.force:
         step15.append("--force")
-    run_step_numbered(15, total_steps, "Step 15 - OCR Subtitles", step15, env)
+    run_step_numbered(15, total_steps, "Step 15 - OCR Subtitles (has_sub)", step15, env)
 
-    step16 = step_command("16_transcribe_with_whisper.py", "--video-dir", video_dir)
+    step16_has_sub = step_command(Path("has_sub") / "16_correct_ocr_subtitle_spacing.py", "--video-dir", video_dir)
+    if video_limit is not None:
+        step16_has_sub += ["--limit-videos", str(video_limit)]
+    if args.force:
+        step16_has_sub.append("--force")
+    run_step_numbered(16, total_steps, "Step 16A - Fix OCR Subtitle Spacing (has_sub)", step16_has_sub, env)
+
+    step16 = step_command(Path("no_sub") / "16_transcribe_with_whisper.py", "--video-dir", video_dir)
     if video_limit is not None:
         step16 += ["--limit", str(video_limit)]
     if args.force:
         step16.append("--force")
-    run_step_numbered(16, total_steps, "Step 16 - Transcribe With Whisper", step16, env)
+    run_step("Step 16B - Transcribe With Whisper (no_sub)", step16, env)
 
-    step17 = step_command("17_correct_transcript_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
+    step17_has_sub = step_command(Path("has_sub") / "17_normalize_ionis_stm.py", "--video-dir", video_dir)
+    if args.force:
+        step17_has_sub.append("--force")
+    run_step_numbered(17, total_steps, "Step 17A - Normalize Ionis-STM (has_sub)", step17_has_sub, env)
+
+    step17 = step_command(Path("no_sub") / "17_correct_transcript_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
     if args.force:
         step17.append("--force")
-    run_step_numbered(17, total_steps, "Step 17 - Correct Transcript Timecodes", step17, env)
+    run_step("Step 17B - Correct Transcript Timecodes (no_sub)", step17, env)
 
-    step18 = step_command("18_enrich_transcripts.py", "--video-dir", video_dir)
+    step18_has_sub = step_command(Path("has_sub") / "18_create_plain_transcript.py", "--video-dir", video_dir)
     if args.force:
-        step18.append("--force")
-    run_step_numbered(18, total_steps, "Step 18 - Enrich Timecodes", step18, env)
+        step18_has_sub.append("--force")
+    run_step_numbered(18, total_steps, "Step 18A - Create Plain Transcript (has_sub)", step18_has_sub, env)
 
-    step19 = step_command("19_generate_video_summary.py", "--video-dir", video_dir)
+    step18_no_sub = step_command(Path("no_sub") / "18_enrich_transcripts.py", "--video-dir", video_dir)
+    if args.force:
+        step18_no_sub.append("--force")
+    run_step("Step 18B - Enrich Timecodes (no_sub)", step18_no_sub, env)
+
+    step19 = step_command(Path("has_sub") / "19_enrich_transcripts.py", "--video-dir", video_dir)
     if args.force:
         step19.append("--force")
-    run_step_numbered(19, total_steps, "Step 19 - Video Summary", step19, env)
+    run_step_numbered(19, total_steps, "Step 19A - Enrich Timecodes (has_sub)", step19, env)
 
-    step20 = step_command("20_create_plain_transcript.py", "--video-dir", video_dir)
+    step20 = step_command(Path("has_sub") / "20_generate_video_summary.py", "--video-dir", video_dir)
     if args.force:
         step20.append("--force")
-    run_step_numbered(20, total_steps, "Step 20 - Create Plain Transcript", step20, env)
+    run_step_numbered(20, total_steps, "Step 20A - Video Summary (has_sub)", step20, env)
 
-    step21 = step_command("21_create_transcript_chunks.py", "--video-dir", video_dir)
+    step20_no_sub = step_command(Path("no_sub") / "20_create_plain_transcript.py", "--video-dir", video_dir)
+    if args.force:
+        step20_no_sub.append("--force")
+    run_step("Step 20B - Create Plain Transcript (no_sub)", step20_no_sub, env)
+
+    step21 = step_command(Path("has_sub") / "21_create_transcript_chunks.py", "--video-dir", video_dir)
     if args.force:
         step21.append("--force")
     run_step_numbered(21, total_steps, "Step 21 - Create Transcript Chunks", step21, env)
 
     step22 = step_command(
-        "22_validate_chunk_speakers.py",
+        Path("has_sub") / "22_validate_chunk_speakers.py",
         "--video-dir",
         video_dir,
         "--model",
@@ -377,29 +495,24 @@ def main():
         step22.append("--force")
     run_step_numbered(22, total_steps, "Step 22 - Validate Chunk Speakers (OpenAI)", step22, env)
 
-    step23 = step_command("23_split_alert_chunks.py", "--video-dir", video_dir)
-    if args.force:
-        step23.append("--force")
-    run_step_numbered(23, total_steps, "Step 23 - Split Alert Chunks", step23, env)
-
-    step24 = step_command("24_create_chunk_embeddings.py", "--video-dir", video_dir)
+    step24 = step_command(Path("has_sub") / "24_create_chunk_embeddings.py", "--video-dir", video_dir)
     if args.force:
         step24.append("--force")
-    run_step_numbered(24, total_steps, "Step 24 - Create Chunk Embeddings", step24, env)
+    run_step_numbered(23, total_steps, "Step 23 - Create Chunk Embeddings", step24, env)
 
     if not args.skip_upload:
-        step25 = step_command("25_upload_outputs_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
+        step25 = step_command("final_01_upload_outputs_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")
         if args.force:
             step25.append("--force")
         if args.dry_run_upload:
             step25.append("--dry-run")
-        run_step_numbered(25, total_steps, "Step 25 - Upload Outputs To S3", step25, env)
+        run_step_numbered(24, total_steps, "Step 24 - Upload Outputs To S3", step25, env)
 
     if not args.skip_sql:
-        step26 = step_command("26_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
+        step26 = step_command("final_02_update_sql_assets.py", "--video-dir", video_dir, "--clean-init-assets")
         if args.dry_run_sql:
             step26.append("--dry-run")
-        run_step_numbered(26, total_steps, "Step 26 - Update SQL Assets", step26, env)
+        run_step_numbered(25, total_steps, "Step 25 - Update SQL Assets", step26, env)
 
     print("\nPipeline termine.", flush=True)
     print(f"Dossier traite: {video_dir}", flush=True)

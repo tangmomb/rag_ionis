@@ -11,8 +11,8 @@ from urllib.parse import urlencode
 
 import requests
 
-from pipeline_analysis import update_analysed_infos
-from pipeline_paths import (
+from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_paths import (
     chunks_dir,
     existing_ocr_dir,
     existing_transcripts_dir,
@@ -26,9 +26,8 @@ PLAIN_NAME = "plain_transcript.txt"
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
 LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-OCR_PROCESSED_NAME = "processed_ocr_items.json"
+OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
-LEGACY_OCR_PROCESSED_SUFFIX = "_ocr_processed.json"
 LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
 CHUNKS_NAME = "transcript_chunks.json"
 LEGACY_CHUNKS_SUFFIX = "_chunks.json"
@@ -38,7 +37,7 @@ API = "https://www.googleapis.com/youtube/v3"
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
 OCR_LOWER_THIRD_MIN_TOP = 320
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
-SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÃ€-Ã–Ã˜-Ã¶Ã¸-Ã¿'â€™-]+")
+SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’\-]+")
 SPACY_FRENCH_MODEL = os.environ.get("SPACY_FRENCH_MODEL", "fr_dep_news_trf")
 SPACY_REQUIRE_GPU = os.environ.get("SPACY_REQUIRE_GPU", "0").strip().lower() not in {"0", "false", "no"}
 SPACY_PERSON_LABELS = {"PER", "PERSON"}
@@ -139,16 +138,7 @@ def ocr_processed_path(video_path):
         return legacy_corrected
     if generic_legacy_corrected.exists():
         return generic_legacy_corrected
-    processed = video_ocr_dir / OCR_PROCESSED_NAME
-    generic_legacy_processed = video_ocr_dir / "ocr_processed.json"
-    legacy_processed = video_ocr_dir / f"{video_path.stem}{LEGACY_OCR_PROCESSED_SUFFIX}"
-    if processed.exists():
-        return processed
-    if generic_legacy_processed.exists():
-        return generic_legacy_processed
-    if legacy_processed.exists():
-        return legacy_processed
-    return processed
+    return video_ocr_dir / OCR_PROCESSED_NAME
 
 
 def chunks_path(video_path):

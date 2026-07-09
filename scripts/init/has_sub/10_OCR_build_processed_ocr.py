@@ -9,7 +9,7 @@ if str(INIT_DIR) not in sys.path:
     sys.path.insert(0, str(INIT_DIR))
 os.environ["PIPELINE_TRANSCRIPTS_DIR_NAME"] = "transcripts_ocr"
 
-from common.processed_ocr_builder import add_common_args, process_matching_videos  # noqa: E402
+from common.used_by_hs10_ns10_processed_ocr_builder import add_common_args, process_matching_videos  # noqa: E402
 import argparse  # noqa: E402
 
 

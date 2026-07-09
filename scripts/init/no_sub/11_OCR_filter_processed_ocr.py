@@ -9,7 +9,7 @@ if str(INIT_DIR) not in sys.path:
     sys.path.insert(0, str(INIT_DIR))
 os.environ["PIPELINE_TRANSCRIPTS_DIR_NAME"] = "transcripts_whisper"
 
-from common.review_other_text_candidates import main as shared_main  # noqa: E402
+from common.used_by_hs11_ns11_filter_processed_ocr import main as shared_main  # noqa: E402
 
 
 def main():

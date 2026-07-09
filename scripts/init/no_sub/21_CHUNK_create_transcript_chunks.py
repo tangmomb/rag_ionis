@@ -7,13 +7,12 @@ CURRENT_DIR = Path(__file__).resolve().parent
 INIT_DIR = CURRENT_DIR.parent
 if str(INIT_DIR) not in sys.path:
     sys.path.insert(0, str(INIT_DIR))
-os.environ["PIPELINE_TRANSCRIPTS_DIR_NAME"] = "transcripts_ocr"
+os.environ["PIPELINE_TRANSCRIPTS_DIR_NAME"] = "transcripts_whisper"
 
-from common.enrich_transcripts import main as shared_main  # noqa: E402
+from common.used_by_hs21_ns21_create_transcript_chunks import main as shared_main  # noqa: E402
 
 
 def main():
-    sys.argv = [sys.argv[0], "--has-subtitles", "true", *sys.argv[1:]]
     shared_main()
 
 

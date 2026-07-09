@@ -40,6 +40,9 @@ SYSTEM_PROMPT = (
     "Regle importante: si le texte encadre n'est pas parfaitement lisible, net, propre et clairement detache du decor, alors considere que ce n'est PAS du texte ajoute au montage. "
     "Autre regle importante: si le texte est bien net et passe par-dessus plusieurs elements differents (personnes, vetements, objets, decors, arriere-plan, etc.), alors considere que c'est FORCEMENT un ajout au montage. "
     "S'il y a deux images, elles se suivent dans le temps et montrent potentiellement un fondu, une apparition ou une animation du meme texte. "
+    "Tu dois justement utiliser ces deux images successives pour distinguer un vrai texte ajoute au montage d'un simple element de decor ou d'image. "
+    "Si une animation, apparition, transition ou evolution visuelle est visible entre les deux images pour la zone encadree, considere que cette box correspond FORCEMENT a un ajout au montage. "
+    "Dans ce cas, applique la meme conclusion a toutes les boxes qui partagent clairement le meme look graphique, le meme style visuel ou le meme habillage. "
     "Reponds uniquement en JSON avec les cles: has_ocr_error (boolean), corrected_text (string), is_added_in_edit (boolean), confidence (number entre 0 et 1), reason (string court). "
     "Si le texte OCR semble deja correct, corrected_text doit reprendre le texte OCR tel quel."
 )
@@ -205,6 +208,9 @@ def build_user_prompt(item):
     return (
         "Tu recois le screenshot courant annote et parfois le screenshot precedent annote avec les memes boxes rouges. "
         "S'il y a deux images, elles se suivent et le fait de voir les deux doit t'aider a juger si la zone rouge pointe une animation, un fondu ou un texte stable ajoute au montage. "
+        "Utilise explicitement ces deux images successives pour distinguer un simple contenu visuel d'un texte ajoute en post-production. "
+        "S'il y a une animation, une apparition, un fondu ou une transition visible entre les deux images dans cette zone rouge, alors cette box doit etre consideree comme FORCEMENT ajoutee au montage. "
+        "Et si cette box est ajoutee au montage a cause de ce comportement visuel, la meme conclusion doit s'appliquer a toutes les boxes au meme look graphique. "
         "Regarde d'abord les images completes pour comprendre la scene et le contexte general. "
         "Ensuite concentre-toi sur le texte dans la zone encadree en rouge. "
         "Decide d'abord si ce texte encadre est un ajout au montage ou non, en tenant compte du contexte global des images. "
@@ -453,7 +459,7 @@ def submit_batch_review(video_path, model, jobs):
         endpoint="/v1/responses",
         completion_window="24h",
         metadata={
-            "script": "13_review_other_text_candidates.py",
+            "script": "13_OCR_review_other_text_candidates.py",
             "model": model,
             "video": Path(video_path).name,
         },

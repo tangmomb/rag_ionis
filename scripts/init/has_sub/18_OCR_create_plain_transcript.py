@@ -9,7 +9,7 @@ if str(INIT_DIR) not in sys.path:
     sys.path.insert(0, str(INIT_DIR))
 os.environ["PIPELINE_TRANSCRIPTS_DIR_NAME"] = "transcripts_ocr"
 
-from common.generate_video_summary import main as shared_main  # noqa: E402
+from common.used_by_hs18_ns20_create_plain_transcript import main as shared_main  # noqa: E402
 
 
 def main():

@@ -12,6 +12,7 @@ LEGACY_ANALYSED_INFOS_NAME = "analysed_infos.json"
 ALLOWED_KEYS = {
     "video_type",
     "has_subtitles",
+    "has_subtitles_details",
 }
 
 

@@ -125,6 +125,36 @@ def print_post_step09_routing(video_dir, video_limit=None):
     print("=" * 72, flush=True)
 
 
+def selected_branch_after_step09(video_dir, video_limit=None):
+    videos = list(video_files(video_dir))
+    if video_limit is not None:
+        videos = videos[:video_limit]
+
+    statuses = []
+    for video_path in videos:
+        statuses.append((video_path.name, analysed_has_subtitles(video_path)))
+
+    if not statuses:
+        raise RuntimeError("Aucune video selectionnee apres le step 09.")
+
+    values = {status for _, status in statuses}
+    if values == {True}:
+        return "has_sub"
+    if values == {False}:
+        return "no_sub"
+
+    details = ", ".join(f"{name}={status}" for name, status in statuses)
+    if None in values:
+        raise RuntimeError(
+            "Impossible de choisir une branche: has_subtitles manquant ou invalide. "
+            f"Details: {details}"
+        )
+    raise RuntimeError(
+        "Impossible de choisir une seule branche: les videos selectionnees melangent "
+        f"has_subtitles=true et false. Details: {details}"
+    )
+
+
 def extract_youtube_video_id(value):
     raw_value = value.strip()
     parsed = urlparse(raw_value if "://" in raw_value else f"https://{raw_value}")
@@ -388,117 +418,141 @@ def main():
         step09.append("--force")
     run_step_numbered(9, total_steps, "Step 09 - Detect OCR Subtitles", step09, env)
     print_post_step09_routing(video_dir, video_limit=video_limit)
+    selected_branch = selected_branch_after_step09(video_dir, video_limit=video_limit)
+    print(f"\nPIPELINE ORIENTE VERS: scripts/init/{selected_branch}\n", flush=True)
 
-    step10_has_sub = step_command(Path("has_sub") / "10_build_processed_ocr.py", "--video-dir", video_dir)
+    branch_dir = Path(selected_branch)
+
+    step10 = step_command(branch_dir / "10_build_processed_ocr.py", "--video-dir", video_dir)
     if video_limit is not None:
-        step10_has_sub += ["--limit-videos", str(video_limit)]
+        step10 += ["--limit-videos", str(video_limit)]
     if args.force:
-        step10_has_sub.append("--force")
-    run_step_numbered(10, total_steps, "Step 10A - Build Processed OCR (has_sub)", step10_has_sub, env)
+        step10.append("--force")
+    run_step_numbered(10, total_steps, f"Step 10 - Build Processed OCR ({selected_branch})", step10, env)
 
-    step10_no_sub = step_command(Path("no_sub") / "10_build_processed_ocr.py", "--video-dir", video_dir)
-    if video_limit is not None:
-        step10_no_sub += ["--limit-videos", str(video_limit)]
-    if args.force:
-        step10_no_sub.append("--force")
-    run_step("Step 10B - Build Processed OCR (no_sub)", step10_no_sub, env)
-
-    step11 = step_command(Path("has_sub") / "11_filter_processed_ocr.py", "--video-dir", video_dir)
+    step11 = step_command(branch_dir / "11_filter_processed_ocr.py", "--video-dir", video_dir)
     if args.force:
         step11.append("--force")
-    run_step_numbered(11, total_steps, "Step 11 - Filter Processed OCR", step11, env)
+    run_step_numbered(11, total_steps, f"Step 11 - Filter Processed OCR ({selected_branch})", step11, env)
 
-    step12 = step_command(Path("has_sub") / "12_extract_other_text_review_candidates.py", "--video-dir", video_dir)
+    step12 = step_command(branch_dir / "12_extract_other_text_review_candidates.py", "--video-dir", video_dir)
     if args.force:
         step12.append("--force")
-    run_step_numbered(12, total_steps, "Step 12 - Extract Other Text Review Candidates", step12, env)
+    run_step_numbered(12, total_steps, f"Step 12 - Extract Other Text Review Candidates ({selected_branch})", step12, env)
 
-    step13 = step_command(Path("has_sub") / "13_review_other_text_candidates.py", "--video-dir", video_dir)
+    step13 = step_command(branch_dir / "13_review_other_text_candidates.py", "--video-dir", video_dir)
     if args.force:
         step13.append("--force")
-    run_step_numbered(13, total_steps, "Step 13 - Review Other Text Candidates (OpenAI)", step13, env)
+    run_step_numbered(13, total_steps, f"Step 13 - Review Other Text Candidates ({selected_branch})", step13, env)
 
-    step14 = step_command(Path("has_sub") / "14_apply_other_text_review.py", "--video-dir", video_dir)
+    step14 = step_command(branch_dir / "14_apply_other_text_review.py", "--video-dir", video_dir)
     if args.force:
         step14.append("--force")
-    run_step_numbered(14, total_steps, "Step 14 - Apply Other Text Review", step14, env)
+    run_step_numbered(14, total_steps, f"Step 14 - Apply Other Text Review ({selected_branch})", step14, env)
 
-    step15 = step_command(Path("has_sub") / "15_extract_ocr_subtitles.py", "--video-dir", video_dir)
-    if video_limit is not None:
-        step15 += ["--limit-videos", str(video_limit)]
-    if args.force:
-        step15.append("--force")
-    run_step_numbered(15, total_steps, "Step 15 - OCR Subtitles (has_sub)", step15, env)
+    if selected_branch == "has_sub":
+        step15 = step_command(branch_dir / "15_extract_ocr_subtitles.py", "--video-dir", video_dir)
+        if video_limit is not None:
+            step15 += ["--limit-videos", str(video_limit)]
+        if args.force:
+            step15.append("--force")
+        run_step_numbered(15, total_steps, "Step 15 - OCR Subtitles", step15, env)
 
-    step16_has_sub = step_command(Path("has_sub") / "16_correct_ocr_subtitle_spacing.py", "--video-dir", video_dir)
-    if video_limit is not None:
-        step16_has_sub += ["--limit-videos", str(video_limit)]
-    if args.force:
-        step16_has_sub.append("--force")
-    run_step_numbered(16, total_steps, "Step 16A - Fix OCR Subtitle Spacing (has_sub)", step16_has_sub, env)
+        step16 = step_command(branch_dir / "16_correct_ocr_subtitle_spacing.py", "--video-dir", video_dir)
+        if video_limit is not None:
+            step16 += ["--limit-videos", str(video_limit)]
+        if args.force:
+            step16.append("--force")
+        run_step_numbered(16, total_steps, "Step 16 - Fix OCR Subtitle Spacing", step16, env)
 
-    step16 = step_command(Path("no_sub") / "16_transcribe_with_whisper.py", "--video-dir", video_dir)
-    if video_limit is not None:
-        step16 += ["--limit", str(video_limit)]
-    if args.force:
-        step16.append("--force")
-    run_step("Step 16B - Transcribe With Whisper (no_sub)", step16, env)
+        step17 = step_command(branch_dir / "17_normalize_ionis_stm.py", "--video-dir", video_dir)
+        if args.force:
+            step17.append("--force")
+        run_step_numbered(17, total_steps, "Step 17 - Normalize Ionis-STM", step17, env)
 
-    step17_has_sub = step_command(Path("has_sub") / "17_normalize_ionis_stm.py", "--video-dir", video_dir)
-    if args.force:
-        step17_has_sub.append("--force")
-    run_step_numbered(17, total_steps, "Step 17A - Normalize Ionis-STM (has_sub)", step17_has_sub, env)
+        step18 = step_command(branch_dir / "18_create_plain_transcript.py", "--video-dir", video_dir)
+        if args.force:
+            step18.append("--force")
+        run_step_numbered(18, total_steps, "Step 18 - Create Plain Transcript", step18, env)
 
-    step17 = step_command(Path("no_sub") / "17_correct_transcript_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
-    if args.force:
-        step17.append("--force")
-    run_step("Step 17B - Correct Transcript Timecodes (no_sub)", step17, env)
+        step19 = step_command(branch_dir / "19_enrich_transcripts.py", "--video-dir", video_dir)
+        if args.force:
+            step19.append("--force")
+        run_step_numbered(19, total_steps, "Step 19 - Enrich Timecodes", step19, env)
 
-    step18_has_sub = step_command(Path("has_sub") / "18_create_plain_transcript.py", "--video-dir", video_dir)
-    if args.force:
-        step18_has_sub.append("--force")
-    run_step_numbered(18, total_steps, "Step 18A - Create Plain Transcript (has_sub)", step18_has_sub, env)
+        step20 = step_command(branch_dir / "20_generate_video_summary.py", "--video-dir", video_dir)
+        if args.force:
+            step20.append("--force")
+        run_step_numbered(20, total_steps, "Step 20 - Video Summary", step20, env)
 
-    step18_no_sub = step_command(Path("no_sub") / "18_enrich_transcripts.py", "--video-dir", video_dir)
-    if args.force:
-        step18_no_sub.append("--force")
-    run_step("Step 18B - Enrich Timecodes (no_sub)", step18_no_sub, env)
+        step21 = step_command(branch_dir / "21_create_transcript_chunks.py", "--video-dir", video_dir)
+        if args.force:
+            step21.append("--force")
+        run_step_numbered(21, total_steps, "Step 21 - Create Transcript Chunks", step21, env)
 
-    step19 = step_command(Path("has_sub") / "19_enrich_transcripts.py", "--video-dir", video_dir)
-    if args.force:
-        step19.append("--force")
-    run_step_numbered(19, total_steps, "Step 19A - Enrich Timecodes (has_sub)", step19, env)
+        step22 = step_command(
+            branch_dir / "22_validate_chunk_speakers.py",
+            "--video-dir",
+            video_dir,
+            "--model",
+            args.chunk_speaker_validation_model,
+        )
+        if args.force:
+            step22.append("--force")
+        run_step_numbered(22, total_steps, "Step 22 - Validate Chunk Speakers (OpenAI)", step22, env)
 
-    step20 = step_command(Path("has_sub") / "20_generate_video_summary.py", "--video-dir", video_dir)
-    if args.force:
-        step20.append("--force")
-    run_step_numbered(20, total_steps, "Step 20A - Video Summary (has_sub)", step20, env)
+        step23_embeddings = step_command(branch_dir / "23_create_chunk_embeddings.py", "--video-dir", video_dir)
+        if args.force:
+            step23_embeddings.append("--force")
+        run_step_numbered(23, total_steps, "Step 23 - Create Chunk Embeddings", step23_embeddings, env)
+    else:
+        step16 = step_command(branch_dir / "16_transcribe_with_whisper.py", "--video-dir", video_dir)
+        if video_limit is not None:
+            step16 += ["--limit", str(video_limit)]
+        if args.force:
+            step16.append("--force")
+        run_step_numbered(16, total_steps, "Step 16 - Transcribe With Whisper", step16, env)
 
-    step20_no_sub = step_command(Path("no_sub") / "20_create_plain_transcript.py", "--video-dir", video_dir)
-    if args.force:
-        step20_no_sub.append("--force")
-    run_step("Step 20B - Create Plain Transcript (no_sub)", step20_no_sub, env)
+        step17 = step_command(branch_dir / "17_correct_transcript_timecodes.py", "--video-dir", video_dir, "--mode", args.correction_mode)
+        if args.force:
+            step17.append("--force")
+        run_step_numbered(17, total_steps, "Step 17 - Correct Transcript Timecodes", step17, env)
 
-    step21 = step_command(Path("has_sub") / "21_create_transcript_chunks.py", "--video-dir", video_dir)
-    if args.force:
-        step21.append("--force")
-    run_step_numbered(21, total_steps, "Step 21 - Create Transcript Chunks", step21, env)
+        step18 = step_command(branch_dir / "18_enrich_transcripts.py", "--video-dir", video_dir)
+        if args.force:
+            step18.append("--force")
+        run_step_numbered(18, total_steps, "Step 18 - Enrich Timecodes", step18, env)
 
-    step22 = step_command(
-        Path("has_sub") / "22_validate_chunk_speakers.py",
-        "--video-dir",
-        video_dir,
-        "--model",
-        args.chunk_speaker_validation_model,
-    )
-    if args.force:
-        step22.append("--force")
-    run_step_numbered(22, total_steps, "Step 22 - Validate Chunk Speakers (OpenAI)", step22, env)
+        step19 = step_command(branch_dir / "19_generate_video_summary.py", "--video-dir", video_dir)
+        if args.force:
+            step19.append("--force")
+        run_step_numbered(19, total_steps, "Step 19 - Video Summary", step19, env)
 
-    step24 = step_command(Path("has_sub") / "24_create_chunk_embeddings.py", "--video-dir", video_dir)
-    if args.force:
-        step24.append("--force")
-    run_step_numbered(23, total_steps, "Step 23 - Create Chunk Embeddings", step24, env)
+        step20 = step_command(branch_dir / "20_create_plain_transcript.py", "--video-dir", video_dir)
+        if args.force:
+            step20.append("--force")
+        run_step_numbered(20, total_steps, "Step 20 - Create Plain Transcript", step20, env)
+
+        step21 = step_command(branch_dir / "21_create_transcript_chunks.py", "--video-dir", video_dir)
+        if args.force:
+            step21.append("--force")
+        run_step_numbered(21, total_steps, "Step 21 - Create Transcript Chunks", step21, env)
+
+        step22 = step_command(
+            branch_dir / "22_validate_chunk_speakers.py",
+            "--video-dir",
+            video_dir,
+            "--model",
+            args.chunk_speaker_validation_model,
+        )
+        if args.force:
+            step22.append("--force")
+        run_step_numbered(22, total_steps, "Step 22 - Validate Chunk Speakers (OpenAI)", step22, env)
+
+        step24 = step_command(branch_dir / "24_create_chunk_embeddings.py", "--video-dir", video_dir)
+        if args.force:
+            step24.append("--force")
+        run_step_numbered(23, total_steps, "Step 23 - Create Chunk Embeddings", step24, env)
 
     if not args.skip_upload:
         step25 = step_command("final_01_upload_outputs_to_s3.py", "--video-dir", video_dir, "--clean-init-prefix")

@@ -147,10 +147,10 @@ def escape_markdown(text):
 
 def normalize_chapter_title(text):
     normalized = normalize_text(text).replace("/", " ").strip()
-    if normalized == "Suivez notre actualité sur":
-        return "Suivez notre actualité sur les réseaux sociaux"
-    if normalized.endswith("Suivez notre actualité sur"):
-        prefix = normalized[: -len("Suivez notre actualité sur")].rstrip()
+    target_pattern = re.compile(r"Suivez notre actualit. sur(?:\s+\S+)?$", re.IGNORECASE)
+    match = target_pattern.search(normalized)
+    if match:
+        prefix = normalized[: match.start()].rstrip()
         if prefix:
             return f"{prefix} Suivez notre actualité sur les réseaux sociaux"
         return "Suivez notre actualité sur les réseaux sociaux"

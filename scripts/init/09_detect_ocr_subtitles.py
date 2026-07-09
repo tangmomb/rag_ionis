@@ -5,6 +5,7 @@ from pathlib import Path
 
 from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
 from common.local_paddle_ocr import (
+    MIN_SUBTITLE_CLUSTER_SECONDS,
     anchored_subtitle_match,
     box_bounds,
     box_geometry,
@@ -15,7 +16,7 @@ from common.local_paddle_ocr import (
     latest_video_dir,
     seconds_from_image_name,
 )
-from common.pipeline_paths import existing_images_dir, existing_ocr_dir
+from common.pipeline_paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -48,8 +49,15 @@ def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_has_subtitles(video_path, has_subtitles):
-    return update_analysed_infos(video_path, "09_detect_ocr_subtitles", {"has_subtitles": bool(has_subtitles)})
+def write_has_subtitles(video_path, has_subtitles, details):
+    return update_analysed_infos(
+        video_path,
+        "09_detect_ocr_subtitles",
+        {
+            "has_subtitles": bool(has_subtitles),
+            "has_subtitles_details": details,
+        },
+    )
 
 
 def subtitle_entries_from_boxes(payload, images_dir):
@@ -83,10 +91,18 @@ def subtitle_entries_from_boxes(payload, images_dir):
     return entries
 
 
-def has_stable_subtitle_anchor(entries):
+def analyze_subtitle_anchor(entries):
     anchors = infer_subtitle_anchors(entries)
     if len(anchors) < 2:
-        return False
+        return {
+            "has_subtitles": False,
+            "reason": "not_enough_anchor_candidates",
+            "anchor_count": len(anchors),
+            "required_distinct_seconds": MIN_SUBTITLE_CLUSTER_SECONDS,
+            "matching_seconds_count": 0,
+            "matching_seconds": [],
+            "matching_images": [],
+        }
 
     anchor_cx = statistics.median(anchor["cx"] for anchor in anchors)
     anchor_cy = statistics.median(anchor["cy"] for anchor in anchors)
@@ -94,8 +110,8 @@ def has_stable_subtitle_anchor(entries):
     anchor_widths = [anchor["relative_width"] for anchor in anchors]
     x_tolerance = max(0.06, min(0.16, statistics.median(anchor_widths) * 0.25))
     y_tolerance = max(0.04, min(0.075, anchor_height * 1.6))
-    matching_seconds = {
-        entry["second"]
+    matching_entries = [
+        entry
         for entry in entries
         if entry["second"] is not None
         and anchored_subtitle_match(
@@ -105,8 +121,42 @@ def has_stable_subtitle_anchor(entries):
             x_tolerance,
             y_tolerance,
         )
+    ]
+    matching_seconds = sorted({entry["second"] for entry in matching_entries})
+    matching_images = []
+    seen_images = set()
+    for entry in matching_entries:
+        image_name = entry["image"]
+        if image_name in seen_images:
+            continue
+        seen_images.add(image_name)
+        matching_images.append(image_name)
+
+    required_distinct_seconds = MIN_SUBTITLE_CLUSTER_SECONDS
+    has_subtitles = len(matching_seconds) >= required_distinct_seconds
+    return {
+        "has_subtitles": has_subtitles,
+        "reason": (
+            "stable_anchor_across_distinct_seconds"
+            if has_subtitles
+            else "not_enough_distinct_matching_seconds"
+        ),
+        "anchor_count": len(anchors),
+        "anchor": {
+            "cx": round(anchor_cx, 4),
+            "cy": round(anchor_cy, 4),
+            "relative_height": round(anchor_height, 4),
+            "median_relative_width": round(statistics.median(anchor_widths), 4),
+        },
+        "tolerances": {
+            "x": round(x_tolerance, 4),
+            "y": round(y_tolerance, 4),
+        },
+        "required_distinct_seconds": required_distinct_seconds,
+        "matching_seconds_count": len(matching_seconds),
+        "matching_seconds": matching_seconds,
+        "matching_images": matching_images,
     }
-    return len(matching_seconds) >= 3
 
 
 def detect_for_video(video_path, force=False):
@@ -129,8 +179,13 @@ def detect_for_video(video_path, force=False):
 
     payload = load_json(source)
     entries = subtitle_entries_from_boxes(payload, images_dir)
-    has_subtitles = has_stable_subtitle_anchor(entries)
-    write_has_subtitles(video_path, has_subtitles)
+    analysis = analyze_subtitle_anchor(entries)
+    details = {
+        "source": relative_to_video_dir(source, video_path),
+        **analysis,
+    }
+    has_subtitles = analysis["has_subtitles"]
+    write_has_subtitles(video_path, has_subtitles, details)
     print(f"[ok] {video_path.name}: has_subtitles={str(has_subtitles).lower()}", flush=True)
     return True
 

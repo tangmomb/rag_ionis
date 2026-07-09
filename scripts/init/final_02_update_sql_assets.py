@@ -7,7 +7,7 @@ from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
-from common.pipeline_paths import analysed_infos_path, existing_transcripts_dir, existing_youtube_api_infos_path
+from common.pipeline_paths import analysed_infos_path, existing_chunks_dir, existing_transcripts_dir, existing_youtube_api_infos_path
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -33,7 +33,10 @@ LEGACY_OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_correc
 LEGACY_OCR_SUBTITLE_ENRICHED_SUFFIX = "_ocr_subtitle_timecodes_corrected_enrichi.txt"
 FULL_RESET_TABLES = (
     "comments",
+    "chunks",
+    "transcripts",
     "video_transcripts",
+    "stats",
     "video_stats",
     "video_daily_stats",
     "videos",
@@ -83,8 +86,9 @@ def default_prefix(video_dir):
 
 
 def ensure_schema(cursor):
-    ensure_video_stats_table_name(cursor)
-    for table_name in ("videos", "video_stats", "video_transcripts"):
+    ensure_stats_table_name(cursor)
+    ensure_transcripts_table_name(cursor)
+    for table_name in ("videos", "stats", "transcripts", "chunks"):
         ensure_data_collected_date_column(cursor, table_name)
 
     cursor.execute(
@@ -102,17 +106,16 @@ def ensure_schema(cursor):
             speakers TEXT[],
             s3_uri TEXT,
             published_at TIMESTAMPTZ,
-            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )
-    cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_medium_url TEXT")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS has_subtitles BOOLEAN")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_type TEXT")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS speakers TEXT[]")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS s3_uri TEXT")
+    cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS updated_at")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS s3_bucket")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS s3_prefix")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS video_summary")
@@ -120,7 +123,7 @@ def ensure_schema(cursor):
 
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS video_stats (
+        CREATE TABLE IF NOT EXISTS stats (
             id BIGSERIAL PRIMARY KEY,
             video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
             view_count BIGINT,
@@ -132,13 +135,14 @@ def ensure_schema(cursor):
         )
         """
     )
-    cursor.execute("ALTER TABLE video_stats DROP COLUMN IF EXISTS raw_json")
+    cursor.execute("ALTER TABLE stats DROP COLUMN IF EXISTS raw_json")
     if table_exists(cursor, "comments"):
         cursor.execute("ALTER TABLE comments DROP COLUMN IF EXISTS raw_json")
     cursor.execute("DROP TABLE IF EXISTS video_elements CASCADE")
     cursor.execute(f"DROP TABLE IF EXISTS {legacy_video_elements_name()} CASCADE")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_stats_snapshot_date ON video_stats(snapshot_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date)")
+    ensure_chunks_schema(cursor)
     ensure_transcripts_schema(cursor)
 
 
@@ -192,18 +196,79 @@ def clear_database(cursor):
     return len(tables)
 
 
-def ensure_video_stats_table_name(cursor):
-    if table_exists(cursor, "video_daily_stats") and not table_exists(cursor, "video_stats"):
-        cursor.execute("ALTER TABLE video_daily_stats RENAME TO video_stats")
+def ensure_stats_table_name(cursor):
+    if table_exists(cursor, "video_daily_stats") and not table_exists(cursor, "stats") and not table_exists(cursor, "video_stats"):
+        cursor.execute("ALTER TABLE video_daily_stats RENAME TO stats")
+    if table_exists(cursor, "video_stats") and not table_exists(cursor, "stats"):
+        cursor.execute("ALTER TABLE video_stats RENAME TO stats")
     if constraint_exists(cursor, "video_daily_stats_video_id_snapshot_date_key"):
         cursor.execute(
-            "ALTER TABLE video_stats RENAME CONSTRAINT video_daily_stats_video_id_snapshot_date_key TO video_stats_video_id_snapshot_date_key"
+            "ALTER TABLE stats RENAME CONSTRAINT video_daily_stats_video_id_snapshot_date_key TO stats_video_id_snapshot_date_key"
+        )
+    if constraint_exists(cursor, "video_stats_video_id_snapshot_date_key"):
+        cursor.execute(
+            "ALTER TABLE stats RENAME CONSTRAINT video_stats_video_id_snapshot_date_key TO stats_video_id_snapshot_date_key"
         )
     if constraint_exists(cursor, "video_daily_stats_pkey"):
-        cursor.execute("ALTER TABLE video_stats RENAME CONSTRAINT video_daily_stats_pkey TO video_stats_pkey")
+        cursor.execute("ALTER TABLE stats RENAME CONSTRAINT video_daily_stats_pkey TO stats_pkey")
+    if constraint_exists(cursor, "video_stats_pkey"):
+        cursor.execute("ALTER TABLE stats RENAME CONSTRAINT video_stats_pkey TO stats_pkey")
     if constraint_exists(cursor, "video_daily_stats_video_id_fkey"):
-        cursor.execute("ALTER TABLE video_stats RENAME CONSTRAINT video_daily_stats_video_id_fkey TO video_stats_video_id_fkey")
+        cursor.execute("ALTER TABLE stats RENAME CONSTRAINT video_daily_stats_video_id_fkey TO stats_video_id_fkey")
+    if constraint_exists(cursor, "video_stats_video_id_fkey"):
+        cursor.execute("ALTER TABLE stats RENAME CONSTRAINT video_stats_video_id_fkey TO stats_video_id_fkey")
     cursor.execute("DROP INDEX IF EXISTS idx_video_daily_stats_snapshot_date")
+    cursor.execute("DROP INDEX IF EXISTS idx_video_stats_snapshot_date")
+
+
+def ensure_transcripts_table_name(cursor):
+    if table_exists(cursor, "video_transcripts") and not table_exists(cursor, "transcripts"):
+        cursor.execute("ALTER TABLE video_transcripts RENAME TO transcripts")
+    if constraint_exists(cursor, "video_transcripts_pkey"):
+        cursor.execute("ALTER TABLE transcripts RENAME CONSTRAINT video_transcripts_pkey TO transcripts_pkey")
+    if constraint_exists(cursor, "video_transcripts_video_id_fkey"):
+        cursor.execute("ALTER TABLE transcripts RENAME CONSTRAINT video_transcripts_video_id_fkey TO transcripts_video_id_fkey")
+    if constraint_exists(cursor, "video_transcripts_video_id_language_code_key"):
+        cursor.execute(
+            "ALTER TABLE transcripts RENAME CONSTRAINT video_transcripts_video_id_language_code_key TO transcripts_video_id_language_code_key"
+        )
+    if constraint_exists(cursor, "video_transcripts_video_id_language_code_transcript_type_key"):
+        cursor.execute(
+            "ALTER TABLE transcripts RENAME CONSTRAINT video_transcripts_video_id_language_code_transcript_type_key TO transcripts_video_id_language_code_transcript_type_key"
+        )
+    cursor.execute("DROP INDEX IF EXISTS idx_video_transcripts_video_id")
+
+
+def ensure_chunks_schema(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chunks (
+            id BIGSERIAL PRIMARY KEY,
+            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            char_count INTEGER,
+            alert BOOLEAN,
+            alert_reason TEXT,
+            speakers TEXT[],
+            source_file TEXT,
+            embedding_model TEXT,
+            embedding vector(3072),
+            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (video_id, chunk_index)
+        )
+        """
+    )
+    ensure_data_collected_date_column(cursor, "chunks")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS char_count INTEGER")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS alert BOOLEAN")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS alert_reason TEXT")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers TEXT[]")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS source_file TEXT")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(3072)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index)")
 
 
 def legacy_video_elements_name():
@@ -242,7 +307,7 @@ def ensure_data_collected_date_column(cursor, table_name):
 def ensure_transcripts_schema(cursor):
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS video_transcripts (
+        CREATE TABLE IF NOT EXISTS transcripts (
             id BIGSERIAL PRIMARY KEY,
             video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
             language_code TEXT NOT NULL,
@@ -250,19 +315,18 @@ def ensure_transcripts_schema(cursor):
             transcript_timecodes TEXT,
             transcript_timecodes_enrichi TEXT,
             video_summary TEXT,
-            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )
-    ensure_data_collected_date_column(cursor, "video_transcripts")
-    cursor.execute("ALTER TABLE video_transcripts ADD COLUMN IF NOT EXISTS transcript TEXT")
-    cursor.execute("ALTER TABLE video_transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes TEXT")
-    cursor.execute("ALTER TABLE video_transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes_enrichi TEXT")
-    cursor.execute("ALTER TABLE video_transcripts ADD COLUMN IF NOT EXISTS video_summary TEXT")
-    cursor.execute("ALTER TABLE video_transcripts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()")
+    ensure_data_collected_date_column(cursor, "transcripts")
+    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript TEXT")
+    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes TEXT")
+    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes_enrichi TEXT")
+    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS video_summary TEXT")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS updated_at")
 
-    columns = table_columns(cursor, "video_transcripts")
+    columns = table_columns(cursor, "transcripts")
     if {"transcript_plain", "transcript_timecoded", "transcript_enriched"} & columns or {"transcript_type", "text"}.issubset(columns):
         plain_expression = "MAX(transcript)" if "transcript" in columns else "NULL::text"
         if "transcript_plain" in columns:
@@ -286,7 +350,7 @@ def ensure_transcripts_schema(cursor):
 
         cursor.execute(
             f"""
-            CREATE TEMP TABLE video_transcripts_merged ON COMMIT DROP AS
+            CREATE TEMP TABLE transcripts_merged ON COMMIT DROP AS
             SELECT
                 MIN(id) AS id,
                 video_id,
@@ -295,23 +359,22 @@ def ensure_transcripts_schema(cursor):
                 {timecodes_expression} AS transcript_timecodes,
                 {enriched_expression} AS transcript_timecodes_enrichi,
                 {summary_expression} AS video_summary,
-                MIN(data_collected_date) AS data_collected_date,
-                MAX(updated_at) AS updated_at
-            FROM video_transcripts
+                MIN(data_collected_date) AS data_collected_date
+            FROM transcripts
             GROUP BY video_id, language_code
             """
         )
-        cursor.execute("ALTER TABLE video_transcripts DROP CONSTRAINT IF EXISTS video_transcripts_video_id_language_code_transcript_type_key")
-        cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_type")
-        cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS text")
-        cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS segments")
-        cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_plain")
-        cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_timecoded")
-        cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_enriched")
-        cursor.execute("TRUNCATE video_transcripts")
+        cursor.execute("ALTER TABLE transcripts DROP CONSTRAINT IF EXISTS transcripts_video_id_language_code_transcript_type_key")
+        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_type")
+        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS text")
+        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS segments")
+        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_plain")
+        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecoded")
+        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_enriched")
+        cursor.execute("TRUNCATE transcripts")
         cursor.execute(
             """
-            INSERT INTO video_transcripts (
+            INSERT INTO transcripts (
                 id,
                 video_id,
                 language_code,
@@ -319,8 +382,7 @@ def ensure_transcripts_schema(cursor):
                 transcript_timecodes,
                 transcript_timecodes_enrichi,
                 video_summary,
-                data_collected_date,
-                updated_at
+                data_collected_date
             )
             SELECT
                 id,
@@ -330,29 +392,28 @@ def ensure_transcripts_schema(cursor):
                 transcript_timecodes,
                 transcript_timecodes_enrichi,
                 video_summary,
-                data_collected_date,
-                updated_at
-            FROM video_transcripts_merged
+                data_collected_date
+            FROM transcripts_merged
             """
         )
         cursor.execute(
             """
             SELECT setval(
-                pg_get_serial_sequence('video_transcripts', 'id'),
-                COALESCE((SELECT MAX(id) FROM video_transcripts), 1),
-                (SELECT COUNT(*) > 0 FROM video_transcripts)
+                pg_get_serial_sequence('transcripts', 'id'),
+                COALESCE((SELECT MAX(id) FROM transcripts), 1),
+                (SELECT COUNT(*) > 0 FROM transcripts)
             )
             """
         )
 
-    cursor.execute("ALTER TABLE video_transcripts DROP CONSTRAINT IF EXISTS video_transcripts_video_id_language_code_key")
-    cursor.execute("ALTER TABLE video_transcripts DROP CONSTRAINT IF EXISTS video_transcripts_video_id_language_code_transcript_type_key")
-    cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_type")
-    cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS text")
-    cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS segments")
-    cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_plain")
-    cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_timecoded")
-    cursor.execute("ALTER TABLE video_transcripts DROP COLUMN IF EXISTS transcript_enriched")
+    cursor.execute("ALTER TABLE transcripts DROP CONSTRAINT IF EXISTS transcripts_video_id_language_code_key")
+    cursor.execute("ALTER TABLE transcripts DROP CONSTRAINT IF EXISTS transcripts_video_id_language_code_transcript_type_key")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_type")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS text")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS segments")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_plain")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecoded")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_enriched")
     cursor.execute(
         """
         DO $$
@@ -360,15 +421,16 @@ def ensure_transcripts_schema(cursor):
             IF NOT EXISTS (
                 SELECT 1
                 FROM pg_constraint
-                WHERE conname = 'video_transcripts_video_id_language_code_key'
+                WHERE conname = 'transcripts_video_id_language_code_key'
             ) THEN
-                ALTER TABLE video_transcripts
-                    ADD CONSTRAINT video_transcripts_video_id_language_code_key
+                ALTER TABLE transcripts
+                    ADD CONSTRAINT transcripts_video_id_language_code_key
                     UNIQUE (video_id, language_code);
             END IF;
         END $$;
         """
     )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id)")
 
 
 def video_db_ids(cursor):
@@ -428,6 +490,37 @@ def extract_thumbnail_medium_url(payload):
             .get("url")
         )
     return None
+
+
+def load_chunks_payload(video_path):
+    chunks_dir = existing_chunks_dir(video_path)
+    candidates = (
+        chunks_dir / "transcript_chunks_speaker_validated.json",
+        chunks_dir / "transcript_chunks.json",
+    )
+    for candidate in candidates:
+        payload = load_json(candidate)
+        if isinstance(payload, dict) and isinstance(payload.get("chunks"), list):
+            return payload, candidate
+    return None, None
+
+
+def load_chunk_embedding_payload(video_path, chunk_index):
+    if chunk_index is None:
+        return None
+    chunks_dir = existing_chunks_dir(video_path)
+    candidate = chunks_dir / f"chunk_{int(chunk_index):02d}_embedding.json"
+    if candidate.exists():
+        payload = load_json(candidate)
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def embedding_vector_literal(values):
+    if not isinstance(values, list) or not values:
+        return None
+    return "[" + ",".join(str(float(value)) for value in values) + "]"
 
 
 def candidate_video_dirs(video_dir):
@@ -498,6 +591,100 @@ def load_video_summary(video_path):
     return text or None
 
 
+def upsert_chunk(cursor, video_id, chunk_payload, source_file, embedding_payload=None):
+    chunk_index = parse_int(chunk_payload.get("chunk_index"))
+    content = str(chunk_payload.get("content") or "").strip()
+    if chunk_index is None or not content:
+        return False
+
+    meta_data = chunk_payload.get("meta_data", {}) if isinstance(chunk_payload.get("meta_data"), dict) else {}
+    raw_speakers = meta_data.get("speakers", [])
+    speakers = [str(name).strip() for name in raw_speakers if str(name).strip()] if isinstance(raw_speakers, list) else None
+    embedding_model = embedding_payload.get("model") if isinstance(embedding_payload, dict) else None
+    embedding_literal = embedding_vector_literal(embedding_payload.get("embedding")) if isinstance(embedding_payload, dict) else None
+
+    if embedding_literal is not None:
+        cursor.execute(
+            """
+            INSERT INTO chunks (
+                video_id,
+                chunk_index,
+                content,
+                char_count,
+                alert,
+                alert_reason,
+                speakers,
+                source_file,
+                embedding_model,
+                embedding,
+                data_collected_date
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, now())
+            ON CONFLICT (video_id, chunk_index) DO UPDATE SET
+                content = EXCLUDED.content,
+                char_count = EXCLUDED.char_count,
+                alert = EXCLUDED.alert,
+                alert_reason = EXCLUDED.alert_reason,
+                speakers = EXCLUDED.speakers,
+                source_file = EXCLUDED.source_file,
+                embedding_model = EXCLUDED.embedding_model,
+                embedding = EXCLUDED.embedding,
+                data_collected_date = now()
+            """,
+            (
+                video_id,
+                chunk_index,
+                content,
+                parse_int(chunk_payload.get("char_count")),
+                chunk_payload.get("alert") if isinstance(chunk_payload.get("alert"), bool) else None,
+                chunk_payload.get("alert_reason"),
+                speakers,
+                source_file,
+                embedding_model,
+                embedding_literal,
+            ),
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO chunks (
+                video_id,
+                chunk_index,
+                content,
+                char_count,
+                alert,
+                alert_reason,
+                speakers,
+                source_file,
+                embedding_model,
+                data_collected_date
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT (video_id, chunk_index) DO UPDATE SET
+                content = EXCLUDED.content,
+                char_count = EXCLUDED.char_count,
+                alert = EXCLUDED.alert,
+                alert_reason = EXCLUDED.alert_reason,
+                speakers = EXCLUDED.speakers,
+                source_file = EXCLUDED.source_file,
+                embedding_model = EXCLUDED.embedding_model,
+                data_collected_date = now()
+            """,
+            (
+                video_id,
+                chunk_index,
+                content,
+                parse_int(chunk_payload.get("char_count")),
+                chunk_payload.get("alert") if isinstance(chunk_payload.get("alert"), bool) else None,
+                chunk_payload.get("alert_reason"),
+                speakers,
+                source_file,
+                embedding_model,
+            ),
+        )
+    return True
+
+
 def video_storage_prefix(video_path, root_dir, prefix):
     relative_path = video_path.relative_to(root_dir).as_posix()
     if prefix:
@@ -534,10 +721,9 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
             has_subtitles,
             video_type,
             speakers,
-            s3_uri,
-            updated_at
+            s3_uri
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (youtube_video_id) DO UPDATE SET
             title = EXCLUDED.title,
             description = EXCLUDED.description,
@@ -548,8 +734,7 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
             has_subtitles = EXCLUDED.has_subtitles,
             video_type = EXCLUDED.video_type,
             speakers = EXCLUDED.speakers,
-            s3_uri = EXCLUDED.s3_uri,
-            updated_at = now()
+            s3_uri = EXCLUDED.s3_uri
         RETURNING id
         """,
         (
@@ -576,7 +761,7 @@ def upsert_video_stats(cursor, video_id, payload, snapshot_date=None):
 
     cursor.execute(
         """
-        INSERT INTO video_stats (
+        INSERT INTO stats (
             video_id,
             snapshot_date,
             view_count,
@@ -668,34 +853,30 @@ def upsert_transcript(cursor, video_id, transcript_type, transcript_path, video_
     if video_summary is not None:
         cursor.execute(
             f"""
-            INSERT INTO video_transcripts (
+        INSERT INTO transcripts (
                 video_id,
                 language_code,
                 {column},
-                video_summary,
-                updated_at
+                video_summary
             )
-            VALUES (%s, 'fr', %s, %s, now())
+            VALUES (%s, 'fr', %s, %s)
             ON CONFLICT (video_id, language_code) DO UPDATE SET
                 {column} = EXCLUDED.{column},
-                video_summary = COALESCE(EXCLUDED.video_summary, video_transcripts.video_summary),
-                updated_at = now()
+                video_summary = COALESCE(EXCLUDED.video_summary, transcripts.video_summary)
             """,
             (video_id, text, video_summary),
         )
     else:
         cursor.execute(
             f"""
-            INSERT INTO video_transcripts (
+            INSERT INTO transcripts (
                 video_id,
                 language_code,
-                {column},
-                updated_at
+                {column}
             )
-            VALUES (%s, 'fr', %s, now())
+            VALUES (%s, 'fr', %s)
             ON CONFLICT (video_id, language_code) DO UPDATE SET
-                {column} = EXCLUDED.{column},
-                updated_at = now()
+                {column} = EXCLUDED.{column}
             """,
             (video_id, text),
         )
@@ -732,7 +913,7 @@ def parse_args():
     parser.add_argument(
         "--skip-transcripts",
         action="store_true",
-        help="N'actualise pas la table video_transcripts.",
+        help="N'actualise pas la table transcripts.",
     )
     parser.add_argument(
         "--dry-run",
@@ -791,6 +972,7 @@ def main():
             ids_by_youtube_id = video_db_ids(cursor)
             assets_count = 0
             transcripts_count = 0
+            chunks_count = 0
             skipped = []
 
             for path in files:
@@ -806,6 +988,21 @@ def main():
                     video_id = ids_by_youtube_id.get(current_video_dir.name)
                     if not video_id:
                         continue
+                    chunks_payload, chunks_source = load_chunks_payload(current_video_dir)
+                    if chunks_payload and chunks_source:
+                        source_file = chunks_source.relative_to(current_video_dir).as_posix()
+                        for chunk_payload in chunks_payload.get("chunks", []):
+                            embedding_payload = load_chunk_embedding_payload(current_video_dir, chunk_payload.get("chunk_index"))
+                            if not args.dry_run and upsert_chunk(
+                                cursor,
+                                video_id,
+                                chunk_payload,
+                                source_file,
+                                embedding_payload=embedding_payload,
+                            ):
+                                chunks_count += 1
+                            elif args.dry_run:
+                                chunks_count += 1
                     video_summary = load_video_summary(current_video_dir)
                     for transcript_type, transcript_path in transcript_paths(current_video_dir):
                         print(f"[transcript] {current_video_dir.name}: {transcript_type} - {transcript_path.name}")
@@ -826,7 +1023,7 @@ def main():
                 connection.commit()
 
     print(f"{videos_count} videos synchronisees, {stats_count} snapshots stats synchronises.")
-    print(f"{assets_count} assets traites, {transcripts_count} transcripts synchronises.")
+    print(f"{assets_count} assets traites, {transcripts_count} transcripts synchronises, {chunks_count} chunks synchronises.")
     if skipped:
         print(f"{len(skipped)} fichiers ignores car video absente de la table videos.")
 

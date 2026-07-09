@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 
 TABLES = (
     "comments",
+    "transcripts",
     "video_transcripts",
+    "stats",
     "video_stats",
     "video_daily_stats",
     "videos",

@@ -13,11 +13,10 @@ CREATE TABLE IF NOT EXISTS videos (
     speakers TEXT[],
     s3_uri TEXT,
     published_at TIMESTAMPTZ,
-    data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS video_stats (
+CREATE TABLE IF NOT EXISTS stats (
     id BIGSERIAL PRIMARY KEY,
     video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     view_count BIGINT,
@@ -28,7 +27,7 @@ CREATE TABLE IF NOT EXISTS video_stats (
     UNIQUE (video_id, snapshot_date)
 );
 
-CREATE TABLE IF NOT EXISTS video_transcripts (
+CREATE TABLE IF NOT EXISTS transcripts (
     id BIGSERIAL PRIMARY KEY,
     video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     language_code TEXT NOT NULL,
@@ -37,8 +36,23 @@ CREATE TABLE IF NOT EXISTS video_transcripts (
     transcript_timecodes_enrichi TEXT,
     video_summary TEXT,
     data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (video_id, language_code)
+);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id BIGSERIAL PRIMARY KEY,
+    video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    char_count INTEGER,
+    alert BOOLEAN,
+    alert_reason TEXT,
+    speakers TEXT[],
+    source_file TEXT,
+    embedding_model TEXT,
+    embedding vector(3072),
+    data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (video_id, chunk_index)
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -53,7 +67,9 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
-CREATE INDEX IF NOT EXISTS idx_video_stats_snapshot_date ON video_stats(snapshot_date);
-CREATE INDEX IF NOT EXISTS idx_video_transcripts_video_id ON video_transcripts(video_id);
+CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index);
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);

@@ -100,8 +100,9 @@ docker compose exec postgres psql -U rag_ionis -d rag_ionis -c "SELECT extname F
 Tables principales:
 
 - `videos`: videos de la chaine IONIS-STM, avec titre, lien et metadonnees stables.
-- `video_stats`: statistiques quotidiennes rattachees a une video via `video_id`, avec vues, likes et nombre de commentaires.
-- `video_transcripts`: transcriptions rattachees a une video via `video_id`, avec une ligne par video/langue et les variantes `transcript`, `transcript_timecodes`, `transcript_timecodes_enrichi`.
+- `stats`: statistiques quotidiennes rattachees a une video via `video_id`, avec vues, likes et nombre de commentaires.
+- `transcripts`: transcriptions rattachees a une video via `video_id`, avec une ligne par video/langue et les variantes `transcript`, `transcript_timecodes`, `transcript_timecodes_enrichi`.
+- `chunks`: chunks textuels rattaches a une video via `video_id`, avec contenu, speakers, alertes et embedding quand il existe.
 - `comments`: commentaires rattaches a une video via `video_id`, avec support des reponses via `parent_comment_id`.
 
 Comparer les vues entre deux jours:
@@ -111,8 +112,8 @@ SELECT
     v.title,
     newer.view_count - older.view_count AS views_delta
 FROM videos v
-JOIN video_stats older ON older.video_id = v.id
-JOIN video_stats newer ON newer.video_id = v.id
+JOIN stats older ON older.video_id = v.id
+JOIN stats newer ON newer.video_id = v.id
 WHERE older.snapshot_date = '2026-06-25'
   AND newer.snapshot_date = '2026-06-26'
 ORDER BY views_delta DESC;
@@ -138,7 +139,7 @@ Importer les videos de la chaine, leurs statistiques du jour et leurs commentair
 python scripts/init/01_get_data.py
 ```
 
-Le script travaille sur `https://www.youtube.com/@IONIS-STM/videos` et remplit les tables `videos`, `video_stats`, `video_transcripts` et `comments`.
+Le script travaille sur `https://www.youtube.com/@IONIS-STM/videos` et remplit les tables `videos`, `stats`, `transcripts` et `comments`.
 
 ## Run Pipeline
 
@@ -515,7 +516,7 @@ downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 -> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo
 ```
 
-Il met aussi a jour une seule ligne `video_transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `outputs/transcripts/`:
+Il met aussi a jour une seule ligne `transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `outputs/transcripts/`:
 
 ```text
 transcript                   -> plain_transcript.txt

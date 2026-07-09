@@ -71,6 +71,18 @@ def analysed_has_subtitles(video_path):
     return value if isinstance(value, bool) else None
 
 
+def analysed_video_type(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("video_type")
+    return value if isinstance(value, str) else None
+
+
 def timecodes_path(video_path):
     transcript_dir = existing_transcripts_dir(video_path)
     candidates = (
@@ -84,6 +96,11 @@ def timecodes_path(video_path):
             return candidate
 
     raise FileNotFoundError(f"Aucun fichier timecodes corrige trouve pour {video_path.stem} dans {transcript_dir}")
+
+
+def whisper_timecoded_path(video_path):
+    transcript_dir = existing_transcripts_dir(video_path)
+    return transcript_dir / "whisper_transcript_timecoded.txt"
 
 
 def enriched_path(source_path):
@@ -149,6 +166,20 @@ def format_overlay_line(overlay):
     return f"[{timecode}] {label}: {overlay['text']}"
 
 
+def format_plain_overlay_line(overlay):
+    timecode = format_timecode(overlay["second"])
+    return f"[{timecode}] {overlay['text']}"
+
+
+def is_empty_text_file(path):
+    if not path.exists():
+        return False
+    try:
+        return not path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return False
+
+
 def enrich_transcript(video_path, force=False):
     source = timecodes_path(video_path)
     analyse = enriched_ocr_source_path(video_path)
@@ -164,23 +195,28 @@ def enrich_transcript(video_path, force=False):
         print(f"[skip] analyse filtree introuvable: {analyse}")
         return None
 
+    video_type = (analysed_video_type(video_path) or "").strip().lower()
+    plain_motion_design_overlays = (
+        video_type == "motion_design" and is_empty_text_file(whisper_timecoded_path(video_path))
+    )
     source_lines = parse_timecoded_source(source)
     overlays = load_filtered_overlays(analyse)
     lines = []
     source_index = 0
     overlay_index = 0
+    overlay_formatter = format_plain_overlay_line if plain_motion_design_overlays else format_overlay_line
 
     while source_index < len(source_lines):
         current_second = source_lines[source_index]["second"]
         while overlay_index < len(overlays) and overlays[overlay_index]["second"] <= current_second:
-            lines.append(format_overlay_line(overlays[overlay_index]))
+            lines.append(overlay_formatter(overlays[overlay_index]))
             overlay_index += 1
 
         lines.append(source_lines[source_index]["line"])
         source_index += 1
 
     while overlay_index < len(overlays):
-        lines.append(format_overlay_line(overlays[overlay_index]))
+        lines.append(overlay_formatter(overlays[overlay_index]))
         overlay_index += 1
 
     target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")

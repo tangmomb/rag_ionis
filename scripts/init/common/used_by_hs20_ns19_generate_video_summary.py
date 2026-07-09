@@ -4,7 +4,7 @@ import re
 import sys
 from pathlib import Path
 
-from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
 from common.pipeline_paths import (
     OUTPUTS_DIR_NAME,
     TRANSCRIPTS_DIR_NAME,
@@ -124,6 +124,32 @@ def video_title_for_input(input_path):
     return normalize_text(input_path.stem)
 
 
+def analysed_video_type(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("video_type")
+    return value if isinstance(value, str) else None
+
+
+def whisper_timecoded_path(video_dir):
+    transcript_dir = existing_transcripts_dir(video_dir)
+    return transcript_dir / "whisper_transcript_timecoded.txt"
+
+
+def is_empty_text_file(path):
+    if not path.exists():
+        return False
+    try:
+        return not path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return False
+
+
 def parse_enriched_lines(text):
     rows = []
     for line in text.splitlines():
@@ -139,6 +165,21 @@ def parse_enriched_lines(text):
             timecode, body = match.groups()
             rows.append((timecode, timecode, body.strip()))
     return rows
+
+
+def visible_text_rows(rows):
+    texts = []
+    seen = set()
+    for _, _, body in rows:
+        cleaned = normalize_text(body)
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        texts.append(cleaned)
+    return texts
 
 
 def escape_markdown(text):
@@ -281,6 +322,21 @@ def render_summary(rows, video_title):
     return "\n".join(lines) + "\n"
 
 
+def render_visible_text_summary(rows, video_title):
+    lines = ["# Sommaire de la vidéo", f"# {escape_markdown(video_title)}", "", "## Textes visibles sur la vidéo", ""]
+    visible_texts = visible_text_rows(rows)
+    if not visible_texts:
+        lines.append("> Aucun texte visible détecté.")
+        lines.append("")
+        return "\n".join(lines) + "\n"
+
+    lines.append("```text")
+    lines.extend(visible_texts)
+    lines.append("```")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def summarize_file(input_path, force=False):
     target = summary_path(input_path)
     if target.exists() and not force:
@@ -288,9 +344,14 @@ def summarize_file(input_path, force=False):
         return target
 
     rows = parse_enriched_lines(input_path.read_text(encoding="utf-8"))
-    target.write_text(render_summary(rows, video_title_for_input(input_path)), encoding="utf-8")
     video_dir = video_dir_for_input(input_path)
     video_path = video_file_for_dir(video_dir)
+    video_type = (analysed_video_type(video_path) or "").strip().lower()
+    plain_motion_design_overlays = (
+        video_type == "motion_design" and is_empty_text_file(whisper_timecoded_path(video_dir))
+    )
+    renderer = render_visible_text_summary if plain_motion_design_overlays else render_summary
+    target.write_text(renderer(rows, video_title_for_input(input_path)), encoding="utf-8")
     update_analysed_infos(
         video_path,
         "video_summary",

@@ -1,9 +1,10 @@
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
 
-from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
 from common.pipeline_paths import existing_transcripts_dir, relative_to_video_dir
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -19,8 +20,10 @@ LEGACY_CORRECTED_TIMECODED_SUFFIXES = (
 PLAIN_NAME = "plain_transcript.txt"
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 TIMECODE_PREFIX = re.compile(
-    r"^\[(?:\d{2}:)?\d{2}:\d{2}-(?:\d{2}:)?\d{2}:\d{2}\]\s*(?:[A-Z][A-Z0-9_-]*:\s*)?"
+    r"^\[(?:(?:\d{2}:)?\d{2}:\d{2}-(?:\d{2}:)?\d{2}:\d{2}|(?:\d{2}:)?\d{2}:\d{2})\]\s*(?:[A-Z][A-Z0-9_-]*:\s*)?"
 )
+ENRICHED_SUFFIX = "_enriched.txt"
+LEGACY_ENRICHED_SUFFIX = "_enrichi.txt"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -66,6 +69,32 @@ def strip_timecodes(text):
     return " ".join(cleaned_lines)
 
 
+def analysed_video_type(video_path):
+    path = analysed_infos_path(video_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = payload.get("video_type")
+    return value if isinstance(value, str) else None
+
+
+def whisper_timecoded_path(video_path):
+    transcript_dir = existing_transcripts_dir(video_path)
+    return transcript_dir / "whisper_transcript_timecoded.txt"
+
+
+def is_empty_text_file(path):
+    if not path.exists():
+        return False
+    try:
+        return not path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return False
+
+
 def output_path(input_path):
     if input_path.name in CORRECTED_TIMECODED_NAMES:
         return input_path.with_name(PLAIN_NAME)
@@ -77,6 +106,18 @@ def output_path(input_path):
     else:
         name = input_path.stem + LEGACY_PLAIN_SUFFIX
     return input_path.with_name(name)
+
+
+def enriched_input_path(input_path):
+    if input_path.name.endswith(".txt"):
+        candidate = input_path.with_name(input_path.name[: -len(".txt")] + ENRICHED_SUFFIX)
+        if candidate.exists():
+            return candidate
+
+    candidate = input_path.with_name(f"{input_path.stem}{LEGACY_ENRICHED_SUFFIX}")
+    if candidate.exists():
+        return candidate
+    return None
 
 
 def timecoded_inputs(transcript_dir):
@@ -96,7 +137,17 @@ def convert_file(video_path, input_path, force=False):
         print(f"[skip] {target.name} existe deja")
         return target
 
-    text = input_path.read_text(encoding="utf-8")
+    video_type = (analysed_video_type(video_path) or "").strip().lower()
+    plain_motion_design_overlays = (
+        video_type == "motion_design" and is_empty_text_file(whisper_timecoded_path(video_path))
+    )
+    source_path = input_path
+    if plain_motion_design_overlays:
+        enriched_path = enriched_input_path(input_path)
+        if enriched_path is not None:
+            source_path = enriched_path
+
+    text = source_path.read_text(encoding="utf-8")
     cleaned = strip_timecodes(text)
     target.write_text(cleaned + "\n", encoding="utf-8")
     update_analysed_infos(
@@ -104,7 +155,7 @@ def convert_file(video_path, input_path, force=False):
         "strip_timecodes",
         {
             "status": "done",
-            "source": relative_to_video_dir(input_path, video_path),
+            "source": relative_to_video_dir(source_path, video_path),
             "plain_transcript_file": relative_to_video_dir(target, video_path),
             "char_count": len(cleaned),
         },

@@ -11,6 +11,7 @@ VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 MANIFEST_NAME = "frame_classification_manifest.json"
 LEGACY_MANIFEST_NAME = "manifest.json"
 INTERVIEW_MANIFEST_NAME = "interview_detection_manifest.json"
+MOTION_DESIGN_MAX_FOOTAGE_RATIO = 0.05
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -66,12 +67,34 @@ def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def manifest_class_counts(payload):
+    class_counts = payload.get("class_counts")
+    if isinstance(class_counts, dict):
+        footage_count = int(class_counts.get("footage", 0) or 0)
+        graphic_count = int(class_counts.get("graphic", 0) or 0)
+        mixture_count = int(class_counts.get("mixture", 0) or 0)
+        return footage_count, graphic_count, mixture_count
+
+    items = payload.get("items", [])
+    counts = {"footage": 0, "graphic": 0, "mixture": 0}
+    for item in items:
+        label = str(item.get("pred_label", "")).strip().lower()
+        if label in counts:
+            counts[label] += 1
+    return counts["footage"], counts["graphic"], counts["mixture"]
+
+
 def infer_video_type_from_manifest(payload):
+    footage_count, graphic_count, mixture_count = manifest_class_counts(payload)
+    total_count = footage_count + graphic_count + mixture_count
     labels = {
         str(item.get("pred_label", "")).strip().lower()
         for item in payload.get("items", [])
         if str(item.get("pred_label", "")).strip()
     }
+    footage_ratio = (footage_count / total_count) if total_count > 0 else 0.0
+    if total_count > 0 and footage_ratio < MOTION_DESIGN_MAX_FOOTAGE_RATIO:
+        return "motion_design"
     if labels and "footage" not in labels:
         return "motion_design"
     return "video_recording"

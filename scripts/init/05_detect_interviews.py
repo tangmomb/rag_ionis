@@ -16,6 +16,7 @@ SOURCE_DIR_NAMES = ("footage",)
 OUTPUT_DIR_NAME = "interview"
 MANIFEST_NAME = "interview_detection_manifest.json"
 LEGACY_MANIFEST_NAME = "manifest.json"
+CLASSIFICATION_MANIFEST_NAME = "frame_classification_manifest.json"
 DEFAULT_MAX_INTERVIEW_SEQUENCES = 5
 
 
@@ -89,6 +90,41 @@ def ensure_clean_dir(path):
         shutil.rmtree(directory)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def classification_manifest_path(video_path):
+    images_dir = existing_images_dir(video_path)
+    preferred = images_dir / CLASSIFICATION_MANIFEST_NAME
+    legacy = images_dir / LEGACY_MANIFEST_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
+
+
+def load_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_classification_counts(video_path):
+    source = classification_manifest_path(video_path)
+    if not source.exists():
+        return None
+
+    payload = load_json(source)
+    class_counts = payload.get("class_counts")
+    if isinstance(class_counts, dict):
+        footage_count = int(class_counts.get("footage", 0) or 0)
+        graphic_count = int(class_counts.get("graphic", 0) or 0)
+    else:
+        footage_count = int(payload.get("footage_count", 0) or 0)
+        graphic_count = int(payload.get("graphic_count", 0) or 0)
+
+    return {
+        "source": relative_to_video_dir(source, video_path),
+        "footage_count": footage_count,
+        "graphic_count": graphic_count,
+        "graphic_exceeds_footage": graphic_count > footage_count,
+    }
 
 
 def dct_matrix(size):
@@ -264,7 +300,7 @@ def build_sequences(image_paths, args):
     return pair_results, serialized
 
 
-def write_outputs(video_path, image_paths, pair_results, sequences, args):
+def write_outputs(video_path, image_paths, pair_results, sequences, args, classification_counts=None):
     output_dir = ensure_clean_dir(interview_dir(video_path))
 
     selected_names = []
@@ -285,13 +321,17 @@ def write_outputs(video_path, image_paths, pair_results, sequences, args):
             )
         sequence["frames"] = frame_items
 
+    sequence_rule_is_interview = len(sequences) < args.max_interview_sequences
+    blocked_by_graphics = bool(classification_counts and classification_counts["graphic_exceeds_footage"])
     manifest = {
         "method": "consecutive_similarity",
-        "is_interview": len(sequences) < args.max_interview_sequences,
+        "is_interview": sequence_rule_is_interview and not blocked_by_graphics,
         "source_dirs": list(args.source_dirs),
         "frame_count": len(image_paths),
         "selected_frame_count": len(selected_names),
         "sequence_count": len(sequences),
+        "sequence_rule_is_interview": sequence_rule_is_interview,
+        "blocked_by_graphic_majority": blocked_by_graphics,
         "thresholds": {
             "phash_similar_max": args.phash_similar_max,
             "phash_ambiguous_max": args.phash_ambiguous_max,
@@ -300,6 +340,7 @@ def write_outputs(video_path, image_paths, pair_results, sequences, args):
             "max_gap_pairs": args.max_gap_pairs,
             "max_interview_sequences": args.max_interview_sequences,
         },
+        "classification_counts": classification_counts,
         "sequences": sequences,
         "pairs": pair_results,
     }
@@ -324,11 +365,18 @@ def detect_for_video(video_path, args):
         print(f"[skip] {video_path.name}: aucune image candidate dans {images_dir}")
         return None
 
+    classification_counts = load_classification_counts(video_path)
+
     print(f"[analyse] {video_path.name}: {len(image_paths)} images candidates", flush=True)
     pair_results, sequences = build_sequences(image_paths, args)
-    manifest_path = write_outputs(video_path, image_paths, pair_results, sequences, args)
+    manifest_path = write_outputs(video_path, image_paths, pair_results, sequences, args, classification_counts)
     print(
-        f"[ok] {video_path.name}: sequences={len(sequences)}, frames={sum(seq['frame_count'] for seq in sequences)} -> {manifest_path}",
+        (
+            f"[ok] {video_path.name}: sequences={len(sequences)}, "
+            f"frames={sum(seq['frame_count'] for seq in sequences)}, "
+            f"is_interview={len(sequences) < args.max_interview_sequences and not bool(classification_counts and classification_counts['graphic_exceeds_footage'])} "
+            f"-> {manifest_path}"
+        ),
         flush=True,
     )
     return manifest_path

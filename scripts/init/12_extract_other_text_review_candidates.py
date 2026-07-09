@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from ocr_processed_filtering import filtered_ocr_path
-from local_paddle_ocr import box_bounds, configure_stdio
+from local_paddle_ocr import box_bounds, configure_stdio, image_files
 from pipeline_paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
@@ -84,15 +84,38 @@ def load_others_entries(path):
             continue
         image_name = item.get("image")
         box = item.get("box")
-        if not image_name or not box:
+        image_names = list(item.get("images", []))
+        boxes = list(item.get("boxes", []))
+        texts = list(item.get("texts", []))
+        if not image_names and image_name:
+            image_names = [image_name]
+        if not boxes and box:
+            boxes = [box]
+        if not texts and item.get("text"):
+            texts = [item.get("text", "")]
+        annotations = []
+        for annotation_index, annotation_box in enumerate(boxes):
+            annotation_image = image_names[annotation_index] if annotation_index < len(image_names) else image_name
+            annotation_text = texts[annotation_index] if annotation_index < len(texts) else item.get("text", "")
+            if not annotation_image or not annotation_box:
+                continue
+            annotations.append(
+                {
+                    "image": annotation_image,
+                    "box": annotation_box,
+                    "text": annotation_text,
+                }
+            )
+        if not annotations:
             continue
         entries.append(
             {
                 "entry_id": entry_id,
                 "timecode": item.get("timecode", entry_id),
                 "text": item.get("text", ""),
-                "image": image_name,
-                "box": box,
+                "image": image_name or annotations[0]["image"],
+                "box": box or annotations[0]["box"],
+                "annotations": annotations,
                 "all_occurrences": list(item.get("all_occurrences", [])),
             }
         )
@@ -121,15 +144,37 @@ def safe_stem(value):
     return cleaned.strip("_") or "item"
 
 
-def annotate_image(image_path, box):
+def annotate_image(image_path, boxes):
     with Image.open(image_path) as image:
-        bounds = padded_box_bounds(box, image.size)
-        if bounds is None:
-            return None
         annotated = image.convert("RGB")
         draw = ImageDraw.Draw(annotated)
-        draw.rectangle(bounds, outline=BOX_OUTLINE_COLOR, width=BOX_OUTLINE_WIDTH)
+        wrote_box = False
+        for box in boxes:
+            bounds = padded_box_bounds(box, image.size)
+            if bounds is None:
+                continue
+            draw.rectangle(bounds, outline=BOX_OUTLINE_COLOR, width=BOX_OUTLINE_WIDTH)
+            wrote_box = True
+        if not wrote_box:
+            return None
         return annotated
+
+
+def previous_image_name(image_name, image_sequence_names):
+    if not image_name:
+        return None
+    try:
+        index = image_sequence_names.index(image_name)
+    except ValueError:
+        return None
+    if index <= 0:
+        return None
+    previous_name = image_sequence_names[index - 1]
+    current_parts = Path(image_name).parts
+    previous_parts = Path(previous_name).parts
+    if current_parts[:-1] != previous_parts[:-1]:
+        return None
+    return previous_name
 
 
 def extract_for_video(video_path, force=False):
@@ -149,6 +194,7 @@ def extract_for_video(video_path, force=False):
     target_dir.mkdir(parents=True, exist_ok=True)
 
     images_dir = existing_images_dir(video_path)
+    image_sequence_names = [path.relative_to(images_dir).as_posix() for path in image_files(images_dir)]
     manifest_items = []
     written = 0
     for index, entry in enumerate(entries, start=1):
@@ -156,6 +202,7 @@ def extract_for_video(video_path, force=False):
         group_dir = target_dir / group_dir_name
         group_dir.mkdir(parents=True, exist_ok=True)
 
+        annotations = list(entry.get("annotations", []))
         occurrences = list(entry.get("all_occurrences", []))
         if not occurrences and entry.get("image") and entry.get("box"):
             occurrences = [
@@ -167,26 +214,44 @@ def extract_for_video(video_path, force=False):
                 }
             ]
 
-        first_occurrence = occurrences[0] if occurrences else None
-        if not first_occurrence:
+        if not annotations:
             continue
-        occurrence_image_name = first_occurrence.get("image")
-        occurrence_box = first_occurrence.get("box")
-        if not occurrence_image_name or not occurrence_box:
+        first_annotation = annotations[0]
+        annotation_image_name = first_annotation.get("image")
+        grouped_annotations = [annotation for annotation in annotations if annotation.get("image") == annotation_image_name]
+        grouped_boxes = [annotation.get("box") for annotation in grouped_annotations]
+        grouped_texts = [annotation.get("text", "") for annotation in grouped_annotations]
+        if not annotation_image_name or not grouped_boxes:
             continue
-        occurrence_image_path = images_dir / occurrence_image_name
+
+        occurrence_image_path = images_dir / annotation_image_name
         if not occurrence_image_path.exists():
             print(f"[skip] image occurrence introuvable: {occurrence_image_path}", flush=True)
             continue
-        annotated = annotate_image(occurrence_image_path, occurrence_box)
+        annotated = annotate_image(occurrence_image_path, grouped_boxes)
         if annotated is None:
             continue
         occurrence_output_name = (
-            f"001__{safe_stem(Path(occurrence_image_name).stem)}"
-            f"__{safe_stem(first_occurrence.get('text', entry['text']))}.png"
+            f"001__{safe_stem(Path(annotation_image_name).stem)}"
+            f"__{safe_stem(entry['text'])}.png"
         )
         occurrence_output_path = group_dir / occurrence_output_name
         annotated.save(occurrence_output_path)
+
+        previous_crop = None
+        previous_annotation_image_name = previous_image_name(annotation_image_name, image_sequence_names)
+        if previous_annotation_image_name:
+            previous_image_path = images_dir / previous_annotation_image_name
+            if previous_image_path.exists():
+                previous_annotated = annotate_image(previous_image_path, grouped_boxes)
+                if previous_annotated is not None:
+                    previous_output_name = (
+                        f"000__{safe_stem(Path(previous_annotation_image_name).stem)}"
+                        f"__{safe_stem(entry['text'])}.png"
+                    )
+                    previous_output_path = group_dir / previous_output_name
+                    previous_annotated.save(previous_output_path)
+                    previous_crop = f"{group_dir_name}/{previous_output_name}"
 
         manifest_items.append(
             {
@@ -195,15 +260,24 @@ def extract_for_video(video_path, force=False):
                 "text": entry["text"],
                 "image": entry["image"],
                 "box": entry["box"],
+                "texts": [annotation.get("text", "") for annotation in annotations],
+                "images": [annotation.get("image") for annotation in annotations],
+                "boxes": [annotation.get("box") for annotation in annotations],
                 "group_dir": group_dir_name,
                 "crop": f"{group_dir_name}/{occurrence_output_name}",
+                "previous_crop": previous_crop,
                 "selected_occurrence": {
-                    "timecode": first_occurrence.get("timecode"),
-                    "text": first_occurrence.get("text", entry["text"]),
-                    "image": occurrence_image_name,
-                    "box": occurrence_box,
-                    "score": first_occurrence.get("score"),
+                    "timecode": entry["timecode"],
+                    "text": entry["text"],
+                    "texts": grouped_texts,
+                    "image": annotation_image_name,
+                    "previous_image": previous_annotation_image_name,
+                    "images": [annotation.get("image") for annotation in annotations],
+                    "box": grouped_boxes[0],
+                    "boxes": grouped_boxes,
+                    "score": occurrences[0].get("score") if occurrences else None,
                     "annotation": f"{group_dir_name}/{occurrence_output_name}",
+                    "previous_annotation": previous_crop,
                 },
                 "all_occurrence_count": len(occurrences),
             }
@@ -221,6 +295,7 @@ def extract_for_video(video_path, force=False):
             "padding_px": BOX_PADDING_PX,
             "outline_color": list(BOX_OUTLINE_COLOR),
             "outline_width": BOX_OUTLINE_WIDTH,
+            "includes_previous_image": True,
         },
         "items": manifest_items,
     }

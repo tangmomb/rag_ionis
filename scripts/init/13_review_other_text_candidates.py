@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,20 +23,24 @@ LEGACY_OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes_review"
 SUMMARY_NAME = "review_summary.json"
 LEGACY_SUMMARY_NAME = "summary.json"
 DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_MODE = "batch"
+DEFAULT_WAIT_FOR_BATCH = True
+BATCH_STATE_NAME = "batch_state.json"
+BATCH_INPUT_NAME = "batch_input.jsonl"
+BATCH_OUTPUT_NAME = "batch_output.jsonl"
+BATCH_ERROR_NAME = "batch_error.jsonl"
 SYSTEM_PROMPT = (
-    "Tu analyses une image complete provenant d'une video. "
-    "Ta tache: 1) regarder d'abord l'ensemble de l'image pour juger le contexte visuel global, "
-    "2) analyser ensuite le texte situe dans la zone encadree en rouge, "
+    "Tu analyses une ou deux images completes provenant d'une video. "
+    "Ta tache: 1) regarder d'abord l'ensemble des images pour juger le contexte visuel global, "
+    "2) analyser ensuite uniquement le texte situe dans les zones encadrees en rouge, sans elargir ton attention a d'autres parties des images pour corriger le texte, "
     "3) dire si ce texte ressemble a du texte ajoute au montage "
-    "(titre, lower third, intertitre, texte graphique, habillage, texte pose en post-production) "
+    "(titre, lower third, intertitre, texte graphique, habillage, texte pose en post-production), attention il se peut que le texte soit en cours de fondu ou d'apparition donc pas hyper contraste, "
     "plutot qu'a du texte capture naturellement dans la scene, "
-    "4) verifier enfin si le texte OCR fourni contient une erreur de lecture, et si oui proposer une correction. "
-    "Regle importante: si le texte encadre n'est pas parfaitement lisible, net, propre et clairement detache du decor, "
-    "alors considere que ce n'est PAS du texte ajoute au montage. "
-    "Autre regle importante: si le texte est bien net et passe par-dessus plusieurs elements differents "
-    "(personnes, vetements, objets, decors, arriere-plan, etc.), alors considere que c'est FORCEMENT un ajout au montage. "
-    "Reponds uniquement en JSON avec les cles: "
-    "has_ocr_error (boolean), corrected_text (string), is_added_in_edit (boolean), confidence (number entre 0 et 1), reason (string court). "
+    "4) verifier enfin si le texte OCR fourni contient une erreur de lecture, et si oui proposer une correction. si le texte que tu proposes n'est pas une petite correction de l'ocr, alors considere qu'il ne s'agit pas d'un ajout au montage mais d'une erreur de lecture de l'ocr. "
+    "Regle importante: si le texte encadre n'est pas parfaitement lisible, net, propre et clairement detache du decor, alors considere que ce n'est PAS du texte ajoute au montage. "
+    "Autre regle importante: si le texte est bien net et passe par-dessus plusieurs elements differents (personnes, vetements, objets, decors, arriere-plan, etc.), alors considere que c'est FORCEMENT un ajout au montage. "
+    "S'il y a deux images, elles se suivent dans le temps et montrent potentiellement un fondu, une apparition ou une animation du meme texte. "
+    "Reponds uniquement en JSON avec les cles: has_ocr_error (boolean), corrected_text (string), is_added_in_edit (boolean), confidence (number entre 0 et 1), reason (string court). "
     "Si le texte OCR semble deja correct, corrected_text doit reprendre le texte OCR tel quel."
 )
 
@@ -100,6 +105,31 @@ def output_dir(video_path):
     return preferred
 
 
+def summary_path(video_path):
+    directory = output_dir(video_path)
+    preferred = directory / SUMMARY_NAME
+    legacy = directory / LEGACY_SUMMARY_NAME
+    if legacy.exists() and not preferred.exists():
+        return legacy
+    return preferred
+
+
+def batch_state_path(video_path):
+    return output_dir(video_path) / BATCH_STATE_NAME
+
+
+def batch_input_path(video_path):
+    return output_dir(video_path) / BATCH_INPUT_NAME
+
+
+def batch_output_path(video_path):
+    return output_dir(video_path) / BATCH_OUTPUT_NAME
+
+
+def batch_error_path(video_path):
+    return output_dir(video_path) / BATCH_ERROR_NAME
+
+
 def openai_client():
     try:
         from openai import OpenAI
@@ -128,15 +158,15 @@ def encode_image_data_url(path):
     return f"data:{mime};base64,{payload}"
 
 
-def response_text(response):
-    output_text = getattr(response, "output_text", None)
+def response_text_from_payload(payload):
+    output_text = payload.get("output_text")
     if output_text:
         return str(output_text)
 
     pieces = []
-    for output in getattr(response, "output", []) or []:
-        for content in getattr(output, "content", []) or []:
-            text = getattr(content, "text", None)
+    for output in payload.get("output", []) or []:
+        for content in output.get("content", []) or []:
+            text = content.get("text")
             if text:
                 pieces.append(str(text))
     return "\n".join(pieces).strip()
@@ -162,44 +192,66 @@ def parse_json_answer(answer):
     }
 
 
-def review_one_image(client, model, image_path, item):
-    user_prompt = (
-        "Regarde d'abord l'image complete pour comprendre la scene et le contexte general. "
+def build_user_prompt(item):
+    return (
+        "Tu recois le screenshot courant annote et parfois le screenshot precedent annote avec les memes boxes rouges. "
+        "S'il y a deux images, elles se suivent et le fait de voir les deux doit t'aider a juger si la zone rouge pointe une animation, un fondu ou un texte stable ajoute au montage. "
+        "Regarde d'abord les images completes pour comprendre la scene et le contexte general. "
         "Ensuite concentre-toi sur le texte dans la zone encadree en rouge. "
-        "Decide d'abord si ce texte encadre est un ajout au montage ou non, en tenant compte du contexte global de l'image. "
+        "Decide d'abord si ce texte encadre est un ajout au montage ou non, en tenant compte du contexte global des images. "
         "Si le texte n'est pas parfaitement lisible ou net, reponds que ce n'est pas du montage. "
         "Si le texte est bien net et traverse visiblement plusieurs elements differents de l'image, reponds que c'est du montage. "
         "Apres cette decision, verifie si le texte OCR fourni correspond bien a ce qui est visible dans la zone rouge, et corrige-le si besoin. "
+        "Question pratique a te poser: voici deux screenshots qui se suivent, la zone rouge pointe-t-elle une animation et y a-t-il une faute d'orthographe dans l'OCR ? "
         "Contexte OCR:\n"
         f"- timecode: {item.get('timecode', '')}\n"
         f"- texte OCR: {item.get('text', '')}\n"
         "Reponds uniquement avec le JSON demande."
     )
+
+
+def build_messages(image_path, item, previous_image_path=None):
+    user_prompt = build_user_prompt(item)
+    user_content = [{"type": "input_text", "text": user_prompt}]
+    if previous_image_path is not None:
+        user_content.append({"type": "input_text", "text": "Image 1: screenshot precedent."})
+        user_content.append(
+            {"type": "input_image", "image_url": encode_image_data_url(previous_image_path), "detail": "high"}
+        )
+    user_content.append({"type": "input_text", "text": "Image 2: screenshot courant cible."})
+    user_content.append({"type": "input_image", "image_url": encode_image_data_url(image_path), "detail": "high"})
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": user_prompt},
-                {"type": "input_image", "image_url": encode_image_data_url(image_path), "detail": "high"},
-            ],
-        },
+        {"role": "user", "content": user_content},
     ]
-    response = client.responses.create(
-        model=model,
-        input=messages,
-        max_output_tokens=200,
-    )
-    answer = response_text(response).strip()
-    return answer, {
+    request_log = {
         "api": "responses.create",
-        "model": model,
+        "model": None,
         "max_output_tokens": 200,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
     }
+    return messages, request_log
+
+
+def build_response_request(model, image_path, item, previous_image_path=None):
+    messages, request_log = build_messages(image_path, item, previous_image_path=previous_image_path)
+    request_log["model"] = model
+    body = {
+        "model": model,
+        "input": messages,
+        "max_output_tokens": 200,
+    }
+    return body, request_log
+
+
+def review_one_image(client, model, image_path, item, previous_image_path=None):
+    body, request_log = build_response_request(model, image_path, item, previous_image_path=previous_image_path)
+    response = client.responses.create(**body)
+    answer = response_text_from_payload(response.model_dump())
+    return answer, request_log, response.model_dump()
 
 
 def safe_stem(value):
@@ -211,31 +263,20 @@ def write_text(path, content):
     path.write_text(str(content), encoding="utf-8")
 
 
-def review_video(video_path, model, force=False, limit_images=None):
+def prepare_jobs(video_path, limit_images=None):
     source_manifest = source_manifest_path(video_path)
     if not source_manifest.exists():
-        print(f"[skip] manifest introuvable: {source_manifest}")
-        return None
+        raise FileNotFoundError(f"manifest introuvable: {source_manifest}")
 
     source_payload = load_manifest(source_manifest)
     items = list(source_payload.get("items", []))
     if limit_images is not None:
         items = items[:limit_images]
 
-    target_dir = output_dir(video_path)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = target_dir / SUMMARY_NAME
-    legacy_summary_path = target_dir / LEGACY_SUMMARY_NAME
-    if legacy_summary_path.exists() and not summary_path.exists():
-        summary_path = legacy_summary_path
-    if summary_path.exists() and not force:
-        print(f"[skip] {summary_path.name} existe deja")
-        return summary_path
-
-    client = openai_client()
-    decisions = []
+    jobs = []
     for index, item in enumerate(items, start=1):
         crop_name = item.get("crop")
+        previous_crop_name = item.get("previous_crop")
         if not crop_name:
             continue
         image_path = source_dir(video_path) / crop_name
@@ -243,77 +284,334 @@ def review_video(video_path, model, force=False, limit_images=None):
             print(f"[skip] crop introuvable: {image_path}", flush=True)
             continue
 
-        review_name = f"{index:03d}__{safe_stem(Path(crop_name).stem)}"
-        review_dir = target_dir / review_name
-        if force and review_dir.exists():
-            for child in review_dir.iterdir():
-                if child.is_file():
-                    child.unlink()
-        review_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(image_path, review_dir / image_path.name)
+        previous_image_path = None
+        if previous_crop_name:
+            candidate_previous_path = source_dir(video_path) / previous_crop_name
+            if candidate_previous_path.exists():
+                previous_image_path = candidate_previous_path
 
-        answer, request_log = review_one_image(client, model, image_path, item)
-        parsed = parse_json_answer(answer)
-        if not parsed["corrected_text"]:
-            parsed["corrected_text"] = " ".join(str(item.get("text", "")).split()).strip()
-        write_text(review_dir / "model_prompt.txt", request_log["messages"][1]["content"])
-        write_text(review_dir / "model_response.txt", answer)
-        (review_dir / "api_request.json").write_text(
-            json.dumps(request_log, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        (review_dir / "review_decision.json").write_text(
-            json.dumps(
-                {
-                    "crop": crop_name,
-                    "entry_id": item.get("entry_id"),
-                    "timecode": item.get("timecode"),
-                    "text": item.get("text"),
-                    "image": item.get("image"),
-                    "box": item.get("box"),
-                    **parsed,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        decisions.append(
+        review_name = f"{index:03d}__{safe_stem(Path(crop_name).stem)}"
+        jobs.append(
             {
-                "review_dir": review_name,
-                "crop": crop_name,
-                "entry_id": item.get("entry_id"),
-                "timecode": item.get("timecode"),
-                "text": item.get("text"),
-                "image": item.get("image"),
-                "box": item.get("box"),
-                **parsed,
+                "index": index,
+                "custom_id": f"review-{index:03d}",
+                "review_name": review_name,
+                "crop_name": crop_name,
+                "previous_crop_name": previous_crop_name,
+                "item": item,
+                "image_path": image_path,
+                "previous_image_path": previous_image_path,
             }
         )
-        print(
-            f"[review {index}/{len(items)}] {crop_name}: added={str(parsed['is_added_in_edit']).lower()} conf={parsed['confidence']:.2f}",
-            flush=True,
-        )
+    return source_manifest, source_payload, jobs
 
-    summary_payload = {
+
+def reset_review_dir(review_dir):
+    if review_dir.exists():
+        for child in review_dir.iterdir():
+            if child.is_file():
+                child.unlink()
+    review_dir.mkdir(parents=True, exist_ok=True)
+
+
+def write_review_artifacts(target_dir, job, parsed, request_log, raw_answer, raw_payload):
+    review_dir = target_dir / job["review_name"]
+    reset_review_dir(review_dir)
+    shutil.copy2(job["image_path"], review_dir / job["image_path"].name)
+    if job["previous_image_path"] is not None:
+        shutil.copy2(job["previous_image_path"], review_dir / job["previous_image_path"].name)
+
+    write_text(review_dir / "model_prompt.txt", request_log["messages"][1]["content"])
+    write_text(review_dir / "model_response.txt", raw_answer)
+    (review_dir / "api_request.json").write_text(
+        json.dumps(request_log, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (review_dir / "api_response.json").write_text(
+        json.dumps(raw_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (review_dir / "review_decision.json").write_text(
+        json.dumps(
+            {
+                "crop": job["crop_name"],
+                "previous_crop": job["previous_crop_name"],
+                "entry_id": job["item"].get("entry_id"),
+                "timecode": job["item"].get("timecode"),
+                "text": job["item"].get("text"),
+                "image": job["item"].get("image"),
+                "box": job["item"].get("box"),
+                **parsed,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "review_dir": job["review_name"],
+        "crop": job["crop_name"],
+        "previous_crop": job["previous_crop_name"],
+        "entry_id": job["item"].get("entry_id"),
+        "timecode": job["item"].get("timecode"),
+        "text": job["item"].get("text"),
+        "image": job["item"].get("image"),
+        "box": job["item"].get("box"),
+        **parsed,
+    }
+
+
+def write_summary(video_path, model, source_manifest, decisions):
+    payload = {
         "model": model,
         "source_dir": relative_to_video_dir(source_dir(video_path), video_path),
         "source_manifest": relative_to_video_dir(source_manifest, video_path),
-        "output_dir": relative_to_video_dir(target_dir, video_path),
+        "output_dir": relative_to_video_dir(output_dir(video_path), video_path),
         "reviewed_count": len(decisions),
         "added_in_edit_count": sum(1 for item in decisions if item["is_added_in_edit"]),
         "not_added_count": sum(1 for item in decisions if not item["is_added_in_edit"]),
         "items": decisions,
     }
-    summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"[ok] {summary_path}", flush=True)
-    return summary_path
+    path = summary_path(video_path)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"[ok] {path}", flush=True)
+    return path
+
+
+def review_video_live(video_path, model, force=False, limit_images=None):
+    source_manifest, _, jobs = prepare_jobs(video_path, limit_images=limit_images)
+    target_dir = output_dir(video_path)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = summary_path(video_path)
+    if path.exists() and not force:
+        print(f"[skip] {path.name} existe deja")
+        return path
+
+    client = openai_client()
+    decisions = []
+    for job in jobs:
+        answer, request_log, raw_payload = review_one_image(
+            client,
+            model,
+            job["image_path"],
+            job["item"],
+            previous_image_path=job["previous_image_path"],
+        )
+        parsed = parse_json_answer(answer)
+        if not parsed["corrected_text"]:
+            parsed["corrected_text"] = " ".join(str(job["item"].get("text", "")).split()).strip()
+        decisions.append(write_review_artifacts(target_dir, job, parsed, request_log, answer, raw_payload))
+        print(
+            f"[review {job['index']}/{len(jobs)}] {job['crop_name']}: added={str(parsed['is_added_in_edit']).lower()} conf={parsed['confidence']:.2f}",
+            flush=True,
+        )
+
+    return write_summary(video_path, model, source_manifest, decisions)
+
+
+def save_batch_state(path, state):
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def submit_batch_review(video_path, model, jobs):
+    client = openai_client()
+    target_dir = output_dir(video_path)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    input_path = batch_input_path(video_path)
+    state_path = batch_state_path(video_path)
+
+    with input_path.open("w", encoding="utf-8") as handle:
+        for job in jobs:
+            body, _request_log = build_response_request(
+                model,
+                job["image_path"],
+                job["item"],
+                previous_image_path=job["previous_image_path"],
+            )
+            record = {
+                "custom_id": job["custom_id"],
+                "method": "POST",
+                "url": "/v1/responses",
+                "body": body,
+            }
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    with input_path.open("rb") as batch_file:
+        uploaded = client.files.create(file=batch_file, purpose="batch")
+    batch = client.batches.create(
+        input_file_id=uploaded.id,
+        endpoint="/v1/responses",
+        completion_window="24h",
+        metadata={
+            "script": "13_review_other_text_candidates.py",
+            "model": model,
+            "video": Path(video_path).name,
+        },
+    )
+    state = {
+        "mode": "batch",
+        "model": model,
+        "batch_id": batch.id,
+        "status": batch.status,
+        "input_file_id": uploaded.id,
+        "submitted_count": len(jobs),
+        "source_manifest": relative_to_video_dir(source_manifest_path(video_path), video_path),
+    }
+    save_batch_state(state_path, state)
+    print(f"[batch] submitted id={batch.id} status={batch.status} requests={len(jobs)}", flush=True)
+    return state_path
+
+
+def load_batch_state(video_path):
+    path = batch_state_path(video_path)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def refresh_batch_state(video_path, client, state):
+    batch = client.batches.retrieve(state["batch_id"])
+    state.update(
+        {
+            "status": batch.status,
+            "input_file_id": getattr(batch, "input_file_id", state.get("input_file_id")),
+            "output_file_id": getattr(batch, "output_file_id", state.get("output_file_id")),
+            "error_file_id": getattr(batch, "error_file_id", state.get("error_file_id")),
+        }
+    )
+    request_counts = getattr(batch, "request_counts", None)
+    if request_counts is not None:
+        state["request_counts"] = request_counts.model_dump() if hasattr(request_counts, "model_dump") else dict(request_counts)
+    save_batch_state(batch_state_path(video_path), state)
+    return state
+
+
+def is_terminal_batch_status(status):
+    return status in {"completed", "failed", "expired", "cancelled"}
+
+
+def parse_batch_lines(path):
+    records = []
+    if not path.exists():
+        return records
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        records.append(json.loads(line))
+    return records
+
+
+def finalize_batch_review(video_path, model, jobs, state):
+    client = openai_client()
+    output_file_id = state.get("output_file_id")
+    if not output_file_id:
+        raise RuntimeError("Batch complete mais output_file_id absent.")
+
+    output_response = client.files.content(output_file_id)
+    output_response.write_to_file(batch_output_path(video_path))
+
+    error_file_id = state.get("error_file_id")
+    if error_file_id:
+        error_response = client.files.content(error_file_id)
+        error_response.write_to_file(batch_error_path(video_path))
+
+    records = parse_batch_lines(batch_output_path(video_path))
+    record_by_id = {record.get("custom_id"): record for record in records if record.get("custom_id")}
+    target_dir = output_dir(video_path)
+    source_manifest = source_manifest_path(video_path)
+    decisions = []
+
+    for job in jobs:
+        record = record_by_id.get(job["custom_id"])
+        if not record:
+            print(f"[skip] resultat batch introuvable pour {job['custom_id']}", flush=True)
+            continue
+        response = record.get("response") or {}
+        if response.get("status_code") != 200:
+            print(f"[skip] batch {job['custom_id']} status={response.get('status_code')}", flush=True)
+            continue
+        raw_payload = response.get("body") or {}
+        answer = response_text_from_payload(raw_payload)
+        parsed = parse_json_answer(answer)
+        if not parsed["corrected_text"]:
+            parsed["corrected_text"] = " ".join(str(job["item"].get("text", "")).split()).strip()
+        _body, request_log = build_response_request(
+            model,
+            job["image_path"],
+            job["item"],
+            previous_image_path=job["previous_image_path"],
+        )
+        decisions.append(write_review_artifacts(target_dir, job, parsed, request_log, answer, raw_payload))
+        print(
+            f"[batch-result {job['index']}/{len(jobs)}] {job['crop_name']}: added={str(parsed['is_added_in_edit']).lower()} conf={parsed['confidence']:.2f}",
+            flush=True,
+        )
+
+    return write_summary(video_path, model, source_manifest, decisions)
+
+
+def review_video_batch(video_path, model, force=False, limit_images=None, wait=False, poll_interval_seconds=30):
+    source_manifest, _, jobs = prepare_jobs(video_path, limit_images=limit_images)
+    target_dir = output_dir(video_path)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = summary_path(video_path)
+    if path.exists() and not force:
+        print(f"[skip] {path.name} existe deja")
+        return path
+
+    if force:
+        for artifact_path in (
+            path,
+            batch_state_path(video_path),
+            batch_input_path(video_path),
+            batch_output_path(video_path),
+            batch_error_path(video_path),
+        ):
+            if artifact_path.exists():
+                artifact_path.unlink()
+
+    state = load_batch_state(video_path)
+    if state is None:
+        state_path = submit_batch_review(video_path, model, jobs)
+        if not wait:
+            return state_path
+        state = load_batch_state(video_path)
+
+    client = openai_client()
+    state = refresh_batch_state(video_path, client, state)
+    while wait and not is_terminal_batch_status(state["status"]):
+        print(f"[batch] status={state['status']} batch_id={state['batch_id']} attente {poll_interval_seconds}s", flush=True)
+        time.sleep(poll_interval_seconds)
+        state = refresh_batch_state(video_path, client, state)
+
+    if not is_terminal_batch_status(state["status"]):
+        print(f"[batch] status={state['status']} batch_id={state['batch_id']}", flush=True)
+        return batch_state_path(video_path)
+
+    if state["status"] != "completed":
+        raise RuntimeError(f"Batch termine avec statut non supporte: {state['status']}")
+
+    return finalize_batch_review(video_path, model, jobs, state)
+
+
+def review_video(video_path, model, mode="live", force=False, limit_images=None, wait=False, poll_interval_seconds=30):
+    if mode == "batch":
+        return review_video_batch(
+            video_path,
+            model,
+            force=force,
+            limit_images=limit_images,
+            wait=wait,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+    return review_video_live(video_path, model, force=force, limit_images=limit_images)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Demande a GPT-5.4-nano si le texte dans la zone rouge des images 'others' ressemble a du texte ajoute au montage."
+        description="Demande a GPT si le texte dans la zone rouge des images 'others' ressemble a du texte ajoute au montage."
     )
     parser.add_argument(
         "--video-dir",
@@ -328,6 +626,24 @@ def parse_args():
         "--model",
         default=os.getenv("OCR_OTHERS_REVIEW_MODEL", DEFAULT_MODEL),
         help=f"Modele OpenAI a utiliser. Defaut: {DEFAULT_MODEL}.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("live", "batch"),
+        default=DEFAULT_MODE,
+        help=f"Mode d'execution OpenAI. Defaut: {DEFAULT_MODE}.",
+    )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        default=DEFAULT_WAIT_FOR_BATCH,
+        help="En mode batch, attend la fin du job et telecharge les resultats. Defaut: actif.",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=int,
+        default=30,
+        help="En mode batch avec --wait, intervalle entre deux polls. Defaut: 30.",
     )
     parser.add_argument(
         "--limit-images",
@@ -354,7 +670,15 @@ def main():
     print(f"Dossier videos: {video_dir}")
     done = 0
     for video_path in videos:
-        if review_video(video_path, args.model, force=args.force, limit_images=args.limit_images):
+        if review_video(
+            video_path,
+            args.model,
+            mode=args.mode,
+            force=args.force,
+            limit_images=args.limit_images,
+            wait=args.wait,
+            poll_interval_seconds=args.poll_interval_seconds,
+        ):
             done += 1
     print(f"{done} review(s) GPT generee(s).")
 

@@ -15,6 +15,7 @@ LEGACY_OCR_PROCESSED_NAME = "ocr_processed.json"
 LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
 LEGACY_OCR_PROCESSED_FILTERED_NAME = "ocr_processed_filtered.json"
 SUBTITLE_REPEAT_IMAGE_WINDOW = 10
+SUBTITLE_NEIGHBOR_IMAGE_GAP = 3
 MIN_OVERLAY_SCORE = 0.9
 GRAPHIC_SEQUENCE_GAP_SECONDS = 5
 ON_FOOTAGE_SEQUENCE_GAP_SECONDS = 1
@@ -409,7 +410,7 @@ def load_overlay_items(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
     seen_image_texts = set()
-    for item in payload.get("items", []):
+    for position, item in enumerate(payload.get("items", [])):
         kind = str(item.get("kind", "")).strip().lower()
         if kind == "subtitle" or (kind and not is_overlay_kind(kind)):
             continue
@@ -440,6 +441,7 @@ def load_overlay_items(path):
                 "text": text,
                 "image": image_name,
                 "box": item.get("box"),
+                "order": position,
             }
         )
     return items, payload
@@ -448,7 +450,7 @@ def load_overlay_items(path):
 def load_groupable_items(path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     items = []
-    for item in payload.get("items", []):
+    for position, item in enumerate(payload.get("items", [])):
         kind = normalize_kind(item.get("kind"))
         text = " ".join(str(item.get("text", "")).split())
         if not kind or not text:
@@ -469,6 +471,7 @@ def load_groupable_items(path):
                 "text": text,
                 "image": item.get("image"),
                 "box": item.get("box"),
+                "order": position,
             }
         )
     return items, payload
@@ -483,7 +486,7 @@ def filter_overlay_items(items):
 
 
 def item_sort_key(item):
-    return (item["second"], item.get("image", ""), item["text"])
+    return (item["second"], item.get("order", float("inf")), item.get("image", ""), item["text"])
 
 
 def image_order_map(items):
@@ -496,25 +499,101 @@ def image_order_map(items):
 
 
 def filter_subtitle_entries(entries, image_orders):
+    sorted_entries = sorted(entries, key=item_sort_key)
     kept = []
-    last_seen_by_text = {}
-    for entry in sorted(entries, key=item_sort_key):
+    last_kept_index_by_text = {}
+
+    for entry in sorted_entries:
         normalized = normalize_text(entry["text"])
         if not normalized:
             continue
+
         image_name = entry.get("image")
         image_index = image_orders.get(image_name)
-        last_seen = last_seen_by_text.get(normalized)
-        if (
-            last_seen is not None
-            and image_index is not None
-            and last_seen is not None
-            and image_index - last_seen <= SUBTITLE_REPEAT_IMAGE_WINDOW
-        ):
+        last_kept_position = last_kept_index_by_text.get(normalized)
+
+        if last_kept_position is None:
+            kept.append(entry)
+            if image_index is not None:
+                last_kept_index_by_text[normalized] = len(kept) - 1
             continue
+
+        previous_entry = kept[last_kept_position]
+        previous_image_index = image_orders.get(previous_entry.get("image"))
+        if (
+            image_index is not None
+            and previous_image_index is not None
+            and image_index - previous_image_index <= SUBTITLE_REPEAT_IMAGE_WINDOW
+        ):
+            if subtitle_entry_quality(entry) >= subtitle_entry_quality(previous_entry):
+                kept[last_kept_position] = entry
+            continue
+
         kept.append(entry)
         if image_index is not None:
-            last_seen_by_text[normalized] = image_index
+            last_kept_index_by_text[normalized] = len(kept) - 1
+
+    return kept
+
+
+def subtitle_entry_quality(entry):
+    text = str(entry.get("text", ""))
+    normalized = fold_text(text)
+    return (
+        len(normalized),
+        len(text),
+        len(text.split()),
+        entry["second"],
+    )
+
+
+def are_subtitle_neighbor_duplicates(left, right, image_orders):
+    left_index = image_orders.get(left.get("image"))
+    right_index = image_orders.get(right.get("image"))
+    if left_index is None or right_index is None:
+        if abs(right["second"] - left["second"]) > 1:
+            return False
+    elif not (0 < right_index - left_index <= SUBTITLE_NEIGHBOR_IMAGE_GAP):
+        return False
+
+    left_text = left.get("text", "")
+    right_text = right.get("text", "")
+    left_folded = fold_text(left_text)
+    right_folded = fold_text(right_text)
+    if not left_folded or not right_folded:
+        return False
+    if left_folded == right_folded:
+        return True
+    if are_minor_ocr_variants(left_text, right_text):
+        return True
+    shorter, longer = sorted((left_folded, right_folded), key=len)
+    return len(shorter) >= 8 and shorter in longer
+
+
+def filter_subtitle_neighbor_duplicates(entries, image_orders):
+    if not entries:
+        return entries
+
+    sorted_entries = sorted(entries, key=item_sort_key)
+    kept = []
+    index = 0
+
+    while index < len(sorted_entries):
+        current = sorted_entries[index]
+        best_entry = current
+        next_index = index + 1
+
+        while next_index < len(sorted_entries):
+            candidate = sorted_entries[next_index]
+            if not are_subtitle_neighbor_duplicates(best_entry, candidate, image_orders):
+                break
+            if subtitle_entry_quality(candidate) >= subtitle_entry_quality(best_entry):
+                best_entry = candidate
+            next_index += 1
+
+        kept.append(best_entry)
+        index = next_index
+
     return kept
 
 
@@ -633,6 +712,7 @@ def group_items_by_kind(all_items, filtered_overlay_items):
         entries = sorted(grouped[kind], key=item_sort_key)
         if kind == "subtitle":
             entries = filter_subtitle_entries(entries, image_orders)
+            entries = filter_subtitle_neighbor_duplicates(entries, image_orders)
         elif kind == "others":
             entries = filter_other_progressive_entries(entries, image_orders)
             entries = filter_other_minor_variants(entries, image_orders)
@@ -641,11 +721,33 @@ def group_items_by_kind(all_items, filtered_overlay_items):
         timecode_counts = defaultdict(int)
         for entry in entries:
             timecode = format_timecode(entry["second"])
+            text = entry["text"]
+            if kind == "others":
+                previous = values.get(timecode)
+                if previous is None:
+                    values[timecode] = text
+                    details[timecode] = {
+                        "timecode": timecode,
+                        "text": text,
+                        "texts": [text],
+                        "image": entry.get("image"),
+                        "images": [entry.get("image")],
+                        "box": entry.get("box"),
+                        "boxes": [entry.get("box")],
+                    }
+                else:
+                    values[timecode] = f"{previous} / {text}"
+                    detail = details[timecode]
+                    detail["text"] = values[timecode]
+                    detail.setdefault("texts", []).append(text)
+                    detail.setdefault("images", []).append(entry.get("image"))
+                    detail.setdefault("boxes", []).append(entry.get("box"))
+                continue
+
             timecode_counts[timecode] += 1
             entry_key = timecode
             if timecode_counts[timecode] > 1:
                 entry_key = f"{timecode}#{timecode_counts[timecode]}"
-            text = entry["text"]
             previous = values.get(entry_key)
             if previous is None:
                 values[entry_key] = text

@@ -27,6 +27,15 @@ class VideoSelection:
     value: object = None
 
 
+def normalize_review_scope(value):
+    normalized = str(value).strip().lower()
+    if normalized in {"duo", "single", "one", "1", "test"}:
+        return "duo"
+    if normalized in {"all", "full", "toutes", "tous"}:
+        return "all"
+    raise ValueError("Mode review invalide. Utilise 'duo' ou 'all'.")
+
+
 def normalize_openai_mode(value):
     normalized = str(value).strip().lower()
     if normalized in {"normal", "live"}:
@@ -215,6 +224,15 @@ def ask_openai_mode():
             print(error)
 
 
+def ask_review_scope():
+    while True:
+        value = input("Review GPT Step 13 ('duo' pour une seule image annotee, 'all' pour tout): ").strip()
+        try:
+            return normalize_review_scope(value)
+        except ValueError as error:
+            print(error)
+
+
 def run_step(label, command, env):
     printable = " ".join(str(part) for part in command)
     print(f"\n=== {label} ===")
@@ -308,6 +326,11 @@ def parse_args():
         choices=("batch", "normal"),
         help="Mode global des appels OpenAI pour tout le pipeline.",
     )
+    parser.add_argument(
+        "--review-scope",
+        choices=("duo", "all"),
+        help="Etendue de la Step 13: 'duo' pour une seule image annotee par video, 'all' pour tout envoyer.",
+    )
     return parser.parse_args()
 
 
@@ -318,6 +341,8 @@ def main():
         args.videos = ask_video_selection()
     if args.openai_mode is None:
         args.openai_mode = ask_openai_mode()
+    if args.review_scope is None:
+        args.review_scope = ask_review_scope()
 
     video_limit = args.videos.value if args.videos.mode == "count" else None
     video_url = args.videos.value if args.videos.mode == "url" else None
@@ -337,6 +362,10 @@ def main():
     else:
         print(f"Mode pipeline: test sur {video_limit} video(s)", flush=True)
     print(f"Mode OpenAI global: {args.openai_mode}", flush=True)
+    print(
+        "Step 13 review GPT: "
+        + ("mode test duo (1 image annotee par video)" if args.review_scope == "duo" else "mode complet (toutes les images annotees)")
+    , flush=True)
 
     clean_download_root(download_parent)
     download_parent.mkdir(parents=True, exist_ok=True)
@@ -441,6 +470,8 @@ def main():
     run_step_numbered(12, total_steps, f"Step 12 - Extract Other Text Review Candidates ({selected_branch})", step12, env)
 
     step13 = step_command(branch_dir / "13_OCR_review_other_text_candidates.py", "--video-dir", video_dir)
+    if args.review_scope == "duo":
+        step13 += ["--limit-images", "1"]
     if args.force:
         step13.append("--force")
     run_step_numbered(13, total_steps, f"Step 13 - Review Other Text Candidates ({selected_branch})", step13, env)

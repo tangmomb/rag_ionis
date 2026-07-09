@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 
 TABLES = (
     "comments",
-    "video_elements",
     "video_transcripts",
+    "video_stats",
     "video_daily_stats",
     "videos",
 )

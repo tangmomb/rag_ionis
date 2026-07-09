@@ -91,6 +91,43 @@ def subtitle_entries_from_boxes(payload, images_dir):
     return entries
 
 
+def longest_continuous_second_run(seconds):
+    ordered = sorted({second for second in seconds if second is not None})
+    if not ordered:
+        return []
+    if len(ordered) == 1:
+        return ordered
+
+    positive_gaps = [
+        current - previous
+        for previous, current in zip(ordered, ordered[1:])
+        if current > previous
+    ]
+    expected_step = min(positive_gaps) if positive_gaps else 0.5
+    max_allowed_gap = max(expected_step * 1.5, 0.75)
+
+    best_start = 0
+    best_end = 0
+    current_start = 0
+
+    for index in range(1, len(ordered)):
+        if ordered[index] - ordered[index - 1] > max_allowed_gap:
+            if (ordered[best_end] - ordered[best_start]) < (
+                ordered[index - 1] - ordered[current_start]
+            ):
+                best_start = current_start
+                best_end = index - 1
+            current_start = index
+
+    if (ordered[best_end] - ordered[best_start]) < (
+        ordered[-1] - ordered[current_start]
+    ):
+        best_start = current_start
+        best_end = len(ordered) - 1
+
+    return ordered[best_start : best_end + 1]
+
+
 def analyze_subtitle_anchor(entries):
     anchors = infer_subtitle_anchors(entries)
     if len(anchors) < 2:
@@ -98,9 +135,12 @@ def analyze_subtitle_anchor(entries):
             "has_subtitles": False,
             "reason": "not_enough_anchor_candidates",
             "anchor_count": len(anchors),
-            "required_distinct_seconds": MIN_SUBTITLE_CLUSTER_SECONDS,
-            "matching_seconds_count": 0,
-            "matching_seconds": [],
+            "required_continuous_seconds": float(MIN_SUBTITLE_CLUSTER_SECONDS),
+            "total_matching_seconds_count": 0,
+            "all_matching_seconds": [],
+            "longest_continuous_seconds_count": 0,
+            "longest_continuous_seconds_duration": 0.0,
+            "longest_continuous_seconds": [],
             "matching_images": [],
         }
 
@@ -123,6 +163,12 @@ def analyze_subtitle_anchor(entries):
         )
     ]
     matching_seconds = sorted({entry["second"] for entry in matching_entries})
+    longest_run_seconds = longest_continuous_second_run(matching_seconds)
+    longest_run_duration = (
+        longest_run_seconds[-1] - longest_run_seconds[0]
+        if len(longest_run_seconds) >= 2
+        else 0.0
+    )
     matching_images = []
     seen_images = set()
     for entry in matching_entries:
@@ -132,14 +178,14 @@ def analyze_subtitle_anchor(entries):
         seen_images.add(image_name)
         matching_images.append(image_name)
 
-    required_distinct_seconds = MIN_SUBTITLE_CLUSTER_SECONDS
-    has_subtitles = len(matching_seconds) >= required_distinct_seconds
+    required_continuous_seconds = float(MIN_SUBTITLE_CLUSTER_SECONDS)
+    has_subtitles = longest_run_duration >= required_continuous_seconds
     return {
         "has_subtitles": has_subtitles,
         "reason": (
-            "stable_anchor_across_distinct_seconds"
+            "stable_anchor_across_continuous_seconds"
             if has_subtitles
-            else "not_enough_distinct_matching_seconds"
+            else "not_enough_continuous_matching_seconds"
         ),
         "anchor_count": len(anchors),
         "anchor": {
@@ -152,9 +198,12 @@ def analyze_subtitle_anchor(entries):
             "x": round(x_tolerance, 4),
             "y": round(y_tolerance, 4),
         },
-        "required_distinct_seconds": required_distinct_seconds,
-        "matching_seconds_count": len(matching_seconds),
-        "matching_seconds": matching_seconds,
+        "required_continuous_seconds": required_continuous_seconds,
+        "total_matching_seconds_count": len(matching_seconds),
+        "all_matching_seconds": matching_seconds,
+        "longest_continuous_seconds_count": len(longest_run_seconds),
+        "longest_continuous_seconds_duration": round(longest_run_duration, 3),
+        "longest_continuous_seconds": longest_run_seconds,
         "matching_images": matching_images,
     }
 

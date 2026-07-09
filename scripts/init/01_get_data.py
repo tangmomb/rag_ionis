@@ -172,7 +172,8 @@ def video_info_payload(video):
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "published_at": published_at.isoformat().replace("+00:00", "Z") if published_at else None,
         "duration_seconds": parse_duration(content["duration"]),
-        "raw_json": video,
+        "thumbnail_medium_url": snippet.get("thumbnails", {}).get("medium", {}).get("url"),
+        "statistics": video.get("statistics", {}),
     }
 
 def write_video_info(video, info_dir):
@@ -238,17 +239,15 @@ def upsert_comment(cursor, video_db_id, comment, parent_db_id=None):
             author_name,
             text,
             like_count,
-            published_at,
-            raw_json
+            published_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (youtube_comment_id) DO UPDATE SET
             parent_comment_id = EXCLUDED.parent_comment_id,
             author_name = EXCLUDED.author_name,
             text = EXCLUDED.text,
             like_count = EXCLUDED.like_count,
-            published_at = EXCLUDED.published_at,
-            raw_json = EXCLUDED.raw_json
+            published_at = EXCLUDED.published_at
         RETURNING id
         """,
         (
@@ -259,7 +258,6 @@ def upsert_comment(cursor, video_db_id, comment, parent_db_id=None):
             snippet.get("textOriginal") or snippet.get("textDisplay") or "",
             snippet.get("likeCount"),
             parse_datetime(snippet.get("publishedAt")),
-            Jsonb(comment),
         ),
     )
     return cursor.fetchone()[0]

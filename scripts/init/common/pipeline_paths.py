@@ -87,6 +87,14 @@ def existing_ocr_raw_dir(video_path):
 def existing_transcripts_dir(video_path):
     base_dir = video_base_dir(video_path)
     preferred = transcripts_dir(video_path)
+    outputs_root = outputs_dir(video_path)
+    output_candidates = (
+        outputs_root / "transcripts_whisper",
+        outputs_root / "transcripts_ocr",
+    )
+    for candidate in output_candidates:
+        if candidate.exists() and not preferred.exists():
+            return candidate
     for legacy_name in ("transcript", "transcript_whisper", "transcript_ocr", "transcripts", "transcripts_whisper", "transcripts_ocr"):
         legacy = base_dir / legacy_name
         if legacy.exists() and not preferred.exists():

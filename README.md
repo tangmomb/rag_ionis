@@ -100,7 +100,7 @@ docker compose exec postgres psql -U rag_ionis -d rag_ionis -c "SELECT extname F
 Tables principales:
 
 - `videos`: videos de la chaine IONIS-STM, avec titre, lien et metadonnees stables.
-- `video_daily_stats`: statistiques quotidiennes rattachees a une video via `video_id`, avec vues, likes et nombre de commentaires.
+- `video_stats`: statistiques quotidiennes rattachees a une video via `video_id`, avec vues, likes et nombre de commentaires.
 - `video_transcripts`: transcriptions rattachees a une video via `video_id`, avec une ligne par video/langue et les variantes `transcript`, `transcript_timecodes`, `transcript_timecodes_enrichi`.
 - `comments`: commentaires rattaches a une video via `video_id`, avec support des reponses via `parent_comment_id`.
 
@@ -111,8 +111,8 @@ SELECT
     v.title,
     newer.view_count - older.view_count AS views_delta
 FROM videos v
-JOIN video_daily_stats older ON older.video_id = v.id
-JOIN video_daily_stats newer ON newer.video_id = v.id
+JOIN video_stats older ON older.video_id = v.id
+JOIN video_stats newer ON newer.video_id = v.id
 WHERE older.snapshot_date = '2026-06-25'
   AND newer.snapshot_date = '2026-06-26'
 ORDER BY views_delta DESC;
@@ -138,7 +138,7 @@ Importer les videos de la chaine, leurs statistiques du jour et leurs commentair
 python scripts/init/01_get_data.py
 ```
 
-Le script travaille sur `https://www.youtube.com/@IONIS-STM/videos` et remplit les tables `videos`, `video_daily_stats`, `video_transcripts` et `comments`.
+Le script travaille sur `https://www.youtube.com/@IONIS-STM/videos` et remplit les tables `videos`, `video_stats`, `video_transcripts` et `comments`.
 
 ## Run Pipeline
 
@@ -286,7 +286,7 @@ Detecter si la video contient probablement des sous-titres OCR a partir des boxe
 python scripts/init/09_detect_ocr_subtitles.py
 ```
 
-Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif se repete sur plusieurs secondes. Il ecrit `has_subtitles` dans `metadata/pipeline_analysis.json`.
+Le script inspecte les boxes en bas de video, au centre, et verifie qu'un centre approximatif reste present de facon continue pendant au moins 10 secondes. Il ecrit `has_subtitles` dans `metadata/pipeline_analysis.json`.
 
 ## Step 10 - Build Processed OCR
 
@@ -502,17 +502,17 @@ python scripts/init/25_upload_outputs_to_s3.py --force
 
 ## Step 26 - Update SQL Assets
 
-Mettre a jour la base SQL avec les chemins S3 des fichiers generes et synchroniser les transcripts disponibles:
+Mettre a jour la base SQL avec le lien S3 du dossier video et synchroniser les transcripts disponibles:
 
 ```powershell
 python scripts/init/26_update_sql_assets.py
 ```
 
-Le script cree la table `video_elements` si elle n'existe pas, puis y enregistre les videos, images, analyses et transcripts du dernier dossier de `downloads/youtube/`. Il utilise le meme prefixe S3 `youtube/` que la Step 25 par defaut:
+Le script met a jour `videos` avec un seul lien S3 par dossier video via `s3_uri`. Il utilise le meme prefixe S3 `youtube/` que la Step 25 par defaut:
 
 ```text
 downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
--> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+-> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo
 ```
 
 Il met aussi a jour une seule ligne `video_transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `outputs/transcripts/`:
@@ -529,7 +529,6 @@ Options utiles:
 python scripts/init/26_update_sql_assets.py --dry-run
 python scripts/init/26_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
 python scripts/init/26_update_sql_assets.py --prefix youtube/20260628_1312_init
-python scripts/init/26_update_sql_assets.py --clean-init-assets
 python scripts/init/26_update_sql_assets.py --skip-transcripts
 ```
 

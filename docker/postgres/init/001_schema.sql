@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE SCHEMA IF NOT EXISTS chat;
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -72,11 +73,11 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     id BIGSERIAL PRIMARY KEY,
     conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
     user_message TEXT NOT NULL,
-    extraction_prompt TEXT,
-    extraction_response_raw TEXT,
+    planner_prompt TEXT,
+    planner_response_raw TEXT,
     intent_source TEXT,
     pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
-    filters_json JSONB,
+    execution_plan_json JSONB,
     sql_query TEXT,
     prefilter_trace JSONB,
     bm25_trace JSONB,

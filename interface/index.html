@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RAG IONIS</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="workspace">
+        <header class="topbar">
+          <div class="brand-inline"></div>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost btn-top" type="button" id="clearButton">Nouveau</button>
+          </div>
+        </header>
+
+        <section class="chat" aria-label="Conversation">
+          <div class="messages" id="messages">
+            <article class="message assistant">
+              <div class="message-body">
+                <div class="message-content">
+Hello! What can I help you with today?
+                </div>
+                <div class="message-actions" aria-hidden="true">
+                  <button type="button" class="icon-btn" aria-label="Like">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M14 10V5.5c0-1.4-.8-2.7-2-3.3L8.7 9.1A2 2 0 0 0 8 10.5V19a2 2 0 0 0 2 2h6.2a3 3 0 0 0 2.9-2.3l1.4-6A2 2 0 0 0 18.6 10H14Z" />
+                      <path d="M4 10h4v11H4z" />
+                    </svg>
+                  </button>
+                  <button type="button" class="icon-btn" aria-label="Dislike">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M10 14v4.5c0 1.4.8 2.7 2 3.3l3.3-6.9a2 2 0 0 0 .7-1.4V5a2 2 0 0 0-2-2H7.8a3 3 0 0 0-2.9 2.3l-1.4 6A2 2 0 0 0 5.4 14H10Z" />
+                      <path d="M20 14h-4V3h4z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <form class="composer" id="composer">
+          <div class="composer-inner">
+            <div class="composer-row">
+              <div class="composer-input-shell">
+                <textarea
+                  id="question"
+                  placeholder="Demander a ChatGPT"
+                ></textarea>
+              </div>
+              <button class="btn btn-primary composer-submit" type="submit">Envoyer</button>
+            </div>
+            <div class="composer-actions">
+              <div class="composer-hint"></div>
+            </div>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      const messages = document.getElementById("messages");
+      const composer = document.getElementById("composer");
+      const question = document.getElementById("question");
+      const clearButton = document.getElementById("clearButton");
+      let conversationId = null;
+      const RAG_CONFIG = {
+        apiUrl: "/api/rag",
+        answerModel: "gpt-5.4-nano",
+        embeddingModel: "meme modele que la base",
+        rerankModel: "cohere rerank",
+        topK: 40,
+        finalK: 5,
+        useSql: true,
+        useRerank: true,
+      };
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function renderInlineMarkdown(value) {
+        let html = escapeHtml(value);
+        html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+        html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+        html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>');
+        return html;
+      }
+
+      function renderMarkdown(value) {
+        const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+        const parts = [];
+        let paragraph = [];
+        let listItems = [];
+        let codeLines = [];
+        let inCodeBlock = false;
+
+        function flushParagraph() {
+          if (!paragraph.length) return;
+          parts.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+          paragraph = [];
+        }
+
+        function flushList() {
+          if (!listItems.length) return;
+          parts.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+          listItems = [];
+        }
+
+        function flushCodeBlock() {
+          if (!codeLines.length) return;
+          parts.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+          codeLines = [];
+        }
+
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+
+          if (line.startsWith("```")) {
+            flushParagraph();
+            flushList();
+            if (inCodeBlock) {
+              flushCodeBlock();
+              inCodeBlock = false;
+            } else {
+              inCodeBlock = true;
+            }
+            continue;
+          }
+
+          if (inCodeBlock) {
+            codeLines.push(rawLine);
+            continue;
+          }
+
+          if (!line.trim()) {
+            flushParagraph();
+            flushList();
+            continue;
+          }
+
+          const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+          if (headingMatch) {
+            flushParagraph();
+            flushList();
+            const level = headingMatch[1].length;
+            parts.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+            continue;
+          }
+
+          const listMatch = line.match(/^[-*]\s+(.+)$/);
+          if (listMatch) {
+            flushParagraph();
+            listItems.push(listMatch[1]);
+            continue;
+          }
+
+          paragraph.push(line);
+        }
+
+        flushParagraph();
+        flushList();
+        if (inCodeBlock) {
+          flushCodeBlock();
+        }
+
+        return parts.join("");
+      }
+
+      function addMessage(role, content, meta, sources = []) {
+        const article = document.createElement("article");
+        article.className = `message ${role}`;
+
+        const renderedContent = role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
+        const metaHtml = role === "assistant" && meta ? `<div class="message-meta"><span>${escapeHtml(meta)}</span></div>` : "";
+        const actionsHtml =
+          role === "assistant"
+            ? `
+              <div class="message-actions" aria-hidden="true">
+                <button type="button" class="icon-btn" aria-label="Like">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M14 10V5.5c0-1.4-.8-2.7-2-3.3L8.7 9.1A2 2 0 0 0 8 10.5V19a2 2 0 0 0 2 2h6.2a3 3 0 0 0 2.9-2.3l1.4-6A2 2 0 0 0 18.6 10H14Z" />
+                    <path d="M4 10h4v11H4z" />
+                  </svg>
+                </button>
+                <button type="button" class="icon-btn" aria-label="Dislike">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M10 14v4.5c0 1.4.8 2.7 2 3.3l3.3-6.9a2 2 0 0 0 .7-1.4V5a2 2 0 0 0-2-2H7.8a3 3 0 0 0-2.9 2.3l-1.4 6A2 2 0 0 0 5.4 14H10Z" />
+                    <path d="M20 14h-4V3h4z" />
+                  </svg>
+                </button>
+              </div>
+            `
+            : "";
+        const sourceHtml = sources.length
+          ? `<div class="source-grid">${sources
+              .map(
+                (src, index) => `
+                  <div class="source-card">
+                    <strong>Chunk ${index + 1} ${src.score ? `- score ${src.score}` : ""}</strong>
+                    <p>${escapeHtml(src.text)}</p>
+                  </div>`
+              )
+              .join("")}</div>`
+          : "";
+
+        article.innerHTML = `
+          <div class="message-body">
+            ${metaHtml}
+            <div class="message-content">${renderedContent}</div>
+            ${sourceHtml}
+            ${actionsHtml}
+          </div>
+        `;
+
+        messages.appendChild(article);
+        article.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      async function sendQuestion(text) {
+        const payload = {
+          question: text,
+          conversationId,
+          apiUrl: RAG_CONFIG.apiUrl,
+          answerModel: RAG_CONFIG.answerModel,
+          embeddingModel: RAG_CONFIG.embeddingModel,
+          rerankModel: RAG_CONFIG.rerankModel,
+          useSql: RAG_CONFIG.useSql,
+          useRerank: RAG_CONFIG.useRerank,
+          topK: RAG_CONFIG.topK,
+          finalK: RAG_CONFIG.finalK,
+        };
+
+        addMessage("user", text, "envoi frontend");
+
+        try {
+          const response = await fetch(RAG_CONFIG.apiUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.detail || "Erreur backend inconnue");
+          }
+
+          conversationId = data.conversation_id ?? conversationId;
+          const meta = `${data.retrieval?.retrieval_mode || "rag"} - ${data.sources?.length || 0} source(s)`;
+          addMessage("assistant", data.answer || "Reponse vide.", meta, data.sources || []);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Erreur reseau inconnue";
+          addMessage("assistant", `Le backend a renvoye une erreur.\n\n${message}`, "echec requete");
+        }
+      }
+
+      composer.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = question.value.trim();
+        if (!text) return;
+        await sendQuestion(text);
+        question.value = "";
+      });
+
+      clearButton.addEventListener("click", () => {
+        conversationId = null;
+        question.value = "";
+        question.focus();
+      });
+
+      question.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          composer.requestSubmit();
+        }
+      });
+    </script>
+  </body>
+</html>

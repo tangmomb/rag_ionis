@@ -1,0 +1,375 @@
+:root {
+  --bg: #000000;
+  --bg-soft: #232323;
+  --bg-softer: #2a2a2a;
+  --text: #f4f4f4;
+  --muted: #9b9b9b;
+  --muted-strong: #d0d0d0;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --accent: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.app,
+.workspace {
+  min-height: 100vh;
+}
+
+.workspace {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 28px 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.94), rgba(0, 0, 0, 0.28), transparent);
+}
+
+.brand-inline {
+  min-height: 1px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+}
+
+.btn-ghost,
+.btn-top {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted-strong);
+}
+
+.btn-top {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.btn-primary {
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #000000;
+  font-size: 0;
+  position: relative;
+}
+
+.btn-primary::before {
+  content: "\2191";
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.chat {
+  overflow: auto;
+  padding: 26px 24px 28px;
+}
+
+.messages {
+  display: grid;
+  gap: 22px;
+  max-width: 840px;
+  margin: 0 auto;
+  min-height: calc(100vh - 280px);
+  align-content: start;
+}
+
+.message {
+  display: block;
+}
+
+.message-body {
+  min-width: 0;
+}
+
+.message.user .message-body {
+  margin-left: auto;
+  width: fit-content;
+  max-width: min(320px, 100%);
+  padding: 13px 18px;
+  border-radius: 999px;
+  background: var(--bg-softer);
+  color: #ffffff;
+}
+
+.message.assistant .message-body {
+  max-width: 640px;
+  padding-top: 4px;
+}
+
+.message-meta {
+  margin-bottom: 8px;
+  color: #7d7d7d;
+  font-size: 12px;
+}
+
+.message-content {
+  white-space: pre-wrap;
+  line-height: 1.65;
+  font-size: 15px;
+}
+
+.message-content p,
+.message-content ul,
+.message-content pre,
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  margin: 0 0 12px;
+}
+
+.message-content p:last-child,
+.message-content ul:last-child,
+.message-content pre:last-child,
+.message-content h1:last-child,
+.message-content h2:last-child,
+.message-content h3:last-child {
+  margin-bottom: 0;
+}
+
+.message-content ul {
+  padding-left: 20px;
+}
+
+.message-content li + li {
+  margin-top: 4px;
+}
+
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  color: #ffffff;
+  line-height: 1.28;
+}
+
+.message-content h1 {
+  font-size: 22px;
+}
+
+.message-content h2 {
+  font-size: 18px;
+}
+
+.message-content h3 {
+  font-size: 16px;
+}
+
+.message-content code {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font-family: Consolas, "SFMono-Regular", Monaco, monospace;
+  font-size: 0.95em;
+}
+
+.message-content pre {
+  overflow-x: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #0b0b0b;
+}
+
+.message-content pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.message-content a {
+  color: #e8e8e8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 15px;
+  opacity: 0.82;
+}
+
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.source-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.source-card {
+  padding: 14px 15px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.source-card strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.source-card p {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  padding: 18px 24px 16px;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.88) 26%, rgba(0, 0, 0, 0.98) 100%);
+}
+
+.composer-inner {
+  max-width: 840px;
+  margin: 0 auto;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.composer-input-shell {
+  flex: 1 1 auto;
+  height: 56px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: var(--bg-soft);
+  padding: 0 18px;
+}
+
+.composer textarea {
+  width: 100%;
+  height: 54px;
+  border: 0;
+  outline: none;
+  resize: none;
+  max-height: 180px;
+  background: transparent;
+  color: var(--text);
+  padding: 15px 0 11px;
+  line-height: 1.45;
+}
+
+.composer textarea::placeholder {
+  color: #b4b4b4;
+}
+
+.composer textarea:focus {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.composer-submit {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.composer-actions {
+  min-height: 8px;
+}
+
+.composer-hint {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .topbar,
+  .chat,
+  .composer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .topbar {
+    padding-top: 10px;
+  }
+
+  .messages {
+    min-height: calc(100vh - 260px);
+  }
+
+  .message.assistant .message-body {
+    max-width: 100%;
+  }
+}

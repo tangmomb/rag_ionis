@@ -16,6 +16,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 def reset_database(cursor):
+    cursor.execute("DROP SCHEMA IF EXISTS chat CASCADE")
+    print("[reset] schema chat supprime")
     cursor.execute("DROP SCHEMA IF EXISTS public CASCADE")
     cursor.execute("CREATE SCHEMA public")
     cursor.execute("GRANT USAGE ON SCHEMA public TO PUBLIC")

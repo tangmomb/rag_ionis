@@ -49,6 +49,15 @@ def base_payload(args, items):
     }
 
 
+def print_step_progress(label, current, total):
+    total = max(1, int(total or 0))
+    current = min(max(0, int(current or 0)), total)
+    percent = int((current / total) * 100)
+    print(f"\r[{label}] {percent:3d}% ({current}/{total})", end="", flush=True)
+    if current >= total:
+        print(flush=True)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="OCR local brut des images contenant du texte avec PaddleOCR."
@@ -133,6 +142,7 @@ def main():
 
         print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
         raw_items_by_group = {group_name: [] for group_name in IMAGE_GROUPS}
+        total_images = len(images)
         for index, image_path in enumerate(images, start=1):
             image_name = image_path.relative_to(images_dir).as_posix()
             raw_result = ocr.recognize_raw(image_path)
@@ -143,7 +153,7 @@ def main():
             group_name = Path(image_name).parts[0] if Path(image_name).parts else ""
             if group_name in raw_items_by_group:
                 raw_items_by_group[group_name].append(item)
-            print(f"[ocr {index}/{len(images)}] {image_name}: brut capture", flush=True)
+            print_step_progress(f"ocr {video_path.name}", index, total_images)
 
         raw_files = {}
         for group_name in IMAGE_GROUPS:

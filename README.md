@@ -2,6 +2,34 @@
 
 Base locale pour construire un RAG.
 
+## Interface RAG
+
+Le repo contient maintenant une interface HTML/CSS branchee a un backend HTTP minimal.
+
+Installer les dependances web si besoin:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install fastapi uvicorn[standard]
+```
+
+Lancer le serveur:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000
+```
+
+Ouvrir ensuite:
+
+- `http://127.0.0.1:8000/` pour l'interface
+- `http://127.0.0.1:8000/health` pour verifier que l'API repond
+
+Le endpoint `POST /api/rag`:
+
+- embed la question avec OpenAI si une cle `OPENAI_API_KEY` est presente
+- cherche les chunks en base via `pgvector`
+- retombe sur une recherche SQL plein texte si besoin
+- renvoie la reponse finale et les sources retenues
+
 ## Environnement Python
 
 Le venv est dans `.venv` et contient deja PyTorch CUDA et Whisper.

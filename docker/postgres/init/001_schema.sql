@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE SCHEMA IF NOT EXISTS chat;
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -62,6 +63,31 @@ CREATE TABLE IF NOT EXISTS comments (
     published_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS chat.conversations (
+    id BIGSERIAL PRIMARY KEY,
+    date TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS chat.messages (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+    user_message TEXT NOT NULL,
+    extraction_prompt TEXT,
+    extraction_response_raw TEXT,
+    intent_source TEXT,
+    pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
+    filters_json JSONB,
+    sql_query TEXT,
+    prefilter_trace JSONB,
+    bm25_trace JSONB,
+    vector_trace JSONB,
+    rrf_trace JSONB,
+    rerank_trace JSONB,
+    retrieved_chunks JSONB,
+    answer_message TEXT,
+    date TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
 CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id);
@@ -69,3 +95,6 @@ CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index);
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_date ON chat.messages(date);

@@ -107,6 +107,15 @@ def clean_init_prefixes(client, bucket, root_prefix, dry_run=False):
     print(f"[clean] {deleted} {label} dans s3://{bucket}/{normalize_prefix(root_prefix)}/")
 
 
+def print_step_progress(label, current, total):
+    total = max(1, int(total or 0))
+    current = min(max(0, int(current or 0)), total)
+    percent = int((current / total) * 100)
+    print(f"\r[{label}] {percent:3d}% ({current}/{total})", end="", flush=True)
+    if current >= total:
+        print(flush=True)
+
+
 def upload_directory(client, bucket, root_dir, prefix="", force=False, dry_run=False):
     files = sorted(path for path in root_dir.rglob("*") if path.is_file())
     if not files:
@@ -115,18 +124,18 @@ def upload_directory(client, bucket, root_dir, prefix="", force=False, dry_run=F
 
     uploaded = 0
     skipped = 0
+    total_files = len(files)
     for path in files:
         key = s3_key_for(path, root_dir, prefix)
         if not dry_run and not force and object_exists(client, bucket, key):
-            print(f"[skip] s3://{bucket}/{key}")
             skipped += 1
+            print_step_progress("upload s3", uploaded + skipped, total_files)
             continue
 
-        action = "[dry-run]" if dry_run else "[upload]"
-        print(f"{action} {path} -> s3://{bucket}/{key}")
         if not dry_run:
             client.upload_file(str(path), bucket, key)
         uploaded += 1
+        print_step_progress("upload s3", uploaded + skipped, total_files)
 
     return {"uploaded": uploaded, "skipped": skipped}
 

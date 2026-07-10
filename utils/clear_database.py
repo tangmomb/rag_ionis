@@ -4,29 +4,36 @@ import psycopg
 from dotenv import load_dotenv
 
 
-TABLES = (
-    "comments",
-    "transcripts",
-    "video_transcripts",
-    "stats",
-    "video_stats",
-    "video_daily_stats",
-    "videos",
-)
+TABLES_BY_SCHEMA = {
+    "public": (
+        "comments",
+        "chunks",
+        "transcripts",
+        "video_transcripts",
+        "stats",
+        "video_stats",
+        "video_daily_stats",
+        "videos",
+    ),
+    "chat": (
+        "messages",
+        "conversations",
+    ),
+}
 
 
-def existing_tables(cursor):
+def existing_tables(cursor, schema_name, tables):
     cursor.execute(
         """
         SELECT tablename
         FROM pg_tables
-        WHERE schemaname = 'public'
+        WHERE schemaname = %s
           AND tablename = ANY(%s)
         """,
-        (list(TABLES),),
+        (schema_name, list(tables)),
     )
     found = {row[0] for row in cursor.fetchall()}
-    return [table for table in TABLES if table in found]
+    return [table for table in tables if table in found]
 
 
 def main():
@@ -34,9 +41,11 @@ def main():
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:
-            tables = existing_tables(cursor)
-            if tables:
-                cursor.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
+            for schema_name, tables in TABLES_BY_SCHEMA.items():
+                existing = existing_tables(cursor, schema_name, tables)
+                if existing:
+                    qualified = ", ".join(f"{schema_name}.{table}" for table in existing)
+                    cursor.execute(f"TRUNCATE {qualified} RESTART IDENTITY CASCADE")
 
     print("Base videe")
 

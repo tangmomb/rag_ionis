@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import sys
+import warnings
 from pathlib import Path
 
 from common.pipeline_analysis import update_analysed_infos
@@ -209,13 +210,13 @@ class FrozenBackboneEmbedder:
         self.config = config
         self.torch = torch
         self.device = torch.device(device)
-        self.dino_processor = AutoImageProcessor.from_pretrained(self.config.dino_model)
+        self.dino_processor = AutoImageProcessor.from_pretrained(self.config.dino_model, use_fast=False)
         self.dino_model = AutoModel.from_pretrained(self.config.dino_model).to(self.device)
         self.dino_model.eval()
         for parameter in self.dino_model.parameters():
             parameter.requires_grad_(False)
 
-        self.clip_processor = CLIPProcessor.from_pretrained(self.config.clip_model)
+        self.clip_processor = CLIPProcessor.from_pretrained(self.config.clip_model, use_fast=False)
         self.clip_model = CLIPModel.from_pretrained(self.config.clip_model).to(self.device)
         self.clip_model.eval()
         for parameter in self.clip_model.parameters():
@@ -303,8 +304,37 @@ def embed_image_paths(image_paths, embedder, batch_size=16, cache_dir=None):
 
 def load_model_payload(path):
     import joblib
+    from sklearn.exceptions import InconsistentVersionWarning
 
-    payload = joblib.load(path)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", InconsistentVersionWarning)
+        payload = joblib.load(path)
+
+    version_warnings = [
+        warning.message
+        for warning in caught
+        if isinstance(warning.message, InconsistentVersionWarning)
+    ]
+    if version_warnings:
+        trained_version = getattr(version_warnings[0], "original_sklearn_version", "unknown")
+        current_version = getattr(version_warnings[0], "current_sklearn_version", "unknown")
+        estimators = ", ".join(
+            sorted(
+                {
+                    str(getattr(warning, "estimator_name", "")).strip()
+                    for warning in version_warnings
+                    if str(getattr(warning, "estimator_name", "")).strip()
+                }
+            )
+        )
+        details = f" ({estimators})" if estimators else ""
+        print(
+            "[warning] Modele scikit-learn charge avec une version differente: "
+            f"entraine en {trained_version}, environnement courant {current_version}{details}. "
+            "Le pipeline continue, mais le plus sur est d'aligner scikit-learn sur la version du modele.",
+            flush=True,
+        )
+
     if not isinstance(payload, dict) or "classifier" not in payload:
         raise ValueError(f"Unsupported model format: {path}")
     return payload

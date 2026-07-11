@@ -100,7 +100,11 @@ class ChunkSource(BaseModel):
     video_title: str
     video_url: str
     chunk_index: int
-    score: float | None = None
+    bm25_score: float | None = None
+    vector_score: float | None = None
+    rrf_score: float | None = None
+    cohere_relevance_score: float | None = None
+    rank_sources: dict[str, int] = Field(default_factory=dict)
     text: str
     speakers: list[str] = Field(default_factory=list)
 
@@ -625,7 +629,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 "chunk_index": 0,
                 "text": f"Titre: {row[1]}\nURL: {row[2]}\nSpeakers: {', '.join(row[3] or [])}",
                 "speakers": row[3] or [],
-                "score": None,
+                "bm25_score": None,
             }
             for row in rows
         ]
@@ -693,7 +697,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
         "chunk_index": 0,
         "text": row[3],
         "speakers": row[4] or [],
-        "score": float(row[5]) if row[5] is not None else None,
+        "bm25_score": float(row[5]) if row[5] is not None else None,
     }
     return [result], {
         "mode": intent,
@@ -739,7 +743,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             "chunk_index": row[3],
             "text": row[4],
             "speakers": row[5] or [],
-            "score": float(row[6]) if row[6] is not None else None,
+            "bm25_score": float(row[6]) if row[6] is not None else None,
         }
         for row in rows
     ]
@@ -792,7 +796,7 @@ def fetch_vector_chunks(
             "chunk_index": row[3],
             "text": row[4],
             "speakers": row[5] or [],
-            "score": float(row[6]) if row[6] is not None else None,
+            "vector_score": float(row[6]) if row[6] is not None else None,
         }
         for row in rows
     ]
@@ -818,6 +822,7 @@ def reciprocal_rank_fusion(
             chunk_id = int(chunk["chunk_id"])
             if chunk_id not in scored:
                 scored[chunk_id] = {**chunk, "rrf_score": 0.0, "rank_sources": {}}
+            scored[chunk_id][f"{source_name}_score"] = chunk.get(f"{source_name}_score")
             scored[chunk_id]["rrf_score"] += 1.0 / (rank_constant + rank)
             scored[chunk_id]["rank_sources"][source_name] = rank
 
@@ -978,9 +983,14 @@ def rerank_chunks(question: str, chunks: list[dict[str, Any]], limit: int, reran
         if not isinstance(index, int):
             continue
         if 0 <= index < len(chunks):
-            ordered.append(chunks[index])
+            selected_chunk = {**chunks[index]}
+            relevance_score = getattr(item, "relevance_score", None)
+            selected_chunk["cohere_relevance_score"] = (
+                float(relevance_score) if relevance_score is not None else None
+            )
+            ordered.append(selected_chunk)
             selected_indices.append(index + 1)
-            relevance_scores.append(getattr(item, "relevance_score", None))
+            relevance_scores.append(relevance_score)
 
     if ordered:
         output = ordered[:limit]

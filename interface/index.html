@@ -206,7 +206,7 @@ Hello! What can I help you with today?
               .map(
                 (src, index) => `
                   <div class="source-card">
-                    <strong>Chunk ${index + 1} ${src.score ? `- score ${src.score}` : ""}</strong>
+                    <strong>Chunk ${index + 1} ${src.rrf_score != null ? `- RRF ${src.rrf_score.toFixed(6)}` : ""}</strong>
                     <p>${escapeHtml(src.text)}</p>
                   </div>`
               )

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQL Beautifier</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="logo">SQL</div>
+      <div>
+        <p class="kicker">RAG IONIS · UTILITAIRE</p>
+        <h1>SQL Beautifier</h1>
+        <p class="subtitle">Transforme une requête inline en SQL lisible.</p>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="Actions">
+      <button id="format" class="primary" type="button">Formater <span>⌘↵</span></button>
+      <button id="sample" type="button">Charger un exemple</button>
+      <button id="clear" type="button">Effacer</button>
+      <label class="indent-control">Indentation
+        <select id="indent" aria-label="Taille de l'indentation">
+          <option value="2">2 espaces</option>
+          <option value="4" selected>4 espaces</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="editor-grid">
+      <article class="card">
+        <div class="card-heading"><h2>Requête inline</h2><span id="inputCount">0 caractères</span></div>
+        <textarea id="input" spellcheck="false" placeholder="Colle ta requête SQL ici…"></textarea>
+      </article>
+      <article class="card result-card">
+        <div class="card-heading"><h2>SQL formaté</h2><button id="copy" class="copy" type="button">Copier</button></div>
+        <pre id="output" aria-live="polite"><code>Le résultat apparaîtra ici.</code></pre>
+      </article>
+    </section>
+
+    <footer><span id="status">Prêt</span><span>Formatage local · aucune requête exécutée</span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

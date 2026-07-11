@@ -12,7 +12,7 @@ if not exist ".\.venv\Scripts\python.exe" (
   exit /b 1
 )
 
-start "RAG IONIS API" cmd /k ".\.venv\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000"
+start "RAG IONIS API" cmd /k ".\.venv\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000 --reload"
 start "" "http://127.0.0.1:8000/"
 
 start "" "https://console.cloud.google.com/apis/dashboard?project=youtube-api-484522&pageState=(%%22duration%%22:(%%22groupValue%%22:%%22P2D%%22,%%22customValue%%22:null))"

@@ -162,6 +162,8 @@ def ensure_chat_schema() -> None:
                         rrf_trace JSONB,
                         rerank_trace JSONB,
                         retrieved_chunks JSONB,
+                        answer_prompt TEXT,
+                        answer_response_raw TEXT,
                         answer_message TEXT,
                         date TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
@@ -180,28 +182,12 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rrf_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rerank_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS retrieved_chunks JSONB",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_prompt TEXT",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_response_raw TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_message TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS date TIMESTAMPTZ NOT NULL DEFAULT now()",
                 ):
                     cursor.execute(statement)
-                cursor.execute(
-                    """
-                    DO $$
-                    BEGIN
-                        IF EXISTS (
-                            SELECT 1
-                            FROM information_schema.columns
-                            WHERE table_schema = 'chat'
-                              AND table_name = 'messages'
-                              AND column_name = 'filters_json'
-                        ) THEN
-                            UPDATE chat.messages
-                            SET execution_plan_json = COALESCE(execution_plan_json, filters_json)
-                            WHERE filters_json IS NOT NULL;
-                        END IF;
-                    END $$;
-                    """
-                )
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id)"
                 )
@@ -240,7 +226,9 @@ def normalize_model_name(value: str, default: str) -> str:
         return "cohere-rerank"
     if lower in {"5.6 luna", "gpt 5.6 luna", "gpt-5.6 luna"}:
         return DEFAULT_GENERATION_MODEL
-    if lower == "gpt5.4nano":
+    # Compatibilite avec d'anciens clients : le modele de generation officiel
+    # reste toujours celui defini par DEFAULT_GENERATION_MODEL.
+    if lower in {"gpt5.4nano", "gpt-5.4-nano"}:
         return DEFAULT_GENERATION_MODEL
     return cleaned
 
@@ -500,6 +488,47 @@ def has_structured_sql_filters(query: ExecutionPlan) -> bool:
             bool(query.published_before),
         ]
     )
+
+
+def resolve_speaker_filters(question: str, planner_plan: PlannerPlan) -> list[str]:
+    """Ne conserve que les noms réellement présents dans videos.speakers."""
+    candidates = [str(value).strip() for value in planner_plan.speakers if str(value).strip()]
+
+    # Pour les questions d'identité, le nom peut être dans query_text_bm25
+    # sans avoir été classé comme speaker par le planner.
+    identity_match = re.search(
+        r"\b(?:qui est|qui était|que fait|parle de|à propos de)\s+([^?!.;,]+)",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if not candidates and identity_match:
+        candidate = identity_match.group(1).strip()
+        if candidate:
+            candidates.append(candidate)
+
+    if not candidates:
+        return []
+
+    resolved: list[str] = []
+    with psycopg.connect(get_database_url()) as connection:
+        with connection.cursor() as cursor:
+            for candidate in candidates:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT speaker_name
+                    FROM videos v
+                    CROSS JOIN LATERAL unnest(coalesce(v.speakers, ARRAY[]::text[])) AS speaker_name
+                    WHERE unaccent(lower(speaker_name)) LIKE unaccent(lower(%s))
+                    ORDER BY speaker_name
+                    LIMIT 5
+                    """,
+                    (f"%{candidate}%",),
+                )
+                for (speaker_name,) in cursor.fetchall():
+                    cleaned = str(speaker_name).strip()
+                    if cleaned and cleaned not in resolved:
+                        resolved.append(cleaned)
+    return resolved
 
 
 def append_speaker_filter_clauses(clauses: list[str], params: list[Any], speakers: list[str]) -> None:
@@ -902,6 +931,8 @@ def store_chat_message(
     rrf_trace: dict[str, Any],
     rerank_trace: dict[str, Any],
     retrieved_chunks: list[dict[str, Any]],
+    answer_prompt: str | None,
+    answer_response_raw: str | None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
 
@@ -913,7 +944,6 @@ def store_chat_message(
                 INSERT INTO chat.messages (
                     conversation_id,
                     user_message,
-                    answer_message,
                     planner_prompt,
                     planner_response_raw,
                     intent_source,
@@ -925,15 +955,17 @@ def store_chat_message(
                     vector_trace,
                     rrf_trace,
                     rerank_trace,
-                    retrieved_chunks
+                    retrieved_chunks,
+                    answer_prompt,
+                    answer_response_raw,
+                    answer_message
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     resolved_conversation_id,
                     user_message,
-                    answer_message,
                     planner_prompt,
                     planner_response_raw,
                     intent_source,
@@ -946,6 +978,9 @@ def store_chat_message(
                     Jsonb(rrf_trace),
                     Jsonb(rerank_trace),
                     Jsonb(retrieved_chunks),
+                    answer_prompt,
+                    answer_response_raw,
+                    answer_message,
                 ),
             )
             message_id = int(cursor.fetchone()[0])
@@ -1009,16 +1044,63 @@ def rerank_chunks(question: str, chunks: list[dict[str, Any]], limit: int, reran
     raise RuntimeError(f"Le rerank Cohere ({resolved_model}) n'a renvoye aucun resultat exploitable.")
 
 
-def generate_answer(client: OpenAI | None, question: str, answer_model: str | None, sources: list[dict[str, Any]]) -> str:
+FINAL_ANSWER_STYLE = (
+    "Réponds directement à la question avec les éléments disponibles. "
+    "N'introduis pas ta réponse par une formule comme « d'après les sources » "
+    "ou « selon les documents ». "
+    "Ne termine pas par une phrase indiquant qu'il manque des informations, "
+    "que tu n'en as pas d'autres ou que tu ne peux pas aller plus loin. "
+    "Ne parle pas de tes limites ni de la recherche effectuée."
+)
+SOURCE_MARKER_INSTRUCTION = (
+    "Pour chaque information importante provenant d'un chunk, ajoute son marqueur "
+    "[S1], [S2], etc. correspondant au numéro du chunk dans le contexte. "
+    "N'utilise que les marqueurs des chunks réellement utilisés."
+)
+
+
+def record_answer_trace(
+    trace: dict[str, str] | None,
+    model: str,
+    input_messages: list[dict[str, str]],
+    response: Any,
+) -> None:
+    if trace is None:
+        return
+    trace["prompt"] = json.dumps(
+        {"model": model, "input": input_messages},
+        ensure_ascii=False,
+    )
+    trace["response_raw"] = str(getattr(response, "output_text", "") or "")
+
+
+def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Retire les marqueurs de citation et conserve les sources utilisées par la réponse."""
+    marker_indexes = {
+        int(value)
+        for value in re.findall(r"\[S(\d+)\]", answer, flags=re.IGNORECASE)
+        if 1 <= int(value) <= len(sources)
+    }
+    cleaned_answer = re.sub(r"\s*\[S\d+\]", "", answer, flags=re.IGNORECASE).strip()
+    selected_sources = [
+        source for index, source in enumerate(sources, start=1) if index in marker_indexes
+    ]
+    return cleaned_answer, selected_sources
+
+
+def generate_answer(
+    client: OpenAI | None,
+    question: str,
+    answer_model: str | None,
+    sources: list[dict[str, Any]],
+    trace: dict[str, str] | None = None,
+) -> str:
     if not sources:
         return "Je n'ai trouve aucun chunk pertinent dans la base pour repondre a cette question."
     if client is None or not answer_model:
-        joined_titles = ", ".join(f"{item['video_title']}#{item['chunk_index']}" for item in sources)
-        return (
-            "Reponse generee sans appel modele externe.\n\n"
-            f"Question: {question}\n\n"
-            f"Sources retenues: {joined_titles}\n\n"
-            + "\n\n".join(source["text"] for source in sources)
+        return "\n\n".join(
+            f"[S{index}] {source['text']}"
+            for index, source in enumerate(sources, start=1)
         )
 
     context_blocks = []
@@ -1035,47 +1117,59 @@ def generate_answer(client: OpenAI | None, question: str, answer_model: str | No
             )
         )
 
-    response = client.responses.create(
-        model=answer_model,
-        input=[
+    input_messages = [
             {
                 "role": "system",
-                "content": "Tu es un assistant RAG. Reponds en francais, de facon concise, en t'appuyant uniquement sur les sources fournies. Si l'information manque, dis-le explicitement.",
+                "content": (
+                    "Tu es un assistant RAG. Réponds en français, de façon concise, "
+                    "en t'appuyant uniquement sur les sources fournies. "
+                    + SOURCE_MARKER_INSTRUCTION + " "
+                    + FINAL_ANSWER_STYLE
+                ),
             },
             {
                 "role": "user",
                 "content": f"Question utilisateur: {question}\n\nContexte:\n\n" + "\n\n".join(context_blocks),
             },
-        ],
-    )
+        ]
+    response = client.responses.create(model=answer_model, input=input_messages)
+    record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
         return answer
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable.")
 
 
-def generate_memory_answer(client: OpenAI | None, question: str, answer_model: str | None, memory_items: list[dict[str, str]]) -> str:
+def generate_memory_answer(
+    client: OpenAI | None,
+    question: str,
+    answer_model: str | None,
+    memory_items: list[dict[str, str]],
+    trace: dict[str, str] | None = None,
+) -> str:
     if not memory_items:
         return "Je n'ai pas trouve d'historique de conversation exploitable pour repondre a cette demande."
 
     if client is None or not answer_model:
         history = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
-        return f"Reponse basee sur l'historique disponible.\n\n{history}"
+        return history
 
     history = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
-    response = client.responses.create(
-        model=answer_model,
-        input=[
+    input_messages = [
             {
                 "role": "system",
-                "content": "Tu reponds uniquement a partir de l'historique de conversation fourni. Si l'historique ne suffit pas, dis-le explicitement.",
+                "content": (
+                    "Tu réponds uniquement à partir de l'historique de conversation fourni. "
+                    + FINAL_ANSWER_STYLE
+                ),
             },
             {
                 "role": "user",
                 "content": f"Question actuelle: {question}\n\nHistorique:\n{history}",
             },
-        ],
-    )
+        ]
+    response = client.responses.create(model=answer_model, input=input_messages)
+    record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
         return answer
@@ -1089,12 +1183,15 @@ def generate_multi_source_answer(
     route_name: str,
     memory_items: list[dict[str, str]],
     sources: list[dict[str, Any]],
+    trace: dict[str, str] | None = None,
 ) -> str:
     if client is None or not answer_model:
-        return (
-            f"Reponse planifiee via la route {route_name} sans generation externe. "
-            f"Memoire: {len(memory_items)} element(s). Sources documentaires: {len(sources)}."
+        memory_text = "\n".join(item["text"] for item in memory_items)
+        source_text = "\n\n".join(
+            f"[S{index}] {source['text']}"
+            for index, source in enumerate(sources, start=1)
         )
+        return "\n\n".join(part for part in (memory_text, source_text) if part)
 
     memory_block = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items) or "Aucun historique exploitable."
     source_blocks = []
@@ -1112,30 +1209,37 @@ def generate_multi_source_answer(
         )
     source_block = "\n\n".join(source_blocks) or "Aucune source documentaire exploitable."
 
-    response = client.responses.create(
-        model=answer_model,
-        input=[
+    input_messages = [
             {
                 "role": "system",
                 "content": (
                     "Tu synthétises plusieurs sources pour répondre en français. "
                     "Distingue clairement ce qui vient de l'historique conversationnel et ce qui vient de la base si utile. "
-                    "Si des informations manquent, dis-le explicitement."
+                    + SOURCE_MARKER_INSTRUCTION + " "
+                    + FINAL_ANSWER_STYLE
                 ),
             },
             {
                 "role": "user",
                 "content": f"Route planifiee: {route_name}\n\nQuestion: {question}\n\nHistorique:\n{memory_block}\n\nSources:\n{source_block}",
             },
-        ],
-    )
+        ]
+    response = client.responses.create(model=answer_model, input=input_messages)
+    record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
         return answer
     raise RuntimeError(f"Le modele n'a pas renvoye de texte exploitable pour la route {route_name}.")
 
 
-def generate_sql_answer(client: OpenAI | None, question: str, answer_model: str | None, sql_sub_intent: str | None, sources: list[dict[str, Any]]) -> str:
+def generate_sql_answer(
+    client: OpenAI | None,
+    question: str,
+    answer_model: str | None,
+    sql_sub_intent: str | None,
+    sources: list[dict[str, Any]],
+    trace: dict[str, str] | None = None,
+) -> str:
     if not sources:
         if sql_sub_intent == "video_lookup":
             return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
@@ -1144,10 +1248,10 @@ def generate_sql_answer(client: OpenAI | None, question: str, answer_model: str 
     if client is None or not answer_model:
         if sql_sub_intent == "video_lookup":
             lines = ["Videos trouvees :"]
-            for item in sources:
-                lines.append(f"- {item['video_title']} ({item['video_url']})")
+            for index, item in enumerate(sources, start=1):
+                lines.append(f"- [S{index}] {item['video_title']} ({item['video_url']})")
             return "\n".join(lines)
-        return sources[0]["text"]
+        return f"[S1] {sources[0]['text']}"
 
     context_blocks = []
     for index, source in enumerate(sources, start=1):
@@ -1165,15 +1269,16 @@ def generate_sql_answer(client: OpenAI | None, question: str, answer_model: str 
     system_prompt = (
         "Tu formules une reponse finale en francais a partir de resultats structures deja recuperes. "
         "N'invente aucune information absente. "
-        "Si plusieurs videos sont trouvees, presente-les clairement."
+        "Si plusieurs videos sont trouvees, presente-les clairement. "
+        + SOURCE_MARKER_INSTRUCTION + " "
+        + FINAL_ANSWER_STYLE
     )
-    response = client.responses.create(
-        model=answer_model,
-        input=[
+    input_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Sous-route SQL: {sql_sub_intent}\n\nQuestion: {question}\n\nResultats:\n\n" + "\n\n".join(context_blocks)},
-        ],
-    )
+        ]
+    response = client.responses.create(model=answer_model, input=input_messages)
+    record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
         return answer
@@ -1186,16 +1291,17 @@ def generate_final_answer(
     answer_model: str | None,
     retrieval: dict[str, Any],
     sources: list[dict[str, Any]],
+    trace: dict[str, str] | None = None,
 ) -> str:
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     if route == "direct":
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
     if route == "rag":
-        return generate_answer(client, question, answer_model, sources)
+        return generate_answer(client, question, answer_model, sources, trace)
     if route == "sql":
-        return generate_sql_answer(client, question, answer_model, retrieval.get("sql_sub_intent"), sources)
+        return generate_sql_answer(client, question, answer_model, retrieval.get("sql_sub_intent"), sources, trace)
     if route == "memory":
-        return generate_memory_answer(client, question, answer_model, retrieval.get("memory_items", []))
+        return generate_memory_answer(client, question, answer_model, retrieval.get("memory_items", []), trace)
     if route in {"multi_source", "agent"}:
         return generate_multi_source_answer(
             client,
@@ -1204,8 +1310,9 @@ def generate_final_answer(
             route,
             retrieval.get("memory_items", []),
             sources,
+            trace,
         )
-    return generate_answer(client, question, answer_model, sources)
+    return generate_answer(client, question, answer_model, sources, trace)
 
 
 def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1290,6 +1397,7 @@ def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_na
 def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     client = get_openai_client()
     planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(payload.question, client)
+    planner_plan.speakers = resolve_speaker_filters(payload.question, planner_plan)
     execution_plan = build_execution_plan(payload, planner_plan)
 
     if pydantic_verification:
@@ -1466,8 +1574,20 @@ def rag(payload: RagRequest) -> RagResponse:
 
     try:
         answer, sources, retrieval = orchestrate_request(payload)
+        answer_trace: dict[str, str] = {}
         if not answer:
-            answer = generate_final_answer(get_openai_client(), payload.question, retrieval["answer_model"], retrieval, sources)
+            answer = generate_final_answer(
+                get_openai_client(),
+                payload.question,
+                retrieval["answer_model"],
+                retrieval,
+                sources,
+                answer_trace,
+            )
+        answer, carousel_sources = select_answer_sources(answer, sources)
+        retrieval["answer_source_indexes"] = [
+            index for index, source in enumerate(sources, start=1) if source in carousel_sources
+        ]
         conversation_id, message_id = store_chat_message(
             conversation_id=payload.conversationId,
             user_message=payload.question,
@@ -1483,7 +1603,9 @@ def rag(payload: RagRequest) -> RagResponse:
             vector_trace=retrieval["vector"],
             rrf_trace=retrieval["rrf"],
             rerank_trace=retrieval["rerank"],
-            retrieved_chunks=sources,
+            retrieved_chunks=carousel_sources,
+            answer_prompt=answer_trace.get("prompt"),
+            answer_response_raw=answer_trace.get("response_raw"),
         )
     except HTTPException:
         raise
@@ -1494,6 +1616,6 @@ def rag(payload: RagRequest) -> RagResponse:
         conversation_id=conversation_id,
         message_id=message_id,
         answer=answer,
-        sources=[ChunkSource(**source) for source in sources],
+        sources=[ChunkSource(**source) for source in carousel_sources],
         retrieval=retrieval,
     )

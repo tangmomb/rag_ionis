@@ -94,16 +94,34 @@ button {
   height: 56px;
   padding: 0;
   border-radius: 999px;
-  background: #ffffff;
+  border: 0;
+  background: var(--bg-softer);
   color: #000000;
-  font-size: 0;
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .btn-primary::before {
-  content: "\2191";
-  font-size: 24px;
-  font-weight: 700;
+  content: "";
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.btn-primary svg {
+  position: relative;
+  z-index: 1;
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .chat {
@@ -129,18 +147,62 @@ button {
 }
 
 .message.user .message-body {
-  margin-left: auto;
-  width: fit-content;
-  max-width: min(320px, 100%);
-  padding: 13px 18px;
-  border-radius: 999px;
-  background: var(--bg-softer);
-  color: #ffffff;
+    margin-left: auto;
+    width: fit-content;
+    max-width: 75%;
+    padding: 8px 18px;
+    border-radius: 999px;
+    background: #000000;
+    color: #ffffff;
+    border: 1px solid #2c2c2c;
 }
 
 .message.assistant .message-body {
   max-width: 640px;
   padding-top: 4px;
+}
+
+.loading-message .message-body {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+.loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 2px;
+}
+
+.loading-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted-strong);
+  animation: loading-bounce 1.1s infinite ease-in-out;
+}
+
+.loading-dots span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.loading-dots span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+@keyframes loading-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
 }
 
 .message-meta {
@@ -224,9 +286,67 @@ button {
 }
 
 .message-content a {
-  color: #e8e8e8;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #ff4242;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.message-content a:hover {
+  color: #ff7070;
+}
+
+.youtube-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: #ff0a0a;
+  fill: currentColor;
+}
+
+.youtube-icon .youtube-play {
+  fill: #ffffff;
+}
+
+.video-carousel {
+  display: flex;
+  gap: 14px;
+  max-width: 100%;
+  margin-top: 18px;
+  padding: 2px 2px 10px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.video-card {
+  flex: 0 0 min(320px, 82vw);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  scroll-snap-align: start;
+}
+
+.video-card iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  background: #000000;
+}
+
+.video-title {
+  padding: 10px 12px 12px;
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-actions {
@@ -265,33 +385,6 @@ button {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.source-grid {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.source-card {
-  padding: 14px 15px;
-  border-radius: 16px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.source-card strong {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--muted-strong);
-  font-size: 12px;
-}
-
-.source-card p {
-  margin: 0;
-  color: var(--muted-strong);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
 .composer {
   position: sticky;
   bottom: 0;
@@ -307,16 +400,16 @@ button {
 .composer-row {
   display: flex;
   align-items: center;
-  gap: 10px;
 }
 
 .composer-input-shell {
-  flex: 1 1 auto;
-  height: 56px;
-  border: 1px solid var(--line);
-  border-radius: 28px;
-  background: var(--bg-soft);
-  padding: 0 18px;
+    position: relative;
+    flex: 1 1 auto;
+    height: 56px;
+    border: 1px solid rgb(85 85 85);
+    border-radius: 28px;
+    background: #000000;
+    padding: 0 64px 0 18px;
 }
 
 .composer textarea {
@@ -340,9 +433,18 @@ button {
   border-color: rgba(255, 255, 255, 0.24);
 }
 
-.composer-submit {
-  flex: 0 0 auto;
-  align-self: center;
+.composer-input-shell > .composer-submit {
+  width: 44px;
+  height: 44px;
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+}
+
+.composer-input-shell > .composer-submit::before {
+  width: 34px;
+  height: 34px;
 }
 
 .composer-actions {

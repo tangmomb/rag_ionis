@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG IONIS</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=3" />
   </head>
   <body>
     <main class="app">
@@ -48,10 +48,15 @@ Hello! What can I help you with today?
               <div class="composer-input-shell">
                 <textarea
                   id="question"
-                  placeholder="Demander a ChatGPT"
+                  placeholder="Que recherchez vous ?"
                 ></textarea>
+                <button class="btn btn-primary composer-submit" type="submit" aria-label="Envoyer" title="Envoyer">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M12 17V7" />
+                    <path d="m7 12 5-5 5 5" />
+                  </svg>
+                </button>
               </div>
-              <button class="btn btn-primary composer-submit" type="submit">Envoyer</button>
             </div>
             <div class="composer-actions">
               <div class="composer-hint"></div>
@@ -69,7 +74,7 @@ Hello! What can I help you with today?
       let conversationId = null;
       const RAG_CONFIG = {
         apiUrl: "/api/rag",
-        answerModel: "gpt-5.4-nano",
+        answerModel: "gpt-5.6-luna",
         embeddingModel: "meme modele que la base",
         rerankModel: "cohere rerank",
         topK: 40,
@@ -89,10 +94,40 @@ Hello! What can I help you with today?
 
       function renderInlineMarkdown(value) {
         let html = escapeHtml(value);
+        const protectedLinks = [];
+
+        function externalLinkContent(url, fallbackLabel = "Lien") {
+          if (!/(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(url)) {
+            return `${fallbackLabel} ↗`;
+          }
+
+          return `
+            Voir sur
+            <svg class="youtube-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8Z" />
+              <path class="youtube-play" d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z" />
+            </svg>
+          `.replace(/\s+/g, " ").trim();
+        }
+
+        html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) => {
+          const token = `@@EXTERNAL_LINK_${protectedLinks.length}@@`;
+          protectedLinks.push(`<a href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, label)}</a>`);
+          return token;
+        });
+
+        html = html.replace(/https?:\/\/[^\s<]+/g, (rawUrl) => {
+          const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || "";
+          const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+          return `<a href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, "Lien")}</a>${trailing}`;
+        });
+
         html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
         html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
         html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-        html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>');
+        protectedLinks.forEach((link, index) => {
+          html = html.replaceAll(`@@EXTERNAL_LINK_${index}@@`, link);
+        });
         return html;
       }
 
@@ -176,12 +211,64 @@ Hello! What can I help you with today?
         return parts.join("");
       }
 
+      function getYoutubeEmbedUrl(rawUrl) {
+        try {
+          const url = new URL(rawUrl);
+          let videoId = "";
+
+          if (url.hostname === "youtu.be") {
+            videoId = url.pathname.slice(1).split("/")[0];
+          } else if (/youtube\.com$/i.test(url.hostname)) {
+            videoId = url.searchParams.get("v") || url.pathname.match(/\/(?:embed|shorts|live)\/([^/]+)/)?.[1] || "";
+          }
+
+          return /^[A-Za-z0-9_-]{6,}$/.test(videoId) ? `https://www.youtube.com/embed/${videoId}` : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function renderVideoEmbeds(sources) {
+        const videos = [];
+        const seen = new Set();
+
+        for (const source of sources) {
+          const embedUrl = getYoutubeEmbedUrl(source.video_url);
+          if (!embedUrl || seen.has(embedUrl)) continue;
+          seen.add(embedUrl);
+          videos.push({ embedUrl, title: source.video_title || "Vidéo YouTube" });
+        }
+
+        if (!videos.length) return "";
+
+        return `
+          <div class="video-carousel" aria-label="Vidéos associées">
+            ${videos
+              .map(
+                (video) => `
+                  <article class="video-card">
+                    <iframe
+                      src="${escapeHtml(video.embedUrl)}"
+                      title="${escapeHtml(video.title)}"
+                      loading="lazy"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowfullscreen
+                    ></iframe>
+                    <div class="video-title">${escapeHtml(video.title)}</div>
+                  </article>`
+              )
+              .join("")}
+          </div>
+        `;
+      }
+
       function addMessage(role, content, meta, sources = []) {
         const article = document.createElement("article");
         article.className = `message ${role}`;
 
         const renderedContent = role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
         const metaHtml = role === "assistant" && meta ? `<div class="message-meta"><span>${escapeHtml(meta)}</span></div>` : "";
+        const videoHtml = role === "assistant" ? renderVideoEmbeds(sources) : "";
         const actionsHtml =
           role === "assistant"
             ? `
@@ -201,29 +288,32 @@ Hello! What can I help you with today?
               </div>
             `
             : "";
-        const sourceHtml = sources.length
-          ? `<div class="source-grid">${sources
-              .map(
-                (src, index) => `
-                  <div class="source-card">
-                    <strong>Chunk ${index + 1} ${src.rrf_score != null ? `- RRF ${src.rrf_score.toFixed(6)}` : ""}</strong>
-                    <p>${escapeHtml(src.text)}</p>
-                  </div>`
-              )
-              .join("")}</div>`
-          : "";
-
         article.innerHTML = `
           <div class="message-body">
             ${metaHtml}
             <div class="message-content">${renderedContent}</div>
-            ${sourceHtml}
+            ${videoHtml}
             ${actionsHtml}
           </div>
         `;
 
         messages.appendChild(article);
         article.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function addLoadingMessage() {
+        const article = document.createElement("article");
+        article.className = "message assistant loading-message";
+        article.innerHTML = `
+          <div class="message-body" aria-label="Réponse en cours" role="status">
+            <div class="loading-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+        `;
+        messages.appendChild(article);
+        article.scrollIntoView({ behavior: "smooth", block: "start" });
+        return article;
       }
 
       async function sendQuestion(text) {
@@ -241,6 +331,7 @@ Hello! What can I help you with today?
         };
 
         addMessage("user", text, "envoi frontend");
+        const loadingMessage = addLoadingMessage();
 
         try {
           const response = await fetch(RAG_CONFIG.apiUrl, {
@@ -257,11 +348,13 @@ Hello! What can I help you with today?
           }
 
           conversationId = data.conversation_id ?? conversationId;
-          const meta = `${data.retrieval?.retrieval_mode || "rag"} - ${data.sources?.length || 0} source(s)`;
+          const meta = data.retrieval?.retrieval_mode || "rag";
           addMessage("assistant", data.answer || "Reponse vide.", meta, data.sources || []);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Erreur reseau inconnue";
           addMessage("assistant", `Le backend a renvoye une erreur.\n\n${message}`, "echec requete");
+        } finally {
+          loadingMessage.remove();
         }
       }
 
@@ -269,8 +362,14 @@ Hello! What can I help you with today?
         event.preventDefault();
         const text = question.value.trim();
         if (!text) return;
-        await sendQuestion(text);
         question.value = "";
+        await sendQuestion(text);
+      });
+
+      question.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.shiftKey) return;
+        event.preventDefault();
+        composer.requestSubmit();
       });
 
       clearButton.addEventListener("click", () => {
@@ -279,12 +378,6 @@ Hello! What can I help you with today?
         question.focus();
       });
 
-      question.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          composer.requestSubmit();
-        }
-      });
     </script>
   </body>
 </html>

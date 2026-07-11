@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Database browser · RAG IONIS</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="dot"></span><div><strong>RAG IONIS</strong><small>Database browser</small></div></div>
+    <div class="connection"><span id="healthDot" class="health-dot"></span><span id="healthText">Connexion…</span></div>
+    <label class="side-label" for="tableFilter">TABLES</label>
+    <input id="tableFilter" class="filter" placeholder="Filtrer les tables…" autocomplete="off">
+    <nav id="tableList" class="table-list"></nav>
+  </aside>
+  <main>
+    <header class="topbar"><div><p class="eyebrow">CONSULTATION EN LECTURE SEULE</p><h1 id="title">Sélectionnez une table</h1></div><button id="refresh" class="button secondary">↻ Actualiser</button></header>
+    <section id="empty" class="empty"><div class="empty-icon">⌁</div><h2>Explorez votre base</h2><p>Choisissez une table à gauche pour afficher ses données.</p></section>
+    <section id="content" class="content hidden">
+      <div class="toolbar"><div><span id="meta" class="meta"></span><span id="columnsMeta" class="meta"></span></div><div class="actions"><input id="search" class="search" placeholder="Rechercher dans les champs texte…" autocomplete="off"><select id="pageSize" class="select"><option>25</option><option selected>50</option><option>100</option><option>200</option></select></div></div>
+      <div class="table-wrap"><table><thead id="thead"></thead><tbody id="tbody"></tbody></table><div id="loading" class="loading hidden">Chargement…</div><div id="noRows" class="no-rows hidden">Aucune ligne trouvée.</div></div>
+      <section id="cellDetail" class="cell-detail hidden"><div class="detail-heading"><span id="detailColumn"></span><button id="closeDetail" class="close-detail">Fermer ×</button></div><pre id="detailValue"></pre></section>
+      <section id="sqlDetail" class="cell-detail sql-detail hidden"><div class="detail-heading"><span>SQL reformaté</span><button id="copySql" class="close-detail">Copier</button></div><pre id="sqlValue"></pre></section>
+      <footer class="pager"><button id="previous" class="button secondary">← Précédent</button><span id="pageInfo"></span><button id="next" class="button secondary">Suivant →</button></footer>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -150,9 +150,11 @@ def ensure_chat_schema() -> None:
                         id BIGSERIAL PRIMARY KEY,
                         conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
                         user_message TEXT NOT NULL,
+                        question_reformulation_prompt TEXT,
+                        question_reformulation_response_raw TEXT,
+                        contextual_question TEXT,
                         planner_prompt TEXT,
                         planner_response_raw TEXT,
-                        intent_source TEXT,
                         pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
                         execution_plan_json JSONB,
                         sql_query TEXT,
@@ -170,9 +172,25 @@ def ensure_chat_schema() -> None:
                     """
                 )
                 for statement in (
+                    """DO $$ BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'chat' AND table_name = 'messages'
+                              AND column_name = 'question_reformulation_trace'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'chat' AND table_name = 'messages'
+                              AND column_name = 'question_reformulation_prompt'
+                        ) THEN
+                            ALTER TABLE chat.messages RENAME COLUMN question_reformulation_trace TO question_reformulation_prompt;
+                        END IF;
+                    END $$""",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS question_reformulation_prompt TEXT",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS question_reformulation_response_raw TEXT",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS contextual_question TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS planner_prompt TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS planner_response_raw TEXT",
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS intent_source TEXT",
+                    "ALTER TABLE chat.messages DROP COLUMN IF EXISTS intent_source",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS execution_plan_json JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS sql_query TEXT",
@@ -402,7 +420,14 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
     heuristic_speakers = extract_speaker_hint(question)
 
     system_prompt, user_prompt = build_planner_prompt(question)
-    raw_prompt = json.dumps({"system": system_prompt, "user": user_prompt}, ensure_ascii=False)
+    planner_input = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    raw_prompt = json.dumps(
+        {"model": DEFAULT_PLANNER_MODEL, "input": planner_input},
+        ensure_ascii=False,
+    )
 
     if client is None:
         fallback = PlannerPlan(
@@ -413,13 +438,8 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
         )
         return fallback, raw_prompt, json.dumps(fallback.model_dump(), ensure_ascii=False), False
 
-    response = client.responses.create(
-        model=DEFAULT_PLANNER_MODEL,
-        input=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    response = client.responses.create(model=DEFAULT_PLANNER_MODEL, input=planner_input)
+    raw_response = serialize_openai_response(response)
     raw = getattr(response, "output_text", "").strip()
     if not raw:
         fallback = PlannerPlan(
@@ -428,7 +448,7 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
             speakers=heuristic_speakers,
             use_rag=True,
         )
-        return fallback, raw_prompt, json.dumps(fallback.model_dump(), ensure_ascii=False), False
+        return fallback, raw_prompt, raw_response, False
 
     try:
         parsed = normalize_planner_output(safe_json_loads(raw))
@@ -445,7 +465,7 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
         if not parsed.get("query_text"):
             parsed["query_text"] = question
         validated = PlannerPlan.model_validate(parsed)
-        return validated, raw_prompt, raw, True
+        return validated, raw_prompt, raw_response, True
     except Exception:
         fallback = PlannerPlan(
             route="rag",
@@ -453,7 +473,7 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
             speakers=heuristic_speakers,
             use_rag=True,
         )
-        return fallback, raw_prompt, raw, False
+        return fallback, raw_prompt, raw_response, False
 
 
 def build_execution_plan(payload: RagRequest, planner_plan: PlannerPlan) -> ExecutionPlan:
@@ -915,13 +935,105 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
     }
 
 
+def build_question_reformulation_prompt(
+    question: str,
+    memory_items: list[dict[str, str]],
+) -> tuple[str, str]:
+    history = "\n".join(
+        f"{item['role']}: {item['text']}" for item in memory_items
+    )
+    system_prompt = (
+        "Tu reformules une question utilisateur pour la rendre autonome avant une recherche documentaire. "
+        "Utilise uniquement l'historique fourni pour résoudre les références implicites comme "
+        "'cette personne', 'ce sujet', 'et pour Emric ?'. "
+        "Conserve l'intention, les contraintes et les noms propres de la question actuelle. "
+        "Si la question est déjà autonome, renvoie-la sans changement. "
+        "Ne réponds pas à la question, n'ajoute aucune explication et renvoie uniquement la question reformulée en français."
+    )
+    user_prompt = f"Question actuelle : {question}\n\nHistorique récent :\n{history}"
+    return system_prompt, user_prompt
+
+
+def serialize_openai_response(response: Any) -> str:
+    """Serialize the complete SDK response while keeping it valid JSON."""
+    to_json = getattr(response, "to_json", None)
+    if callable(to_json):
+        return str(to_json())
+
+    model_dump_json = getattr(response, "model_dump_json", None)
+    if callable(model_dump_json):
+        return str(model_dump_json())
+
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        return json.dumps(model_dump(mode="json"), ensure_ascii=False)
+
+    return json.dumps(response, default=str, ensure_ascii=False)
+
+
+def reformulate_question(
+    question: str,
+    conversation_id: int | None,
+    client: OpenAI | None,
+) -> tuple[str, dict[str, Any]]:
+    """Rend une relance autonome avant le planner, sans modifier le message stocké."""
+    memory_items, memory_trace = fetch_conversation_memory(conversation_id)
+    memory_items = [item for item in memory_items if item.get("role") == "user"]
+    trace: dict[str, Any] = {
+        "applied": False,
+        "original_question": question,
+        "reformulated_question": question,
+        "memory_message_count": len(memory_items),
+        "memory": memory_trace,
+    }
+    if not memory_items:
+        trace["reason"] = "no_history"
+        return question, trace
+    if client is None:
+        trace["reason"] = "no_openai_client"
+        return question, trace
+
+    system_prompt, user_prompt = build_question_reformulation_prompt(question, memory_items)
+    trace["prompt"] = json.dumps(
+        {"model": DEFAULT_PLANNER_MODEL, "input": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]},
+        ensure_ascii=False,
+    )
+    try:
+        response = client.responses.create(
+            model=DEFAULT_PLANNER_MODEL,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        trace["response_raw"] = serialize_openai_response(response)
+        reformulated = (getattr(response, "output_text", "") or "").strip()
+        if not reformulated:
+            trace["reason"] = "empty_response"
+            return question, trace
+        # Évite qu'une réponse accidentellement multi-ligne devienne une nouvelle consigne.
+        reformulated = reformulated.strip('"\' `')
+        trace["applied"] = reformulated != question.strip()
+        trace["reformulated_question"] = reformulated
+        return reformulated or question, trace
+    except Exception as exc:  # La recherche doit rester disponible si la reformulation échoue.
+        trace["reason"] = "reformulation_error"
+        trace["error"] = str(exc)
+        return question, trace
+
+
 def store_chat_message(
     conversation_id: int | None,
     user_message: str,
     answer_message: str,
+    question_reformulation_response_raw: str | None,
+    contextual_question: str,
+    question_reformulation_prompt: str | None,
     planner_prompt: str | None,
     planner_response_raw: str | None,
-    intent_source: str,
     pydantic_verification: bool,
     execution_plan_json: dict[str, Any],
     sql_query: str | None,
@@ -944,9 +1056,11 @@ def store_chat_message(
                 INSERT INTO chat.messages (
                     conversation_id,
                     user_message,
+                    question_reformulation_prompt,
+                    question_reformulation_response_raw,
+                    contextual_question,
                     planner_prompt,
                     planner_response_raw,
-                    intent_source,
                     pydantic_verification,
                     execution_plan_json,
                     sql_query,
@@ -960,15 +1074,17 @@ def store_chat_message(
                     answer_response_raw,
                     answer_message
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     resolved_conversation_id,
                     user_message,
+                    question_reformulation_prompt,
+                    question_reformulation_response_raw,
+                    contextual_question,
                     planner_prompt,
                     planner_response_raw,
-                    intent_source,
                     pydantic_verification,
                     Jsonb(execution_plan_json),
                     sql_query,
@@ -1071,7 +1187,7 @@ def record_answer_trace(
         {"model": model, "input": input_messages},
         ensure_ascii=False,
     )
-    trace["response_raw"] = str(getattr(response, "output_text", "") or "")
+    trace["response_raw"] = serialize_openai_response(response)
 
 
 def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -1332,7 +1448,12 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
     fused_chunks, fusion_debug = reciprocal_rank_fusion(bm25_chunks, vector_chunks, DEFAULT_RRF_TOP_N)
 
     if payload.useRerank:
-        final_chunks, rerank_debug = rerank_chunks(payload.question, fused_chunks, execution_plan.final_k, rerank_model)
+        final_chunks, rerank_debug = rerank_chunks(
+            execution_plan.query_text,
+            fused_chunks,
+            execution_plan.final_k,
+            rerank_model,
+        )
     else:
         final_chunks = fused_chunks[: execution_plan.final_k]
         rerank_debug = {
@@ -1396,23 +1517,24 @@ def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_na
 
 def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     client = get_openai_client()
-    planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(payload.question, client)
-    planner_plan.speakers = resolve_speaker_filters(payload.question, planner_plan)
+    contextual_question, reformulation_trace = reformulate_question(
+        payload.question,
+        payload.conversationId,
+        client,
+    )
+    planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(contextual_question, client)
+    planner_plan.speakers = resolve_speaker_filters(contextual_question, planner_plan)
     execution_plan = build_execution_plan(payload, planner_plan)
-
-    if pydantic_verification:
-        intent_source = "llm"
-    else:
-        intent_source = "fallback"
 
     base_retrieval = {
         "route": execution_plan.route,
         "direct_sub_intent": execution_plan.direct_sub_intent,
         "sql_sub_intent": execution_plan.sql_sub_intent,
-        "intent_source": intent_source,
         "planner_prompt": planner_prompt,
         "planner_response_raw": planner_raw,
         "pydantic_verification": pydantic_verification,
+        "question_reformulation": reformulation_trace,
+        "contextual_question": contextual_question,
         "planner_plan": planner_plan.model_dump(),
         "execution_plan": execution_plan.model_dump(),
         "validated_query": execution_plan.model_dump(),
@@ -1420,7 +1542,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
 
     if execution_plan.route == "direct":
         if execution_plan.direct_sub_intent == "social":
-            return build_direct_retrieval(base_retrieval, build_social_answer(payload.question), "direct")
+            return build_direct_retrieval(base_retrieval, build_social_answer(contextual_question), "direct")
         return build_direct_retrieval(
             base_retrieval,
             "Je peux repondre directement a ce type de message sans interroger la base, mais aucun sous-type direct n'a ete defini pour cette demande.",
@@ -1578,7 +1700,7 @@ def rag(payload: RagRequest) -> RagResponse:
         if not answer:
             answer = generate_final_answer(
                 get_openai_client(),
-                payload.question,
+                retrieval.get("contextual_question", payload.question),
                 retrieval["answer_model"],
                 retrieval,
                 sources,
@@ -1592,9 +1714,11 @@ def rag(payload: RagRequest) -> RagResponse:
             conversation_id=payload.conversationId,
             user_message=payload.question,
             answer_message=answer,
+            question_reformulation_prompt=retrieval.get("question_reformulation", {}).get("prompt"),
+            question_reformulation_response_raw=retrieval.get("question_reformulation", {}).get("response_raw"),
+            contextual_question=retrieval.get("contextual_question", payload.question),
             planner_prompt=retrieval["planner_prompt"],
             planner_response_raw=retrieval["planner_response_raw"],
-            intent_source=retrieval["intent_source"],
             pydantic_verification=retrieval["pydantic_verification"],
             execution_plan_json=retrieval["execution_plan"],
             sql_query=retrieval["sql_query"],

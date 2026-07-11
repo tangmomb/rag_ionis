@@ -73,9 +73,11 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     id BIGSERIAL PRIMARY KEY,
     conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
     user_message TEXT NOT NULL,
+    question_reformulation_prompt TEXT,
+    question_reformulation_response_raw TEXT,
+    contextual_question TEXT,
     planner_prompt TEXT,
     planner_response_raw TEXT,
-    intent_source TEXT,
     pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
     execution_plan_json JSONB,
     sql_query TEXT,
@@ -85,6 +87,8 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     rrf_trace JSONB,
     rerank_trace JSONB,
     retrieved_chunks JSONB,
+    answer_prompt TEXT,
+    answer_response_raw TEXT,
     answer_message TEXT,
     date TIMESTAMPTZ NOT NULL DEFAULT now()
 );

@@ -22,7 +22,8 @@ OUTPUT_DIRNAME = "other_text_gpt_review"
 LEGACY_OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes_review"
 SUMMARY_NAME = "review_summary.json"
 LEGACY_SUMMARY_NAME = "summary.json"
-DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_MODEL = "gpt-5.6-luna"
+REVIEW_MAX_OUTPUT_TOKENS = 400
 DEFAULT_MODE = "batch"
 DEFAULT_WAIT_FOR_BATCH = True
 BATCH_STATE_NAME = "batch_state.json"
@@ -43,7 +44,7 @@ SYSTEM_PROMPT = (
     "Tu dois justement utiliser ces deux images successives pour distinguer un vrai texte ajoute au montage d'un simple element de decor ou d'image. "
     "Si une animation, apparition, transition ou evolution visuelle est visible entre les deux images pour la zone encadree, considere que cette box correspond FORCEMENT a un ajout au montage. "
     "Dans ce cas, applique la meme conclusion a toutes les boxes qui partagent clairement le meme look graphique, le meme style visuel ou le meme habillage. "
-    "Reponds uniquement en JSON avec les cles: has_ocr_error (boolean), corrected_text (string), is_added_in_edit (boolean), confidence (number entre 0 et 1), reason (string court). "
+    "Reponds uniquement en JSON avec les cles: has_ocr_error (boolean), corrected_text (string), is_added_in_edit (boolean), confidence (number entre 0 et 1), reason (string court de 20 mots maximum). "
     "Si le texte OCR semble deja correct, corrected_text doit reprendre le texte OCR tel quel."
 )
 
@@ -193,7 +194,39 @@ def parse_json_answer(answer):
         match = re.search(r"\{[\s\S]*\}", text)
         if match:
             text = match.group(0)
-    parsed = json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # Une sortie Responses peut etre tronquee (notamment au milieu de
+        # `reason`). On recupere les champs simples deja emis et on laisse
+        # l'appelant remettre le texte OCR original si corrected_text manque.
+        def extract_bool(name, default=False):
+            match = re.search(rf'"{re.escape(name)}"\s*:\s*(true|false)', text, flags=re.IGNORECASE)
+            return match.group(1).lower() == "true" if match else default
+
+        def extract_number(name, default=0.0):
+            match = re.search(rf'"{re.escape(name)}"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+))', text)
+            try:
+                return float(match.group(1)) if match else default
+            except ValueError:
+                return default
+
+        def extract_string(name, default=""):
+            match = re.search(rf'"{re.escape(name)}"\s*:\s*"((?:\\.|[^"\\])*)', text, flags=re.DOTALL)
+            if not match:
+                return default
+            try:
+                return json.loads('"' + match.group(1) + '"')
+            except json.JSONDecodeError:
+                return match.group(1)
+
+        parsed = {
+            "has_ocr_error": extract_bool("has_ocr_error"),
+            "corrected_text": extract_string("corrected_text"),
+            "is_added_in_edit": extract_bool("is_added_in_edit"),
+            "confidence": extract_number("confidence"),
+            "reason": extract_string("reason", "Reponse JSON tronquee; champs recuperes partiellement."),
+        }
     corrected_text = " ".join(str(parsed.get("corrected_text", "")).split()).strip()
     return {
         "has_ocr_error": bool(parsed.get("has_ocr_error")),
@@ -242,7 +275,7 @@ def build_messages(image_path, item, previous_image_path=None):
     request_log = {
         "api": "responses.create",
         "model": None,
-        "max_output_tokens": 200,
+        "max_output_tokens": REVIEW_MAX_OUTPUT_TOKENS,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -257,7 +290,7 @@ def build_response_request(model, image_path, item, previous_image_path=None):
     body = {
         "model": model,
         "input": messages,
-        "max_output_tokens": 200,
+        "max_output_tokens": REVIEW_MAX_OUTPUT_TOKENS,
     }
     return body, request_log
 

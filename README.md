@@ -580,5 +580,5 @@ python utils/clear_database.py
 Console HTML pour tester les requetes YouTube API:
 
 ```text
-utils/api_console.html
+utils/api_console/index.html
 ```

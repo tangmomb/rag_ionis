@@ -12,8 +12,14 @@ if not exist ".\.venv\Scripts\python.exe" (
   exit /b 1
 )
 
-start "RAG IONIS API" cmd /k ".\.venv\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000 --reload"
-start "" "http://127.0.0.1:8000/"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$patterns = @('uvicorn interface.app:app','uvicorn utils.database_browser.app:app'); Get-CimInstance Win32_Process | Where-Object { $process = $_; $process.Name -eq 'python.exe' -and ($patterns | Where-Object { $process.CommandLine -like ('*' + $_ + '*') }) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+
+start "RAG IONIS API" cmd /k ".\.venv\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8006 --reload"
+start "" "http://127.0.0.1:8006/"
+
+start "Database browser" cmd /k ".\.venv\Scripts\python.exe -m uvicorn utils.database_browser.app:app --host 127.0.0.1 --port 8001 --reload"
+start "" "http://127.0.0.1:8001/"
+start "" "https://www.youtube.com/@IONIS-STM/videos"
 
 start "" "https://console.cloud.google.com/apis/dashboard?project=youtube-api-484522&pageState=(%%22duration%%22:(%%22groupValue%%22:%%22P2D%%22,%%22customValue%%22:null))"
 start "" "https://eu-west-3.console.aws.amazon.com/s3/buckets/rag-ionis-532523613357-eu-west-3-an?region=eu-west-3&tab=objects"

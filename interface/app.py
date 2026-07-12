@@ -116,6 +116,7 @@ class ChunkSource(BaseModel):
     text: str
     speakers: list[str] = Field(default_factory=list)
     video_description: str | None = None
+    video_type: str | None = None
 
 
 class RagResponse(BaseModel):
@@ -927,7 +928,8 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 v.url,
                 v.thumbnail_medium_url,
                 coalesce(v.speakers, ARRAY[]::text[]),
-                v.published_at
+                v.published_at,
+                v.video_type
             FROM videos v
             WHERE {where_sql}
             ORDER BY v.published_at DESC NULLS LAST, v.id DESC
@@ -946,8 +948,13 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 "video_url": row[2],
                 "thumbnail_medium_url": row[3],
                 "chunk_index": 0,
-                "text": f"Titre: {row[1]}\nURL: {row[2]}\nSpeakers: {', '.join(row[4] or [])}",
+                "text": (
+                    f"Titre: {row[1]}\nURL: {row[2]}\n"
+                    f"Type: {row[6] or 'non disponible'}\n"
+                    f"Speakers: {', '.join(row[4] or [])}"
+                ),
                 "speakers": row[4] or [],
+                "video_type": row[6],
                 "bm25_score": None,
             }
             for row in rows

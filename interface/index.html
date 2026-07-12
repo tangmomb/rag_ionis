@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RAG IONIS</title>
-    <link rel="stylesheet" href="styles.css?v=4" />
+    <title>RAG YouTube IONIS-STM</title>
+    <link rel="stylesheet" href="styles.css?v=5" />
   </head>
   <body>
     <main class="app">
@@ -19,10 +19,23 @@
                 <path class="brand-youtube-play" d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z" />
               </svg>
               <div>
-                <div class="brand-title">RAG IONIS</div>
-                <div class="brand-subtitle">Assistant de recherche vidéo</div>
+                <div class="brand-title">RAG YouTube IONIS-STM</div>
+                <div class="brand-subtitle">Posez vos questions sur la chaîne YouTube</div>
               </div>
             </div>
+            <a
+              class="channel-link"
+              href="https://www.youtube.com/@IONIS-STM/videos"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Voir la chaîne YouTube IONIS-STM"
+            >
+              Voir la chaîne
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M7 17 17 7" />
+                <path d="M8 7h9v9" />
+              </svg>
+            </a>
           </div>
         </header>
 
@@ -78,16 +91,22 @@
           if (!response.ok) return;
           const thumbnails = await response.json();
           if (!thumbnails.length) return;
-          const repeatedThumbnails = Array.from(
-            { length: Math.max(48, thumbnails.length * 2) },
-            (_, index) => thumbnails[index % thumbnails.length]
+          const rowSize = Math.max(12, thumbnails.length);
+          const makeRow = (offset) => Array.from(
+            { length: rowSize },
+            (_, index) => thumbnails[(index + offset) % thumbnails.length]
           );
-          headerThumbnails.innerHTML = repeatedThumbnails
-            .map(
-              (url, index) =>
-                `<img class="header-thumbnail header-thumbnail-${(index % 6) + 1}" src="${escapeHtml(url)}" alt="" loading="lazy" />`
-            )
+          const renderImages = (urls) => urls
+            .map((url) => `<img class="header-thumbnail" src="${escapeHtml(url)}" alt="" />`)
             .join("");
+
+          headerThumbnails.innerHTML = [0, 1].map((rowIndex) => {
+            const row = makeRow(rowIndex * Math.ceil(thumbnails.length / 2));
+            const images = renderImages(row);
+            return `<div class="header-thumbnail-row header-thumbnail-row-${rowIndex + 1}">
+              <div class="header-thumbnail-track">${images}${images}</div>
+            </div>`;
+          }).join("");
         } catch (_error) {
           // Le header reste utilisable si les miniatures ne sont pas disponibles.
         }

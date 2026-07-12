@@ -323,7 +323,8 @@ button {
 }
 
 .video-card {
-  flex: 0 0 min(320px, 82vw);
+  flex: 0 0 min(300px, 82vw);
+  max-width: 300px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -331,10 +332,16 @@ button {
   scroll-snap-align: start;
 }
 
-.video-card iframe {
+.video-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.video-card img {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: auto;
   border: 0;
   background: #000000;
 }

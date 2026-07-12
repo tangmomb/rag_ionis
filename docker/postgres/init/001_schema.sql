@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     vector_trace JSONB,
     rrf_trace JSONB,
     rerank_trace JSONB,
+    source_evaluation_trace JSONB,
     retrieved_chunks JSONB,
     answer_prompt TEXT,
     answer_response_raw TEXT,

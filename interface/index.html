@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG IONIS</title>
-    <link rel="stylesheet" href="styles.css?v=3" />
+    <link rel="stylesheet" href="styles.css?v=4" />
   </head>
   <body>
     <main class="app">
@@ -211,32 +211,16 @@ Hello! What can I help you with today?
         return parts.join("");
       }
 
-      function getYoutubeEmbedUrl(rawUrl) {
-        try {
-          const url = new URL(rawUrl);
-          let videoId = "";
-
-          if (url.hostname === "youtu.be") {
-            videoId = url.pathname.slice(1).split("/")[0];
-          } else if (/youtube\.com$/i.test(url.hostname)) {
-            videoId = url.searchParams.get("v") || url.pathname.match(/\/(?:embed|shorts|live)\/([^/]+)/)?.[1] || "";
-          }
-
-          return /^[A-Za-z0-9_-]{6,}$/.test(videoId) ? `https://www.youtube.com/embed/${videoId}` : null;
-        } catch {
-          return null;
-        }
-      }
-
-      function renderVideoEmbeds(sources) {
+      function renderVideoThumbnails(sources) {
         const videos = [];
         const seen = new Set();
 
         for (const source of sources) {
-          const embedUrl = getYoutubeEmbedUrl(source.video_url);
-          if (!embedUrl || seen.has(embedUrl)) continue;
-          seen.add(embedUrl);
-          videos.push({ embedUrl, title: source.video_title || "Vidéo YouTube" });
+          const thumbnailUrl = String(source.thumbnail_medium_url || "").trim();
+          const videoUrl = String(source.video_url || "").trim();
+          if (!/^https?:\/\//i.test(thumbnailUrl) || !/^https?:\/\//i.test(videoUrl) || seen.has(videoUrl)) continue;
+          seen.add(videoUrl);
+          videos.push({ videoUrl, thumbnailUrl, title: source.video_title || "Vidéo" });
         }
 
         if (!videos.length) return "";
@@ -247,14 +231,10 @@ Hello! What can I help you with today?
               .map(
                 (video) => `
                   <article class="video-card">
-                    <iframe
-                      src="${escapeHtml(video.embedUrl)}"
-                      title="${escapeHtml(video.title)}"
-                      loading="lazy"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowfullscreen
-                    ></iframe>
+                    <a class="video-card-link" href="${escapeHtml(video.videoUrl)}" target="_blank" rel="noreferrer noopener">
+                      <img src="${escapeHtml(video.thumbnailUrl)}" alt="${escapeHtml(video.title)}" loading="lazy" />
                     <div class="video-title">${escapeHtml(video.title)}</div>
+                    </a>
                   </article>`
               )
               .join("")}
@@ -268,7 +248,7 @@ Hello! What can I help you with today?
 
         const renderedContent = role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
         const metaHtml = role === "assistant" && meta ? `<div class="message-meta"><span>${escapeHtml(meta)}</span></div>` : "";
-        const videoHtml = role === "assistant" ? renderVideoEmbeds(sources) : "";
+        const videoHtml = role === "assistant" ? renderVideoThumbnails(sources) : "";
         const actionsHtml =
           role === "assistant"
             ? `

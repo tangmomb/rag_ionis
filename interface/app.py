@@ -38,6 +38,7 @@ DEFAULT_FUSION_K = 60
 DEFAULT_BM25_LIMIT = 40
 DEFAULT_VECTOR_LIMIT = 40
 DEFAULT_RRF_TOP_N = 30
+SOURCE_RELEVANCE_MIN = 0.25
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
 _STARTED_AT: datetime | None = None
@@ -45,6 +46,7 @@ _STARTED_AT: datetime | None = None
 PlannerRoute = Literal["direct", "rag", "memory", "multi_source", "agent"]
 DirectSubIntent = Literal["social"]
 SqlSubIntent = Literal["video_lookup", "video_transcript", "video_summary"]
+AnswerAction = Literal["answer", "clarify", "abstain"]
 
 
 class RagRequest(BaseModel):
@@ -101,6 +103,7 @@ class ChunkSource(BaseModel):
     chunk_id: int
     video_title: str
     video_url: str
+    thumbnail_medium_url: str | None = None
     chunk_index: int
     bm25_score: float | None = None
     vector_score: float | None = None
@@ -115,6 +118,7 @@ class RagResponse(BaseModel):
     conversation_id: int
     message_id: int
     answer: str
+    action: AnswerAction
     sources: list[ChunkSource]
     retrieval: dict[str, Any]
 
@@ -165,6 +169,7 @@ def ensure_chat_schema() -> None:
                         vector_trace JSONB,
                         rrf_trace JSONB,
                         rerank_trace JSONB,
+                        source_evaluation_trace JSONB,
                         retrieved_chunks JSONB,
                         answer_prompt TEXT,
                         answer_response_raw TEXT,
@@ -173,6 +178,47 @@ def ensure_chat_schema() -> None:
                     )
                     """
                 )
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'chat'
+                      AND table_name = 'messages'
+                      AND column_name = 'source_evaluation_trace'
+                    """
+                )
+                if cursor.fetchone() is None:
+                    # Migration volontaire : l'historique de chat est supprime
+                    # pour reconstruire la table avec les colonnes dans le bon ordre.
+                    cursor.execute("DROP TABLE chat.messages")
+                    cursor.execute(
+                        """
+                        CREATE TABLE chat.messages (
+                            id BIGSERIAL PRIMARY KEY,
+                            conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+                            user_message TEXT NOT NULL,
+                            question_reformulation_prompt TEXT,
+                            question_reformulation_response_raw TEXT,
+                            contextual_question TEXT,
+                            planner_prompt TEXT,
+                            planner_response_raw TEXT,
+                            pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
+                            execution_plan_json JSONB,
+                            sql_query JSONB,
+                            prefilter_trace JSONB,
+                            bm25_trace JSONB,
+                            vector_trace JSONB,
+                            rrf_trace JSONB,
+                            rerank_trace JSONB,
+                            source_evaluation_trace JSONB,
+                            retrieved_chunks JSONB,
+                            answer_prompt TEXT,
+                            answer_response_raw TEXT,
+                            answer_message TEXT,
+                            date TIMESTAMPTZ NOT NULL DEFAULT now()
+                        )
+                        """
+                    )
                 for statement in (
                     """DO $$ BEGIN
                         IF EXISTS (
@@ -219,6 +265,7 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS vector_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rrf_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rerank_trace JSONB",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS source_evaluation_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS retrieved_chunks JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_prompt TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_response_raw TEXT",
@@ -529,7 +576,7 @@ def has_explicit_structured_sql_request(question: str) -> bool:
     )
     return bool(
         re.search(
-            r"\b(?:video|videos|url|lien|titre|date de publication|publie|publiee|publiees|"
+            r"\b(?:url|lien|titre|date de publication|publie|publiee|publiees|"
             r"transcript|transcription|verbatim|timecodes?|sous-titres?|intervenant(?:e|s)?|speaker(?:s)?)\b",
             normalized,
         )
@@ -546,8 +593,8 @@ def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> 
         return
 
     if not has_explicit_structured_sql_request(question):
-        planner_plan.sql_main_source = False
-        planner_plan.sql_sub_intent = None
+        # Le planner peut conserver SQL pour une question video complexe.
+        # Si la recherche structuree echoue, orchestrate_request tentera le RAG.
         return
 
     planner_plan.sql_main_source = True
@@ -715,6 +762,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 v.id,
                 v.title,
                 v.url,
+                v.thumbnail_medium_url,
                 coalesce(v.speakers, ARRAY[]::text[]),
                 v.published_at
             FROM videos v
@@ -733,9 +781,10 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 "chunk_id": int(row[0]),
                 "video_title": row[1],
                 "video_url": row[2],
+                "thumbnail_medium_url": row[3],
                 "chunk_index": 0,
                 "text": f"Titre: {row[1]}\nURL: {row[2]}\nSpeakers: {', '.join(row[3] or [])}",
-                "speakers": row[3] or [],
+                "speakers": row[4] or [],
                 "bm25_score": None,
             }
             for row in rows
@@ -770,6 +819,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             v.id,
             v.title,
             v.url,
+            v.thumbnail_medium_url,
             {document_expr} AS document_text,
             coalesce(v.speakers, ARRAY[]::text[]),
             ts_rank_cd(
@@ -801,10 +851,11 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
         "chunk_id": int(row[0]),
         "video_title": row[1],
         "video_url": row[2],
+        "thumbnail_medium_url": row[3],
         "chunk_index": 0,
-        "text": row[3],
-        "speakers": row[4] or [],
-        "bm25_score": float(row[5]) if row[5] is not None else None,
+        "text": row[4],
+        "speakers": row[5] or [],
+        "bm25_score": float(row[6]) if row[6] is not None else None,
     }
     return [result], {
         "mode": intent,
@@ -822,6 +873,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             c.id,
             v.title,
             v.url,
+            v.thumbnail_medium_url,
             c.chunk_index,
             c.content,
             c.speakers,
@@ -847,10 +899,11 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             "chunk_id": int(row[0]),
             "video_title": row[1],
             "video_url": row[2],
-            "chunk_index": row[3],
-            "text": row[4],
-            "speakers": row[5] or [],
-            "bm25_score": float(row[6]) if row[6] is not None else None,
+            "thumbnail_medium_url": row[3],
+            "chunk_index": row[4],
+            "text": row[5],
+            "speakers": row[6] or [],
+            "bm25_score": float(row[7]) if row[7] is not None else None,
         }
         for row in rows
     ]
@@ -878,6 +931,7 @@ def fetch_vector_chunks(
             c.id,
             v.title,
             v.url,
+            v.thumbnail_medium_url,
             c.chunk_index,
             c.content,
             c.speakers,
@@ -900,10 +954,11 @@ def fetch_vector_chunks(
             "chunk_id": int(row[0]),
             "video_title": row[1],
             "video_url": row[2],
-            "chunk_index": row[3],
-            "text": row[4],
-            "speakers": row[5] or [],
-            "vector_score": float(row[6]) if row[6] is not None else None,
+            "thumbnail_medium_url": row[3],
+            "chunk_index": row[4],
+            "text": row[5],
+            "speakers": row[6] or [],
+            "vector_score": float(row[7]) if row[7] is not None else None,
         }
         for row in rows
     ]
@@ -1035,6 +1090,9 @@ def build_question_reformulation_prompt(
         "Utilise l'historique uniquement pour resoudre les references implicites. "
         "Si la question introduit un nouveau sujet, une nouvelle personne ou une nouvelle intention, "
         "considere-la comme autonome et ne reutilise pas l'historique. "
+        "Si le dernier message de l'assistant demandait d'identifier une video et que la question actuelle fournit un titre, un mot-cle ou un nom de video, traite cette question comme une precision de la demande precedente. "
+        "Dans ce cas, conserve l'intention precedente : ne transforme pas une question de contenu comme 'qu'apprend-on dans cette video ?' en question de recherche de titre comme 'quelle est la video ?'. "
+        "Exemple : si l'historique demande 'qu'apprend-on dans la video sur la recherche de stage ?' et que l'utilisateur precise 'la video avec recherche de stage dans le titre', reformule en 'qu'apprend-on dans la video dont le titre contient recherche de stage ?'. "
         "Retourne uniquement un JSON valide avec exactement deux champs : "
         "follow_up (booleen) et reformulated_question (chaine en francais). "
         "follow_up=true uniquement si la question depend du contexte precedent. "
@@ -1042,6 +1100,35 @@ def build_question_reformulation_prompt(
         "mais sans reutiliser le contenu de l'historique."
     )
     return system_prompt, user_prompt
+
+
+def repair_video_clarification_follow_up(
+    question: str,
+    memory_items: list[dict[str, str]],
+) -> str | None:
+    """Preserve l'intention initiale quand l'utilisateur identifie une vidéo demandée."""
+    normalized_question = normalize_text(question).strip()
+    if not re.match(r"^(?:la|le|cette|ce|une|un)\s+video\b", normalized_question):
+        return None
+
+    last_assistant = next(
+        (item["text"] for item in reversed(memory_items) if item.get("role") == "assistant"),
+        "",
+    )
+    if "de quelle video" not in normalize_text(last_assistant):
+        return None
+
+    previous_user = next(
+        (item["text"] for item in reversed(memory_items) if item.get("role") == "user"),
+        "",
+    ).strip()
+    if not previous_user:
+        return None
+
+    return (
+        f"{previous_user}\n"
+        f"Reference video precisée par l'utilisateur : {question.strip()}"
+    )
 
 
 def serialize_openai_response(response: Any) -> str:
@@ -1110,6 +1197,11 @@ def reformulate_question(
             return question, trace
 
         trace["follow_up"] = follow_up
+        repaired = repair_video_clarification_follow_up(question, memory_items)
+        if repaired:
+            reformulated = repaired
+            follow_up = True
+            trace["reason"] = "video_followup_intent_preserved"
         trace["applied"] = reformulated != question.strip()
         trace["reformulated_question"] = reformulated
         return reformulated or question, trace
@@ -1158,6 +1250,7 @@ def store_chat_message(
     vector_trace: dict[str, Any],
     rrf_trace: dict[str, Any],
     rerank_trace: dict[str, Any],
+    source_evaluation_trace: dict[str, Any],
     retrieved_chunks: list[dict[str, Any]],
     answer_prompt: str | None,
     answer_response_raw: str | None,
@@ -1185,12 +1278,13 @@ def store_chat_message(
                     vector_trace,
                     rrf_trace,
                     rerank_trace,
+                    source_evaluation_trace,
                     retrieved_chunks,
                     answer_prompt,
                     answer_response_raw,
                     answer_message
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1209,6 +1303,7 @@ def store_chat_message(
                     Jsonb(vector_trace),
                     Jsonb(rrf_trace),
                     Jsonb(rerank_trace),
+                    Jsonb(source_evaluation_trace),
                     Jsonb(retrieved_chunks),
                     answer_prompt,
                     answer_response_raw,
@@ -1289,6 +1384,14 @@ SOURCE_MARKER_INSTRUCTION = (
     "[S1], [S2], etc. correspondant au numéro du chunk dans le contexte. "
     "N'utilise que les marqueurs des chunks réellement utilisés."
 )
+ANSWER_ACTION_INSTRUCTION = (
+    "Retourne uniquement un objet JSON valide avec exactement deux cles : "
+    "answer et action. action doit valoir exactement answer, clarify ou abstain. "
+    "Utilise answer si les sources permettent de repondre. "
+    "Utilise clarify si la question n'est pas assez precise pour savoir quelle information ou quelle video est demandee ; dans ce cas, answer doit etre une seule question de precision adressee a l'utilisateur. "
+    "Utilise abstain si la question est claire mais que les sources ne contiennent pas l'information necessaire. "
+    "Le champ answer contient uniquement le message final a afficher a l'utilisateur."
+)
 
 
 def record_answer_trace(
@@ -1306,6 +1409,30 @@ def record_answer_trace(
     trace["response_raw"] = serialize_openai_response(response)
 
 
+def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) -> str:
+    """Valide l'enveloppe JSON du modele et conserve l'action choisie."""
+    fallback_action: AnswerAction = "answer"
+    try:
+        payload = safe_json_loads(raw_answer)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        if trace is not None:
+            trace["action"] = fallback_action
+        return raw_answer
+
+    if not isinstance(payload, dict):
+        if trace is not None:
+            trace["action"] = fallback_action
+        return raw_answer
+
+    action = payload.get("action")
+    if action not in {"answer", "clarify", "abstain"}:
+        action = fallback_action
+    answer = str(payload.get("answer") or "").strip()
+    if trace is not None:
+        trace["action"] = action
+    return answer or raw_answer
+
+
 def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Retire les marqueurs de citation et conserve les sources utilisées par la réponse."""
     marker_indexes = {
@@ -1320,6 +1447,60 @@ def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[s
     return cleaned_answer, selected_sources
 
 
+def evaluate_source_sufficiency(
+    question: str,
+    sources: list[dict[str, Any]],
+    retrieval: dict[str, Any],
+) -> dict[str, Any]:
+    """Calcule une confiance technique avant de demander une réponse au modèle."""
+    source_scores = [
+        {
+            "chunk_id": source.get("chunk_id"),
+            "video_title": source.get("video_title"),
+            "cohere_relevance_score": source.get("cohere_relevance_score"),
+            "rrf_score": source.get("rrf_score"),
+            "bm25_score": source.get("bm25_score"),
+            "vector_score": source.get("vector_score"),
+        }
+        for source in sources
+    ]
+    cohere_scores = [
+        float(source["cohere_relevance_score"])
+        for source in source_scores
+        if source.get("cohere_relevance_score") is not None
+    ]
+    normalized_question = normalize_text(question)
+    has_unresolved_video_reference = bool(
+        re.search(r"\b(?:la|le|cette|ce|une|un)\s+video\b", normalized_question)
+        or re.search(r"\bvideo\b.*\b(?:sur|de|a propos de)\b", normalized_question)
+    )
+
+    if not sources:
+        action_hint: AnswerAction = "clarify" if has_unresolved_video_reference else "abstain"
+        reason = "ambiguous_video_reference" if action_hint == "clarify" else "no_sources"
+    elif cohere_scores and max(cohere_scores) < SOURCE_RELEVANCE_MIN:
+        action_hint = "abstain"
+        reason = "low_rerank_relevance"
+    else:
+        action_hint = "answer"
+        reason = "sources_available"
+
+    return {
+        "action_hint": action_hint,
+        "reason": reason,
+        "question": question,
+        "source_count": len(sources),
+        "top_cohere_relevance_score": max(cohere_scores) if cohere_scores else None,
+        "source_scores": source_scores,
+        "retrieval_mode": retrieval.get("retrieval_mode"),
+        "clarification_message": (
+            "Peux-tu préciser le titre exact de la vidéo ou le sujet dont tu parles ?"
+            if action_hint == "clarify"
+            else None
+        ),
+    }
+
+
 def generate_answer(
     client: OpenAI | None,
     question: str,
@@ -1328,8 +1509,12 @@ def generate_answer(
     trace: dict[str, str] | None = None,
 ) -> str:
     if not sources:
+        if trace is not None:
+            trace["action"] = "abstain"
         return "Je n'ai trouve aucun chunk pertinent dans la base pour repondre a cette question."
     if client is None or not answer_model:
+        if trace is not None:
+            trace["action"] = "answer"
         return "\n\n".join(
             f"[S{index}] {source['text']}"
             for index, source in enumerate(sources, start=1)
@@ -1355,8 +1540,9 @@ def generate_answer(
                 "content": (
                     "Tu es un assistant RAG. Réponds en français, de façon concise, "
                     "en t'appuyant uniquement sur les sources fournies. "
-                    + SOURCE_MARKER_INSTRUCTION + " "
-                    + FINAL_ANSWER_STYLE
+                     + SOURCE_MARKER_INSTRUCTION + " "
+                     + ANSWER_ACTION_INSTRUCTION + " "
+                     + FINAL_ANSWER_STYLE
                 ),
             },
             {
@@ -1368,7 +1554,7 @@ def generate_answer(
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
-        return answer
+        return parse_answer_output(answer, trace)
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable.")
 
 
@@ -1380,9 +1566,13 @@ def generate_memory_answer(
     trace: dict[str, str] | None = None,
 ) -> str:
     if not memory_items:
+        if trace is not None:
+            trace["action"] = "abstain"
         return "Je n'ai pas trouve d'historique de conversation exploitable pour repondre a cette demande."
 
     if client is None or not answer_model:
+        if trace is not None:
+            trace["action"] = "answer"
         history = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
         return history
 
@@ -1392,6 +1582,7 @@ def generate_memory_answer(
                 "role": "system",
                 "content": (
                     "Tu réponds uniquement à partir de l'historique de conversation fourni. "
+                    + ANSWER_ACTION_INSTRUCTION + " "
                     + FINAL_ANSWER_STYLE
                 ),
             },
@@ -1404,7 +1595,7 @@ def generate_memory_answer(
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
-        return answer
+        return parse_answer_output(answer, trace)
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable pour la route memory.")
 
 
@@ -1418,6 +1609,8 @@ def generate_multi_source_answer(
     trace: dict[str, str] | None = None,
 ) -> str:
     if client is None or not answer_model:
+        if trace is not None:
+            trace["action"] = "answer" if (memory_items or sources) else "abstain"
         memory_text = "\n".join(item["text"] for item in memory_items)
         source_text = "\n\n".join(
             f"[S{index}] {source['text']}"
@@ -1447,8 +1640,9 @@ def generate_multi_source_answer(
                 "content": (
                     "Tu synthétises plusieurs sources pour répondre en français. "
                     "Distingue clairement ce qui vient de l'historique conversationnel et ce qui vient de la base si utile. "
-                    + SOURCE_MARKER_INSTRUCTION + " "
-                    + FINAL_ANSWER_STYLE
+                     + SOURCE_MARKER_INSTRUCTION + " "
+                     + ANSWER_ACTION_INSTRUCTION + " "
+                     + FINAL_ANSWER_STYLE
                 ),
             },
             {
@@ -1460,7 +1654,7 @@ def generate_multi_source_answer(
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
-        return answer
+        return parse_answer_output(answer, trace)
     raise RuntimeError(f"Le modele n'a pas renvoye de texte exploitable pour la route {route_name}.")
 
 
@@ -1473,11 +1667,18 @@ def generate_sql_answer(
     trace: dict[str, str] | None = None,
 ) -> str:
     if not sources:
+        if trace is not None:
+            trace["action"] = "abstain"
         if sql_sub_intent == "video_lookup":
             return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
-        return "Je n'ai trouve aucun document correspondant a cette demande dans la base."
+        return (
+            "Je n'ai trouve aucun contenu correspondant a cette demande. "
+            "Si tu fais reference a une video precise, indique son titre exact ou un mot-cle du titre."
+        )
 
     if client is None or not answer_model:
+        if trace is not None:
+            trace["action"] = "answer"
         if sql_sub_intent == "video_lookup":
             lines = ["Videos trouvees :"]
             for index, item in enumerate(sources, start=1):
@@ -1503,6 +1704,7 @@ def generate_sql_answer(
         "N'invente aucune information absente. "
         "Si plusieurs videos sont trouvees, presente-les clairement. "
         + SOURCE_MARKER_INSTRUCTION + " "
+        + ANSWER_ACTION_INSTRUCTION + " "
         + FINAL_ANSWER_STYLE
     )
     input_messages = [
@@ -1513,7 +1715,7 @@ def generate_sql_answer(
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
-        return answer
+        return parse_answer_output(answer, trace)
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable pour la route sql.")
 
 
@@ -1526,6 +1728,16 @@ def generate_final_answer(
     trace: dict[str, str] | None = None,
 ) -> str:
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
+    source_evaluation = retrieval.get("source_evaluation") or {}
+    action_hint = source_evaluation.get("action_hint")
+    if route not in {"direct", "memory"} and action_hint == "clarify":
+        if trace is not None:
+            trace["action"] = "clarify"
+        return source_evaluation.get("clarification_message") or "Peux-tu préciser ta question ?"
+    if route not in {"direct", "memory"} and action_hint == "abstain" and source_evaluation.get("reason") == "low_rerank_relevance":
+        if trace is not None:
+            trace["action"] = "abstain"
+        return "Je n'ai pas trouvé de source suffisamment pertinente pour répondre à cette question."
     if route == "direct":
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
     if route == "rag" and retrieval.get("retrieval_mode") == "rag+structured_sql":
@@ -1674,8 +1886,8 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         retrieval = {
             **base_retrieval,
             "answer_model": answer_model,
-            "embedding_model": None,
-            "rerank_model": None,
+            "embedding_model": fallback_trace.get("embedding_model"),
+            "rerank_model": fallback_trace.get("rerank_model"),
             "retrieval_mode": "memory",
             "sql_main_source": False,
             "sql_prefilters": False,
@@ -1700,29 +1912,40 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
     if execution_plan.route == "rag" and execution_plan.sql_main_source:
         sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
         sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
+        fallback_trace: dict[str, Any] = {}
+        retrieval_mode = "rag+structured_sql"
+        if not sources:
+            try:
+                fallback_sources, fallback_trace = retrieve_chunks(payload, execution_plan)
+            except Exception as exc:  # pragma: no cover
+                fallback_trace = {"mode": "rag_fallback", "error": str(exc), "result_count": 0}
+                fallback_sources = []
+            if fallback_sources:
+                sources = fallback_sources
+                retrieval_mode = "rag+structured_sql_fallback"
         answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
         retrieval = {
             **base_retrieval,
             "answer_model": answer_model,
-            "embedding_model": None,
-            "rerank_model": None,
-            "retrieval_mode": "rag+structured_sql",
+            "embedding_model": fallback_trace.get("embedding_model"),
+            "rerank_model": fallback_trace.get("rerank_model"),
+            "retrieval_mode": retrieval_mode,
             "sql_main_source": True,
             "sql_prefilters": has_structured_sql_filters(execution_plan),
-            "bm25_top_k": 0,
-            "vector_top_k": 0,
-            "rrf_top_n": 0,
-            "final_k": 1 if sql_sub_intent != "video_lookup" else len(sources),
-            "used_rerank": False,
+            "bm25_top_k": fallback_trace.get("bm25_top_k", 0),
+            "vector_top_k": fallback_trace.get("vector_top_k", 0),
+            "rrf_top_n": fallback_trace.get("rrf_top_n", 0),
+            "final_k": len(sources),
+            "used_rerank": fallback_trace.get("used_rerank", False),
             "general_question_only": not has_structured_sql_filters(execution_plan),
             "sql_query": direct_trace["sql"],
-            "prefilter": {},
-            "sql_prefilters_trace": {},
-            "bm25": {},
-            "vector": {},
-            "rrf": {},
-            "rerank": {},
-            "direct_lookup": direct_trace,
+            "prefilter": fallback_trace.get("prefilter", {}),
+            "sql_prefilters_trace": fallback_trace.get("sql_prefilters_trace", {}),
+            "bm25": fallback_trace.get("bm25", {}),
+            "vector": fallback_trace.get("vector", {}),
+            "rrf": fallback_trace.get("rrf", {}),
+            "rerank": fallback_trace.get("rerank", {}),
+            "direct_lookup": {**direct_trace, "rag_fallback": fallback_trace},
             "memory": {},
             "sql_sub_intent": sql_sub_intent,
         }
@@ -1825,6 +2048,11 @@ def rag(payload: RagRequest) -> RagResponse:
 
     try:
         answer, sources, retrieval = orchestrate_request(payload)
+        retrieval["source_evaluation"] = evaluate_source_sufficiency(
+            retrieval.get("contextual_question", payload.question),
+            sources,
+            retrieval,
+        )
         answer_trace: dict[str, str] = {}
         if not answer:
             answer = generate_final_answer(
@@ -1835,7 +2063,12 @@ def rag(payload: RagRequest) -> RagResponse:
                 sources,
                 answer_trace,
             )
-        answer, carousel_sources = select_answer_sources(answer, sources)
+        answer_action = answer_trace.get("action", "answer")
+        retrieval["answer_action"] = answer_action
+        if answer_action == "answer":
+            answer, carousel_sources = select_answer_sources(answer, sources)
+        else:
+            carousel_sources = []
         retrieval["answer_source_indexes"] = [
             index for index, source in enumerate(sources, start=1) if source in carousel_sources
         ]
@@ -1856,6 +2089,7 @@ def rag(payload: RagRequest) -> RagResponse:
             vector_trace=retrieval["vector"],
             rrf_trace=retrieval["rrf"],
             rerank_trace=retrieval["rerank"],
+            source_evaluation_trace=retrieval["source_evaluation"],
             retrieved_chunks=carousel_sources,
             answer_prompt=answer_trace.get("prompt"),
             answer_response_raw=answer_trace.get("response_raw"),
@@ -1869,6 +2103,7 @@ def rag(payload: RagRequest) -> RagResponse:
         conversation_id=conversation_id,
         message_id=message_id,
         answer=answer,
+        action=answer_action,
         sources=[ChunkSource(**source) for source in carousel_sources],
         retrieval=retrieval,
     )

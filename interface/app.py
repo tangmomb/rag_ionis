@@ -45,7 +45,7 @@ _STARTED_AT: datetime | None = None
 
 PlannerRoute = Literal["direct", "rag", "memory", "multi_source", "agent"]
 DirectSubIntent = Literal["social"]
-SqlSubIntent = Literal["video_lookup", "video_transcript", "video_summary"]
+SqlSubIntent = Literal["video_lookup", "video_transcript", "video_description"]
 AnswerAction = Literal["answer", "clarify", "abstain"]
 
 
@@ -114,6 +114,7 @@ class ChunkSource(BaseModel):
     rank_sources: dict[str, int] = Field(default_factory=dict)
     text: str
     speakers: list[str] = Field(default_factory=list)
+    video_description: str | None = None
 
 
 class RagResponse(BaseModel):
@@ -360,7 +361,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "multi_source = combinaison de plusieurs sources. "
         "agent = uniquement pour les demandes necessitant plusieurs etapes ou un raisonnement complexe. "
         "direct_sub_intent peut etre null ou social. "
-        "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_summary. "
+        "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_description. "
         "Si route=direct et que le message est une salutation, politesse, small talk ou message purement conversationnel, mets direct_sub_intent=social. "
         "Si sql_main_source=false, sql_sub_intent doit etre null. "
         "Si route=memory, use_memory=true et use_rag=false et sql_main_source=false. "
@@ -372,14 +373,15 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "'qu'est-ce qui est dit sur Parcoursup ?' => route=rag. "
         "'trouve une video avec Andy Leveque' => route=rag, sql_main_source=true et sql_sub_intent=video_lookup. "
         "'donne le transcript complet de la video sur Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=video_transcript. "
-        "'donne le sommaire de cette video sur l'alternance' => route=rag, sql_main_source=true et sql_sub_intent=video_summary. "
-        "Ne choisis video_summary que si le mot exact 'sommaire' est present dans la question utilisateur. "
-        "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux, ne choisis pas video_summary par defaut. "
+        "'donne la description de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_description. "
+        "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux, utilise la recherche RAG sur le transcript. "
         "'que t'ai-je demande juste avant ?' => route=memory. "
         "'compare ce que dit la base et ce qu'on s'est deja dit' => route=multi_source. "
         "query_text doit contenir la reformulation utile pour la recherche semantique/vectorielle. "
         "query_text_bm25 doit etre une version tres courte orientee mots-cles. "
         "title_hint contient le titre ou fragment de titre explicitement fourni par l'utilisateur, sinon null. "
+        "Ne remplis title_hint que si le titre est explicitement présenté comme un titre. Les formulations 'une video avec [personne/groupe]', 'une video sur [sujet]' et 'une video qui parle de [sujet]' ne sont jamais un title_hint : dans ces cas, title_hint=null. "
+        "Exemple: 'j'ai besoin de la description de la video avec les alumnis' => title_hint=null et sql_sub_intent=video_description. "
         "query_text_bm25 ne doit contenir que des noms propres, acronymes, entites nommees, termes metier ou mots-cles concrets. "
         "Pour direct ou memory, query_text peut etre proche de la question brute. "
         "Pour rag ou sql, evite les verbes, les questions naturelles, les reformulations longues, les mots vides et les termes generiques comme "
@@ -417,7 +419,7 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["sql_main_source"] = bool(payload.get("use_sql"))
     payload.pop("use_sql", None)
 
-    legacy_sql_intents = {"video_lookup", "video_transcript", "video_summary"}
+    legacy_sql_intents = {"video_lookup", "video_transcript", "video_description"}
     legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
 
     if route in legacy_sql_intents:
@@ -580,7 +582,7 @@ def has_explicit_structured_sql_request(question: str) -> bool:
     )
     return bool(
         re.search(
-            r"\b(?:url|lien|titre|date de publication|publie|publiee|publiees|"
+            r"\b(?:url|lien|titre|description|descriptif|date de publication|publie|publiee|publiees|"
             r"transcript|transcription|verbatim|timecodes?|sous-titres?|intervenant(?:e|s)?|speaker(?:s)?)\b",
             normalized,
         )
@@ -603,7 +605,9 @@ def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> 
 
     planner_plan.sql_main_source = True
     normalized = question.lower()
-    if any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
+    if re.search(r"\b(?:description|descriptif|decris)\b", normalized):
+        planner_plan.sql_sub_intent = "video_description"
+    elif any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
         planner_plan.sql_sub_intent = "video_transcript"
     else:
         planner_plan.sql_sub_intent = planner_plan.sql_sub_intent or "video_lookup"
@@ -774,6 +778,24 @@ def extract_video_title_hint(question: str) -> str | None:
     return None
 
 
+def sanitize_video_title_hint(question: str, title_hint: str | None) -> str | None:
+    """Ignore les faux titres issus de formulations generiques de la question."""
+    if not title_hint:
+        return None
+
+    normalized_question = normalize_text(question)
+    has_explicit_title_label = bool(
+        re.search(r"\b(?:titre|intitulee?|nommee?|appelee?)\b", normalized_question)
+        or re.search(r"[\"«“].+[\"»”]", question)
+    )
+    if not has_explicit_title_label and re.search(
+        r"\bvideo\b.*\b(?:avec|sur|a propos de|qui parle de)\b",
+        normalized_question,
+    ):
+        return None
+    return title_hint.strip() or None
+
+
 def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if intent == "video_lookup":
         clauses, params = build_video_lookup_conditions(query)
@@ -804,7 +826,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 "video_url": row[2],
                 "thumbnail_medium_url": row[3],
                 "chunk_index": 0,
-                "text": f"Titre: {row[1]}\nURL: {row[2]}\nSpeakers: {', '.join(row[3] or [])}",
+                "text": f"Titre: {row[1]}\nURL: {row[2]}\nSpeakers: {', '.join(row[4] or [])}",
                 "speakers": row[4] or [],
                 "bm25_score": None,
             }
@@ -817,10 +839,48 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             "result_count": len(results),
         }
 
+    if intent == "video_description":
+        clauses, params = build_video_lookup_conditions(query)
+        where_sql = " AND ".join(clauses) if clauses else "TRUE"
+        sql = f"""
+            SELECT
+                v.id,
+                v.title,
+                v.url,
+                v.description
+            FROM videos v
+            WHERE {where_sql}
+            ORDER BY v.published_at DESC NULLS LAST, v.id DESC
+            LIMIT 10
+        """
+        with psycopg.connect(get_database_url()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+
+        results = [
+            {
+                "chunk_id": int(row[0]),
+                "video_title": row[1],
+                "video_url": row[2],
+                "thumbnail_medium_url": None,
+                "chunk_index": 0,
+                "text": f"Titre: {row[1]}\nURL: {row[2]}\nDescription: {row[3] or ''}",
+                "speakers": [],
+                "video_description": row[3],
+                "bm25_score": None,
+            }
+            for row in rows
+        ]
+        return results, {
+            "mode": intent,
+            "sql": format_sql_for_trace(sql),
+            "params": params,
+            "result_count": len(results),
+        }
+
     if intent == "video_transcript":
         document_expr = "coalesce(t.transcript_timecodes, t.transcript)"
-    elif intent == "video_summary":
-        document_expr = "t.video_summary"
     else:
         raise RuntimeError(f"Intent direct non supporte: {intent}")
 
@@ -1394,6 +1454,7 @@ def rerank_chunks(question: str, chunks: list[dict[str, Any]], limit: int, reran
 
 FINAL_ANSWER_STYLE = (
     "Réponds directement à la question avec les éléments disponibles. "
+    "Commence toujours par une phrase d'introduction qui reformule brièvement la question de l'utilisateur avant de donner les informations. "
     "N'introduis pas ta réponse par une formule comme « d'après les sources » "
     "ou « selon les documents ». "
     "Ne termine pas par une phrase indiquant qu'il manque des informations, "
@@ -1720,10 +1781,28 @@ def generate_sql_answer(
             )
         )
 
+    if sql_sub_intent == "video_description":
+        sub_intent_instruction = (
+            "La demande porte sur la description d'une video. "
+            "Commence par reformuler ce que l'utilisateur demande, puis presente la description dans une phrase ou un paragraphe clair. "
+            "Ne renvoie jamais la description brute seule. "
+        )
+    elif sql_sub_intent == "video_transcript":
+        sub_intent_instruction = (
+            "La demande porte sur le transcript d'une video. "
+            "Introduis brievement le transcript avant de le restituer, sans inventer ni resumer a sa place. "
+        )
+    else:
+        sub_intent_instruction = (
+            "La demande porte sur une recherche de videos. "
+            "Presente clairement les videos trouvees avec leur titre et leur lien. "
+        )
+
     system_prompt = (
         "Tu formules une reponse finale en francais a partir de resultats structures deja recuperes. "
         "N'invente aucune information absente. "
         "Si plusieurs videos sont trouvees, presente-les clairement. "
+        + sub_intent_instruction
         + SOURCE_MARKER_INSTRUCTION + " "
         + ANSWER_ACTION_INSTRUCTION + " "
         + FINAL_ANSWER_STYLE
@@ -1874,7 +1953,10 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         client,
     )
     planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(contextual_question, client)
-    planner_plan.title_hint = planner_plan.title_hint or extract_video_title_hint(contextual_question)
+    planner_plan.title_hint = sanitize_video_title_hint(
+        contextual_question,
+        planner_plan.title_hint or extract_video_title_hint(contextual_question),
+    )
     planner_plan.speakers = resolve_speaker_filters(contextual_question, planner_plan)
     apply_deterministic_sql_policy(contextual_question, planner_plan)
     execution_plan = build_execution_plan(payload, planner_plan)

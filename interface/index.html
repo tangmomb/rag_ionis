@@ -195,8 +195,11 @@
           /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
           (match, label, url) => {
             const token = `@@EXTERNAL_LINK_${protectedLinks.length}@@`;
+            const linkClass = /(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(url)
+              ? ""
+              : ' class="external-link-generic"';
             protectedLinks.push(
-              `<a href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, label)}</a>`,
+              `<a${linkClass} href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, label)}</a>`,
             );
             return token;
           },
@@ -205,7 +208,10 @@
         html = html.replace(/https?:\/\/[^\s<]+/g, (rawUrl) => {
           const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || "";
           const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
-          return `<a href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, "Lien")}</a>${trailing}`;
+          const linkClass = /(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(url)
+            ? ""
+            : ' class="external-link-generic"';
+          return `<a${linkClass} href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, "Lien")}</a>${trailing}`;
         });
 
         html = html.replace(/`([^`]+)`/g, "<code>$1</code>");

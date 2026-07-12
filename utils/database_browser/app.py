@@ -168,3 +168,14 @@ def table_data(
         "searchable": bool(text_columns),
     }
 
+
+@app.delete("/api/tables/{schema}/{table}")
+def clear_table(schema: str, table: str) -> dict[str, Any]:
+    if schema in {"pg_catalog", "information_schema"} or not allowed_table(schema, table):
+        raise HTTPException(status_code=404, detail="Table introuvable")
+
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql.SQL("DELETE FROM {};").format(quote_table(schema, table)))
+        deleted = cur.rowcount
+        conn.commit()
+    return {"schema": schema, "table": table, "deleted": deleted}

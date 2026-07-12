@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import unicodedata
+from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Literal
@@ -39,8 +40,9 @@ DEFAULT_VECTOR_LIMIT = 40
 DEFAULT_RRF_TOP_N = 30
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
+_STARTED_AT: datetime | None = None
 
-PlannerRoute = Literal["direct", "rag", "sql", "memory", "multi_source", "agent"]
+PlannerRoute = Literal["direct", "rag", "memory", "multi_source", "agent"]
 DirectSubIntent = Literal["social"]
 SqlSubIntent = Literal["video_lookup", "video_transcript", "video_summary"]
 
@@ -157,7 +159,7 @@ def ensure_chat_schema() -> None:
                         planner_response_raw TEXT,
                         pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
                         execution_plan_json JSONB,
-                        sql_query TEXT,
+                        sql_query JSONB,
                         prefilter_trace JSONB,
                         bm25_trace JSONB,
                         vector_trace JSONB,
@@ -193,7 +195,25 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages DROP COLUMN IF EXISTS intent_source",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS execution_plan_json JSONB",
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS sql_query TEXT",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS sql_query JSONB",
+                    """DO $$ BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'chat' AND table_name = 'messages'
+                              AND column_name = 'sql_query' AND data_type = 'text'
+                        ) THEN
+                            ALTER TABLE chat.messages
+                            ALTER COLUMN sql_query TYPE JSONB
+                            USING CASE
+                                WHEN sql_query IS NULL THEN NULL
+                                ELSE jsonb_build_object(
+                                    'sql', sql_query,
+                                    'params', '[]'::jsonb,
+                                    'source', 'legacy'
+                                )
+                            END;
+                        END IF;
+                    END $$""",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS prefilter_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS bm25_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS vector_trace JSONB",
@@ -283,27 +303,27 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "Tu ne dois jamais mentionner ni utiliser de details techniques d'implementation. "
         "Retourne uniquement un JSON valide avec les cles exactes: "
         "route, direct_sub_intent, sql_sub_intent, query_text, query_text_bm25, speakers, published_after, published_before, use_memory, use_rag, sql_main_source, plan_notes. "
-        "route doit etre l'une de ces valeurs exactes: direct, rag, sql, memory, multi_source, agent. "
+        "route doit etre l'une de ces valeurs exactes: direct, rag, memory, multi_source, agent. "
         "direct = reponse sans recherche. "
         "rag = recherche documentaire dans les contenus video et documents associes. "
-        "sql = interrogation structuree sur les metadonnees video ou les documents associes. "
+        "Les demandes structurees sur les metadonnees, speakers ou transcripts utilisent aussi rag, avec sql_main_source=true et le sous-intent SQL adapte. "
         "memory = recherche dans l'historique conversationnel. "
         "multi_source = combinaison de plusieurs sources. "
         "agent = uniquement pour les demandes necessitant plusieurs etapes ou un raisonnement complexe. "
         "direct_sub_intent peut etre null ou social. "
         "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_summary. "
         "Si route=direct et que le message est une salutation, politesse, small talk ou message purement conversationnel, mets direct_sub_intent=social. "
-        "Si route n'est pas sql ou multi_source ou agent, sql_sub_intent doit etre null. "
+        "Si sql_main_source=false, sql_sub_intent doit etre null. "
         "Si route=memory, use_memory=true et use_rag=false et sql_main_source=false. "
         "Si route=rag, use_rag=true et use_memory=false et sql_main_source=false. "
-        "Si route=sql, sql_main_source=true et use_rag=false. "
+        "Pour une video, un transcript, des speakers ou des metadonnees, route=rag, sql_main_source=true et sql_sub_intent=video_lookup ou video_transcript. "
         "Si route=multi_source, active au moins deux booleens parmi use_memory, use_rag, sql_main_source. "
         "Si route=agent, tu peux activer plusieurs booleens si necessaire. "
         "Exemples: 'bonjour' => route=direct et direct_sub_intent=social. "
         "'qu'est-ce qui est dit sur Parcoursup ?' => route=rag. "
-        "'trouve une video avec Andy Leveque' => route=sql et sql_sub_intent=video_lookup. "
-        "'donne le transcript complet de la video sur Parcoursup' => route=sql et sql_sub_intent=video_transcript. "
-        "'donne le sommaire de cette video sur l'alternance' => route=sql et sql_sub_intent=video_summary. "
+        "'trouve une video avec Andy Leveque' => route=rag, sql_main_source=true et sql_sub_intent=video_lookup. "
+        "'donne le transcript complet de la video sur Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=video_transcript. "
+        "'donne le sommaire de cette video sur l'alternance' => route=rag, sql_main_source=true et sql_sub_intent=video_summary. "
         "Ne choisis video_summary que si le mot exact 'sommaire' est present dans la question utilisateur. "
         "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux, ne choisis pas video_summary par defaut. "
         "'que t'ai-je demande juste avant ?' => route=memory. "
@@ -348,13 +368,13 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     payload.pop("use_sql", None)
 
     legacy_sql_intents = {"video_lookup", "video_transcript", "video_summary"}
-    legacy_routes = {"rag_chunks": "rag", "sql_request": "sql", "social": "direct"}
+    legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
 
     if route in legacy_sql_intents:
-        payload["route"] = "sql"
+        payload["route"] = "rag"
         payload["sql_sub_intent"] = route
         payload["sql_main_source"] = True
-        payload["use_rag"] = False
+        payload["use_rag"] = True
         payload["use_memory"] = False
         return payload
 
@@ -362,10 +382,17 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["route"] = legacy_routes[route]
         route = payload["route"]
 
+    if route == "sql":
+        payload["route"] = "rag"
+        payload["sql_main_source"] = True
+        payload["use_rag"] = True
+        payload["use_memory"] = False
+        route = "rag"
+
     if route == "direct" and direct_sub_intent is None:
         payload["direct_sub_intent"] = "social"
 
-    if route not in {"sql", "multi_source", "agent"}:
+    if route not in {"multi_source", "agent"} and not payload.get("sql_main_source"):
         payload["sql_sub_intent"] = None
     elif sql_sub_intent not in legacy_sql_intents:
         payload["sql_sub_intent"] = "video_lookup"
@@ -377,17 +404,13 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     elif route == "rag":
         payload["use_memory"] = False
         payload["use_rag"] = True
-        payload["sql_main_source"] = False
-    elif route == "sql":
-        payload["use_memory"] = False
-        payload["use_rag"] = False
-        payload["sql_main_source"] = True
+        payload["sql_main_source"] = bool(payload.get("sql_main_source"))
     elif route == "direct":
         payload["use_memory"] = False
         payload["use_rag"] = False
         payload["sql_main_source"] = False
 
-    if route not in {"direct", "rag", "sql", "memory", "multi_source", "agent"}:
+    if route not in {"direct", "rag", "memory", "multi_source", "agent"}:
         payload["route"] = "rag"
         payload["use_memory"] = False
         payload["use_rag"] = True
@@ -498,6 +521,41 @@ def build_execution_plan(payload: RagRequest, planner_plan: PlannerPlan) -> Exec
         top_k=DEFAULT_BM25_LIMIT,
         final_k=DEFAULT_FINAL_K,
     )
+
+
+def has_explicit_structured_sql_request(question: str) -> bool:
+    normalized = "".join(
+        char for char in unicodedata.normalize("NFD", question.lower()) if unicodedata.category(char) != "Mn"
+    )
+    return bool(
+        re.search(
+            r"\b(?:video|videos|url|lien|titre|date de publication|publie|publiee|publiees|"
+            r"transcript|transcription|verbatim|timecodes?|sous-titres?|intervenant(?:e|s)?|speaker(?:s)?)\b",
+            normalized,
+        )
+        or re.search(r"\b(?:quelle?|quelles?)\s+(?:video|videos|url|lien|titre|date)\b", normalized)
+        or re.search(r"\b(?:trouve|trouver|cherche|chercher|liste|lister)\b.*\b(?:video|videos|transcript|transcription)\b", normalized)
+    )
+
+
+def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> None:
+    """Empêche le planner de basculer arbitrairement la source SQL principale."""
+    if planner_plan.route in {"direct", "memory"}:
+        planner_plan.sql_main_source = False
+        planner_plan.sql_sub_intent = None
+        return
+
+    if not has_explicit_structured_sql_request(question):
+        planner_plan.sql_main_source = False
+        planner_plan.sql_sub_intent = None
+        return
+
+    planner_plan.sql_main_source = True
+    normalized = question.lower()
+    if any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
+        planner_plan.sql_sub_intent = "video_transcript"
+    else:
+        planner_plan.sql_sub_intent = planner_plan.sql_sub_intent or "video_lookup"
 
 
 def has_structured_sql_filters(query: ExecutionPlan) -> bool:
@@ -906,7 +964,7 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
     ensure_chat_schema()
 
     sql = """
-        SELECT user_message, answer_message
+        SELECT user_message, answer_message, retrieved_chunks
         FROM chat.messages
         WHERE conversation_id = %s
         ORDER BY id DESC
@@ -924,7 +982,28 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
         if user_message:
             items.append({"role": "user", "text": user_message})
         if answer_message:
-            items.append({"role": "assistant", "text": answer_message})
+            source_context = ""
+            try:
+                retrieved_chunks = row[2]
+                if isinstance(retrieved_chunks, str):
+                    retrieved_chunks = json.loads(retrieved_chunks)
+                if isinstance(retrieved_chunks, list):
+                    source_labels = []
+                    for source in retrieved_chunks[:5]:
+                        if not isinstance(source, dict):
+                            continue
+                        title = str(source.get("video_title") or "").strip()
+                        speakers = source.get("speakers") or []
+                        if title:
+                            label = title
+                            if speakers:
+                                label += f" (intervenants : {', '.join(map(str, speakers))})"
+                            source_labels.append(label)
+                    if source_labels:
+                        source_context = "\nSources de la réponse précédente : " + " ; ".join(source_labels)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                source_context = ""
+            items.append({"role": "assistant", "text": answer_message + source_context})
 
     return items, {
         "applied": True,
@@ -951,6 +1030,17 @@ def build_question_reformulation_prompt(
         "Ne réponds pas à la question, n'ajoute aucune explication et renvoie uniquement la question reformulée en français."
     )
     user_prompt = f"Question actuelle : {question}\n\nHistorique récent :\n{history}"
+    system_prompt = (
+        "Tu analyses puis reformules une question utilisateur avant une recherche documentaire. "
+        "Utilise l'historique uniquement pour resoudre les references implicites. "
+        "Si la question introduit un nouveau sujet, une nouvelle personne ou une nouvelle intention, "
+        "considere-la comme autonome et ne reutilise pas l'historique. "
+        "Retourne uniquement un JSON valide avec exactement deux champs : "
+        "follow_up (booleen) et reformulated_question (chaine en francais). "
+        "follow_up=true uniquement si la question depend du contexte precedent. "
+        "Si follow_up=false, reformule quand meme la question en francais correct, "
+        "mais sans reutiliser le contenu de l'historique."
+    )
     return system_prompt, user_prompt
 
 
@@ -978,7 +1068,6 @@ def reformulate_question(
 ) -> tuple[str, dict[str, Any]]:
     """Rend une relance autonome avant le planner, sans modifier le message stocké."""
     memory_items, memory_trace = fetch_conversation_memory(conversation_id)
-    memory_items = [item for item in memory_items if item.get("role") == "user"]
     trace: dict[str, Any] = {
         "applied": False,
         "original_question": question,
@@ -986,9 +1075,6 @@ def reformulate_question(
         "memory_message_count": len(memory_items),
         "memory": memory_trace,
     }
-    if not memory_items:
-        trace["reason"] = "no_history"
-        return question, trace
     if client is None:
         trace["reason"] = "no_openai_client"
         return question, trace
@@ -1010,12 +1096,20 @@ def reformulate_question(
             ],
         )
         trace["response_raw"] = serialize_openai_response(response)
-        reformulated = (getattr(response, "output_text", "") or "").strip()
-        if not reformulated:
+        raw_output = (getattr(response, "output_text", "") or "").strip()
+        if not raw_output:
             trace["reason"] = "empty_response"
             return question, trace
         # Évite qu'une réponse accidentellement multi-ligne devienne une nouvelle consigne.
-        reformulated = reformulated.strip('"\' `')
+        try:
+            parsed = safe_json_loads(raw_output)
+            follow_up = bool(parsed.get("follow_up", False))
+            reformulated = str(parsed.get("reformulated_question") or question).strip()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            trace["reason"] = "invalid_json_response"
+            return question, trace
+
+        trace["follow_up"] = follow_up
         trace["applied"] = reformulated != question.strip()
         trace["reformulated_question"] = reformulated
         return reformulated or question, trace
@@ -1023,6 +1117,28 @@ def reformulate_question(
         trace["reason"] = "reformulation_error"
         trace["error"] = str(exc)
         return question, trace
+
+
+def sql_trace_for_storage(retrieval: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = retrieval.get("sql_query")
+    if isinstance(candidate, dict):
+        return candidate
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None
+
+    if retrieval.get("direct_lookup"):
+        source = "structured_sql"
+        params = retrieval["direct_lookup"].get("params", [])
+    elif retrieval.get("prefilter"):
+        source = "prefilter"
+        params = retrieval["prefilter"].get("params", [])
+    elif retrieval.get("memory"):
+        source = "memory"
+        params = retrieval["memory"].get("params", [])
+    else:
+        source = "unknown"
+        params = []
+    return {"sql": candidate, "params": params, "source": source}
 
 
 def store_chat_message(
@@ -1036,7 +1152,7 @@ def store_chat_message(
     planner_response_raw: str | None,
     pydantic_verification: bool,
     execution_plan_json: dict[str, Any],
-    sql_query: str | None,
+    sql_query: dict[str, Any] | None,
     prefilter_trace: dict[str, Any],
     bm25_trace: dict[str, Any],
     vector_trace: dict[str, Any],
@@ -1087,7 +1203,7 @@ def store_chat_message(
                     planner_response_raw,
                     pydantic_verification,
                     Jsonb(execution_plan_json),
-                    sql_query,
+                    Jsonb(sql_query) if sql_query is not None else None,
                     Jsonb(prefilter_trace),
                     Jsonb(bm25_trace),
                     Jsonb(vector_trace),
@@ -1412,6 +1528,8 @@ def generate_final_answer(
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     if route == "direct":
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
+    if route == "rag" and retrieval.get("retrieval_mode") == "rag+structured_sql":
+        return generate_sql_answer(client, question, answer_model, retrieval.get("sql_sub_intent"), sources, trace)
     if route == "rag":
         return generate_answer(client, question, answer_model, sources, trace)
     if route == "sql":
@@ -1477,7 +1595,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         "sql_main_source": execution_plan.sql_main_source,
         "sql_prefilters": prefilter_debug["applied"],
         "general_question_only": prefilter_debug["general_question_only"],
-        "sql_query": prefilter_debug["sql"],
+        "sql_query": None,
         "prefilter": prefilter_debug,
         "sql_prefilters_trace": prefilter_debug,
         "bm25": {**bm25_debug, "results": bm25_chunks},
@@ -1524,6 +1642,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
     )
     planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(contextual_question, client)
     planner_plan.speakers = resolve_speaker_filters(contextual_question, planner_plan)
+    apply_deterministic_sql_policy(contextual_question, planner_plan)
     execution_plan = build_execution_plan(payload, planner_plan)
 
     base_retrieval = {
@@ -1566,7 +1685,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "final_k": 0,
             "used_rerank": False,
             "general_question_only": True,
-            "sql_query": memory_trace.get("sql"),
+            "sql_query": None,
             "prefilter": {},
             "sql_prefilters_trace": {},
             "bm25": {},
@@ -1578,7 +1697,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         }
         return "", [], retrieval
 
-    if execution_plan.route == "sql":
+    if execution_plan.route == "rag" and execution_plan.sql_main_source:
         sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
         sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
         answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
@@ -1587,7 +1706,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "answer_model": answer_model,
             "embedding_model": None,
             "rerank_model": None,
-            "retrieval_mode": "sql",
+            "retrieval_mode": "rag+structured_sql",
             "sql_main_source": True,
             "sql_prefilters": has_structured_sql_filters(execution_plan),
             "bm25_top_k": 0,
@@ -1670,6 +1789,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup() -> None:
+    global _STARTED_AT
+    _STARTED_AT = datetime.now().astimezone()
+    print(f"[backend] started_at={_STARTED_AT.isoformat(timespec='seconds')}", flush=True)
     ensure_chat_schema()
 
 
@@ -1677,6 +1799,13 @@ def startup() -> None:
 def health() -> dict[str, str]:
     ensure_chat_schema()
     return {"status": "ok"}
+
+
+@app.get("/version")
+def version() -> dict[str, str | None]:
+    return {
+        "started_at": _STARTED_AT.isoformat(timespec="seconds") if _STARTED_AT else None,
+    }
 
 
 @app.get("/")
@@ -1721,7 +1850,7 @@ def rag(payload: RagRequest) -> RagResponse:
             planner_response_raw=retrieval["planner_response_raw"],
             pydantic_verification=retrieval["pydantic_verification"],
             execution_plan_json=retrieval["execution_plan"],
-            sql_query=retrieval["sql_query"],
+            sql_query=sql_trace_for_storage(retrieval),
             prefilter_trace=retrieval["prefilter"],
             bm25_trace=retrieval["bm25"],
             vector_trace=retrieval["vector"],

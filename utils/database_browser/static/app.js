@@ -45,6 +45,26 @@ async function selectTable(schema, name) {
   state.selected = { schema, name }; state.offset = 0; state.query = ""; $("#search").value = ""; $("#title").textContent = name; $("#empty").classList.add("hidden"); $("#content").classList.remove("hidden"); renderTables(); await loadRows();
 }
 
+async function clearSelectedTable() {
+  if (!state.selected) return;
+  const label = `${state.selected.schema}.${state.selected.name}`;
+  if (!window.confirm(`Supprimer toutes les données de ${label} ?`)) return;
+  if (!window.confirm(`Confirmation finale : vider définitivement ${label} ?`)) return;
+  const button = $("#clearTable");
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/tables/${encodeURIComponent(state.selected.schema)}/${encodeURIComponent(state.selected.name)}`, { method: "DELETE" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "Erreur serveur");
+    await loadRows();
+    alert(`${Number(body.deleted).toLocaleString("fr-FR")} ligne(s) supprimée(s).`);
+  } catch (error) {
+    alert(`Échec de la suppression : ${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadRows() {
   if (!state.selected) return; $("#loading").classList.remove("hidden"); $("#noRows").classList.add("hidden");
   const params = new URLSearchParams({ limit: state.limit, offset: state.offset, q: state.query });
@@ -62,9 +82,12 @@ function renderData(data) {
     $("#detailColumn").textContent = `${column.name} · ${column.type}`;
     $("#detailValue").innerHTML = formatDetail(row[column.name]);
     $("#cellDetail").classList.remove("hidden");
-    const sqlText = findSql(row[column.name]);
+    const sqlText = findSql(row[column.name], column.name);
     $("#sqlValue").innerHTML = sqlText ? highlightSql(formatSql(sqlText)) : "";
     $("#sqlDetail").classList.toggle("hidden", !sqlText);
+    const jsonValue = findNestedJson(row[column.name]);
+    $("#jsonValue").innerHTML = jsonValue === undefined ? "" : formatDetail(jsonValue);
+    $("#jsonDetail").classList.toggle("hidden", jsonValue === undefined);
   }));
   $("#noRows").classList.toggle("hidden", data.rows.length > 0); $("#columnsMeta").textContent = `${data.columns.length} colonnes`; $("#meta").textContent = `${data.total.toLocaleString("fr-FR")} lignes`;
   const first = data.total ? state.offset + 1 : 0, last = Math.min(state.offset + state.limit, data.total); $("#pageInfo").textContent = `${first}–${last} sur ${data.total.toLocaleString("fr-FR")}`; $("#previous").disabled = state.offset === 0; $("#next").disabled = state.offset + state.limit >= data.total;
@@ -92,16 +115,28 @@ function formatDetail(value) {
 }
 function parseJsonString(value) {
   if (typeof value !== "string") return value;
-  const candidate = value.trim();
-  if (!(candidate.startsWith("{") || candidate.startsWith("[") || candidate.startsWith('"'))) return value;
-  try { return JSON.parse(candidate); } catch { return value; }
+  let candidate = value.trim();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (/^[^{}\[\]]*::\s*(?=[{[\"])/.test(candidate)) candidate = candidate.slice(candidate.indexOf("::") + 2).trim();
+    if (!(candidate.startsWith("{") || candidate.startsWith("[") || candidate.startsWith('"'))) return value;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === "string") { candidate = parsed.trim(); continue; }
+      return parsed;
+    } catch { return value; }
+  }
+  return value;
 }
-function findSql(value) {
+function findSql(value, key = "") {
   const parsed = parseJsonString(value);
-  if (parsed !== value) return findSql(parsed);
+  if (parsed !== value) return findSql(parsed, key);
+  if (typeof value === "string") {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "_");
+    return normalizedKey === "sql" || normalizedKey === "sql_query" || looksLikeSql(value) ? value.trim() : "";
+  }
   if (!value || typeof value !== "object") return "";
   if (!Array.isArray(value)) {
-    const sqlKey = Object.keys(value).find((key) => key.toLowerCase() === "sql");
+    const sqlKey = Object.keys(value).find((key) => ["sql", "sql_query"].includes(key.toLowerCase()));
     if (sqlKey && typeof value[sqlKey] === "string" && value[sqlKey].trim()) return value[sqlKey].trim();
   }
   for (const child of Object.values(value)) {
@@ -109,6 +144,36 @@ function findSql(value) {
     if (nested) return nested;
   }
   return "";
+}
+function looksLikeSql(value) {
+  return /^(?:(?:--[^\n]*|\/\*[\s\S]*?\*\/|\s)+)(SELECT|WITH|INSERT|UPDATE|DELETE|EXPLAIN|CREATE|ALTER|DROP)\b/i.test(value.trim()) || /^(SELECT|WITH|INSERT|UPDATE|DELETE|EXPLAIN|CREATE|ALTER|DROP)\b/i.test(value.trim());
+}
+function findNestedJson(value) {
+  if (typeof value === "string") {
+    const parsed = parseJsonString(value);
+    if (parsed !== value) {
+      const nested = findNestedJson(parsed);
+      return nested === undefined ? parsed : nested;
+    }
+    return findEmbeddedJson(value);
+  }
+  if (!value || typeof value !== "object") return undefined;
+  for (const child of Object.values(value)) {
+    const nested = findNestedJson(child);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+function findEmbeddedJson(value) {
+  const candidates = value.matchAll(/::\s*("(?:\\.|[^"\\])*")/g);
+  let firstParsed;
+  for (const match of candidates) {
+    const parsed = parseJsonString(match[1]);
+    if (parsed === match[1]) continue;
+    if (firstParsed === undefined) firstParsed = parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  }
+  return firstParsed;
 }
 function formatSql(raw) {
   const major = /\b(SELECT|FROM|WHERE|GROUP BY|ORDER BY|HAVING|LIMIT|OFFSET|UNION ALL|UNION|RETURNING|VALUES|SET)\b/gi;
@@ -124,13 +189,14 @@ function formatSql(raw) {
   flush(); return lines.join("\n");
 }
 function highlightSql(sql) {
-  const pattern = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w$]*(?=\s*\())/g;
+  const pattern = /(--[^\n]*|\/\*[\s\S]*?\*\/|%s|'(?:''|[^'])*'|"(?:""|[^"])*"|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w$]*(?=\s*\())/g;
   const keywords = /\b(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|FULL|INNER|OUTER|CROSS|ON|AND|OR|GROUP|BY|ORDER|HAVING|LIMIT|OFFSET|UNION|ALL|RETURNING|VALUES|SET|AS|DESC|ASC|NULLS|FIRST|LAST|IS|NOT|IN|LIKE|ILIKE|CASE|WHEN|THEN|ELSE|END|TRUE|FALSE|NULL)\b/gi;
   let output = ""; let cursor = 0;
   for (const match of sql.matchAll(pattern)) {
     output += highlightSqlPlain(sql.slice(cursor, match.index), keywords);
     const token = match[0]; const escaped = escapeHtml(token);
     if (token.startsWith("--") || token.startsWith("/*")) output += `<span class="sql-comment">${escaped}</span>`;
+    else if (token === "%s") output += `<span class="sql-parameter">${escaped}</span>`;
     else if (token.startsWith("'") || token.startsWith('"')) output += `<span class="sql-string">${escaped}</span>`;
     else if (/^\d/.test(token)) output += `<span class="sql-number">${escaped}</span>`;
     else output += `<span class="sql-function">${escaped}</span>`;
@@ -146,6 +212,8 @@ function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (char) => 
 $("#tableFilter").addEventListener("input", renderTables); $("#refresh").addEventListener("click", init); $("#pageSize").addEventListener("change", (event) => { state.limit = Number(event.target.value); state.offset = 0; loadRows(); });
 $("#search").addEventListener("input", (event) => { clearTimeout(state.timer); state.timer = setTimeout(() => { state.query = event.target.value; state.offset = 0; loadRows(); }, 300); });
 $("#previous").addEventListener("click", () => { state.offset = Math.max(0, state.offset - state.limit); loadRows(); }); $("#next").addEventListener("click", () => { state.offset += state.limit; loadRows(); });
+$("#clearTable").addEventListener("click", clearSelectedTable);
 $("#closeDetail").addEventListener("click", () => $("#cellDetail").classList.add("hidden"));
 $("#copySql").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#sqlValue").textContent); $("#copySql").textContent = "Copié"; setTimeout(() => $("#copySql").textContent = "Copier", 1200); } catch { $("#copySql").textContent = "Indisponible"; } });
+$("#copyJson").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#jsonValue").textContent); $("#copyJson").textContent = "Copié"; setTimeout(() => $("#copyJson").textContent = "Copier", 1200); } catch { $("#copyJson").textContent = "Indisponible"; } });
 init();

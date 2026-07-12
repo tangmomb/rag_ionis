@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     planner_response_raw TEXT,
     pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
     execution_plan_json JSONB,
-    sql_query TEXT,
+    sql_query JSONB,
     prefilter_trace JSONB,
     bm25_trace JSONB,
     vector_trace JSONB,

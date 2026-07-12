@@ -48,32 +48,42 @@ button {
 }
 
 .topbar {
-  position: sticky;
-  top: 0;
-  z-index: 4;
+  position: relative;
   display: flex;
   justify-content: center;
   width: 100%;
-  min-height: 150px;
-  margin-bottom: 18px;
+  min-height: 184px;
+  margin-bottom: 14px;
   overflow: hidden;
-  padding: 18px 32px;
+  padding: 24px 32px;
   isolation: isolate;
   border-bottom: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.96);
+  background: #050505;
 }
 
 .header-card {
+  position: relative;
+  overflow: hidden;
   display: flex;
   justify-content: space-between;
   align-items: center;
   width: min(840px, 100%);
-  padding: 16px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 16px;
-  background: rgba(12, 12, 12, 0.78);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(5px);
+  padding: 20px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  background: linear-gradient(112deg, rgba(19, 19, 19, 0.92), rgba(8, 8, 8, 0.72));
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.45), inset 0 1px rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(9px);
+}
+
+.header-card::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  content: "";
+  background: linear-gradient(90deg, #ff1515 0%, #ff1515 15%, rgba(255, 255, 255, 0.7) 15%, transparent 58%);
 }
 
 .header-thumbnails,
@@ -106,24 +116,25 @@ button {
   height: 100%;
   gap: 8px;
   will-change: transform;
-  animation: header-thumbnails-scroll 42s linear infinite;
+  animation: header-thumbnails-scroll 82s linear infinite;
 }
 
 .header-thumbnail-row-2 .header-thumbnail-track {
   animation-name: header-thumbnails-scroll-reverse;
-  animation-duration: 50s;
+  animation-duration: 96s;
 }
 
 .header-shade {
   z-index: -1;
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.46), rgba(0, 0, 0, 0.82));
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.94), rgba(0, 0, 0, 0.38), rgba(0, 0, 0, 0.9));
 }
 
 .header-thumbnail {
-  width: clamp(126px, 13vw, 210px);
   height: 100%;
+  width: auto;
   flex: 0 0 auto;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
   border-radius: 8px;
   filter: saturate(0.75);
 }
@@ -140,15 +151,41 @@ button {
 .brand-inline {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 15px;
 }
 
 .brand-youtube-icon {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
+  padding: 9px 7px;
+  box-sizing: content-box;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.42);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26);
   flex: 0 0 auto;
   color: #ff0a0a;
   fill: currentColor;
+}
+
+.brand-kicker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: #c5c5c5;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  line-height: 1;
+}
+
+.brand-kicker span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff2020;
+  box-shadow: 0 0 0 4px rgba(255, 32, 32, 0.14);
 }
 
 .brand-youtube-play {
@@ -157,7 +194,7 @@ button {
 
 .brand-title {
   color: var(--text);
-  font-size: 18px;
+  font-size: clamp(19px, 2.4vw, 24px);
   font-weight: 700;
   letter-spacing: 0.01em;
   line-height: 1.1;
@@ -169,11 +206,11 @@ button {
   gap: 7px;
   flex: 0 0 auto;
   margin-left: 24px;
-  padding: 9px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
   border-radius: 999px;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.09);
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
@@ -202,7 +239,7 @@ button {
 }
 
 .brand-subtitle {
-  margin-top: 4px;
+  margin-top: 6px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.2;
@@ -280,7 +317,7 @@ button {
   gap: 22px;
   max-width: 840px;
   margin: 50px auto 0;
-  min-height: calc(100vh - 280px);
+  min-height: 0;
   align-content: start;
 }
 
@@ -550,6 +587,42 @@ button {
   margin: 0 auto;
 }
 
+.suggested-questions {
+  margin: 0 0 13px;
+}
+
+.suggested-questions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.suggested-question {
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.suggested-question:hover {
+  border-color: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.suggested-question:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 3px;
+}
+
 .composer-row {
   display: flex;
   align-items: center;
@@ -618,11 +691,11 @@ button {
 
   .topbar {
     padding-top: 10px;
-    min-height: 126px;
+    min-height: 148px;
   }
 
   .header-card {
-    padding: 12px 14px;
+    padding: 16px 14px;
   }
 
   .channel-link {
@@ -636,12 +709,13 @@ button {
     height: 18px;
   }
 
-  .header-thumbnail {
-    width: 112px;
+  .brand-kicker {
+    font-size: 9px;
+    letter-spacing: 0.08em;
   }
 
-  .messages {
-    min-height: calc(100vh - 260px);
+  .suggested-question {
+    width: 100%;
   }
 
   .message.assistant .message-body {

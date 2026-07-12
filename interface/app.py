@@ -2064,7 +2064,7 @@ def video_thumbnails() -> list[str]:
                 WHERE thumbnail_medium_url IS NOT NULL
                   AND thumbnail_medium_url <> ''
                 ORDER BY published_at DESC NULLS LAST, id DESC
-                LIMIT 24
+                LIMIT 32
                 """
             )
             return [row[0] for row in cursor.fetchall()]

@@ -10,17 +10,36 @@
     <main class="app">
       <section class="workspace">
         <header class="topbar">
-          <div class="header-thumbnails" id="headerThumbnails" aria-hidden="true"></div>
+          <div
+            class="header-thumbnails"
+            id="headerThumbnails"
+            aria-hidden="true"
+          ></div>
           <div class="header-shade" aria-hidden="true"></div>
           <div class="header-card">
             <div class="brand-inline">
-              <svg class="brand-youtube-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8Z" />
-                <path class="brand-youtube-play" d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z" />
+              <svg
+                class="brand-youtube-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8Z"
+                />
+                <path
+                  class="brand-youtube-play"
+                  d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z"
+                />
               </svg>
-              <div>
+              <div class="brand-copy">
+                <div class="brand-kicker">
+                  <span></span> IONIS-STM · VIDEO SEARCH
+                </div>
                 <div class="brand-title">RAG YouTube IONIS-STM</div>
-                <div class="brand-subtitle">Posez vos questions sur la chaîne YouTube</div>
+                <div class="brand-subtitle">
+                  Posez vos questions sur la chaîne YouTube
+                </div>
               </div>
             </div>
             <a
@@ -40,19 +59,40 @@
         </header>
 
         <section class="chat" aria-label="Conversation">
-          <div class="messages" id="messages">
-          </div>
+          <div class="messages" id="messages"></div>
         </section>
 
         <form class="composer" id="composer">
           <div class="composer-inner">
+            <div
+              class="suggested-questions"
+              id="suggestedQuestions"
+              aria-label="Questions suggérées"
+            >
+              <div class="suggested-questions-list">
+                <button type="button" class="suggested-question">
+                  Qui est Emric ?
+                </button>
+                <button type="button" class="suggested-question">
+                  J'ai besoin de la transcription d'une vidéo ?
+                </button>
+                <button type="button" class="suggested-question">
+                  Quelles questions ont été posées à Déborah ?
+                </button>
+              </div>
+            </div>
             <div class="composer-row">
               <div class="composer-input-shell">
                 <textarea
                   id="question"
                   placeholder="Que recherchez vous ?"
                 ></textarea>
-                <button class="btn btn-primary composer-submit" type="submit" aria-label="Envoyer" title="Envoyer">
+                <button
+                  class="btn btn-primary composer-submit"
+                  type="submit"
+                  aria-label="Envoyer"
+                  title="Envoyer"
+                >
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M12 17V7" />
                     <path d="m7 12 5-5 5 5" />
@@ -72,6 +112,7 @@
       const messages = document.getElementById("messages");
       const composer = document.getElementById("composer");
       const question = document.getElementById("question");
+      const suggestedQuestions = document.getElementById("suggestedQuestions");
       const headerThumbnails = document.getElementById("headerThumbnails");
       let conversationId = null;
       const RAG_CONFIG = {
@@ -91,22 +132,29 @@
           if (!response.ok) return;
           const thumbnails = await response.json();
           if (!thumbnails.length) return;
-          const rowSize = Math.max(12, thumbnails.length);
-          const makeRow = (offset) => Array.from(
-            { length: rowSize },
-            (_, index) => thumbnails[(index + offset) % thumbnails.length]
-          );
-          const renderImages = (urls) => urls
-            .map((url) => `<img class="header-thumbnail" src="${escapeHtml(url)}" alt="" />`)
-            .join("");
+          const rowSize = Math.max(12, Math.ceil(thumbnails.length / 2));
+          const makeRow = (offset) =>
+            Array.from(
+              { length: rowSize },
+              (_, index) => thumbnails[(index + offset) % thumbnails.length],
+            );
+          const renderImages = (urls) =>
+            urls
+              .map(
+                (url) =>
+                  `<img class="header-thumbnail" src="${escapeHtml(url)}" alt="" />`,
+              )
+              .join("");
 
-          headerThumbnails.innerHTML = [0, 1].map((rowIndex) => {
-            const row = makeRow(rowIndex * Math.ceil(thumbnails.length / 2));
-            const images = renderImages(row);
-            return `<div class="header-thumbnail-row header-thumbnail-row-${rowIndex + 1}">
+          headerThumbnails.innerHTML = [0, 1]
+            .map((rowIndex) => {
+              const row = makeRow(rowIndex * rowSize);
+              const images = renderImages(row);
+              return `<div class="header-thumbnail-row header-thumbnail-row-${rowIndex + 1}">
               <div class="header-thumbnail-track">${images}${images}</div>
             </div>`;
-          }).join("");
+            })
+            .join("");
         } catch (_error) {
           // Le header reste utilisable si les miniatures ne sont pas disponibles.
         }
@@ -138,14 +186,21 @@
               <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8Z" />
               <path class="youtube-play" d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z" />
             </svg>
-          `.replace(/\s+/g, " ").trim();
+          `
+            .replace(/\s+/g, " ")
+            .trim();
         }
 
-        html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) => {
-          const token = `@@EXTERNAL_LINK_${protectedLinks.length}@@`;
-          protectedLinks.push(`<a href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, label)}</a>`);
-          return token;
-        });
+        html = html.replace(
+          /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+          (match, label, url) => {
+            const token = `@@EXTERNAL_LINK_${protectedLinks.length}@@`;
+            protectedLinks.push(
+              `<a href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, label)}</a>`,
+            );
+            return token;
+          },
+        );
 
         html = html.replace(/https?:\/\/[^\s<]+/g, (rawUrl) => {
           const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || "";
@@ -163,7 +218,9 @@
       }
 
       function renderMarkdown(value) {
-        const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+        const lines = String(value || "")
+          .replace(/\r\n/g, "\n")
+          .split("\n");
         const parts = [];
         let paragraph = [];
         let listItems = [];
@@ -178,13 +235,17 @@
 
         function flushList() {
           if (!listItems.length) return;
-          parts.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+          parts.push(
+            `<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`,
+          );
           listItems = [];
         }
 
         function flushCodeBlock() {
           if (!codeLines.length) return;
-          parts.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+          parts.push(
+            `<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+          );
           codeLines = [];
         }
 
@@ -219,7 +280,9 @@
             flushParagraph();
             flushList();
             const level = headingMatch[1].length;
-            parts.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+            parts.push(
+              `<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`,
+            );
             continue;
           }
 
@@ -249,9 +312,18 @@
         for (const source of sources) {
           const thumbnailUrl = String(source.thumbnail_medium_url || "").trim();
           const videoUrl = String(source.video_url || "").trim();
-          if (!/^https?:\/\//i.test(thumbnailUrl) || !/^https?:\/\//i.test(videoUrl) || seen.has(videoUrl)) continue;
+          if (
+            !/^https?:\/\//i.test(thumbnailUrl) ||
+            !/^https?:\/\//i.test(videoUrl) ||
+            seen.has(videoUrl)
+          )
+            continue;
           seen.add(videoUrl);
-          videos.push({ videoUrl, thumbnailUrl, title: source.video_title || "Vidéo" });
+          videos.push({
+            videoUrl,
+            thumbnailUrl,
+            title: source.video_title || "Vidéo",
+          });
         }
 
         if (!videos.length) return "";
@@ -266,7 +338,7 @@
                       <img src="${escapeHtml(video.thumbnailUrl)}" alt="${escapeHtml(video.title)}" loading="lazy" />
                     <div class="video-title">${escapeHtml(video.title)}</div>
                     </a>
-                  </article>`
+                  </article>`,
               )
               .join("")}
           </div>
@@ -277,9 +349,14 @@
         const article = document.createElement("article");
         article.className = `message ${role}`;
 
-        const renderedContent = role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
-        const metaHtml = role === "assistant" && meta ? `<div class="message-meta"><span>${escapeHtml(meta)}</span></div>` : "";
-        const videoHtml = role === "assistant" ? renderVideoThumbnails(sources) : "";
+        const renderedContent =
+          role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
+        const metaHtml =
+          role === "assistant" && meta
+            ? `<div class="message-meta"><span>${escapeHtml(meta)}</span></div>`
+            : "";
+        const videoHtml =
+          role === "assistant" ? renderVideoThumbnails(sources) : "";
         const actionsHtml =
           role === "assistant"
             ? `
@@ -341,6 +418,7 @@
           finalK: RAG_CONFIG.finalK,
         };
 
+        suggestedQuestions.hidden = true;
         addMessage("user", text, "envoi frontend");
         const loadingMessage = addLoadingMessage();
 
@@ -360,10 +438,20 @@
 
           conversationId = data.conversation_id ?? conversationId;
           const meta = data.retrieval?.retrieval_mode || "rag";
-          addMessage("assistant", data.answer || "Reponse vide.", meta, data.sources || []);
+          addMessage(
+            "assistant",
+            data.answer || "Reponse vide.",
+            meta,
+            data.sources || [],
+          );
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Erreur reseau inconnue";
-          addMessage("assistant", `Le backend a renvoye une erreur.\n\n${message}`, "echec requete");
+          const message =
+            error instanceof Error ? error.message : "Erreur reseau inconnue";
+          addMessage(
+            "assistant",
+            `Le backend a renvoye une erreur.\n\n${message}`,
+            "echec requete",
+          );
         } finally {
           loadingMessage.remove();
         }
@@ -383,6 +471,14 @@
         composer.requestSubmit();
       });
 
+      document.querySelectorAll(".suggested-question").forEach((button) => {
+        button.addEventListener("click", () => {
+          const text = button.textContent.trim();
+          if (!text) return;
+          question.value = "";
+          sendQuestion(text);
+        });
+      });
     </script>
   </body>
 </html>

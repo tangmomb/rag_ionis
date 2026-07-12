@@ -92,6 +92,7 @@ class ExecutionPlan(BaseModel):
     query_text_bm25: str
     title_hint: str | None = None
     speakers: list[str] = Field(default_factory=list)
+    video_ids: list[int] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
     use_memory: bool = False
@@ -176,6 +177,7 @@ def ensure_chat_schema() -> None:
                         rrf_trace JSONB,
                         rerank_trace JSONB,
                         source_evaluation_trace JSONB,
+                        multi_source_actions JSONB,
                         answer_prompt TEXT,
                         answer_response_raw TEXT,
                         answer_message TEXT,
@@ -199,6 +201,20 @@ def ensure_chat_schema() -> None:
                             FROM information_schema.columns
                             WHERE table_schema = 'chat'
                               AND table_name = 'messages'
+                              AND column_name = 'source_evaluation_trace'
+                        ),
+                        (
+                            SELECT ordinal_position
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
+                              AND column_name = 'multi_source_actions'
+                        ),
+                        (
+                            SELECT ordinal_position
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
                               AND column_name = 'cited_chunks'
                         ),
                         (
@@ -210,9 +226,18 @@ def ensure_chat_schema() -> None:
                         )
                     """
                 )
-                source_trace_exists, cited_position, date_position = cursor.fetchone()
+                (
+                    source_trace_exists,
+                    source_trace_position,
+                    multi_source_actions_position,
+                    cited_position,
+                    date_position,
+                ) = cursor.fetchone()
                 if (
                     not source_trace_exists
+                    or source_trace_position is None
+                    or multi_source_actions_position is None
+                    or multi_source_actions_position != source_trace_position + 1
                     or cited_position is None
                     or date_position is None
                     or cited_position != date_position - 1
@@ -241,6 +266,7 @@ def ensure_chat_schema() -> None:
                             rrf_trace JSONB,
                             rerank_trace JSONB,
                             source_evaluation_trace JSONB,
+                            multi_source_actions JSONB,
                             answer_prompt TEXT,
                             answer_response_raw TEXT,
                             answer_message TEXT,
@@ -297,6 +323,7 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rrf_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rerank_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS source_evaluation_trace JSONB",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS multi_source_actions JSONB",
                     """DO $$ BEGIN
                         IF EXISTS (
                             SELECT 1 FROM information_schema.columns
@@ -417,6 +444,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "'donne la description de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_description. "
         "'donne les statistiques de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_stats. "
         "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux, utilise la recherche RAG sur le transcript. "
+        "Si la question fait reference a plusieurs videos deja evoquees dans l'historique avec des formulations comme 'les precedentes', 'ces videos', 'les 3', 'laquelle', 'la plus vue' ou 'compare', choisis route=multi_source avec use_memory=true et sql_main_source=true lorsque des statistiques ou metadonnees SQL sont necessaires. "
         "'que t'ai-je demande juste avant ?' => route=memory. "
         "'compare ce que dit la base et ce qu'on s'est deja dit' => route=multi_source. "
         "query_text doit contenir la reformulation utile pour la recherche semantique/vectorielle. "
@@ -593,7 +621,11 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
         return fallback, raw_prompt, raw_response, False
 
 
-def build_execution_plan(payload: RagRequest, planner_plan: PlannerPlan) -> ExecutionPlan:
+def build_execution_plan(
+    payload: RagRequest,
+    planner_plan: PlannerPlan,
+    video_ids: list[int] | None = None,
+) -> ExecutionPlan:
     bm25_query = (planner_plan.query_text_bm25 or "").strip()
     if not bm25_query:
         bm25_query = (planner_plan.query_text or payload.question).strip() or payload.question
@@ -607,6 +639,7 @@ def build_execution_plan(payload: RagRequest, planner_plan: PlannerPlan) -> Exec
         query_text_bm25=bm25_query,
         title_hint=planner_plan.title_hint,
         speakers=planner_plan.speakers,
+        video_ids=video_ids or [],
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
         use_memory=planner_plan.use_memory,
@@ -968,6 +1001,9 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
 
     if intent == "video_stats":
         clauses, params = build_video_lookup_conditions(query)
+        if query.video_ids:
+            clauses.append("v.id = ANY(%s)")
+            params.append(query.video_ids)
         clauses.append("s.id IS NOT NULL")
         where_sql = " AND ".join(clauses)
         sql = f"""
@@ -1333,6 +1369,94 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
     }
 
 
+def fetch_recent_cited_video_ids(
+    conversation_id: int | None,
+    limit: int = 8,
+) -> tuple[list[int], dict[str, Any]]:
+    """Retrouve les videos citees dans l'historique pour les comparaisons implicites."""
+    if conversation_id is None:
+        return [], {"applied": False, "reason": "no_conversation_id", "video_ids": []}
+
+    ensure_chat_schema()
+    sql = """
+        SELECT cited_chunks
+        FROM chat.messages
+        WHERE conversation_id = %s
+        ORDER BY id DESC
+        LIMIT %s
+    """
+    with psycopg.connect(get_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, (conversation_id, limit))
+            rows = cursor.fetchall()
+
+    urls: list[str] = []
+    titles: list[str] = []
+    for (raw_chunks,) in rows:
+        try:
+            chunks = json.loads(raw_chunks) if isinstance(raw_chunks, str) else raw_chunks
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(chunks, list):
+            continue
+        for source in chunks:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("video_url") or "").strip()
+            title = str(source.get("video_title") or "").strip()
+            if url and url not in urls:
+                urls.append(url)
+            elif title and title not in titles:
+                titles.append(title)
+
+    if not urls and not titles:
+        return [], {"applied": True, "reason": "no_cited_videos", "video_ids": [], "sql": sql}
+
+    lookup_sql = """
+        SELECT id, url, title
+        FROM videos
+        WHERE (%s::text[] IS NOT NULL AND url = ANY(%s::text[]))
+           OR (%s::text[] IS NOT NULL AND title = ANY(%s::text[]))
+    """
+    with psycopg.connect(get_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(lookup_sql, (urls, urls, titles, titles))
+            matches = cursor.fetchall()
+
+    ordered_ids: list[int] = []
+    for url in urls:
+        for video_id, matched_url, _title in matches:
+            if matched_url == url and int(video_id) not in ordered_ids:
+                ordered_ids.append(int(video_id))
+    for title in titles:
+        for video_id, _url, matched_title in matches:
+            if matched_title == title and int(video_id) not in ordered_ids:
+                ordered_ids.append(int(video_id))
+
+    return ordered_ids, {
+        "applied": True,
+        "reason": "cited_videos_resolved" if ordered_ids else "cited_videos_not_found",
+        "video_ids": ordered_ids,
+        "source_urls": urls,
+        "source_titles": titles,
+        "sql": lookup_sql,
+        "params": [urls, urls, titles, titles],
+    }
+
+
+def is_memory_video_comparison(question: str) -> bool:
+    normalized = normalize_text(question)
+    has_memory_reference = bool(
+        re.search(r"\b(?:les?|des?)\s+\d+\b", normalized)
+        or re.search(r"\b(?:ces|celles|ceux|laquelle|lequel|parmi|entre)\b", normalized)
+    )
+    has_comparison = bool(
+        re.search(r"\b(?:plus|moins|meilleur|meilleure|compare|comparatif|laquelle|lequel)\b", normalized)
+        or re.search(r"\b(?:vues?|likes?|commentaires?|statistiques?|stats?)\b", normalized)
+    )
+    return has_memory_reference and has_comparison
+
+
 def build_question_reformulation_prompt(
     question: str,
     memory_items: list[dict[str, str]],
@@ -1516,6 +1640,7 @@ def store_chat_message(
     rrf_trace: dict[str, Any],
     rerank_trace: dict[str, Any],
     source_evaluation_trace: dict[str, Any],
+    multi_source_actions: list[dict[str, Any]],
     cited_chunks: list[dict[str, Any]],
     answer_prompt: str | None,
     answer_response_raw: str | None,
@@ -1545,12 +1670,13 @@ def store_chat_message(
                     rrf_trace,
                     rerank_trace,
                     source_evaluation_trace,
+                    multi_source_actions,
                     cited_chunks,
                     answer_prompt,
                     answer_response_raw,
                     answer_message
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1571,6 +1697,7 @@ def store_chat_message(
                     Jsonb(rrf_trace),
                     Jsonb(rerank_trace),
                     Jsonb(source_evaluation_trace),
+                    Jsonb(multi_source_actions),
                     Jsonb(cited_chunks),
                     answer_prompt,
                     answer_response_raw,
@@ -1641,6 +1768,7 @@ def rerank_chunks(question: str, chunks: list[dict[str, Any]], limit: int, reran
 FINAL_ANSWER_STYLE = (
     "Réponds directement à la question avec les éléments disponibles. "
     "Commence toujours par une phrase d'introduction qui reformule brièvement la question de l'utilisateur avant de donner les informations. "
+    "Formate toujours la réponse en Markdown lisible, avec des paragraphes, listes ou tableaux lorsque cela améliore la clarté. "
     "N'introduis pas ta réponse par une formule comme « d'après les sources » "
     "ou « selon les documents ». "
     "Ne termine pas par une phrase indiquant qu'il manque des informations, "
@@ -1871,6 +1999,39 @@ def generate_memory_answer(
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable pour la route memory.")
 
 
+def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
+    if sql_sub_intent == "video_stats":
+        return (
+            "Tu reponds a une demande de statistiques sur une video. "
+            "Identifie la video correspondante et presente les dernieres statistiques disponibles : vues, likes, commentaires et date du snapshot. "
+            "Commence par une phrase qui reformule la demande. "
+            "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
+        )
+    if sql_sub_intent == "video_description":
+        return (
+            "Tu reponds a une demande de description d'une video. "
+            "Identifie la video a partir des resultats fournis. "
+            "Commence par une phrase qui reformule la demande de l'utilisateur. "
+            "Presente ensuite la description de la video dans un paragraphe naturel et lisible. "
+            "Ne recopie jamais la description brute seule et n'ajoute aucune information absente de la description. "
+            "Il s'agit de restituer la description de la video, pas de la resumer ni de l'analyser. "
+        )
+    if sql_sub_intent == "video_transcript":
+        return (
+            "Tu reponds a une demande de transcript de video. "
+            "Identifie la video correspondante dans les resultats fournis. "
+            "Commence par une courte phrase indiquant que tu restitues le transcript demande. "
+            "Restitue le transcript fidelement, sans le remplacer par un resume, sans inventer de contenu et sans ajouter d'analyse non demandee. "
+        )
+    return (
+        "Tu reponds a une demande de recherche de videos dans les resultats structures fournis. "
+        "Commence par une phrase qui reformule la demande. "
+        "Presente chaque video trouvee de maniere claire avec son titre et son lien. "
+        "Si plusieurs videos sont presentes, distingue-les nettement. "
+        "Ne transforme pas une recherche de videos en description ou en resume. "
+    )
+
+
 def generate_multi_source_answer(
     client: OpenAI | None,
     question: str,
@@ -1878,6 +2039,7 @@ def generate_multi_source_answer(
     route_name: str,
     memory_items: list[dict[str, str]],
     sources: list[dict[str, Any]],
+    sql_sub_intent: str | None = None,
     trace: dict[str, str] | None = None,
 ) -> str:
     if client is None or not answer_model:
@@ -1905,6 +2067,7 @@ def generate_multi_source_answer(
             )
         )
     source_block = "\n\n".join(source_blocks) or "Aucune source documentaire exploitable."
+    source_marker_instruction = "" if sql_sub_intent == "video_transcript" else SOURCE_MARKER_INSTRUCTION + " "
 
     input_messages = [
             {
@@ -1912,7 +2075,8 @@ def generate_multi_source_answer(
                 "content": (
                     "Tu synthétises plusieurs sources pour répondre en français. "
                     "Distingue clairement ce qui vient de l'historique conversationnel et ce qui vient de la base si utile. "
-                     + SOURCE_MARKER_INSTRUCTION + " "
+                     + build_sql_sub_intent_prompt(sql_sub_intent)
+                     + source_marker_instruction
                      + ANSWER_ACTION_INSTRUCTION + " "
                      + FINAL_ANSWER_STYLE
                 ),
@@ -2004,6 +2168,7 @@ def generate_sql_answer(
             "Ne transforme pas une recherche de videos en description ou en resume. "
         )
 
+    task_prompt = build_sql_sub_intent_prompt(sql_sub_intent)
     source_marker_instruction = "" if sql_sub_intent == "video_transcript" else SOURCE_MARKER_INSTRUCTION + " "
     system_prompt = (
         task_prompt
@@ -2068,6 +2233,7 @@ def generate_final_answer(
             route,
             retrieval.get("memory_items", []),
             sources,
+            retrieval.get("sql_sub_intent"),
             trace,
         )
     return generate_answer(client, question, answer_model, sources, trace)
@@ -2174,7 +2340,27 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         planner_plan,
     )
     apply_deterministic_sql_policy(contextual_question, planner_plan)
-    execution_plan = build_execution_plan(payload, planner_plan)
+    memory_video_ids: list[int] = []
+    memory_video_resolution: dict[str, Any] = {
+        "applied": False,
+        "reason": "not_a_memory_comparison",
+        "video_ids": [],
+    }
+    if is_memory_video_comparison(contextual_question):
+        memory_video_ids, memory_video_resolution = fetch_recent_cited_video_ids(
+            payload.conversationId,
+        )
+        if len(memory_video_ids) >= 2:
+            planner_plan.route = "multi_source"
+            planner_plan.use_memory = True
+            planner_plan.use_rag = False
+            planner_plan.sql_main_source = True
+            planner_plan.sql_sub_intent = "video_stats"
+            planner_plan.title_hint = None
+            planner_plan.speakers = []
+            memory_video_resolution["reason"] = "comparison_route_forced"
+
+    execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
 
     base_retrieval = {
         "route": execution_plan.route,
@@ -2189,6 +2375,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "execution_plan": execution_plan.model_dump(),
         "validated_query": execution_plan.model_dump(),
         "speaker_resolution": speaker_resolution,
+        "memory_video_resolution": memory_video_resolution,
     }
 
     if speaker_resolution.get("ambiguous"):
@@ -2303,15 +2490,56 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         memory_trace: dict[str, Any] = {}
         doc_sources: list[dict[str, Any]] = []
         doc_trace: dict[str, Any] = {}
+        multi_source_actions: list[dict[str, Any]] = []
 
         if execution_plan.use_memory:
             memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
+            multi_source_actions.append(
+                {
+                    "action": len(multi_source_actions) + 1,
+                    "source": "memory",
+                    "operation": "fetch_conversation_memory",
+                    "status": "completed",
+                    "request": {
+                        "sql": memory_trace.get("sql"),
+                        "params": memory_trace.get("params", []),
+                    },
+                    "response": memory_items,
+                    "result_count": len(memory_items),
+                }
+            )
 
         if execution_plan.sql_main_source:
             sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
             doc_sources, doc_trace = lookup_video_document(execution_plan, sql_sub_intent)
+            multi_source_actions.append(
+                {
+                    "action": len(multi_source_actions) + 1,
+                    "source": "sql",
+                    "operation": "lookup_video_document",
+                    "sub_intent": sql_sub_intent,
+                    "status": "completed",
+                    "request": {
+                        "sql": doc_trace.get("sql"),
+                        "params": doc_trace.get("params", []),
+                    },
+                    "response": doc_sources,
+                    "result_count": len(doc_sources),
+                }
+            )
         elif execution_plan.use_rag or execution_plan.route == "agent":
             doc_sources, doc_trace = retrieve_chunks(payload, execution_plan)
+            multi_source_actions.append(
+                {
+                    "action": len(multi_source_actions) + 1,
+                    "source": "rag",
+                    "operation": "retrieve_chunks",
+                    "status": "completed",
+                    "request": doc_trace,
+                    "response": doc_sources,
+                    "result_count": len(doc_sources),
+                }
+            )
 
         answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
         retrieval = {
@@ -2338,6 +2566,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "direct_lookup": doc_trace.get("direct_lookup", {}),
             "memory": memory_trace,
             "memory_items": memory_items,
+            "multi_source_actions": multi_source_actions,
         }
         return "", doc_sources, retrieval
 
@@ -2455,6 +2684,7 @@ def rag(payload: RagRequest) -> RagResponse:
             rrf_trace=retrieval["rrf"],
             rerank_trace=retrieval["rerank"],
             source_evaluation_trace=retrieval["source_evaluation"],
+            multi_source_actions=retrieval.get("multi_source_actions", []),
             cited_chunks=carousel_sources,
             answer_prompt=answer_trace.get("prompt"),
             answer_response_raw=answer_trace.get("response_raw"),

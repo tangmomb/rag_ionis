@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import unicodedata
+from difflib import SequenceMatcher
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
@@ -45,7 +46,7 @@ _STARTED_AT: datetime | None = None
 
 PlannerRoute = Literal["direct", "rag", "memory", "multi_source", "agent"]
 DirectSubIntent = Literal["social"]
-SqlSubIntent = Literal["video_lookup", "video_transcript", "video_description"]
+SqlSubIntent = Literal["video_lookup", "video_transcript", "video_description", "video_stats"]
 AnswerAction = Literal["answer", "clarify", "abstain"]
 
 
@@ -164,6 +165,7 @@ def ensure_chat_schema() -> None:
                         contextual_question TEXT,
                         planner_prompt TEXT,
                         planner_response_raw TEXT,
+                        speaker_resolution_trace JSONB,
                         pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
                         execution_plan_json JSONB,
                         sql_query JSONB,
@@ -173,24 +175,47 @@ def ensure_chat_schema() -> None:
                         rrf_trace JSONB,
                         rerank_trace JSONB,
                         source_evaluation_trace JSONB,
-                        retrieved_chunks JSONB,
                         answer_prompt TEXT,
                         answer_response_raw TEXT,
                         answer_message TEXT,
+                        cited_chunks JSONB,
                         date TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
                     """
                 )
                 cursor.execute(
                     """
-                    SELECT 1
-                    FROM information_schema.columns
-                    WHERE table_schema = 'chat'
-                      AND table_name = 'messages'
-                      AND column_name = 'source_evaluation_trace'
+                    SELECT
+                        EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
+                              AND column_name = 'source_evaluation_trace'
+                        ),
+                        (
+                            SELECT ordinal_position
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
+                              AND column_name = 'cited_chunks'
+                        ),
+                        (
+                            SELECT ordinal_position
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
+                              AND column_name = 'date'
+                        )
                     """
                 )
-                if cursor.fetchone() is None:
+                source_trace_exists, cited_position, date_position = cursor.fetchone()
+                if (
+                    not source_trace_exists
+                    or cited_position is None
+                    or date_position is None
+                    or cited_position != date_position - 1
+                ):
                     # Migration volontaire : l'historique de chat est supprime
                     # pour reconstruire la table avec les colonnes dans le bon ordre.
                     cursor.execute("DROP TABLE chat.messages")
@@ -205,6 +230,7 @@ def ensure_chat_schema() -> None:
                             contextual_question TEXT,
                             planner_prompt TEXT,
                             planner_response_raw TEXT,
+                            speaker_resolution_trace JSONB,
                             pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
                             execution_plan_json JSONB,
                             sql_query JSONB,
@@ -214,10 +240,10 @@ def ensure_chat_schema() -> None:
                             rrf_trace JSONB,
                             rerank_trace JSONB,
                             source_evaluation_trace JSONB,
-                            retrieved_chunks JSONB,
                             answer_prompt TEXT,
                             answer_response_raw TEXT,
                             answer_message TEXT,
+                            cited_chunks JSONB,
                             date TIMESTAMPTZ NOT NULL DEFAULT now()
                         )
                         """
@@ -241,6 +267,7 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS contextual_question TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS planner_prompt TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS planner_response_raw TEXT",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS speaker_resolution_trace JSONB",
                     "ALTER TABLE chat.messages DROP COLUMN IF EXISTS intent_source",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS execution_plan_json JSONB",
@@ -269,7 +296,20 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rrf_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS rerank_trace JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS source_evaluation_trace JSONB",
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS retrieved_chunks JSONB",
+                    """DO $$ BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'chat' AND table_name = 'messages'
+                              AND column_name = 'retrieved_chunks'
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'chat' AND table_name = 'messages'
+                              AND column_name = 'cited_chunks'
+                        ) THEN
+                            ALTER TABLE chat.messages RENAME COLUMN retrieved_chunks TO cited_chunks;
+                        END IF;
+                    END $$""",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS cited_chunks JSONB",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_prompt TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_response_raw TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_message TEXT",
@@ -361,7 +401,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "multi_source = combinaison de plusieurs sources. "
         "agent = uniquement pour les demandes necessitant plusieurs etapes ou un raisonnement complexe. "
         "direct_sub_intent peut etre null ou social. "
-        "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_description. "
+        "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_description, video_stats. "
         "Si route=direct et que le message est une salutation, politesse, small talk ou message purement conversationnel, mets direct_sub_intent=social. "
         "Si sql_main_source=false, sql_sub_intent doit etre null. "
         "Si route=memory, use_memory=true et use_rag=false et sql_main_source=false. "
@@ -374,6 +414,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "'trouve une video avec Andy Leveque' => route=rag, sql_main_source=true et sql_sub_intent=video_lookup. "
         "'donne le transcript complet de la video sur Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=video_transcript. "
         "'donne la description de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_description. "
+        "'donne les statistiques de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_stats. "
         "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux, utilise la recherche RAG sur le transcript. "
         "'que t'ai-je demande juste avant ?' => route=memory. "
         "'compare ce que dit la base et ce qu'on s'est deja dit' => route=multi_source. "
@@ -419,7 +460,7 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["sql_main_source"] = bool(payload.get("use_sql"))
     payload.pop("use_sql", None)
 
-    legacy_sql_intents = {"video_lookup", "video_transcript", "video_description"}
+    legacy_sql_intents = {"video_lookup", "video_transcript", "video_description", "video_stats"}
     legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
 
     if route in legacy_sql_intents:
@@ -582,7 +623,7 @@ def has_explicit_structured_sql_request(question: str) -> bool:
     )
     return bool(
         re.search(
-            r"\b(?:url|lien|titre|description|descriptif|date de publication|publie|publiee|publiees|"
+            r"\b(?:url|lien|titre|description|descriptif|statistiques?|stats?|vues?|likes?|commentaires?|date de publication|publie|publiee|publiees|"
             r"transcript|transcription|verbatim|timecodes?|sous-titres?|intervenant(?:e|s)?|speaker(?:s)?)\b",
             normalized,
         )
@@ -605,7 +646,9 @@ def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> 
 
     planner_plan.sql_main_source = True
     normalized = question.lower()
-    if re.search(r"\b(?:description|descriptif|decris)\b", normalized):
+    if re.search(r"\b(?:statistiques?|stats?|vues?|likes?|commentaires?)\b", normalized):
+        planner_plan.sql_sub_intent = "video_stats"
+    elif re.search(r"\b(?:description|descriptif|decris)\b", normalized):
         planner_plan.sql_sub_intent = "video_description"
     elif any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
         planner_plan.sql_sub_intent = "video_transcript"
@@ -623,7 +666,10 @@ def has_structured_sql_filters(query: ExecutionPlan) -> bool:
     )
 
 
-def resolve_speaker_filters(question: str, planner_plan: PlannerPlan) -> list[str]:
+def resolve_speaker_filters(
+    question: str,
+    planner_plan: PlannerPlan,
+) -> tuple[list[str], dict[str, Any]]:
     """Ne conserve que les noms réellement présents dans videos.speakers."""
     candidates = [str(value).strip() for value in planner_plan.speakers if str(value).strip()]
 
@@ -640,28 +686,102 @@ def resolve_speaker_filters(question: str, planner_plan: PlannerPlan) -> list[st
             candidates.append(candidate)
 
     if not candidates:
-        return []
+        return [], {"applied": False, "ambiguous": False, "requested": [], "suggestions": []}
 
     resolved: list[str] = []
+    suggestions: list[str] = []
+    ambiguous_candidates: list[str] = []
+    unresolved_candidates: list[str] = []
     with psycopg.connect(get_database_url()) as connection:
         with connection.cursor() as cursor:
-            for candidate in candidates:
-                cursor.execute(
-                    """
-                    SELECT DISTINCT speaker_name
-                    FROM videos v
-                    CROSS JOIN LATERAL unnest(coalesce(v.speakers, ARRAY[]::text[])) AS speaker_name
-                    WHERE unaccent(lower(speaker_name)) LIKE unaccent(lower(%s))
-                    ORDER BY speaker_name
-                    LIMIT 5
-                    """,
-                    (f"%{candidate}%",),
+            cursor.execute(
+                """
+                SELECT DISTINCT speaker_name
+                FROM videos v
+                CROSS JOIN LATERAL unnest(coalesce(v.speakers, ARRAY[]::text[])) AS speaker_name
+                WHERE speaker_name IS NOT NULL AND btrim(speaker_name) <> ''
+                ORDER BY speaker_name
+                """
+            )
+            database_speakers = [str(row[0]).strip() for row in cursor.fetchall()]
+
+    for candidate in candidates:
+        normalized_candidate = normalize_text(candidate)
+        exact_matches = [
+            speaker for speaker in database_speakers
+            if normalize_text(speaker) == normalized_candidate
+        ]
+        if exact_matches:
+            for speaker in exact_matches:
+                if speaker not in resolved:
+                    resolved.append(speaker)
+            continue
+
+        candidate_tokens = normalized_candidate.split()
+
+        def speaker_similarity(speaker: str) -> float:
+            normalized_speaker = normalize_text(speaker)
+            whole_score = SequenceMatcher(None, normalized_candidate, normalized_speaker).ratio()
+            speaker_tokens = normalized_speaker.split()
+            token_score = max(
+                (
+                    SequenceMatcher(None, candidate_token, speaker_token).ratio()
+                    for candidate_token in candidate_tokens
+                    for speaker_token in speaker_tokens
+                ),
+                default=0.0,
+            )
+            return max(whole_score, token_score)
+
+        ranked = sorted(
+            [
+                (
+                    speaker_similarity(speaker),
+                    speaker,
                 )
-                for (speaker_name,) in cursor.fetchall():
-                    cleaned = str(speaker_name).strip()
-                    if cleaned and cleaned not in resolved:
-                        resolved.append(cleaned)
-    return resolved
+                for speaker in database_speakers
+            ],
+            reverse=True,
+        )
+        close_matches = [speaker for score, speaker in ranked if score >= 0.58][:3]
+        if close_matches:
+            ambiguous_candidates.append(candidate)
+            for speaker in close_matches:
+                if speaker not in suggestions:
+                    suggestions.append(speaker)
+        else:
+            unresolved_candidates.append(candidate)
+
+    if ambiguous_candidates:
+        return [], {
+            "applied": True,
+            "ambiguous": True,
+            "requested": candidates,
+            "ambiguous_requests": ambiguous_candidates,
+            "suggestions": suggestions[:3],
+            "message": (
+                "Vous parlez de " + " ou de ".join(suggestions[:3]) + " ?"
+                if suggestions
+                else "Peux-tu préciser le nom de l'intervenant ?"
+            ),
+        }
+
+    if unresolved_candidates:
+        return [], {
+            "applied": True,
+            "ambiguous": True,
+            "requested": candidates,
+            "ambiguous_requests": unresolved_candidates,
+            "suggestions": [],
+            "message": "Je ne trouve aucun nom proche dans la base. Peux-tu préciser le nom de l'intervenant ?",
+        }
+
+    return resolved, {
+        "applied": True,
+        "ambiguous": False,
+        "requested": candidates,
+        "suggestions": [],
+    }
 
 
 def append_speaker_filter_clauses(clauses: list[str], params: list[Any], speakers: list[str]) -> None:
@@ -836,6 +956,62 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             "mode": intent,
             "sql": format_sql_for_trace(sql),
             "params": sql_params,
+            "result_count": len(results),
+        }
+
+    if intent == "video_stats":
+        clauses, params = build_video_lookup_conditions(query)
+        clauses.append("s.id IS NOT NULL")
+        where_sql = " AND ".join(clauses)
+        sql = f"""
+            SELECT
+                v.id,
+                v.title,
+                v.url,
+                s.view_count,
+                s.like_count,
+                s.comment_count,
+                s.snapshot_date
+            FROM videos v
+            JOIN LATERAL (
+                SELECT id, view_count, like_count, comment_count, snapshot_date
+                FROM stats
+                WHERE video_id = v.id
+                ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC
+                LIMIT 1
+            ) s ON TRUE
+            WHERE {where_sql}
+            ORDER BY v.published_at DESC NULLS LAST, v.id DESC
+            LIMIT 10
+        """
+        with psycopg.connect(get_database_url()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+
+        results = [
+            {
+                "chunk_id": int(row[0]),
+                "video_title": row[1],
+                "video_url": row[2],
+                "thumbnail_medium_url": None,
+                "chunk_index": 0,
+                "text": (
+                    f"Titre: {row[1]}\nURL: {row[2]}\n"
+                    f"Vues: {row[3] if row[3] is not None else 'non disponible'}\n"
+                    f"Likes: {row[4] if row[4] is not None else 'non disponible'}\n"
+                    f"Commentaires: {row[5] if row[5] is not None else 'non disponible'}\n"
+                    f"Date du snapshot: {row[6]}"
+                ),
+                "speakers": [],
+                "bm25_score": None,
+            }
+            for row in rows
+        ]
+        return results, {
+            "mode": intent,
+            "sql": format_sql_for_trace(sql),
+            "params": params,
             "result_count": len(results),
         }
 
@@ -1100,7 +1276,7 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
     ensure_chat_schema()
 
     sql = """
-        SELECT user_message, answer_message, retrieved_chunks
+        SELECT user_message, answer_message, cited_chunks
         FROM chat.messages
         WHERE conversation_id = %s
         ORDER BY id DESC
@@ -1120,12 +1296,12 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
         if answer_message:
             source_context = ""
             try:
-                retrieved_chunks = row[2]
-                if isinstance(retrieved_chunks, str):
-                    retrieved_chunks = json.loads(retrieved_chunks)
-                if isinstance(retrieved_chunks, list):
+                cited_chunks = row[2]
+                if isinstance(cited_chunks, str):
+                    cited_chunks = json.loads(cited_chunks)
+                if isinstance(cited_chunks, list):
                     source_labels = []
-                    for source in retrieved_chunks[:5]:
+                    for source in cited_chunks[:5]:
                         if not isinstance(source, dict):
                             continue
                         title = str(source.get("video_title") or "").strip()
@@ -1323,6 +1499,7 @@ def store_chat_message(
     question_reformulation_prompt: str | None,
     planner_prompt: str | None,
     planner_response_raw: str | None,
+    speaker_resolution_trace: dict[str, Any],
     pydantic_verification: bool,
     execution_plan_json: dict[str, Any],
     sql_query: dict[str, Any] | None,
@@ -1332,7 +1509,7 @@ def store_chat_message(
     rrf_trace: dict[str, Any],
     rerank_trace: dict[str, Any],
     source_evaluation_trace: dict[str, Any],
-    retrieved_chunks: list[dict[str, Any]],
+    cited_chunks: list[dict[str, Any]],
     answer_prompt: str | None,
     answer_response_raw: str | None,
 ) -> tuple[int, int]:
@@ -1351,6 +1528,7 @@ def store_chat_message(
                     contextual_question,
                     planner_prompt,
                     planner_response_raw,
+                    speaker_resolution_trace,
                     pydantic_verification,
                     execution_plan_json,
                     sql_query,
@@ -1360,12 +1538,12 @@ def store_chat_message(
                     rrf_trace,
                     rerank_trace,
                     source_evaluation_trace,
-                    retrieved_chunks,
+                    cited_chunks,
                     answer_prompt,
                     answer_response_raw,
                     answer_message
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1376,6 +1554,7 @@ def store_chat_message(
                     contextual_question,
                     planner_prompt,
                     planner_response_raw,
+                    Jsonb(speaker_resolution_trace),
                     pydantic_verification,
                     Jsonb(execution_plan_json),
                     Jsonb(sql_query) if sql_query is not None else None,
@@ -1385,7 +1564,7 @@ def store_chat_message(
                     Jsonb(rrf_trace),
                     Jsonb(rerank_trace),
                     Jsonb(source_evaluation_trace),
-                    Jsonb(retrieved_chunks),
+                    Jsonb(cited_chunks),
                     answer_prompt,
                     answer_response_raw,
                     answer_message,
@@ -1551,13 +1730,17 @@ def evaluate_source_sufficiency(
         for source in source_scores
         if source.get("cohere_relevance_score") is not None
     ]
+    speaker_resolution = retrieval.get("speaker_resolution") or {}
     normalized_question = normalize_text(question)
     has_unresolved_video_reference = bool(
         re.search(r"\b(?:la|le|cette|ce|une|un)\s+video\b", normalized_question)
         or re.search(r"\bvideo\b.*\b(?:sur|de|a propos de)\b", normalized_question)
     )
 
-    if not sources:
+    if speaker_resolution.get("ambiguous"):
+        action_hint: AnswerAction = "clarify"
+        reason = "ambiguous_speaker"
+    elif not sources:
         action_hint: AnswerAction = "clarify" if has_unresolved_video_reference else "abstain"
         reason = "ambiguous_video_reference" if action_hint == "clarify" else "no_sources"
     elif cohere_scores and max(cohere_scores) < SOURCE_RELEVANCE_MIN:
@@ -1781,29 +1964,44 @@ def generate_sql_answer(
             )
         )
 
-    if sql_sub_intent == "video_description":
-        sub_intent_instruction = (
-            "La demande porte sur la description d'une video. "
-            "Commence par reformuler ce que l'utilisateur demande, puis presente la description dans une phrase ou un paragraphe clair. "
-            "Ne renvoie jamais la description brute seule. "
+    if sql_sub_intent == "video_stats":
+        task_prompt = (
+            "Tu reponds a une demande de statistiques sur une video. "
+            "Identifie la video correspondante et presente les dernieres statistiques disponibles : vues, likes, commentaires et date du snapshot. "
+            "Commence par une phrase qui reformule la demande. "
+            "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
+        )
+    elif sql_sub_intent == "video_description":
+        task_prompt = (
+            "Tu reponds a une demande de description d'une video. "
+            "Identifie la video a partir des resultats fournis. "
+            "Commence par une phrase qui reformule la demande de l'utilisateur. "
+            "Presente ensuite la description de la video dans un paragraphe naturel et lisible. "
+            "Ne recopie jamais la description brute seule et n'ajoute aucune information absente de la description. "
+            "Il s'agit de restituer la description de la video, pas de la resumer ni de l'analyser."
         )
     elif sql_sub_intent == "video_transcript":
-        sub_intent_instruction = (
-            "La demande porte sur le transcript d'une video. "
-            "Introduis brievement le transcript avant de le restituer, sans inventer ni resumer a sa place. "
+        task_prompt = (
+            "Tu reponds a une demande de transcript de video. "
+            "Identifie la video correspondante dans les resultats fournis. "
+            "Commence par une courte phrase indiquant que tu restitues le transcript demande. "
+            "Restitue le transcript fidelement, sans le remplacer par un resume, sans inventer de contenu et sans ajouter d'analyse non demandee. "
+            "Sauf si user a précisé qu'il veut les timecodes, retire-les. "
         )
     else:
-        sub_intent_instruction = (
-            "La demande porte sur une recherche de videos. "
-            "Presente clairement les videos trouvees avec leur titre et leur lien. "
+        task_prompt = (
+            "Tu reponds a une demande de recherche de videos dans les resultats structures fournis. "
+            "Commence par une phrase qui reformule la demande. "
+            "Presente chaque video trouvee de maniere claire avec son titre et son lien. "
+            "Si plusieurs videos sont presentes, distingue-les nettement. "
+            "Ne transforme pas une recherche de videos en description ou en resume. "
         )
 
+    source_marker_instruction = "" if sql_sub_intent == "video_transcript" else SOURCE_MARKER_INSTRUCTION + " "
     system_prompt = (
-        "Tu formules une reponse finale en francais a partir de resultats structures deja recuperes. "
-        "N'invente aucune information absente. "
-        "Si plusieurs videos sont trouvees, presente-les clairement. "
-        + sub_intent_instruction
-        + SOURCE_MARKER_INSTRUCTION + " "
+        task_prompt
+        + "N'invente aucune information absente des resultats. "
+        + source_marker_instruction
         + ANSWER_ACTION_INSTRUCTION + " "
         + FINAL_ANSWER_STYLE
     )
@@ -1830,6 +2028,13 @@ def generate_final_answer(
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     source_evaluation = retrieval.get("source_evaluation") or {}
     action_hint = source_evaluation.get("action_hint")
+    if route not in {"direct", "memory"} and source_evaluation.get("reason") == "ambiguous_speaker":
+        if trace is not None:
+            trace["action"] = "clarify"
+        return (
+            (retrieval.get("speaker_resolution") or {}).get("message")
+            or "Peux-tu préciser le nom de l'intervenant ?"
+        )
     if route not in {"direct", "memory"} and action_hint == "clarify":
         if trace is not None:
             trace["action"] = "clarify"
@@ -1957,7 +2162,10 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         contextual_question,
         planner_plan.title_hint or extract_video_title_hint(contextual_question),
     )
-    planner_plan.speakers = resolve_speaker_filters(contextual_question, planner_plan)
+    planner_plan.speakers, speaker_resolution = resolve_speaker_filters(
+        contextual_question,
+        planner_plan,
+    )
     apply_deterministic_sql_policy(contextual_question, planner_plan)
     execution_plan = build_execution_plan(payload, planner_plan)
 
@@ -1973,7 +2181,35 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "planner_plan": planner_plan.model_dump(),
         "execution_plan": execution_plan.model_dump(),
         "validated_query": execution_plan.model_dump(),
+        "speaker_resolution": speaker_resolution,
     }
+
+    if speaker_resolution.get("ambiguous"):
+        clarification_retrieval = {
+            **base_retrieval,
+            "answer_model": normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL),
+            "embedding_model": normalize_model_name(payload.embeddingModel, DEFAULT_EMBEDDING_MODEL),
+            "rerank_model": normalize_model_name(payload.rerankModel or "", DEFAULT_RERANK_MODEL),
+            "retrieval_mode": "speaker_clarification",
+            "sql_main_source": execution_plan.sql_main_source,
+            "sql_prefilters": False,
+            "bm25_top_k": 0,
+            "vector_top_k": 0,
+            "rrf_top_n": 0,
+            "final_k": 0,
+            "used_rerank": False,
+            "general_question_only": False,
+            "sql_query": None,
+            "prefilter": {},
+            "sql_prefilters_trace": {},
+            "bm25": {},
+            "vector": {},
+            "rrf": {},
+            "rerank": {},
+            "direct_lookup": {},
+            "memory": {},
+        }
+        return "", [], clarification_retrieval
 
     if execution_plan.route == "direct":
         if execution_plan.direct_sub_intent == "social":
@@ -1990,8 +2226,8 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         retrieval = {
             **base_retrieval,
             "answer_model": answer_model,
-            "embedding_model": fallback_trace.get("embedding_model"),
-            "rerank_model": fallback_trace.get("rerank_model"),
+            "embedding_model": None,
+            "rerank_model": None,
             "retrieval_mode": "memory",
             "sql_main_source": False,
             "sql_prefilters": False,
@@ -2202,6 +2438,7 @@ def rag(payload: RagRequest) -> RagResponse:
             contextual_question=retrieval.get("contextual_question", payload.question),
             planner_prompt=retrieval["planner_prompt"],
             planner_response_raw=retrieval["planner_response_raw"],
+            speaker_resolution_trace=retrieval["speaker_resolution"],
             pydantic_verification=retrieval["pydantic_verification"],
             execution_plan_json=retrieval["execution_plan"],
             sql_query=sql_trace_for_storage(retrieval),
@@ -2211,7 +2448,7 @@ def rag(payload: RagRequest) -> RagResponse:
             rrf_trace=retrieval["rrf"],
             rerank_trace=retrieval["rerank"],
             source_evaluation_trace=retrieval["source_evaluation"],
-            retrieved_chunks=carousel_sources,
+            cited_chunks=carousel_sources,
             answer_prompt=answer_trace.get("prompt"),
             answer_response_raw=answer_trace.get("response_raw"),
         )

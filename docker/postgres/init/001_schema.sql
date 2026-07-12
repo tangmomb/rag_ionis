@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     contextual_question TEXT,
     planner_prompt TEXT,
     planner_response_raw TEXT,
+    speaker_resolution_trace JSONB,
     pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
     execution_plan_json JSONB,
     sql_query JSONB,
@@ -87,10 +88,10 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     rrf_trace JSONB,
     rerank_trace JSONB,
     source_evaluation_trace JSONB,
-    retrieved_chunks JSONB,
     answer_prompt TEXT,
     answer_response_raw TEXT,
     answer_message TEXT,
+    cited_chunks JSONB,
     date TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

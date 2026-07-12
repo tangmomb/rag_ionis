@@ -74,7 +74,7 @@
                   Qui est Emric ?
                 </button>
                 <button type="button" class="suggested-question">
-                  J'ai besoin de la transcription d'une vidéo ?
+                  J'ai besoin de la transcription d'une vidéo.
                 </button>
                 <button type="button" class="suggested-question">
                   Quelles questions ont été posées à Déborah ?
@@ -195,7 +195,9 @@
           /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
           (match, label, url) => {
             const token = `@@EXTERNAL_LINK_${protectedLinks.length}@@`;
-            const linkClass = /(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(url)
+            const linkClass = /(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(
+              url,
+            )
               ? ""
               : ' class="external-link-generic"';
             protectedLinks.push(

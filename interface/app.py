@@ -70,6 +70,7 @@ class PlannerPlan(BaseModel):
     sql_sub_intent: SqlSubIntent | None = None
     query_text: str
     query_text_bm25: str | None = None
+    title_hint: str | None = None
     speakers: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
@@ -88,6 +89,7 @@ class ExecutionPlan(BaseModel):
     raw_question: str
     query_text: str
     query_text_bm25: str
+    title_hint: str | None = None
     speakers: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
@@ -349,7 +351,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "Tu ne dois jamais pretendre acceder aux donnees, ni repondre a la question utilisateur. "
         "Tu ne dois jamais mentionner ni utiliser de details techniques d'implementation. "
         "Retourne uniquement un JSON valide avec les cles exactes: "
-        "route, direct_sub_intent, sql_sub_intent, query_text, query_text_bm25, speakers, published_after, published_before, use_memory, use_rag, sql_main_source, plan_notes. "
+        "route, direct_sub_intent, sql_sub_intent, query_text, query_text_bm25, title_hint, speakers, published_after, published_before, use_memory, use_rag, sql_main_source, plan_notes. "
         "route doit etre l'une de ces valeurs exactes: direct, rag, memory, multi_source, agent. "
         "direct = reponse sans recherche. "
         "rag = recherche documentaire dans les contenus video et documents associes. "
@@ -377,6 +379,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "'compare ce que dit la base et ce qu'on s'est deja dit' => route=multi_source. "
         "query_text doit contenir la reformulation utile pour la recherche semantique/vectorielle. "
         "query_text_bm25 doit etre une version tres courte orientee mots-cles. "
+        "title_hint contient le titre ou fragment de titre explicitement fourni par l'utilisateur, sinon null. "
         "query_text_bm25 ne doit contenir que des noms propres, acronymes, entites nommees, termes metier ou mots-cles concrets. "
         "Pour direct ou memory, query_text peut etre proche de la question brute. "
         "Pour rag ou sql, evite les verbes, les questions naturelles, les reformulations longues, les mots vides et les termes generiques comme "
@@ -558,6 +561,7 @@ def build_execution_plan(payload: RagRequest, planner_plan: PlannerPlan) -> Exec
         raw_question=payload.question,
         query_text=(planner_plan.query_text or payload.question).strip() or payload.question,
         query_text_bm25=bm25_query,
+        title_hint=planner_plan.title_hint,
         speakers=planner_plan.speakers,
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
@@ -742,6 +746,10 @@ def candidate_sql_clause(candidate_chunk_ids: list[int] | None) -> tuple[str, li
 def build_video_lookup_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
+    title_hint = query.title_hint
+    if title_hint:
+        clauses.append("unaccent(lower(v.title)) LIKE unaccent(lower(%s))")
+        params.append(f"%{title_hint}%")
     if query.speakers:
         append_speaker_filter_clauses(clauses, params, query.speakers)
     if query.published_after:
@@ -751,6 +759,19 @@ def build_video_lookup_conditions(query: ExecutionPlan) -> tuple[list[str], list
         clauses.append("v.published_at <= %s::timestamptz")
         params.append(query.published_before)
     return clauses, params
+
+
+def extract_video_title_hint(question: str) -> str | None:
+    """Extrait un titre explicitement fourni par l'utilisateur pour le SQL vidéo."""
+    quoted_match = re.search(r"[\"«“]([^\"»”]+)[\"»”]\s+dans\s+le\s+titre", question, flags=re.IGNORECASE)
+    if quoted_match:
+        return quoted_match.group(1).strip() or None
+
+    plain_match = re.search(r"(?:avec|intitulee?|intitulee?\s+la\s+video)\s+(.+?)\s+dans\s+le\s+titre", question, flags=re.IGNORECASE)
+    if plain_match:
+        return plain_match.group(1).strip(" \"«“»”'\t") or None
+
+    return None
 
 
 def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1853,6 +1874,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         client,
     )
     planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(contextual_question, client)
+    planner_plan.title_hint = planner_plan.title_hint or extract_video_title_hint(contextual_question)
     planner_plan.speakers = resolve_speaker_filters(contextual_question, planner_plan)
     apply_deterministic_sql_policy(contextual_question, planner_plan)
     execution_plan = build_execution_plan(payload, planner_plan)
@@ -2029,6 +2051,23 @@ def version() -> dict[str, str | None]:
     return {
         "started_at": _STARTED_AT.isoformat(timespec="seconds") if _STARTED_AT else None,
     }
+
+
+@app.get("/api/video-thumbnails", response_model=list[str])
+def video_thumbnails() -> list[str]:
+    with psycopg.connect(get_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT thumbnail_medium_url
+                FROM videos
+                WHERE thumbnail_medium_url IS NOT NULL
+                  AND thumbnail_medium_url <> ''
+                ORDER BY published_at DESC NULLS LAST, id DESC
+                LIMIT 24
+                """
+            )
+            return [row[0] for row in cursor.fetchall()]
 
 
 @app.get("/")

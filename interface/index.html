@@ -10,35 +10,24 @@
     <main class="app">
       <section class="workspace">
         <header class="topbar">
-          <div class="brand-inline"></div>
-          <div class="topbar-actions">
-            <button class="btn btn-ghost btn-top" type="button" id="clearButton">Nouveau</button>
+          <div class="header-thumbnails" id="headerThumbnails" aria-hidden="true"></div>
+          <div class="header-shade" aria-hidden="true"></div>
+          <div class="header-card">
+            <div class="brand-inline">
+              <svg class="brand-youtube-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8Z" />
+                <path class="brand-youtube-play" d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z" />
+              </svg>
+              <div>
+                <div class="brand-title">RAG IONIS</div>
+                <div class="brand-subtitle">Assistant de recherche vidéo</div>
+              </div>
+            </div>
           </div>
         </header>
 
         <section class="chat" aria-label="Conversation">
           <div class="messages" id="messages">
-            <article class="message assistant">
-              <div class="message-body">
-                <div class="message-content">
-Hello! What can I help you with today?
-                </div>
-                <div class="message-actions" aria-hidden="true">
-                  <button type="button" class="icon-btn" aria-label="Like">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M14 10V5.5c0-1.4-.8-2.7-2-3.3L8.7 9.1A2 2 0 0 0 8 10.5V19a2 2 0 0 0 2 2h6.2a3 3 0 0 0 2.9-2.3l1.4-6A2 2 0 0 0 18.6 10H14Z" />
-                      <path d="M4 10h4v11H4z" />
-                    </svg>
-                  </button>
-                  <button type="button" class="icon-btn" aria-label="Dislike">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M10 14v4.5c0 1.4.8 2.7 2 3.3l3.3-6.9a2 2 0 0 0 .7-1.4V5a2 2 0 0 0-2-2H7.8a3 3 0 0 0-2.9 2.3l-1.4 6A2 2 0 0 0 5.4 14H10Z" />
-                      <path d="M20 14h-4V3h4z" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </article>
           </div>
         </section>
 
@@ -70,7 +59,7 @@ Hello! What can I help you with today?
       const messages = document.getElementById("messages");
       const composer = document.getElementById("composer");
       const question = document.getElementById("question");
-      const clearButton = document.getElementById("clearButton");
+      const headerThumbnails = document.getElementById("headerThumbnails");
       let conversationId = null;
       const RAG_CONFIG = {
         apiUrl: "/api/rag",
@@ -82,6 +71,29 @@ Hello! What can I help you with today?
         useSql: true,
         useRerank: true,
       };
+
+      async function loadHeaderThumbnails() {
+        try {
+          const response = await fetch("/api/video-thumbnails");
+          if (!response.ok) return;
+          const thumbnails = await response.json();
+          if (!thumbnails.length) return;
+          const repeatedThumbnails = Array.from(
+            { length: Math.max(48, thumbnails.length * 2) },
+            (_, index) => thumbnails[index % thumbnails.length]
+          );
+          headerThumbnails.innerHTML = repeatedThumbnails
+            .map(
+              (url, index) =>
+                `<img class="header-thumbnail header-thumbnail-${(index % 6) + 1}" src="${escapeHtml(url)}" alt="" loading="lazy" />`
+            )
+            .join("");
+        } catch (_error) {
+          // Le header reste utilisable si les miniatures ne sont pas disponibles.
+        }
+      }
+
+      loadHeaderThumbnails();
 
       function escapeHtml(value) {
         return String(value)
@@ -350,12 +362,6 @@ Hello! What can I help you with today?
         if (event.key !== "Enter" || event.shiftKey) return;
         event.preventDefault();
         composer.requestSubmit();
-      });
-
-      clearButton.addEventListener("click", () => {
-        conversationId = null;
-        question.value = "";
-        question.focus();
       });
 
     </script>

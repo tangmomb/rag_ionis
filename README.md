@@ -64,18 +64,16 @@ L'interface Phoenix est disponible sur `http://127.0.0.1:6006/`. Elle n'est expo
 que sur la machine locale, car les traces peuvent contenir les questions, prompts,
 reponses et chunks recuperes.
 
-Le backend web utilise un environnement Python separe pour eviter un conflit entre
-les versions Protobuf requises par OpenTelemetry et par le modele spaCy du pipeline:
+Le projet utilise un environnement Python unique pour le pipeline GPU, l'API,
+Phoenix et Dagster:
 
 ```powershell
-py -3.10 -m venv .venv-interface
-.\.venv-interface\Scripts\python.exe -m pip install --upgrade pip
-.\.venv-interface\Scripts\python.exe -m pip install -r requirements-interface.txt
-.\.venv-interface\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-`start_app.bat` demarre automatiquement PostgreSQL, Phoenix et l'API avec ce venv
-quand il existe. Les variables utiles sont:
+`start_app.bat` demarre automatiquement tous les services avec ce venv. Les variables utiles sont:
 
 ```text
 PHOENIX_ENABLED=true
@@ -88,62 +86,36 @@ dans `chat.messages`. La colonne `trace_id` relie chaque message a sa trace Phoe
 Une fois la parite verifiee sur des requetes reelles, les colonnes JSONB techniques
 pourront etre retirees progressivement sans toucher aux messages, reponses et sources.
 
-## Orchestration du pipeline avec Prefect
+## Orchestration du pipeline avec Dagster
 
-Prefect supervise les memes scripts que `RUN_PIPELINE_INIT.py`, sans modifier les
-algorithmes OCR, WhisperX, chunking ou embeddings. Son interface locale est disponible
-sur `http://127.0.0.1:4200/` et affiche chaque sous-processus comme une task distincte,
-avec son etat, sa duree, ses logs et ses tentatives.
-
-Creer l'environnement d'orchestration separe:
+Dagster pilote directement les scripts OCR, WhisperX, OpenAI, chunking, embeddings,
+S3 et SQL. L'interface locale sur `http://127.0.0.1:3000/` présente chaque vidéo comme
+une partition et chaque étape comme un asset relançable.
 
 ```powershell
-py -3.10 -m venv .venv-prefect
-.\.venv-prefect\Scripts\python.exe -m pip install --upgrade pip
-.\.venv-prefect\Scripts\python.exe -m pip install -r requirements-prefect.txt
+.\start_app.bat
 ```
 
-Lancer un test non destructif de la connexion et des artifacts:
+Les jobs disponibles dans l'interface sont:
 
-```powershell
-docker compose up -d prefect
-.\run_pipeline_prefect.bat smoke
-```
+- `importer_videos`: collecte et téléchargement (Steps 01-02), puis création des partitions;
+- `traiter_video`: traitement d'une partition de la Step 03 jusqu'aux embeddings;
+- `publier_video`: publication S3 et mise à jour PostgreSQL/pgvector;
+- `pipeline_video_complet`: traitement et publication de bout en bout.
 
-Lancer ensuite le pipeline supervise avec les memes arguments que le runner original:
+La branche `has_sub` ou `no_sub` est choisie automatiquement après la Step 09. Les
+assets de l'autre branche sont indiqués comme non applicables. Les appels réseau et
+OpenAI ont deux retries, les étapes GPU lourdes un retry.
 
-```powershell
-.\run_pipeline_prefect.bat 3 --openai-mode normal --review-scope duo
-.\run_pipeline_prefect.bat all --openai-mode batch --review-scope all
-```
-
-Apres chaque etape par video, une fiche Markdown et une progression sont publiees dans
-Prefect. Selon les sorties deja produites, la fiche contient:
-
-- titre, duree, type de video et detection des sous-titres;
-- nombre d'images et repartition footage/graphic/mixture;
-- fichiers OCR, volumes et exemples de textes;
-- fichiers transcript et apercu du resume ou du transcript;
-- nombre de chunks, speakers, apercu des chunks et nombre d'embeddings;
-- commande executee et duree de l'etape.
-
-Les fichiers complets restent localement et dans S3; Prefect ne conserve que des
-resumes lisibles. Les variables de pilotage sont:
-
-```text
-PREFECT_API_URL=http://127.0.0.1:4200/api
-PIPELINE_PYTHON=.\.venv\Scripts\python.exe
-```
-
-Les appels reseau et OpenAI ont deux retries, les etapes GPU lourdes un retry, et les
-autres etapes aucun retry automatique. L'execution reste volontairement sequentielle
-pour cette premiere integration. Important: le comportement d'initialisation existant
-est conserve; un nouveau run complet supprime toujours les anciennes sorties locales
-et vide les tables applicatives avant de commencer.
+La remise à zéro des téléchargements et de la base n'est plus implicite. Pour reproduire
+l'ancien comportement destructif, activer explicitement `reset_before_import` dans le
+Launchpad du job `importer_videos`. Voir [utils/DAGSTER.md](utils/DAGSTER.md) pour le
+mode d'emploi détaillé.
 
 ## Environnement Python
 
-Le venv est dans `.venv` et contient deja PyTorch CUDA et Whisper.
+Le seul venv est `.venv`. Il contient PyTorch CUDA, PaddleOCR, WhisperX, l'API,
+OpenTelemetry/Phoenix et Dagster.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -163,17 +135,11 @@ Reinstallation equivalente:
 py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements-torch-cu126.txt
 python -m pip install -r requirements.txt
-python -m pip install -r requirements-paddle-cu126.txt
 ```
 
-Pour PaddleOCR GPU, la machine locale a ete verifiee avec un driver NVIDIA exposant CUDA 12.7 et un venv PyTorch en `cu126`. L'installation Paddle correspondante est:
-
-```powershell
-python -m pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-python -m pip install paddleocr
-```
+Les index CUDA 12.6 de PyTorch et Paddle sont configurés directement dans
+`requirements.txt`.
 
 ## Postgres + pgvector
 
@@ -566,10 +532,10 @@ python scripts/init/21_create_transcript_chunks.py
 
 Le script lit d'abord `outputs/transcripts/plain_transcript.txt`, sinon `outputs/transcripts/ocr_subtitles.txt`, et ecrit `outputs/chunks/transcript_chunks.json`.
 
-La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, quand ils apparaissent dans un item OCR dont `kind` n'est ni `subtitle` ni `ocr_error`. Le modele transformer francais `fr_dep_news_trf` est charge sur GPU par defaut, et le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele et CuPy CUDA 12 sont declares dans `requirements.txt`; si l'environnement ne trouve pas le modele, le reinstaller avec:
+La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, quand ils apparaissent dans un item OCR dont `kind` n'est ni `subtitle` ni `ocr_error`. Le modele francais `fr_core_news_lg` fournit le parser et la reconnaissance d'entites sans imposer l'ancienne version de Protobuf incompatible avec OpenTelemetry. Le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele est declare dans `requirements.txt`; si l'environnement ne le trouve pas, le reinstaller avec:
 
 ```powershell
-python -m spacy download fr_dep_news_trf
+python -m spacy download fr_core_news_lg
 ```
 
 ## Step 22 - Validate Chunk Speakers

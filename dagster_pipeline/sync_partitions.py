@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dagster as dg
 
-from dagster_pipeline.definitions import VIDEO_PARTITIONS, discover_local_videos
+from dagster_pipeline.runtime import VIDEO_PARTITIONS, discover_local_videos
 
 
 def main() -> None:

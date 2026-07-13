@@ -5,13 +5,13 @@ Interface locale pour explorer les sorties vidéo du pipeline et consulter Postg
 Depuis la racine du projet :
 
 ```powershell
-.\run_data_explorer.bat
+.\start_app.bat
 ```
 
-Puis ouvrir <http://127.0.0.1:8003/videos>.
+Puis ouvrir <http://127.0.0.1:8001/videos>.
 
-- Explorateur vidéo : <http://127.0.0.1:8003/videos>
-- Tables PostgreSQL : <http://127.0.0.1:8003/>
+- Explorateur vidéo : <http://127.0.0.1:8001/videos>
+- Tables PostgreSQL : <http://127.0.0.1:8001/>
 
 L'explorateur vidéo indexe automatiquement `downloads/youtube/*_init`, puis permet d'ouvrir chaque vidéo et de consulter son résumé, son transcript, les textes OCR, les images extraites, les chunks et les fichiers produits.
 

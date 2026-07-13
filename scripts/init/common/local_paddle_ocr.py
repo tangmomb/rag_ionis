@@ -1,5 +1,6 @@
 import inspect
 import importlib.machinery
+import os
 import re
 import statistics
 import sys
@@ -8,6 +9,29 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from common.pipeline_paths import existing_images_dir
+
+
+_NVIDIA_DLL_HANDLES = []
+
+
+def configure_nvidia_dll_paths():
+    """Expose les DLL CUDA installées par PyTorch au runtime Paddle sous Windows."""
+    if os.name != "nt":
+        return
+    nvidia_root = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
+    bin_dirs = [path / "bin" for path in nvidia_root.glob("*") if (path / "bin").is_dir()]
+    if not bin_dirs:
+        return
+    os.environ["PATH"] = os.pathsep.join(map(str, bin_dirs)) + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        for bin_dir in bin_dirs:
+            try:
+                _NVIDIA_DLL_HANDLES.append(os.add_dll_directory(str(bin_dir)))
+            except OSError:
+                pass
+
+
+configure_nvidia_dll_paths()
 
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")

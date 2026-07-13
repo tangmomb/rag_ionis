@@ -1,34 +1,92 @@
-# Prototype Dagster pour RAG IONIS
+# Dagster dans RAG IONIS
 
-Ce prototype présente les sorties locales du pipeline comme un graphe d'assets partitionné par identifiant YouTube :
-
-```text
-video_source -> extracted_images -> ocr_texts -> plain_transcript -> transcript_chunks -> chunk_embeddings
-```
-
-Il est volontairement non destructif : matérialiser les assets catalogue et contrôle les fichiers déjà produits, sans relancer les scripts OCR, OpenAI, embeddings, S3 ou SQL.
+Dagster est l'orchestrateur unique du pipeline d'initialisation. Il exécute les scripts
+métiers existants dans le venv GPU `.venv`, conserve l'historique des runs et présente
+la chaîne de données sous forme d'assets partitionnés par identifiant YouTube.
 
 ## Démarrage
 
 ```powershell
-py -3.10 -m venv .venv-dagster
-.\.venv-dagster\Scripts\python.exe -m pip install -r requirements-dagster.txt
-.\run_dagster.bat
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\start_app.bat
 ```
 
-Ouvrir ensuite <http://127.0.0.1:3000>.
+Ouvrir <http://127.0.0.1:3000>. `start_app.bat` est l'unique lanceur du projet : il
+démarre PostgreSQL, Phoenix, les interfaces applicatives et Dagster. Il synchronise
+également les vidéos locales comme partitions avant de démarrer Dagster.
 
-Dans **Assets**, sélectionner le groupe `rag_ionis_video`. Chaque identifiant YouTube est une partition. Le job `cataloguer_video` matérialise les six assets pour la partition choisie et exécute les contrôles de qualité.
+## Importer de nouvelles vidéos
 
-Le sensor `discover_video_partitions` détecte toutes les 15 secondes les nouvelles vidéos sous `downloads/youtube/*_init`. Le script de démarrage synchronise également les partitions avant de lancer l'interface.
+Dans **Jobs > importer_videos > Launchpad**, modifier les ressources si nécessaire:
 
-## Contrôles fournis
+```yaml
+resources:
+  import_settings:
+    config:
+      videos: "3"                 # entier, all, ou URL YouTube
+      cookies_from_browser: chrome
+      skip_data: false
+      force_download: false
+      reset_before_import: false
+```
 
-- fichier vidéo présent et non vide ;
-- au moins une image extraite ;
-- OCR non vide ;
-- transcript d'au moins 100 caractères ;
-- au moins un chunk ;
+`reset_before_import` reste `false` par défaut. Le passer à `true` supprime les anciens
+téléchargements et vide la base SQL avant l'import.
+
+## Traiter une vidéo
+
+Dans **Jobs > traiter_video**, cliquer **Materialize**, puis choisir la partition vidéo.
+Le graphe exécute:
+
+```text
+video_source
+  -> Steps 03..09
+  -> Steps 10..14
+  -> branche has_sub (15..23) OU no_sub (16..24)
+  -> pipeline_outputs
+```
+
+La route est lue dans `metadata/pipeline_analysis.json`. Les assets de la branche qui
+ne correspond pas à la vidéo sont matérialisés avec le statut `non applicable` et
+n'exécutent aucun script.
+
+Pour relancer seulement une partie, ouvrir **Catalog**, sélectionner l'asset désiré et
+cliquer **Materialize selected**. Dagster permet aussi de relancer un run échoué depuis
+le point de panne.
+
+Les options du traitement sont modifiables dans le Launchpad:
+
+```yaml
+resources:
+  pipeline_settings:
+    config:
+      force: false
+      openai_mode: normal
+      review_scope: duo
+      correction_mode: balanced
+      chunk_speaker_validation_model: gpt-5.4-nano
+      dry_run_upload: false
+      dry_run_sql: false
+```
+
+## Publier
+
+- `publier_video` exécute seulement l'upload S3 et la mise à jour SQL;
+- `pipeline_video_complet` enchaîne traitement et publication.
+
+Les assets publient leurs durées, commandes, compteurs de fichiers et un lien vers
+l'explorateur vidéo: <http://127.0.0.1:8001/videos>.
+
+## Contrôles qualité
+
+- fichier vidéo présent et non vide;
+- au moins une image extraite;
+- OCR non vide;
+- transcript d'au moins 100 caractères;
+- au moins un chunk;
 - exactement un embedding par chunk.
 
-Les matérialisations exposent des compteurs, aperçus Markdown, chemins locaux et un lien vers l'explorateur vidéo sur le port 8003.
+Le code de l'orchestration se trouve dans `dagster_pipeline/` et l'historique local
+dans `.dagster/` (ignoré par Git).

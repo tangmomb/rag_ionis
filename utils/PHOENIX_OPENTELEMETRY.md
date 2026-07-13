@@ -8,7 +8,7 @@ Dans ce projet, ils servent à comprendre ce qui se passe pendant un appel à `P
 
 Ils n’exécutent pas le RAG et ne remplacent pas PostgreSQL.
 
-Pour le pipeline batch de préparation des vidéos, voir [PREFECT.md](PREFECT.md).
+Pour le pipeline batch de préparation des vidéos, voir [DAGSTER.md](DAGSTER.md).
 
 ## Répartition des responsabilités
 
@@ -130,7 +130,7 @@ Le projet utilise actuellement l’endpoint HTTP `6006/v1/traces`. Le port gRPC 
 
 Les données Phoenix persistent dans le volume Docker `rag_ionis_phoenix_data`.
 
-Le backend utilise de préférence `.venv-interface`, car les dépendances OpenTelemetry/Phoenix sont isolées de l’environnement GPU du pipeline.
+Le backend, OpenTelemetry/Phoenix, Dagster et le pipeline GPU utilisent tous le venv unique `.venv`.
 
 ## Lire une trace pour diagnostiquer une mauvaise réponse
 

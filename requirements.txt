@@ -1,5 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+
 imageio-ffmpeg==0.6.0
 boto3==1.42.95
+dagster==1.13.13
+dagster-webserver==1.13.13
+arize-phoenix-otel==0.16.1
+openinference-instrumentation-openai==0.1.52
 cohere==5.20.0
 openai==2.44.0
 fastapi==0.118.0
@@ -13,12 +20,17 @@ python-dotenv==1.2.2
 requests==2.34.2
 numpy>=1.24
 joblib>=1.3
-scikit-learn>=1.9,<2
+scikit-learn==1.7.2
 Pillow>=10.0
-torch>=2.1
+torch==2.8.0+cu126
+torchvision==0.23.0+cu126
+torchaudio==2.8.0+cu126
+paddlepaddle-gpu==3.2.0
+paddleocr==3.7.0
 transformers>=4.40
 spacy>=3.8,<4
 cupy-cuda12x==14.1.1
-fr-dep-news-trf @ https://github.com/explosion/spacy-models/releases/download/fr_dep_news_trf-3.8.0/fr_dep_news_trf-3.8.0-py3-none-any.whl
+fr-core-news-lg @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_lg-3.8.0/fr_core_news_lg-3.8.0-py3-none-any.whl
 youtube-transcript-api==1.2.3
 yt-dlp==2026.6.9
+protobuf>=5,<8

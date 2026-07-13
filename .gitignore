@@ -1,4 +1,6 @@
 .venv/
+.venv-interface/
+.venv-prefect/
 __pycache__/
 *.py[cod]
 .env

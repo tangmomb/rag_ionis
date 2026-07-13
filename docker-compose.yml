@@ -18,6 +18,35 @@ services:
       timeout: 5s
       retries: 10
 
+  phoenix:
+    image: arizephoenix/phoenix:15.10.0
+    container_name: rag_ionis_phoenix
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PHOENIX_PORT:-6006}:6006"
+      - "127.0.0.1:${PHOENIX_GRPC_PORT:-4317}:4317"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - rag_ionis_phoenix_data:/mnt/data
+
+  prefect:
+    image: prefecthq/prefect:3.7.7-python3.12
+    container_name: rag_ionis_prefect
+    restart: unless-stopped
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "127.0.0.1:${PREFECT_UI_PORT:-4200}:4200"
+    environment:
+      PREFECT_HOME: /prefect-data
+      PREFECT_SERVER_UI_API_URL: http://127.0.0.1:${PREFECT_UI_PORT:-4200}/api
+    volumes:
+      - rag_ionis_prefect_data:/prefect-data
+
 volumes:
   rag_ionis_pgdata:
     name: rag_ionis_pgdata
+  rag_ionis_phoenix_data:
+    name: rag_ionis_phoenix_data
+  rag_ionis_prefect_data:
+    name: rag_ionis_prefect_data

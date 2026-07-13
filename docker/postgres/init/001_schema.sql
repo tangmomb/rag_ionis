@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     answer_response_raw TEXT,
     answer_message TEXT,
     cited_chunks JSONB,
-    date TIMESTAMPTZ NOT NULL DEFAULT now()
+    date TIMESTAMPTZ NOT NULL DEFAULT now(),
+    trace_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
@@ -106,3 +107,4 @@ CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_com
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_date ON chat.messages(date);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id);

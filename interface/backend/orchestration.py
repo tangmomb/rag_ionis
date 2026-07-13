@@ -1,0 +1,374 @@
+from __future__ import annotations
+
+from typing import Any
+
+from interface.backend.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_RERANK_MODEL,
+)
+from interface.backend.database import fetch_conversation_memory, fetch_recent_cited_video_ids
+from interface.backend.planner import (
+    apply_deterministic_sql_policy,
+    build_execution_plan,
+    build_social_answer,
+    extract_video_title_hint,
+    has_structured_sql_filters,
+    is_memory_video_comparison,
+    reformulate_question,
+    resolve_speaker_filters,
+    run_planner,
+    sanitize_video_title_hint,
+)
+from interface.backend.retrieval import lookup_video_document, retrieve_chunks
+from interface.backend.schemas import RagRequest
+from interface.backend.telemetry import trace_operation
+from interface.backend.utilities import get_openai_client, normalize_model_name
+
+
+def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_name: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    retrieval = {
+        **base_retrieval,
+        "direct_answer": answer,
+        "answer_model": None,
+        "embedding_model": None,
+        "rerank_model": None,
+        "retrieval_mode": route_name,
+        "sql_main_source": False,
+        "sql_prefilters": False,
+        "bm25_top_k": 0,
+        "vector_top_k": 0,
+        "rrf_top_n": 0,
+        "final_k": 0,
+        "used_rerank": False,
+        "general_question_only": True,
+        "sql_query": None,
+        "prefilter": {},
+        "sql_prefilters_trace": {},
+        "bm25": {},
+        "vector": {},
+        "rrf": {},
+        "rerank": {},
+        "direct_lookup": {},
+    }
+    return answer, [], retrieval
+
+
+def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    client = get_openai_client()
+    with trace_operation(
+        "rag.reformulation",
+        kind="CHAIN",
+        input_value={
+            "question": payload.question,
+            "conversation_id": payload.conversationId,
+        },
+    ) as reformulation_span:
+        contextual_question, reformulation_trace = reformulate_question(
+            payload.question,
+            payload.conversationId,
+            client,
+        )
+        reformulation_span.set_output(reformulation_trace)
+
+    with trace_operation(
+        "rag.planner",
+        kind="AGENT",
+        input_value={"question": contextual_question, "model": DEFAULT_PLANNER_MODEL},
+    ) as planner_span:
+        planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(
+            contextual_question,
+            client,
+        )
+        planner_plan.title_hint = sanitize_video_title_hint(
+            contextual_question,
+            planner_plan.title_hint or extract_video_title_hint(contextual_question),
+        )
+        apply_deterministic_sql_policy(contextual_question, planner_plan)
+        planner_span.set_output(
+            {
+                "prompt": planner_prompt,
+                "response_raw": planner_raw,
+                "validated": pydantic_verification,
+                "plan": planner_plan.model_dump(),
+            }
+        )
+
+    with trace_operation(
+        "rag.speaker_resolution",
+        kind="CHAIN",
+        input_value={
+            "question": contextual_question,
+            "planned_speakers": planner_plan.speakers,
+        },
+    ) as speaker_span:
+        planner_plan.speakers, speaker_resolution = resolve_speaker_filters(
+            contextual_question,
+            planner_plan,
+        )
+        speaker_span.set_output(speaker_resolution)
+    memory_video_ids: list[int] = []
+    memory_video_resolution: dict[str, Any] = {
+        "applied": False,
+        "reason": "not_a_memory_comparison",
+        "video_ids": [],
+    }
+    if is_memory_video_comparison(contextual_question):
+        memory_video_ids, memory_video_resolution = fetch_recent_cited_video_ids(
+            payload.conversationId,
+        )
+        if len(memory_video_ids) >= 2:
+            planner_plan.route = "multi_source"
+            planner_plan.use_memory = True
+            planner_plan.use_rag = False
+            planner_plan.sql_main_source = True
+            planner_plan.sql_sub_intent = "video_stats"
+            planner_plan.title_hint = None
+            planner_plan.speakers = []
+            memory_video_resolution["reason"] = "comparison_route_forced"
+
+    execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
+
+    base_retrieval = {
+        "route": execution_plan.route,
+        "direct_sub_intent": execution_plan.direct_sub_intent,
+        "sql_sub_intent": execution_plan.sql_sub_intent,
+        "planner_prompt": planner_prompt,
+        "planner_response_raw": planner_raw,
+        "pydantic_verification": pydantic_verification,
+        "question_reformulation": reformulation_trace,
+        "contextual_question": contextual_question,
+        "planner_plan": planner_plan.model_dump(),
+        "execution_plan": execution_plan.model_dump(),
+        "validated_query": execution_plan.model_dump(),
+        "speaker_resolution": speaker_resolution,
+        "memory_video_resolution": memory_video_resolution,
+    }
+
+    if speaker_resolution.get("ambiguous"):
+        clarification_retrieval = {
+            **base_retrieval,
+            "answer_model": normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL),
+            "embedding_model": normalize_model_name(payload.embeddingModel, DEFAULT_EMBEDDING_MODEL),
+            "rerank_model": normalize_model_name(payload.rerankModel or "", DEFAULT_RERANK_MODEL),
+            "retrieval_mode": "speaker_clarification",
+            "sql_main_source": execution_plan.sql_main_source,
+            "sql_prefilters": False,
+            "bm25_top_k": 0,
+            "vector_top_k": 0,
+            "rrf_top_n": 0,
+            "final_k": 0,
+            "used_rerank": False,
+            "general_question_only": False,
+            "sql_query": None,
+            "prefilter": {},
+            "sql_prefilters_trace": {},
+            "bm25": {},
+            "vector": {},
+            "rrf": {},
+            "rerank": {},
+            "direct_lookup": {},
+            "memory": {},
+        }
+        return "", [], clarification_retrieval
+
+    if execution_plan.route == "direct":
+        if execution_plan.direct_sub_intent == "social":
+            return build_direct_retrieval(base_retrieval, build_social_answer(contextual_question), "direct")
+        return build_direct_retrieval(
+            base_retrieval,
+            "Je peux repondre directement a ce type de message sans interroger la base, mais aucun sous-type direct n'a ete defini pour cette demande.",
+            "direct",
+        )
+
+    if execution_plan.route == "memory":
+        with trace_operation(
+            "rag.memory",
+            kind="RETRIEVER",
+            input_value={"conversation_id": payload.conversationId},
+        ) as memory_span:
+            memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
+            memory_span.set_output({"trace": memory_trace, "results": memory_items})
+        answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
+        retrieval = {
+            **base_retrieval,
+            "answer_model": answer_model,
+            "embedding_model": None,
+            "rerank_model": None,
+            "retrieval_mode": "memory",
+            "sql_main_source": False,
+            "sql_prefilters": False,
+            "bm25_top_k": 0,
+            "vector_top_k": 0,
+            "rrf_top_n": 0,
+            "final_k": 0,
+            "used_rerank": False,
+            "general_question_only": True,
+            "sql_query": None,
+            "prefilter": {},
+            "sql_prefilters_trace": {},
+            "bm25": {},
+            "vector": {},
+            "rrf": {},
+            "rerank": {},
+            "memory": memory_trace,
+            "memory_items": memory_items,
+        }
+        return "", [], retrieval
+
+    if execution_plan.route == "rag" and execution_plan.sql_main_source:
+        sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
+        with trace_operation(
+            "rag.structured_sql",
+            kind="RETRIEVER",
+            input_value={
+                "execution_plan": execution_plan.model_dump(),
+                "sql_sub_intent": sql_sub_intent,
+            },
+        ) as sql_span:
+            sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
+            sql_span.set_output({"trace": direct_trace, "results": sources})
+        fallback_trace: dict[str, Any] = {}
+        retrieval_mode = "rag+structured_sql"
+        if not sources:
+            try:
+                fallback_sources, fallback_trace = retrieve_chunks(payload, execution_plan)
+            except Exception as exc:  # pragma: no cover
+                fallback_trace = {"mode": "rag_fallback", "error": str(exc), "result_count": 0}
+                fallback_sources = []
+            if fallback_sources:
+                sources = fallback_sources
+                retrieval_mode = "rag+structured_sql_fallback"
+        answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
+        retrieval = {
+            **base_retrieval,
+            "answer_model": answer_model,
+            "embedding_model": fallback_trace.get("embedding_model"),
+            "rerank_model": fallback_trace.get("rerank_model"),
+            "retrieval_mode": retrieval_mode,
+            "sql_main_source": True,
+            "sql_prefilters": has_structured_sql_filters(execution_plan),
+            "bm25_top_k": fallback_trace.get("bm25_top_k", 0),
+            "vector_top_k": fallback_trace.get("vector_top_k", 0),
+            "rrf_top_n": fallback_trace.get("rrf_top_n", 0),
+            "final_k": len(sources),
+            "used_rerank": fallback_trace.get("used_rerank", False),
+            "general_question_only": not has_structured_sql_filters(execution_plan),
+            "sql_query": direct_trace["sql"],
+            "prefilter": fallback_trace.get("prefilter", {}),
+            "sql_prefilters_trace": fallback_trace.get("sql_prefilters_trace", {}),
+            "bm25": fallback_trace.get("bm25", {}),
+            "vector": fallback_trace.get("vector", {}),
+            "rrf": fallback_trace.get("rrf", {}),
+            "rerank": fallback_trace.get("rerank", {}),
+            "direct_lookup": {**direct_trace, "rag_fallback": fallback_trace},
+            "memory": {},
+            "sql_sub_intent": sql_sub_intent,
+        }
+        return "", sources, retrieval
+
+    if execution_plan.route in {"multi_source", "agent"}:
+        memory_items: list[dict[str, str]] = []
+        memory_trace: dict[str, Any] = {}
+        doc_sources: list[dict[str, Any]] = []
+        doc_trace: dict[str, Any] = {}
+        multi_source_actions: list[dict[str, Any]] = []
+
+        if execution_plan.use_memory:
+            with trace_operation(
+                "rag.memory",
+                kind="RETRIEVER",
+                input_value={"conversation_id": payload.conversationId},
+            ) as memory_span:
+                memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
+                memory_span.set_output({"trace": memory_trace, "results": memory_items})
+            multi_source_actions.append(
+                {
+                    "action": len(multi_source_actions) + 1,
+                    "source": "memory",
+                    "operation": "fetch_conversation_memory",
+                    "status": "completed",
+                    "request": {
+                        "sql": memory_trace.get("sql"),
+                        "params": memory_trace.get("params", []),
+                    },
+                    "response": memory_items,
+                    "result_count": len(memory_items),
+                }
+            )
+
+        if execution_plan.sql_main_source:
+            sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
+            with trace_operation(
+                "rag.structured_sql",
+                kind="RETRIEVER",
+                input_value={
+                    "execution_plan": execution_plan.model_dump(),
+                    "sql_sub_intent": sql_sub_intent,
+                },
+            ) as sql_span:
+                doc_sources, doc_trace = lookup_video_document(execution_plan, sql_sub_intent)
+                sql_span.set_output({"trace": doc_trace, "results": doc_sources})
+            multi_source_actions.append(
+                {
+                    "action": len(multi_source_actions) + 1,
+                    "source": "sql",
+                    "operation": "lookup_video_document",
+                    "sub_intent": sql_sub_intent,
+                    "status": "completed",
+                    "request": {
+                        "sql": doc_trace.get("sql"),
+                        "params": doc_trace.get("params", []),
+                    },
+                    "response": doc_sources,
+                    "result_count": len(doc_sources),
+                }
+            )
+        elif execution_plan.use_rag or execution_plan.route == "agent":
+            doc_sources, doc_trace = retrieve_chunks(payload, execution_plan)
+            multi_source_actions.append(
+                {
+                    "action": len(multi_source_actions) + 1,
+                    "source": "rag",
+                    "operation": "retrieve_chunks",
+                    "status": "completed",
+                    "request": doc_trace,
+                    "response": doc_sources,
+                    "result_count": len(doc_sources),
+                }
+            )
+
+        answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
+        retrieval = {
+            **base_retrieval,
+            "answer_model": answer_model,
+            "embedding_model": doc_trace.get("embedding_model"),
+            "rerank_model": doc_trace.get("rerank_model"),
+            "retrieval_mode": execution_plan.route,
+            "sql_main_source": execution_plan.sql_main_source,
+            "bm25_top_k": doc_trace.get("bm25_top_k", 0),
+            "vector_top_k": doc_trace.get("vector_top_k", 0),
+            "rrf_top_n": doc_trace.get("rrf_top_n", 0),
+            "final_k": doc_trace.get("final_k", len(doc_sources)),
+            "used_rerank": doc_trace.get("used_rerank", False),
+            "sql_prefilters": doc_trace.get("sql_prefilters", False),
+            "general_question_only": doc_trace.get("general_question_only", True),
+            "sql_query": doc_trace.get("sql_query"),
+            "prefilter": doc_trace.get("prefilter", {}) if doc_trace.get("retrieval_mode") == "prefilter+bm25+vector+rrf" else {},
+            "sql_prefilters_trace": doc_trace.get("sql_prefilters_trace", {}) if doc_trace.get("retrieval_mode") == "prefilter+bm25+vector+rrf" else {},
+            "bm25": doc_trace.get("bm25", {}),
+            "vector": doc_trace.get("vector", {}),
+            "rrf": doc_trace.get("rrf", {}),
+            "rerank": doc_trace.get("rerank", {}),
+            "direct_lookup": doc_trace.get("direct_lookup", {}),
+            "memory": memory_trace,
+            "memory_items": memory_items,
+            "multi_source_actions": multi_source_actions,
+        }
+        return "", doc_sources, retrieval
+
+    sources, retrieval = retrieve_chunks(payload, execution_plan)
+    retrieval["route"] = "rag"
+    retrieval.update(base_retrieval)
+    return "", sources, retrieval

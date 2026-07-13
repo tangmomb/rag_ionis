@@ -261,11 +261,13 @@ def run_step_numbered(index, total, label, command, env):
 
 
 def step_command(script_name, *args):
-    return [sys.executable, str(ROOT_DIR / "scripts" / "init" / script_name), *map(str, args)]
+    python_executable = os.getenv("PIPELINE_PYTHON", sys.executable)
+    return [python_executable, str(ROOT_DIR / "scripts" / "init" / script_name), *map(str, args)]
 
 
 def utils_command(script_name, *args):
-    return [sys.executable, str(ROOT_DIR / "utils" / script_name), *map(str, args)]
+    python_executable = os.getenv("PIPELINE_PYTHON", sys.executable)
+    return [python_executable, str(ROOT_DIR / "utils" / script_name), *map(str, args)]
 
 
 def run_video_script(index, total, label, script_name, run_dir, env, extra_args=None, force=False):

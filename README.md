@@ -30,6 +30,117 @@ Le endpoint `POST /api/rag`:
 - retombe sur une recherche SQL plein texte si besoin
 - renvoie la reponse finale et les sources retenues
 
+Le backend est decoupe par responsabilite:
+
+- `interface/app.py`: creation FastAPI, cycle de vie et fichiers statiques;
+- `interface/backend/api.py`: routes HTTP et conversion des erreurs en reponses API;
+- `interface/backend/schemas.py` et `interface/backend/config.py`: contrats Pydantic et configuration;
+- `interface/backend/database.py`: schema de chat, memoire et persistance SQL;
+- `interface/backend/planner.py`: reformulation, planification et resolution des filtres;
+- `interface/backend/retrieval.py`: SQL, BM25, recherche vectorielle, RRF et reranking;
+- `interface/backend/generation.py`: evaluation des sources et generation de la reponse;
+- `interface/backend/orchestration.py`: enchainement des etapes du RAG;
+- `interface/backend/telemetry.py`: instrumentation Phoenix/OpenTelemetry.
+
+## Observabilite RAG avec Phoenix
+
+Le backend envoie des traces OpenTelemetry vers une instance locale d'Arize Phoenix.
+Phoenix affiche la chronologie d'une requete RAG et le detail des etapes suivantes:
+
+- reformulation et planner OpenAI;
+- resolution des speakers;
+- prefiltre SQL, BM25 et recherche vectorielle;
+- fusion RRF et reranking Cohere;
+- evaluation des sources et generation finale;
+- ecriture du message dans PostgreSQL.
+
+Lancer PostgreSQL et Phoenix:
+
+```powershell
+docker compose up -d postgres phoenix
+```
+
+L'interface Phoenix est disponible sur `http://127.0.0.1:6006/`. Elle n'est exposee
+que sur la machine locale, car les traces peuvent contenir les questions, prompts,
+reponses et chunks recuperes.
+
+Le backend web utilise un environnement Python separe pour eviter un conflit entre
+les versions Protobuf requises par OpenTelemetry et par le modele spaCy du pipeline:
+
+```powershell
+py -3.10 -m venv .venv-interface
+.\.venv-interface\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-interface\Scripts\python.exe -m pip install -r requirements-interface.txt
+.\.venv-interface\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000
+```
+
+`start_app.bat` demarre automatiquement PostgreSQL, Phoenix et l'API avec ce venv
+quand il existe. Les variables utiles sont:
+
+```text
+PHOENIX_ENABLED=true
+PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006/v1/traces
+PHOENIX_PROJECT_NAME=rag-ionis
+```
+
+Pendant la phase de validation, les traces techniques existantes restent stockees
+dans `chat.messages`. La colonne `trace_id` relie chaque message a sa trace Phoenix.
+Une fois la parite verifiee sur des requetes reelles, les colonnes JSONB techniques
+pourront etre retirees progressivement sans toucher aux messages, reponses et sources.
+
+## Orchestration du pipeline avec Prefect
+
+Prefect supervise les memes scripts que `RUN_PIPELINE_INIT.py`, sans modifier les
+algorithmes OCR, WhisperX, chunking ou embeddings. Son interface locale est disponible
+sur `http://127.0.0.1:4200/` et affiche chaque sous-processus comme une task distincte,
+avec son etat, sa duree, ses logs et ses tentatives.
+
+Creer l'environnement d'orchestration separe:
+
+```powershell
+py -3.10 -m venv .venv-prefect
+.\.venv-prefect\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-prefect\Scripts\python.exe -m pip install -r requirements-prefect.txt
+```
+
+Lancer un test non destructif de la connexion et des artifacts:
+
+```powershell
+docker compose up -d prefect
+.\run_pipeline_prefect.bat smoke
+```
+
+Lancer ensuite le pipeline supervise avec les memes arguments que le runner original:
+
+```powershell
+.\run_pipeline_prefect.bat 3 --openai-mode normal --review-scope duo
+.\run_pipeline_prefect.bat all --openai-mode batch --review-scope all
+```
+
+Apres chaque etape par video, une fiche Markdown et une progression sont publiees dans
+Prefect. Selon les sorties deja produites, la fiche contient:
+
+- titre, duree, type de video et detection des sous-titres;
+- nombre d'images et repartition footage/graphic/mixture;
+- fichiers OCR, volumes et exemples de textes;
+- fichiers transcript et apercu du resume ou du transcript;
+- nombre de chunks, speakers, apercu des chunks et nombre d'embeddings;
+- commande executee et duree de l'etape.
+
+Les fichiers complets restent localement et dans S3; Prefect ne conserve que des
+resumes lisibles. Les variables de pilotage sont:
+
+```text
+PREFECT_API_URL=http://127.0.0.1:4200/api
+PIPELINE_PYTHON=.\.venv\Scripts\python.exe
+```
+
+Les appels reseau et OpenAI ont deux retries, les etapes GPU lourdes un retry, et les
+autres etapes aucun retry automatique. L'execution reste volontairement sequentielle
+pour cette premiere integration. Important: le comportement d'initialisation existant
+est conserve; un nouveau run complet supprime toujours les anciennes sorties locales
+et vide les tables applicatives avant de commencer.
+
 ## Environnement Python
 
 Le venv est dans `.venv` et contient deja PyTorch CUDA et Whisper.

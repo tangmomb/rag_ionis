@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import dagster as dg
 
+from dagster_pipeline.asset_metadata import (
+    changed_result_files,
+    snapshot_result_files,
+    step_output_metadata,
+)
 from dagster_pipeline.runtime import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -65,7 +70,9 @@ def make_step_asset(spec: StepSpec) -> dg.AssetsDefinition:
             context.log.info("Étape non applicable : route vidéo=%s, branche asset=%s", branch, spec.branch)
             return dg.MaterializeResult(
                 metadata={
-                    **explorer_metadata(video_id),
+                    "resultat": "Étape non applicable à cette vidéo",
+                    "raison": f"La route choisie est {branch or 'inconnue'}, cette étape appartient à {spec.branch}.",
+                    **explorer_metadata(video_id, video_dir),
                     "statut": "non applicable",
                     "route_video": branch or "inconnue",
                     "branche_asset": spec.branch,
@@ -74,20 +81,30 @@ def make_step_asset(spec: StepSpec) -> dg.AssetsDefinition:
 
         relative_script = spec.script.format(branch=branch)
         command = build_video_command(relative_script, video_dir, pipeline_settings, _extra_args(spec, pipeline_settings))
+        files_before = snapshot_result_files(video_dir)
         elapsed = execute_command(
             context,
             command,
             env={"PIPELINE_OPENAI_MODE": pipeline_settings.openai_mode},
         )
-        return dg.MaterializeResult(
-            metadata={
-                **output_snapshot(video_id, video_dir),
-                "statut": "exécuté",
+        changed_files = changed_result_files(files_before, snapshot_result_files(video_dir))
+        metadata = step_output_metadata(spec.name, video_id, video_dir)
+        metadata.update(
+            {
+                "statut_execution": "sorties générées ou mises à jour" if changed_files else "sorties existantes réutilisées",
+                "sorties_modifiees": len(changed_files),
                 "route_video": branch or "commune",
                 "duree_secondes": round(elapsed, 2),
                 "commande": dg.MetadataValue.text(subprocess.list2cmdline(command)),
             }
         )
+        if changed_files:
+            visible = changed_files[:20]
+            lines = [f"- `{path}`" for path in visible]
+            if len(changed_files) > len(visible):
+                lines.append(f"- … et {len(changed_files) - len(visible)} autre(s)")
+            metadata["sorties_modifiees_detail"] = dg.MetadataValue.md("\n".join(lines))
+        return dg.MaterializeResult(metadata=metadata)
 
     return step_asset
 
@@ -106,7 +123,8 @@ def video_source(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     )
     return dg.MaterializeResult(
         metadata={
-            **explorer_metadata(video_id),
+            "resultat": f"Vidéo source disponible : {metadata.get('title') or video_id}",
+            **explorer_metadata(video_id, video_dir),
             "titre": str(metadata.get("title") or video_id),
             "fichier": dg.MetadataValue.path(str(video_file)),
             "taille_mo": round(video_file.stat().st_size / 1024 / 1024, 2),
@@ -173,10 +191,18 @@ def pipeline_outputs(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     paths = output_paths(video_dir)
     transcript = read_text(paths["transcript"], limit=20_000)
     summary = read_text(paths["summary"], limit=8_000)
-    metadata = output_snapshot(video_id, video_dir)
+    route = video_branch(video_dir)
+    metadata = {
+        "resultat": f"Pipeline terminé — route {route}",
+        **output_snapshot(video_id, video_dir),
+    }
     metadata.update(
         {
-            "route_video": video_branch(video_dir),
+            "route_video": route,
+            "fichier_analyse": dg.MetadataValue.path(str(paths["analysis"])) if paths["analysis"] else "absent",
+            "fichier_transcript": dg.MetadataValue.path(str(paths["transcript"])) if paths["transcript"] else "absent",
+            "fichier_resume": dg.MetadataValue.path(str(paths["summary"])) if paths["summary"] else "absent",
+            "fichier_chunks": dg.MetadataValue.path(str(paths["chunks"])) if paths["chunks"] else "absent",
             "apercu_transcript": dg.MetadataValue.md(transcript[:2_500] or "Transcript absent."),
             "resume": dg.MetadataValue.md(summary or "Résumé absent."),
         }
@@ -210,8 +236,19 @@ def upload_outputs_to_s3(context: dg.AssetExecutionContext, pipeline_settings: P
     if pipeline_settings.dry_run_upload:
         extra.append("--dry-run")
     elapsed = execute_command(context, _publication_command("final_01_upload_outputs_to_s3.py", video_dir, pipeline_settings, extra))
+    publication_files = [path for path in video_dir.rglob("*") if path.is_file()]
+    publication_size = sum(path.stat().st_size for path in publication_files)
     return dg.MaterializeResult(
-        metadata={**explorer_metadata(video_id), "prefixe_s3": prefix, "duree_secondes": round(elapsed, 2)}
+        metadata={
+            "resultat": "Simulation de publication S3 terminée" if pipeline_settings.dry_run_upload else "Sorties publiées dans S3",
+            **explorer_metadata(video_id, video_dir),
+            "prefixe_s3": prefix,
+            "mode": "dry-run" if pipeline_settings.dry_run_upload else "écriture réelle",
+            "fichiers_a_publier": len(publication_files),
+            "taille_a_publier_mo": round(publication_size / 1024 / 1024, 2),
+            "force": pipeline_settings.force,
+            "duree_secondes": round(elapsed, 2),
+        }
     )
 
 
@@ -230,8 +267,22 @@ def update_sql_assets(context: dg.AssetExecutionContext, pipeline_settings: Pipe
     if pipeline_settings.dry_run_sql:
         extra.append("--dry-run")
     elapsed = execute_command(context, _publication_command("final_02_update_sql_assets.py", video_dir, pipeline_settings, extra))
+    paths = output_paths(video_dir)
+    analysis = read_json(paths["analysis"]) or {}
+    chunks = chunk_values(paths["chunks"])
+    embeddings = len(list((video_dir / "outputs" / "chunks").glob("*_embedding.json")))
     return dg.MaterializeResult(
-        metadata={**explorer_metadata(video_id), "prefixe_s3": prefix, "duree_secondes": round(elapsed, 2)}
+        metadata={
+            "resultat": "Simulation SQL terminée" if pipeline_settings.dry_run_sql else "Assets SQL/pgvector mis à jour",
+            **explorer_metadata(video_id, video_dir),
+            "prefixe_s3": prefix,
+            "mode": "dry-run" if pipeline_settings.dry_run_sql else "écriture réelle",
+            "video_type": str(analysis.get("video_type") or "inconnu"),
+            "chunks": len(chunks),
+            "embeddings": embeddings,
+            "couverture_embeddings_complete": bool(chunks) and len(chunks) == embeddings,
+            "duree_secondes": round(elapsed, 2),
+        }
     )
 
 
@@ -249,6 +300,54 @@ def images_are_not_empty(context: dg.AssetCheckExecutionContext) -> dg.AssetChec
     root = video_dir / "outputs" / "images"
     count = sum(1 for path in root.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS) if root.is_dir() else 0
     return dg.AssetCheckResult(passed=count > 0, metadata={"nombre_images": count})
+
+
+@dg.asset_check(asset=dg.AssetKey("step_05_detect_interviews"), description="Le manifeste contient une décision d'interview exploitable.")
+def interview_decision_is_valid(context: dg.AssetCheckExecutionContext) -> dg.AssetCheckResult:
+    _video_id, video_dir = selected_video(context)
+    path = video_dir / "outputs" / "interview" / "interview_detection_manifest.json"
+    payload = read_json(path)
+    valid = isinstance(payload, dict) and isinstance(payload.get("is_interview"), bool)
+    return dg.AssetCheckResult(
+        passed=valid,
+        metadata={
+            "is_interview": payload.get("is_interview") if isinstance(payload, dict) else "absent",
+            "sequences_detectees": int(payload.get("sequence_count", 0) or 0) if isinstance(payload, dict) else 0,
+            "manifest": dg.MetadataValue.path(str(path)),
+        },
+    )
+
+
+@dg.asset_check(asset=dg.AssetKey("step_06_infer_video_type"), description="Le type de vidéo appartient aux valeurs prises en charge.")
+def video_type_is_valid(context: dg.AssetCheckExecutionContext) -> dg.AssetCheckResult:
+    _video_id, video_dir = selected_video(context)
+    path = output_paths(video_dir)["analysis"]
+    payload = read_json(path) or {}
+    video_type = payload.get("video_type")
+    allowed = {"interview", "motion_design", "video_recording"}
+    return dg.AssetCheckResult(
+        passed=video_type in allowed,
+        metadata={
+            "video_type": str(video_type or "absent"),
+            "valeurs_acceptees": dg.MetadataValue.json(sorted(allowed)),
+        },
+    )
+
+
+@dg.asset_check(asset=dg.AssetKey("step_09_detect_ocr_subtitles"), description="La détection a choisi explicitement la route has_sub ou no_sub.")
+def subtitle_route_is_valid(context: dg.AssetCheckExecutionContext) -> dg.AssetCheckResult:
+    _video_id, video_dir = selected_video(context)
+    path = output_paths(video_dir)["analysis"]
+    payload = read_json(path) or {}
+    has_subtitles = payload.get("has_subtitles")
+    valid = isinstance(has_subtitles, bool)
+    return dg.AssetCheckResult(
+        passed=valid,
+        metadata={
+            "has_subtitles": has_subtitles if valid else "absent",
+            "route_choisie": ("has_sub" if has_subtitles else "no_sub") if valid else "inconnue",
+        },
+    )
 
 
 @dg.asset_check(asset=dg.AssetKey("step_09_detect_ocr_subtitles"), description="La sortie OCR contient du texte exploitable.")
@@ -287,7 +386,10 @@ ALL_ASSETS = [video_source, *STEP_ASSETS, pipeline_outputs, upload_outputs_to_s3
 ALL_CHECKS = [
     source_video_exists,
     images_are_not_empty,
+    interview_decision_is_valid,
+    video_type_is_valid,
     ocr_is_not_empty,
+    subtitle_route_is_valid,
     transcript_is_not_empty,
     chunks_are_not_empty,
     embeddings_cover_chunks,

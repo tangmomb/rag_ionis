@@ -18,10 +18,11 @@ class ImportSettings(dg.ConfigurableResource):
     """Paramètres visibles dans le Launchpad du job importer_videos."""
 
     videos: str = "3"
-    cookies_from_browser: str = "chrome"
-    skip_data: bool = False
+    cookies_from_browser: str = "edge"
     force_download: bool = False
-    reset_before_import: bool = False
+    min_delay_seconds: float = 15.0
+    max_delay_seconds: float = 45.0
+    reset_before_import: bool = True
     download_dir: str = str(DOWNLOAD_ROOT)
     pipeline_python: str = str(PIPELINE_PYTHON)
 
@@ -81,9 +82,6 @@ def prepare_import(context: dg.OpExecutionContext, import_settings: ImportSettin
 
 @dg.op(description="Step 01 — Collecter les métadonnées YouTube dans PostgreSQL.")
 def get_youtube_data(context: dg.OpExecutionContext, download_root: str, import_settings: ImportSettings) -> str:
-    if import_settings.skip_data:
-        context.log.info("Step 01 ignorée (skip_data=true).")
-        return download_root
     command = [
         str(_python(import_settings)),
         str(PROJECT_DIR / "scripts" / "init" / "01_get_data.py"),
@@ -107,6 +105,14 @@ def download_videos(context: dg.OpExecutionContext, download_root: str, import_s
     ]
     if import_settings.force_download:
         command.append("--force")
+    command.extend(
+        [
+            "--min-delay",
+            str(import_settings.min_delay_seconds),
+            "--max-delay",
+            str(import_settings.max_delay_seconds),
+        ]
+    )
     if import_settings.cookies_from_browser:
         command.extend(["--cookies-from-browser", import_settings.cookies_from_browser])
     execute_command(context, command)

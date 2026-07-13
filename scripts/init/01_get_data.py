@@ -18,7 +18,10 @@ CHANNEL = "https://www.youtube.com/@IONIS-STM/videos"
 DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
-DEFAULT_YTDLP_FORMAT_360P = "bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+# Keep the downloaded MP4 broadly compatible with Windows media players.
+# Generic bestaudio often resolves to Opus/WebM, which is not reliably
+# supported by the default Windows player.
+DEFAULT_YTDLP_FORMAT_360P = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best"
 DEFAULT_YTDLP_MERGE_FORMAT = "mp4"
 YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}

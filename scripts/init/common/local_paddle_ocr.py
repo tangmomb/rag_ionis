@@ -101,12 +101,14 @@ def image_files(video_images_dir):
 
 
 def image_video_dirs(video_dir):
-    candidates = []
-
     direct_images_dir = existing_images_dir(video_dir)
     if direct_images_dir.is_dir() and any(image_files(direct_images_dir)):
-        candidates.append(video_dir)
+        # This is already a video directory. Do not inspect its children:
+        # ``outputs`` also contains ``outputs/images`` and would otherwise be
+        # misidentified as a second video, producing outputs/outputs/...
+        return [video_dir]
 
+    candidates = []
     for child in sorted(video_dir.iterdir()):
         child_images_dir = existing_images_dir(child)
         if child.is_dir() and child_images_dir.is_dir() and any(image_files(child_images_dir)):

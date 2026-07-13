@@ -46,6 +46,20 @@ class DagsterPipelineTests(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=degQjvAoxvE"
         self.assertEqual(_selection_args(url), ["--video-url", url])
 
+    def test_pipeline_settings_expose_launchpad_choices(self) -> None:
+        fields = runtime.PipelineSettings.to_config_schema().as_field().config_type.fields
+
+        def choices(name: str) -> list[str]:
+            return [value.config_value for value in fields[name].config_type.enum_values]
+
+        self.assertEqual(choices("openai_mode"), ["normal", "batch"])
+        self.assertEqual(choices("review_scope"), ["duo", "all"])
+        self.assertEqual(choices("correction_mode"), ["conservative", "balanced", "aggressive"])
+        custom_model = runtime.PipelineSettings(chunk_speaker_validation_model="gpt-custom")
+        self.assertEqual(custom_model.chunk_speaker_validation_model, "gpt-custom")
+        with self.assertRaises(ValueError):
+            runtime.PipelineSettings(openai_mode="live")
+
 
 if __name__ == "__main__":
     unittest.main()

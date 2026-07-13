@@ -176,7 +176,7 @@ WHISPERX_LANGUAGE=fr
 WHISPERX_DEVICE=cuda
 WHISPERX_COMPUTE_TYPE=float16
 WHISPERX_BATCH_SIZE=16
-YTDLP_FORMAT=bestvideo[height<=360]+bestaudio/best[height<=360]/best
+YTDLP_FORMAT=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best
 YTDLP_MERGE_FORMAT=mp4
 ```
 

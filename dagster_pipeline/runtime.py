@@ -3,9 +3,11 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
+from urllib.parse import quote
 
 import dagster as dg
+from pydantic import Field
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -20,14 +22,26 @@ VIDEO_PARTITIONS = dg.DynamicPartitionsDefinition(name="youtube_videos")
 class PipelineSettings(dg.ConfigurableResource):
     """Options modifiables dans le Launchpad Dagster pour les traitements vidéo."""
 
-    pipeline_python: str = str(PIPELINE_PYTHON)
-    force: bool = False
-    openai_mode: str = "normal"
-    review_scope: str = "duo"
-    correction_mode: str = "balanced"
-    chunk_speaker_validation_model: str = "gpt-5.4-nano"
-    dry_run_upload: bool = False
-    dry_run_sql: bool = False
+    pipeline_python: str = Field(default=str(PIPELINE_PYTHON), description="Interpréteur Python utilisé par les scripts du pipeline.")
+    force: bool = Field(default=False, description="Régénérer les fichiers même lorsqu'une sortie existe déjà.")
+    openai_mode: Literal["normal", "batch"] = Field(
+        default="normal",
+        description="normal exécute immédiatement les appels OpenAI ; batch utilise la Batch API.",
+    )
+    review_scope: Literal["duo", "all"] = Field(
+        default="duo",
+        description="duo limite la revue à une image de test ; all traite tous les candidats.",
+    )
+    correction_mode: Literal["conservative", "balanced", "aggressive"] = Field(
+        default="balanced",
+        description="Niveau de correction des timecodes et des noms propres.",
+    )
+    chunk_speaker_validation_model: str = Field(
+        default="gpt-5.4-nano",
+        description="Nom ou alias du modèle OpenAI de validation des locuteurs ; ce champ reste libre.",
+    )
+    dry_run_upload: bool = Field(default=False, description="Simuler la publication S3 sans envoyer de fichier.")
+    dry_run_sql: bool = Field(default=False, description="Simuler la mise à jour SQL/pgvector sans écrire en base.")
 
 
 def read_json(path: Path | None) -> Any:
@@ -152,10 +166,49 @@ def ocr_count(path: Path | None) -> int:
     return 0
 
 
-def explorer_metadata(video_id: str) -> dict[str, Any]:
+def explorer_metadata(video_id: str, video_dir: Path | None = None) -> dict[str, Any]:
+    explorer_url = f"{EXPLORER_URL}?video={quote(video_id)}"
+    if video_dir is None:
+        return {
+            "video_id": video_id,
+            "ouvrir_dans_explorateur": dg.MetadataValue.url(explorer_url),
+        }
+
+    source = read_json(video_dir / "metadata" / "youtube_video_metadata.json") or {}
+    title = str(source.get("title") or video_id)
+    youtube_url = str(source.get("url") or f"https://www.youtube.com/watch?v={video_id}")
+    images_dir = video_dir / "outputs" / "images"
+    images = sorted(
+        (
+            path
+            for path in images_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ),
+        key=lambda path: (path.name, path.as_posix()),
+    ) if images_dir.is_dir() else []
+    if images:
+        preview_path = images[0].relative_to(video_dir).as_posix()
+        run_name = video_dir.parent.name
+        media_root = EXPLORER_URL.removesuffix("/videos")
+        preview_url = (
+            f"{media_root}/api/videos/{quote(run_name)}/{quote(video_id)}/media"
+            f"?path={quote(preview_path, safe='/')}"
+        )
+        preview_label = "Première frame extraite"
+    else:
+        preview_url = str(source.get("thumbnail_medium_url") or "").strip()
+        preview_label = "Miniature YouTube"
+
+    title_markdown = title.replace("[", "\\[").replace("]", "\\]")
+    preview_markdown = f"\n\n![{preview_label}]({preview_url})" if preview_url else ""
     return {
+        "titre_video": title,
+        "apercu_video": dg.MetadataValue.md(
+            f"### [{title_markdown}]({youtube_url}){preview_markdown}\n\n`{video_id}`"
+        ),
+        "image_apercu": dg.MetadataValue.url(preview_url) if preview_url else "indisponible",
         "video_id": video_id,
-        "ouvrir_dans_explorateur": dg.MetadataValue.url(f"{EXPLORER_URL}?video={video_id}"),
+        "ouvrir_dans_explorateur": dg.MetadataValue.url(explorer_url),
     }
 
 
@@ -172,7 +225,7 @@ def output_snapshot(video_id: str, video_dir: Path) -> dict[str, Any]:
     embeddings = len(list(chunks_dir.glob("*_embedding.json"))) if chunks_dir.is_dir() else 0
     transcript = read_text(paths["transcript"], limit=1_000_000)
     return {
-        **explorer_metadata(video_id),
+        **explorer_metadata(video_id, video_dir),
         "dossier_video": dg.MetadataValue.path(str(video_dir)),
         "images": images,
         "textes_ocr": ocr_count(paths["ocr"]),

@@ -1,8 +1,10 @@
 import argparse
 import json
 import os
+import random
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -17,7 +19,10 @@ from common.pipeline_paths import youtube_api_infos_path
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
-DEFAULT_FORMAT = "bestvideo[height=720]+bestaudio/best[height=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+# Prefer MP4 video + M4A audio.  Without the extension constraints yt-dlp
+# commonly selects WebM/Opus audio, which some Windows players cannot decode
+# after the streams are merged into an MP4 container.
+DEFAULT_FORMAT = "bestvideo[height=720][ext=mp4]+bestaudio[ext=m4a]/best[height=720][ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best"
 DEFAULT_MERGE_FORMAT = "mp4"
 YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
 LEGACY_INFO_SUFFIX = ".info.json"
@@ -230,6 +235,18 @@ def parse_args():
         help="Navigateur dont yt-dlp utilise les cookies pour acceder a YouTube.",
     )
     parser.add_argument(
+        "--min-delay",
+        type=float,
+        default=15.0,
+        help="Delai minimum en secondes entre deux telechargements. Defaut: 15",
+    )
+    parser.add_argument(
+        "--max-delay",
+        type=float,
+        default=45.0,
+        help="Delai maximum en secondes entre deux telechargements. Defaut: 45",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Liste les videos trouvees sans telecharger.",
@@ -240,6 +257,8 @@ def parse_args():
 def main():
     load_dotenv(override=True)
     args = parse_args()
+    if args.min_delay < 0 or args.max_delay < args.min_delay:
+        raise ValueError("Les delais doivent respecter 0 <= min-delay <= max-delay.")
     parent_download_dir = Path(args.download_dir)
 
     videos = (
@@ -262,8 +281,14 @@ def main():
 
     downloaded_count = 0
     failed = []
+    attempted_downloads = 0
     for video in videos:
+        if attempted_downloads:
+            delay = random.uniform(args.min_delay, args.max_delay)
+            print(f"[wait] pause de {delay:.1f} secondes avant le prochain telechargement")
+            time.sleep(delay)
         try:
+            attempted_downloads += 1
             download_video(
                 video,
                 download_dir,

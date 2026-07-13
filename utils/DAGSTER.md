@@ -26,14 +26,15 @@ resources:
   import_settings:
     config:
       videos: "3"                 # entier, all, ou URL YouTube
-      cookies_from_browser: chrome
-      skip_data: false
+      cookies_from_browser: edge
       force_download: false
-      reset_before_import: false
+      min_delay_seconds: 15
+      max_delay_seconds: 45
+      reset_before_import: true
 ```
 
-`reset_before_import` reste `false` par défaut. Le passer à `true` supprime les anciens
-téléchargements et vide la base SQL avant l'import.
+`reset_before_import` est `true` par défaut. Il supprime les anciens téléchargements et
+vide la base SQL avant l'import.
 
 ## Traiter une vidéo
 

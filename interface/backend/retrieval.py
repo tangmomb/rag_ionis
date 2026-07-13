@@ -20,11 +20,24 @@ from interface.backend.schemas import ExecutionPlan, RagRequest
 from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import (
     format_sql_for_trace,
+    format_sql_pretty,
     get_cohere_client,
     get_openai_client,
     normalize_model_name,
     resolve_cohere_rerank_model,
 )
+
+
+def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
+    formatted_sql = format_sql_pretty(trace.get("sql"))
+    if formatted_sql is None:
+        return
+    with trace_operation(
+        f"{span_name}.sql_formatted",
+        kind="CHAIN",
+        input_value={"params": trace.get("params", [])},
+    ) as sql_span:
+        sql_span.set_output_text(formatted_sql)
 
 
 def append_speaker_filter_clauses(clauses: list[str], params: list[Any], speakers: list[str]) -> None:
@@ -542,16 +555,21 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
 
     with trace_operation(
         "rag.retrieval.prefilter",
-        kind="RETRIEVER",
+        kind="CHAIN",
         input_value=execution_plan.model_dump(),
     ) as prefilter_span:
         prefilter_candidate_ids, prefilter_debug = prefilter_candidate_chunk_ids(execution_plan)
-        prefilter_span.set_output(
-            {
-                "candidate_chunk_ids": prefilter_candidate_ids,
-                "trace": prefilter_debug,
-            }
-        )
+        prefilter_output = {
+            "sql": prefilter_debug.get("sql"),
+            "params": prefilter_debug.get("params", []),
+            "applied": prefilter_debug.get("applied", False),
+            "sql_prefilters": prefilter_debug.get("sql_prefilters", False),
+            "candidate_count": prefilter_debug.get("candidate_count"),
+            "candidate_chunk_ids": prefilter_candidate_ids,
+            "general_question_only": prefilter_debug.get("general_question_only", True),
+        }
+        prefilter_span.set_output(prefilter_output)
+        trace_formatted_sql("rag.retrieval.prefilter", prefilter_debug)
 
     question_embedding: list[float] | None = None
     if client is not None and payload.useSql:
@@ -568,18 +586,19 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
 
     with trace_operation(
         "rag.retrieval.bm25",
-        kind="RETRIEVER",
+        kind="CHAIN",
         input_value={
             "query": execution_plan.query_text_bm25,
             "candidate_chunk_ids": prefilter_candidate_ids,
         },
     ) as bm25_span:
         bm25_chunks, bm25_debug = fetch_bm25_chunks(execution_plan, prefilter_candidate_ids)
-        bm25_span.set_output({"trace": bm25_debug, "results": bm25_chunks})
+        bm25_span.set_output({**bm25_debug, "results": bm25_chunks})
+        trace_formatted_sql("rag.retrieval.bm25", bm25_debug)
 
     with trace_operation(
         "rag.retrieval.vector",
-        kind="RETRIEVER",
+        kind="CHAIN",
         input_value={
             "query": execution_plan.query_text,
             "embedding_model": embedding_model,
@@ -591,7 +610,8 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             question_embedding,
             prefilter_candidate_ids,
         )
-        vector_span.set_output({"trace": vector_debug, "results": vector_chunks})
+        vector_span.set_output({**vector_debug, "results": vector_chunks})
+        trace_formatted_sql("rag.retrieval.vector", vector_debug)
 
     with trace_operation(
         "rag.retrieval.rrf",
@@ -620,12 +640,17 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
                 "limit": execution_plan.final_k,
             },
         ) as rerank_span:
+            rerank_span.set_attribute("reranker.query", execution_plan.query_text)
+            rerank_span.set_attribute("reranker.model_name", rerank_model)
+            rerank_span.set_attribute("reranker.top_k", execution_plan.final_k)
+            rerank_span.set_documents("reranker.input_documents", fused_chunks)
             final_chunks, rerank_debug = rerank_chunks(
                 execution_plan.query_text,
                 fused_chunks,
                 execution_plan.final_k,
                 rerank_model,
             )
+            rerank_span.set_documents("reranker.output_documents", final_chunks)
             rerank_span.set_output({"trace": rerank_debug, "results": final_chunks})
     else:
         final_chunks = fused_chunks[: execution_plan.final_k]

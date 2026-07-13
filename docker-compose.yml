@@ -19,7 +19,7 @@ services:
       retries: 10
 
   phoenix:
-    image: arizephoenix/phoenix:15.10.0
+    image: arizephoenix/phoenix:17.28.0
     container_name: rag_ionis_phoenix
     restart: unless-stopped
     ports:

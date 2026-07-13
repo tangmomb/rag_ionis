@@ -148,7 +148,14 @@ def progress_for_label(label: str) -> float | None:
     match = re.search(r"\bStep\s+(\d{1,2})\b", label, flags=re.IGNORECASE)
     if not match:
         return None
-    return min(100.0, int(match.group(1)) / 25 * 100)
+    # Step 23 is the last per-video processing step. Steps 24 and 25 only
+    # finalize publication to S3 and SQL, so the video itself is ready at 100%.
+    return min(100.0, int(match.group(1)) / 23 * 100)
+
+
+def is_video_report_step(label: str) -> bool:
+    match = re.search(r"\bStep\s+(\d{1,2})\b", label, flags=re.IGNORECASE)
+    return bool(match and int(match.group(1)) == 23)
 
 
 def build_video_markdown(video_dir: Path, label: str, command: list[str], elapsed_seconds: float) -> str:
@@ -287,15 +294,24 @@ def build_video_markdown(video_dir: Path, label: str, command: list[str], elapse
 def artifact_records(label: str, command: list[str], elapsed_seconds: float) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     progress = progress_for_label(label)
+    publish_report = is_video_report_step(label)
     for scope in resolve_artifact_scopes(command):
-        video_id = scope.name
+        metadata = _read_json(scope / "metadata" / "youtube_video_metadata.json") or {}
+        video_id = str(metadata.get("youtube_video_id") or scope.name)
+        title = str(metadata.get("title") or video_id)
         records.append(
             {
-                "key": slugify(f"{video_id}-{label}"),
+                "key": slugify(f"rapport-video-{video_id}"),
                 "progress_key": slugify(f"progress-{video_id}"),
                 "progress": progress,
-                "description": f"Sorties produites après {label} pour {video_id}",
-                "markdown": build_video_markdown(scope, label, command, elapsed_seconds),
+                "progress_description": f"{title} — {label}",
+                "publish_report": publish_report,
+                "description": f"Rapport final — {title} ({video_id})",
+                "markdown": (
+                    build_video_markdown(scope, label, command, elapsed_seconds)
+                    if publish_report
+                    else None
+                ),
             }
         )
     return records

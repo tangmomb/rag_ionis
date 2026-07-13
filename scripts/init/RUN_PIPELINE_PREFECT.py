@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from prefect import flow, get_run_logger, task
-from prefect.artifacts import create_markdown_artifact, create_progress_artifact
+from prefect.artifacts import (
+    create_markdown_artifact,
+    create_progress_artifact,
+    update_progress_artifact,
+)
 
 try:
     import RUN_PIPELINE_INIT as pipeline
@@ -20,6 +24,7 @@ from common.prefect_artifacts import artifact_records, command_argument, slugify
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_PIPELINE_PYTHON = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
 SAFE_ENV_OVERRIDES = {"PIPELINE_OPENAI_MODE", "PYTHONUTF8"}
+PROGRESS_ARTIFACT_IDS: dict[str, Any] = {}
 
 os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
 os.environ.setdefault("PIPELINE_PYTHON", str(DEFAULT_PIPELINE_PYTHON))
@@ -80,18 +85,30 @@ def execute_pipeline_step(
     published_artifacts = 0
     try:
         for record in artifact_records(label, command, elapsed_seconds):
-            create_markdown_artifact(
-                key=record["key"],
-                markdown=record["markdown"],
-                description=record["description"],
-            )
             if record["progress"] is not None:
-                create_progress_artifact(
-                    key=record["progress_key"],
-                    progress=record["progress"],
-                    description=f"Progression de {record['progress_key'].removeprefix('progress-')}",
+                progress_key = record["progress_key"]
+                artifact_id = PROGRESS_ARTIFACT_IDS.get(progress_key)
+                if artifact_id is None:
+                    artifact_id = create_progress_artifact(
+                        key=progress_key,
+                        progress=record["progress"],
+                        description=record["progress_description"],
+                    )
+                    PROGRESS_ARTIFACT_IDS[progress_key] = artifact_id
+                else:
+                    update_progress_artifact(
+                        artifact_id=artifact_id,
+                        progress=record["progress"],
+                        description=record["progress_description"],
+                    )
+                published_artifacts += 1
+            if record["publish_report"]:
+                create_markdown_artifact(
+                    key=record["key"],
+                    markdown=record["markdown"],
+                    description=record["description"],
                 )
-            published_artifacts += 1
+                published_artifacts += 1
     except Exception as exc:  # Les apercus ne doivent pas invalider un traitement reussi.
         logger.warning("Impossible de publier les artifacts Prefect: %s", exc)
 
@@ -124,6 +141,7 @@ def prefect_run_step(label: str, command: list[str], env: dict[str, str]) -> Non
 
 @flow(name="RAG IONIS - Pipeline initial", log_prints=True)
 def prefect_pipeline_flow() -> None:
+    PROGRESS_ARTIFACT_IDS.clear()
     pipeline_python = Path(os.environ["PIPELINE_PYTHON"])
     if not pipeline_python.exists():
         raise FileNotFoundError(

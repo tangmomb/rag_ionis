@@ -127,6 +127,41 @@ class TraceOperation:
         except Exception:
             pass
 
+    def set_output_text(self, value: str | None) -> None:
+        if self._span is None or value is None:
+            return
+        try:
+            from phoenix.otel import OpenInferenceMimeTypeValues, SpanAttributes
+
+            self._span.set_attribute(SpanAttributes.OUTPUT_VALUE, value)
+            self._span.set_attribute(
+                SpanAttributes.OUTPUT_MIME_TYPE,
+                OpenInferenceMimeTypeValues.TEXT.value,
+            )
+        except Exception:
+            pass
+
+    def set_documents(self, attribute_name: str, documents: list[dict[str, Any]]) -> None:
+        """Expose documents using the flattened OpenInference document convention."""
+        if self._span is None:
+            return
+        for index, document in enumerate(documents):
+            prefix = f"{attribute_name}.{index}.document"
+            if document.get("chunk_id") is not None:
+                self.set_attribute(f"{prefix}.id", str(document["chunk_id"]))
+            if document.get("text") is not None:
+                self.set_attribute(f"{prefix}.content", str(document["text"]))
+            for score_name in (
+                "cohere_relevance_score",
+                "rrf_score",
+                "bm25_score",
+                "vector_score",
+            ):
+                score = document.get(score_name)
+                if score is not None:
+                    self.set_attribute(f"{prefix}.score", float(score))
+                    break
+
     def set_session_id(self, conversation_id: int | str | None) -> None:
         if self._span is None or conversation_id is None:
             return

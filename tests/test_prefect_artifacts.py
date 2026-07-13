@@ -72,7 +72,9 @@ class PrefectArtifactTests(unittest.TestCase):
             )
 
             self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["progress"], 92.0)
+            self.assertEqual(records[0]["progress"], 100.0)
+            self.assertTrue(records[0]["publish_report"])
+            self.assertEqual(records[0]["key"], "rapport-video-video123")
             markdown = records[0]["markdown"]
             for expected in (
                 "Video de test",
@@ -86,8 +88,25 @@ class PrefectArtifactTests(unittest.TestCase):
                 self.assertIn(expected, markdown)
 
     def test_progress_is_derived_from_step_number(self) -> None:
+        self.assertEqual(progress_for_label("Step 23 - Create Chunk Embeddings"), 100.0)
         self.assertEqual(progress_for_label("Step 25 - Update SQL Assets"), 100.0)
         self.assertIsNone(progress_for_label("Initial cleanup"))
+
+    def test_intermediate_step_only_updates_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            video_dir.mkdir()
+            (video_dir / "video123.mp4").touch()
+
+            records = artifact_records(
+                "Step 11 - Filter Processed OCR",
+                ["python", "step.py", "--video-dir", str(video_dir)],
+                1.0,
+            )
+
+            self.assertEqual(len(records), 1)
+            self.assertFalse(records[0]["publish_report"])
+            self.assertIsNone(records[0]["markdown"])
 
 
 if __name__ == "__main__":

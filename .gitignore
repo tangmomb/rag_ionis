@@ -1,6 +1,8 @@
 .venv/
 .venv-interface/
 .venv-prefect/
+.venv-dagster/
+.dagster/
 __pycache__/
 *.py[cod]
 .env

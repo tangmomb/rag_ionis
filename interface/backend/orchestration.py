@@ -21,7 +21,7 @@ from interface.backend.planner import (
     run_planner,
     sanitize_video_title_hint,
 )
-from interface.backend.retrieval import lookup_video_document, retrieve_chunks
+from interface.backend.retrieval import lookup_video_document, retrieve_chunks, trace_formatted_sql
 from interface.backend.schemas import RagRequest
 from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import get_openai_client, normalize_model_name
@@ -128,7 +128,16 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             planner_plan.speakers = []
             memory_video_resolution["reason"] = "comparison_route_forced"
 
-    execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
+    with trace_operation(
+        "rag.execution_plan",
+        kind="CHAIN",
+        input_value={
+            "planner_plan": planner_plan.model_dump(),
+            "memory_video_ids": memory_video_ids,
+        },
+    ) as execution_plan_span:
+        execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
+        execution_plan_span.set_output(execution_plan.model_dump())
 
     base_retrieval = {
         "route": execution_plan.route,
@@ -185,11 +194,11 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
     if execution_plan.route == "memory":
         with trace_operation(
             "rag.memory",
-            kind="RETRIEVER",
+            kind="CHAIN",
             input_value={"conversation_id": payload.conversationId},
         ) as memory_span:
             memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
-            memory_span.set_output({"trace": memory_trace, "results": memory_items})
+            memory_span.set_output({**memory_trace, "results": memory_items})
         answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
         retrieval = {
             **base_retrieval,
@@ -221,14 +230,15 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
         with trace_operation(
             "rag.structured_sql",
-            kind="RETRIEVER",
+            kind="CHAIN",
             input_value={
                 "execution_plan": execution_plan.model_dump(),
                 "sql_sub_intent": sql_sub_intent,
             },
         ) as sql_span:
             sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
-            sql_span.set_output({"trace": direct_trace, "results": sources})
+            sql_span.set_output({**direct_trace, "results": sources})
+            trace_formatted_sql("rag.structured_sql", direct_trace)
         fallback_trace: dict[str, Any] = {}
         retrieval_mode = "rag+structured_sql"
         if not sources:
@@ -278,11 +288,11 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         if execution_plan.use_memory:
             with trace_operation(
                 "rag.memory",
-                kind="RETRIEVER",
+                kind="CHAIN",
                 input_value={"conversation_id": payload.conversationId},
             ) as memory_span:
                 memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
-                memory_span.set_output({"trace": memory_trace, "results": memory_items})
+                memory_span.set_output({**memory_trace, "results": memory_items})
             multi_source_actions.append(
                 {
                     "action": len(multi_source_actions) + 1,
@@ -302,14 +312,15 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
             with trace_operation(
                 "rag.structured_sql",
-                kind="RETRIEVER",
+                kind="CHAIN",
                 input_value={
                     "execution_plan": execution_plan.model_dump(),
                     "sql_sub_intent": sql_sub_intent,
                 },
             ) as sql_span:
                 doc_sources, doc_trace = lookup_video_document(execution_plan, sql_sub_intent)
-                sql_span.set_output({"trace": doc_trace, "results": doc_sources})
+                sql_span.set_output({**doc_trace, "results": doc_sources})
+                trace_formatted_sql("rag.structured_sql", doc_trace)
             multi_source_actions.append(
                 {
                     "action": len(multi_source_actions) + 1,

@@ -305,6 +305,11 @@ def parse_args():
         help="Dossier parent des telechargements. Defaut: downloads/youtube",
     )
     parser.add_argument(
+        "--cookies-from-browser",
+        choices=("brave", "chrome", "chromium", "edge", "firefox", "opera", "vivaldi"),
+        help="Navigateur dont yt-dlp utilise les cookies pour acceder a YouTube.",
+    )
+    parser.add_argument(
         "--skip-data",
         action="store_true",
         help="Ne lance pas la Step 01 de collecte YouTube.",
@@ -413,6 +418,8 @@ def main():
         step02 += ["--limit", str(video_limit)]
     if args.force:
         step02.append("--force")
+    if args.cookies_from_browser:
+        step02 += ["--cookies-from-browser", args.cookies_from_browser]
     run_step_numbered(2, total_steps, "Step 02 - Download Videos", step02, env)
 
     try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import unicodedata
 from importlib import import_module
 from typing import Any
@@ -74,6 +75,82 @@ def format_sql_for_trace(sql: str | None) -> str | None:
     if not sql:
         return None
     return " ".join(sql.split())
+
+
+_SQL_KEYWORDS = re.compile(
+    r"\b(UNION ALL|LEFT JOIN|RIGHT JOIN|FULL JOIN|INNER JOIN|OUTER JOIN|CROSS JOIN|"
+    r"GROUP BY|ORDER BY|NULLS FIRST|NULLS LAST|SELECT|FROM|WHERE|JOIN|ON|AND|OR|"
+    r"HAVING|LIMIT|OFFSET|UNION|RETURNING|VALUES|SET|AS|DESC|ASC)\b",
+    re.IGNORECASE,
+)
+_SQL_MAJOR_KEYWORDS = {
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP BY",
+    "ORDER BY",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "UNION ALL",
+    "RETURNING",
+    "VALUES",
+    "SET",
+}
+
+
+def format_sql_pretty(sql: str | None, indent_size: int = 2) -> str | None:
+    """Format traced SQL for a compact, readable Phoenix text panel."""
+    if not sql or not sql.strip():
+        return None
+
+    protected_values: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected_values.append(match.group(0))
+        return f"\x00{len(protected_values) - 1}\x00"
+
+    protected = re.sub(
+        r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--[^\n]*|/\*[\s\S]*?\*/",
+        protect,
+        sql,
+    )
+    normalized = re.sub(r"\s+", " ", protected.strip())
+    normalized = re.sub(r"\s*,\s*", ", ", normalized)
+    normalized = _SQL_KEYWORDS.sub(
+        lambda match: match.group(0).upper().replace(" ", "\x01"),
+        normalized,
+    )
+
+    lines: list[str] = []
+    current: list[str] = []
+    depth = 0
+
+    def flush() -> None:
+        if current:
+            lines.append(" " * (max(depth, 0) * indent_size) + " ".join(current).strip())
+            current.clear()
+
+    for token in normalized.split(" "):
+        display_token = token.replace("\x01", " ")
+        upper = display_token.upper()
+        depth += token.count("(")
+        depth -= token.count(")")
+        if upper in _SQL_MAJOR_KEYWORDS or upper.endswith(" JOIN"):
+            flush()
+            current.append(display_token)
+        elif upper in {"JOIN", "ON", "AND", "OR"}:
+            flush()
+            current.append(display_token)
+        else:
+            current.append(display_token)
+    flush()
+
+    formatted = "\n".join(lines)
+    for index, value in enumerate(protected_values):
+        formatted = formatted.replace(f"\x00{index}\x00", value)
+    return re.sub(r"\s+;", ";", formatted)
 
 
 def normalize_text(value: str) -> str:

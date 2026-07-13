@@ -162,7 +162,7 @@ def timestamped_download_dir(parent_dir):
     return download_dir
 
 
-def download_video(video, download_dir, parent_dir, force=False):
+def download_video(video, download_dir, parent_dir, force=False, cookies_from_browser=None):
     youtube_video_id, title, url, payload = video
     video_dir = download_dir / youtube_video_id
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -185,6 +185,8 @@ def download_video(video, download_dir, parent_dir, force=False):
         "quiet": False,
         "noplaylist": True,
     }
+    if cookies_from_browser:
+        options["cookiesfrombrowser"] = (cookies_from_browser, None, None, None)
 
     print(f"[download] {youtube_video_id} - {title}")
     with yt_dlp.YoutubeDL(options) as downloader:
@@ -223,6 +225,11 @@ def parse_args():
         help="Retelecharge meme si un fichier existe deja pour l'ID YouTube.",
     )
     parser.add_argument(
+        "--cookies-from-browser",
+        choices=("brave", "chrome", "chromium", "edge", "firefox", "opera", "vivaldi"),
+        help="Navigateur dont yt-dlp utilise les cookies pour acceder a YouTube.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Liste les videos trouvees sans telecharger.",
@@ -257,7 +264,13 @@ def main():
     failed = []
     for video in videos:
         try:
-            download_video(video, download_dir, parent_download_dir, force=args.force)
+            download_video(
+                video,
+                download_dir,
+                parent_download_dir,
+                force=args.force,
+                cookies_from_browser=args.cookies_from_browser,
+            )
             downloaded_count += 1
         except DownloadError as error:
             youtube_video_id = video[0]
@@ -267,6 +280,11 @@ def main():
     print(f"{downloaded_count} videos traitees dans {download_dir}.")
     if failed:
         print(f"{len(failed)} videos en erreur: {', '.join(failed)}")
+    if downloaded_count == 0:
+        raise RuntimeError(
+            "Aucune video n'a pu etre telechargee. Consulte les erreurs yt-dlp ci-dessus "
+            "et utilise --cookies-from-browser si YouTube demande une connexion."
+        )
 
 
 if __name__ == "__main__":

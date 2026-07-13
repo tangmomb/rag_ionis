@@ -87,7 +87,8 @@ L’interface permet de voir :
 Oui, à deux niveaux :
 
 - **pendant une étape**, les logs sont visibles au fur et à mesure ;
-- **après chaque étape réussie**, un nouvel artifact résume l’état courant des fichiers de la vidéo.
+- **après chaque étape réussie**, l’indicateur de progression unique de la vidéo est mis à jour ;
+- **après la dernière étape de traitement vidéo**, un rapport Markdown récapitule les sorties utiles.
 
 Un artifact peut contenir selon les sorties déjà disponibles :
 
@@ -103,9 +104,9 @@ Un artifact peut contenir selon les sorties déjà disponibles :
 - nombre de fichiers d’embeddings ;
 - commande exécutée et durée de l’étape.
 
-La progression est calculée à partir de `Step N / 25`.
+La progression d’une vidéo est calculée à partir de `Step N / 23`. Les Steps 24 et 25 finalisent ensuite l’upload S3 et la mise à jour SQL sans recréer d’artifact.
 
-Important : l’artifact est un **instantané publié à la fin d’une étape**, pas un affichage en temps réel de chaque élément OCR ou de chaque chunk produit à l’intérieur de cette étape.
+Important : le rapport est un **instantané publié à la fin du traitement d’une vidéo**, pas un affichage en temps réel de chaque élément OCR ou de chaque chunk produit à l’intérieur d’une étape. Le détail intermédiaire reste disponible dans les logs des tasks.
 
 Le générateur d’artifacts est dans [`scripts/init/common/prefect_artifacts.py`](../scripts/init/common/prefect_artifacts.py).
 
@@ -153,6 +154,14 @@ Exemples de lancements réels :
 ```
 
 Les arguments sont transmis au runner historique.
+
+Si YouTube répond avec une erreur `429` ou demande de confirmer que l'utilisateur n'est pas un robot, fermer le navigateur puis transmettre ses cookies à `yt-dlp` :
+
+```powershell
+.\run_pipeline_prefect.bat 3 --cookies-from-browser edge --openai-mode normal --review-scope duo
+```
+
+Le navigateur doit déjà être connecté à YouTube. Les cookies sont lus localement par `yt-dlp` et ne sont pas ajoutés aux paramètres Prefect ni aux artifacts.
 
 ## Règles de retry actuelles
 
@@ -231,7 +240,7 @@ Test-Path .\.venv\Scripts\python.exe
 
 ```text
 Prefect = exécuter, suivre et relancer le pipeline batch
-Artifacts = aperçus progressifs après chaque étape
+Artifacts = une progression et un rapport final par vidéo
 Fichiers/S3/PostgreSQL = données complètes et métier
 Phoenix = comprendre une requête interactive du RAG
 ```

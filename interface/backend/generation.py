@@ -135,6 +135,24 @@ def evaluate_source_sufficiency(
         action_hint = "answer"
         reason = "sources_available"
 
+    clarification_message = (
+        "Peux-tu préciser le titre exact de la vidéo ou le sujet dont tu parles ?"
+        if action_hint == "clarify"
+        else None
+    )
+    message_source = (
+        "speaker_resolution"
+        if reason == "ambiguous_speaker"
+        else "source_evaluation"
+        if action_hint == "clarify"
+        else None
+    )
+    selected_message = (
+        speaker_resolution.get("message")
+        if reason == "ambiguous_speaker"
+        else clarification_message
+    )
+
     return {
         "action_hint": action_hint,
         "reason": reason,
@@ -143,11 +161,9 @@ def evaluate_source_sufficiency(
         "top_cohere_relevance_score": max(cohere_scores) if cohere_scores else None,
         "source_scores": source_scores,
         "retrieval_mode": retrieval.get("retrieval_mode"),
-        "clarification_message": (
-            "Peux-tu préciser le titre exact de la vidéo ou le sujet dont tu parles ?"
-            if action_hint == "clarify"
-            else None
-        ),
+        "message_source": message_source,
+        "selected_message": selected_message,
+        "clarification_message": clarification_message,
     }
 
 

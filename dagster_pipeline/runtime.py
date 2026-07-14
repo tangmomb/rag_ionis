@@ -22,26 +22,42 @@ VIDEO_PARTITIONS = dg.DynamicPartitionsDefinition(name="youtube_videos")
 class PipelineSettings(dg.ConfigurableResource):
     """Options modifiables dans le Launchpad Dagster pour les traitements vidéo."""
 
-    pipeline_python: str = Field(default=str(PIPELINE_PYTHON), description="Interpréteur Python utilisé par les scripts du pipeline.")
-    force: bool = Field(default=False, description="Régénérer les fichiers même lorsqu'une sortie existe déjà.")
+    pipeline_python: str = Field(
+        default=str(PIPELINE_PYTHON),
+        description="Saisie libre : chemin de l'interpréteur Python utilisé pour lancer les scripts. Laisser la valeur par défaut sauf si l'environnement Python est ailleurs.",
+    )
+    force: bool = Field(
+        default=False,
+        description="Choix : false ou true. Si true, régénère les sorties même si elles existent déjà et peut écraser les résultats précédents.",
+    )
     openai_mode: Literal["normal", "batch"] = Field(
         default="normal",
-        description="normal exécute immédiatement les appels OpenAI ; batch utilise la Batch API.",
+        description="normal : appels OpenAI immédiats. batch : utilise la Batch API, généralement moins chère mais asynchrone.",
     )
     review_scope: Literal["duo", "all"] = Field(
         default="duo",
-        description="duo limite la revue à une image de test ; all traite tous les candidats.",
+        description="duo : revue d'une seule image par vidéo. all : revue de toutes les images candidates.",
     )
     correction_mode: Literal["conservative", "balanced", "aggressive"] = Field(
         default="balanced",
-        description="Niveau de correction des timecodes et des noms propres.",
+        description="Intensité de correction des timecodes et des noms propres : conservative, balanced ou aggressive.",
     )
     chunk_speaker_validation_model: str = Field(
         default="gpt-5.4-nano",
-        description="Nom ou alias du modèle OpenAI de validation des locuteurs ; ce champ reste libre.",
+        description="Saisie libre : nom ou alias du modèle OpenAI utilisé pour valider les locuteurs des segments audio. Par défaut : gpt-5.4-nano.",
     )
-    dry_run_upload: bool = Field(default=False, description="Simuler la publication S3 sans envoyer de fichier.")
-    dry_run_sql: bool = Field(default=False, description="Simuler la mise à jour SQL/pgvector sans écrire en base.")
+    image_review_model: str = Field(
+        default="gpt-5.6-luna",
+        description="Saisie libre : modèle OpenAI utilisé pour revoir les images candidates et décider si le texte est ajouté au montage. Par défaut : gpt-5.6-luna.",
+    )
+    dry_run_upload: bool = Field(
+        default=False,
+        description="Choix : false ou true. Si true, simule la publication S3 et liste les fichiers à envoyer sans rien téléverser.",
+    )
+    dry_run_sql: bool = Field(
+        default=False,
+        description="Choix : false ou true. Si true, simule la mise à jour SQL/pgvector sans modifier la base.",
+    )
 
 
 def read_json(path: Path | None) -> Any:

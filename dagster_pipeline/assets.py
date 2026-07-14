@@ -46,10 +46,17 @@ class StepSpec:
 def _extra_args(spec: StepSpec, settings: PipelineSettings) -> list[str]:
     if spec.extra_args == "review_scope" and settings.review_scope == "duo":
         return ["--limit-images", "1"]
+    if spec.extra_args == "image_review_model_review_scope":
+        args = ["--model", settings.image_review_model]
+        if settings.review_scope == "duo":
+            args += ["--limit-images", "1"]
+        return args
     if spec.extra_args == "correction_mode":
         return ["--mode", settings.correction_mode]
     if spec.extra_args == "speaker_model":
         return ["--model", settings.chunk_speaker_validation_model]
+    if spec.extra_args == "image_review_model":
+        return ["--model", settings.image_review_model]
     return []
 
 
@@ -146,7 +153,7 @@ COMMON_SPECS = [
     StepSpec("step_10_build_processed_ocr", "10 — Consolider l'OCR selon la route vidéo.", "{branch}/10_OCR_build_processed_ocr.py", "step_09_detect_ocr_subtitles", kinds=("ocr",)),
     StepSpec("step_11_filter_processed_ocr", "11 — Filtrer l'OCR consolidé.", "{branch}/11_OCR_filter_processed_ocr.py", "step_10_build_processed_ocr", kinds=("ocr",)),
     StepSpec("step_12_extract_review_candidates", "12 — Extraire les textes à revoir.", "{branch}/12_OCR_extract_other_text_review_candidates.py", "step_11_filter_processed_ocr", kinds=("ocr", "review")),
-    StepSpec("step_13_review_candidates", "13 — Revoir les candidats avec OpenAI.", "{branch}/13_OCR_review_other_text_candidates.py", "step_12_extract_review_candidates", extra_args="review_scope", kinds=("openai", "review"), retries=2),
+    StepSpec("step_13_review_candidates", "13 — Revoir les candidats avec OpenAI.", "{branch}/13_OCR_review_other_text_candidates.py", "step_12_extract_review_candidates", extra_args="image_review_model_review_scope", kinds=("openai", "review"), retries=2),
     StepSpec("step_14_apply_review", "14 — Appliquer la revue aux textes OCR.", "{branch}/14_OCR_apply_other_text_review.py", "step_13_review_candidates", kinds=("ocr", "review")),
 ]
 

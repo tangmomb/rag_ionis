@@ -39,6 +39,9 @@ vide la base SQL avant l'import.
 ## Traiter une vidéo
 
 Dans **Jobs > traiter_video**, cliquer **Materialize**, puis choisir la partition vidéo.
+Le job `traiter_video` est configuré avec une concurrence maximale de 1, y compris
+lorsqu'un backfill sélectionne plusieurs partitions vidéo : les runs `traiter_video`
+attendent leur tour dans la file Dagster.
 Le graphe exécute:
 
 ```text
@@ -68,6 +71,7 @@ resources:
       review_scope: duo
       correction_mode: balanced
       chunk_speaker_validation_model: gpt-5.4-nano
+      image_review_model: gpt-5.6-luna
       dry_run_upload: false
       dry_run_sql: false
 ```

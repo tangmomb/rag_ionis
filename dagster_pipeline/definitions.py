@@ -30,9 +30,14 @@ traiter_video = dg.define_asset_job(
     name="traiter_video",
     selection=dg.AssetSelection.groups(PROCESSING_GROUP),
     partitions_def=VIDEO_PARTITIONS,
+    run_tags={"pipeline_job": "traiter_video"},
+    executor_def=dg.multiprocess_executor.configured(
+        {"max_concurrent": 1},
+        name="traiter_video_one_at_a_time",
+    ),
     description=(
-        "Exécuter toutes les étapes 03 à 24 pour une vidéo. La branche has_sub/no_sub "
-        "est choisie automatiquement après la Step 09."
+        "Exécuter toutes les étapes 03 à 24 pour une vidéo, avec une seule étape active à la fois. "
+        "La branche has_sub/no_sub est choisie automatiquement après la Step 09."
     ),
 )
 

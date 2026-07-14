@@ -64,8 +64,8 @@ L'interface Phoenix est disponible sur `http://127.0.0.1:6006/`. Elle n'est expo
 que sur la machine locale, car les traces peuvent contenir les questions, prompts,
 reponses et chunks recuperes.
 
-Le projet utilise un environnement Python unique pour le pipeline GPU, l'API,
-Phoenix et Dagster:
+Le projet utilise un environnement Python unique pour le pipeline GPU, l'API et
+Phoenix:
 
 ```powershell
 py -3.10 -m venv .venv
@@ -86,36 +86,10 @@ dans `chat.messages`. La colonne `trace_id` relie chaque message a sa trace Phoe
 Une fois la parite verifiee sur des requetes reelles, les colonnes JSONB techniques
 pourront etre retirees progressivement sans toucher aux messages, reponses et sources.
 
-## Orchestration du pipeline avec Dagster
-
-Dagster pilote directement les scripts OCR, WhisperX, OpenAI, chunking, embeddings,
-S3 et SQL. L'interface locale sur `http://127.0.0.1:3000/` présente chaque vidéo comme
-une partition et chaque étape comme un asset relançable.
-
-```powershell
-.\start_app.bat
-```
-
-Les jobs disponibles dans l'interface sont:
-
-- `importer_videos`: collecte et téléchargement (Steps 01-02), puis création des partitions;
-- `traiter_video`: traitement d'une partition de la Step 03 jusqu'aux embeddings;
-- `publier_video`: publication S3 et mise à jour PostgreSQL/pgvector;
-- `pipeline_video_complet`: traitement et publication de bout en bout.
-
-La branche `has_sub` ou `no_sub` est choisie automatiquement après la Step 09. Les
-assets de l'autre branche sont indiqués comme non applicables. Les appels réseau et
-OpenAI ont deux retries, les étapes GPU lourdes un retry.
-
-La remise à zéro des téléchargements et de la base n'est plus implicite. Pour reproduire
-l'ancien comportement destructif, activer explicitement `reset_before_import` dans le
-Launchpad du job `importer_videos`. Voir [utils/DAGSTER.md](utils/DAGSTER.md) pour le
-mode d'emploi détaillé.
-
 ## Environnement Python
 
 Le seul venv est `.venv`. Il contient PyTorch CUDA, PaddleOCR, WhisperX, l'API,
-OpenTelemetry/Phoenix et Dagster.
+OpenTelemetry/Phoenix et le pipeline de préparation des vidéos.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1

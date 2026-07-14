@@ -1,6 +1,0 @@
-telemetry:
-  enabled: false
-
-run_queue:
-  # Limiter la charge CPU en n'autorisant qu'un seul run Dagster a la fois.
-  max_concurrent_runs: 1

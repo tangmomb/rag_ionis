@@ -25,12 +25,14 @@ DEFAULT_WAIT_FOR_BATCH = True
 LEGACY_CHUNKS_SUFFIX = "_chunks.json"
 LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 DEFAULT_MODEL = "gpt-5.4-nano"
+MAX_OUTPUT_TOKENS = 512
+MAX_LIVE_ATTEMPTS = 3
 SYSTEM_PROMPT = (
     "Tu verifies une liste de speakers detectes automatiquement dans une video. "
     "Garde uniquement les noms qui designent vraiment des personnes physiques. "
     "Rejete les entreprises, ecoles, services, metiers, titres, lieux, slogans, URLs, "
-    "mots OCR parasites et noms incomplets. Reponds uniquement par un tableau JSON "
-    "de chaines, en reprenant exactement les noms valides fournis."
+    "mots OCR parasites et noms incomplets. Reponds uniquement avec l'objet JSON "
+    "demande, en reprenant exactement les noms valides fournis."
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -174,37 +176,110 @@ def openai_client():
     return OpenAI()
 
 
+def response_diagnostics(response):
+    incomplete_details = getattr(response, "incomplete_details", None)
+    if hasattr(incomplete_details, "model_dump"):
+        incomplete_details = incomplete_details.model_dump()
+    error = getattr(response, "error", None)
+    if hasattr(error, "model_dump"):
+        error = error.model_dump()
+    return {
+        "status": getattr(response, "status", None),
+        "incomplete_details": incomplete_details,
+        "error": error,
+        "output_types": [getattr(item, "type", None) for item in getattr(response, "output", []) or []],
+    }
+
+
+def response_diagnostics_from_payload(payload):
+    return {
+        "status": payload.get("status"),
+        "incomplete_details": payload.get("incomplete_details"),
+        "error": payload.get("error"),
+        "output_types": [item.get("type") for item in payload.get("output", []) or []],
+    }
+
+
+def structured_output_config(speakers):
+    return {
+        "format": {
+            "type": "json_schema",
+            "name": "speaker_validation",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "valid_speakers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": speakers,
+                        },
+                    }
+                },
+                "required": ["valid_speakers"],
+                "additionalProperties": False,
+            },
+        }
+    }
+
+
+def supports_minimal_reasoning(model):
+    normalized = str(model).strip().lower()
+    return normalized.startswith("gpt-5")
+
+
 def build_response_request(model, speakers):
     user_prompt = (
         "Parmi cette liste de speakers, lesquels sont vraiment des personnes ? "
-        "Reponds uniquement par un tableau JSON de noms valides, sans commentaire.\n\n"
+        "Place uniquement les noms valides dans valid_speakers, sans commentaire.\n\n"
         + json.dumps(speakers, ensure_ascii=False, indent=2)
     )
     request_messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
-    return (
-        {
-            "model": model,
-            "input": request_messages,
-            "max_output_tokens": 512,
-        },
-        {
-            "model": model,
-            "messages": request_messages,
-            "api": "responses.create",
-            "max_output_tokens": 512,
-        },
-    )
+    body = {
+        "model": model,
+        "input": request_messages,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "text": structured_output_config(speakers),
+    }
+    if supports_minimal_reasoning(model):
+        body["reasoning"] = {"effort": "minimal"}
+    request_log = {
+        "model": model,
+        "messages": request_messages,
+        "api": "responses.create",
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "text": body["text"],
+    }
+    if "reasoning" in body:
+        request_log["reasoning"] = body["reasoning"]
+    return body, request_log
 
 
 def ask_gpt(client, model, speakers):
     body, request_log = build_response_request(model, speakers)
     if hasattr(client, "responses"):
-        response = client.responses.create(**body)
-        answer = response_text(response)
-        return answer, request_log
+        diagnostics = None
+        for attempt in range(1, MAX_LIVE_ATTEMPTS + 1):
+            response = client.responses.create(**body)
+            answer = response_text(response)
+            diagnostics = response_diagnostics(response)
+            if answer:
+                request_log["attempt_count"] = attempt
+                return answer, request_log
+            if attempt < MAX_LIVE_ATTEMPTS:
+                print(
+                    f"[warn] Reponse OpenAI vide (tentative {attempt}/{MAX_LIVE_ATTEMPTS}); relance... "
+                    f"details={json.dumps(diagnostics, ensure_ascii=False)}",
+                    flush=True,
+                )
+        raise RuntimeError(
+            f"OpenAI n'a renvoye aucun texte apres {MAX_LIVE_ATTEMPTS} tentatives. "
+            f"Details: {json.dumps(diagnostics, ensure_ascii=False)}"
+        )
 
     response = client.chat.completions.create(
         model=model,
@@ -214,11 +289,15 @@ def ask_gpt(client, model, speakers):
     answer = response.choices[0].message.content or ""
     request_log["api"] = "chat.completions.create"
     request_log["max_completion_tokens"] = body["max_output_tokens"]
+    if not answer.strip():
+        raise RuntimeError("OpenAI n'a renvoye aucun texte via chat.completions.create.")
     return answer, request_log
 
 
 def parse_valid_speakers(answer, original_speakers):
     text = str(answer).strip()
+    if not text:
+        raise ValueError("Reponse OpenAI vide pendant la validation des speakers.")
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
@@ -227,7 +306,12 @@ def parse_valid_speakers(answer, original_speakers):
         if match:
             text = match.group(0)
 
-    parsed = json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Reponse OpenAI non JSON: {text[:500]!r}") from error
+    if isinstance(parsed, dict):
+        parsed = parsed.get("valid_speakers")
     if not isinstance(parsed, list):
         raise ValueError(f"Reponse GPT inattendue: {answer!r}")
 
@@ -439,6 +523,12 @@ def finalize_batch_validation(video_path, model, source, target, log_target, spe
 
     raw_payload = response.get("body") or {}
     answer = response_text_from_payload(raw_payload).strip()
+    if speakers and not answer:
+        diagnostics = response_diagnostics_from_payload(raw_payload)
+        raise RuntimeError(
+            "Le batch OpenAI n'a renvoye aucun texte pour speaker-validation. "
+            f"Details: {json.dumps(diagnostics, ensure_ascii=False)}"
+        )
     valid_speakers = parse_valid_speakers(answer, speakers) if speakers else []
     _body, request_log = build_response_request(model, speakers)
     return write_validation_outputs(model, source, target, log_target, speakers, valid_speakers, answer or "[]", request_log, payload)

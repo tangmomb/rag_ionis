@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import psycopg
-
 from interface.backend.config import (
     DEFAULT_BM25_LIMIT,
+    DEFAULT_EMBEDDING_DIMENSIONS,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_FINAL_K,
     DEFAULT_FUSION_K,
@@ -15,7 +14,7 @@ from interface.backend.config import (
     DEFAULT_RRF_TOP_N,
     DEFAULT_VECTOR_LIMIT,
 )
-from interface.backend.database import get_database_url
+from interface.backend.database import connect_database
 from interface.backend.schemas import ExecutionPlan, RagRequest
 from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import (
@@ -94,7 +93,7 @@ def prefilter_candidate_chunk_ids(query: ExecutionPlan) -> tuple[list[int] | Non
         LIMIT %s
     """
     sql_params = [*params, DEFAULT_PREFILTER_LIMIT]
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql, sql_params)
             rows = cursor.fetchall()
@@ -160,7 +159,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             LIMIT 10
         """
         sql_params = params
-        with psycopg.connect(get_database_url()) as connection:
+        with connect_database() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(sql, sql_params)
                 rows = cursor.fetchall()
@@ -218,7 +217,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             ORDER BY v.published_at DESC NULLS LAST, v.id DESC
             LIMIT 10
         """
-        with psycopg.connect(get_database_url()) as connection:
+        with connect_database() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
@@ -263,7 +262,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             ORDER BY v.published_at DESC NULLS LAST, v.id DESC
             LIMIT 10
         """
-        with psycopg.connect(get_database_url()) as connection:
+        with connect_database() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
@@ -325,7 +324,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
         LIMIT 1
     """
     sql_params = [terms, *params]
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql, sql_params)
             row = cursor.fetchone()
@@ -380,7 +379,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
         LIMIT %s
     """
     params = [terms, terms, *candidate_params, DEFAULT_BM25_LIMIT]
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
             rows = cursor.fetchall()
@@ -426,16 +425,25 @@ def fetch_vector_chunks(
             c.chunk_index,
             c.content,
             c.speakers,
-            1 - (c.embedding <=> %s::vector) AS score
+            1 - (c.embedding <=> %s::vector(2000)) AS score
         FROM chunks c
         JOIN videos v ON v.id = c.video_id
         WHERE c.embedding IS NOT NULL
+          AND c.embedding_model = %s
+          AND c.embedding_dimensions = %s
         {candidate_sql}
-        ORDER BY c.embedding <=> %s::vector ASC
+        ORDER BY c.embedding <=> %s::vector(2000) ASC
         LIMIT %s
     """
-    params = [vector_literal, *candidate_params, vector_literal, DEFAULT_VECTOR_LIMIT]
-    with psycopg.connect(get_database_url()) as connection:
+    params = [
+        vector_literal,
+        DEFAULT_EMBEDDING_MODEL,
+        DEFAULT_EMBEDDING_DIMENSIONS,
+        *candidate_params,
+        vector_literal,
+        DEFAULT_VECTOR_LIMIT,
+    ]
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
             rows = cursor.fetchall()
@@ -551,6 +559,10 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
     client = get_openai_client()
     answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
     embedding_model = normalize_model_name(payload.embeddingModel, DEFAULT_EMBEDDING_MODEL)
+    if embedding_model != DEFAULT_EMBEDDING_MODEL:
+        raise ValueError(
+            f"Le modele d'embedding doit correspondre a la base: {DEFAULT_EMBEDDING_MODEL}."
+        )
     rerank_model = normalize_model_name(payload.rerankModel or "", DEFAULT_RERANK_MODEL)
 
     with trace_operation(
@@ -576,9 +588,17 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         with trace_operation(
             "rag.retrieval.embedding",
             kind="CHAIN",
-            input_value={"model": embedding_model, "text": query_terms(execution_plan)},
+            input_value={
+                "model": embedding_model,
+                "dimensions": DEFAULT_EMBEDDING_DIMENSIONS,
+                "text": query_terms(execution_plan),
+            },
         ) as embedding_span:
-            embedding_response = client.embeddings.create(model=embedding_model, input=query_terms(execution_plan))
+            embedding_response = client.embeddings.create(
+                model=embedding_model,
+                dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
+                input=query_terms(execution_plan),
+            )
             question_embedding = embedding_response.data[0].embedding
             embedding_span.set_output(
                 {"model": embedding_model, "dimensions": len(question_embedding)}

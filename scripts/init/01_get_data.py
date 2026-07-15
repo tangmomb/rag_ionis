@@ -169,6 +169,7 @@ def video_info_payload(video):
     video_id = video["id"]
     published_at = parse_datetime(snippet.get("publishedAt"))
     return {
+        **video,
         "youtube_video_id": video_id,
         "title": snippet["title"],
         "description": snippet.get("description"),

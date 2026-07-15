@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 
 TABLES_BY_SCHEMA = {
-    "public": (
+    "data": (
         "comments",
         "chunks",
         "transcripts",

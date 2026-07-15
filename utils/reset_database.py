@@ -18,11 +18,25 @@ if hasattr(sys.stderr, "reconfigure"):
 def reset_database(cursor):
     cursor.execute("DROP SCHEMA IF EXISTS chat CASCADE")
     print("[reset] schema chat supprime")
-    cursor.execute("DROP SCHEMA IF EXISTS public CASCADE")
-    cursor.execute("CREATE SCHEMA public")
-    cursor.execute("GRANT USAGE ON SCHEMA public TO PUBLIC")
-    cursor.execute("GRANT ALL ON SCHEMA public TO CURRENT_USER")
-    print("[reset] schema public recree")
+    cursor.execute(
+        """
+        DROP TABLE IF EXISTS
+            public.comments,
+            public.chunks,
+            public.transcripts,
+            public.video_transcripts,
+            public.stats,
+            public.video_stats,
+            public.video_daily_stats,
+            public.videos
+        CASCADE
+        """
+    )
+    cursor.execute("DROP SCHEMA IF EXISTS data CASCADE")
+    cursor.execute("CREATE SCHEMA data")
+    cursor.execute("GRANT USAGE ON SCHEMA data TO PUBLIC")
+    cursor.execute("GRANT ALL ON SCHEMA data TO CURRENT_USER")
+    print("[reset] schema data recree")
 
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     cursor.execute(schema_sql)

@@ -5,7 +5,6 @@ import random
 import shutil
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -14,7 +13,7 @@ from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 from yt_dlp.utils import DownloadError
 
-from common.pipeline_paths import youtube_api_infos_path
+from common.pipeline_paths import consolidate_init_dir, youtube_api_infos_path
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -135,6 +134,46 @@ def existing_download(video_dir, youtube_video_id):
     return matches[0] if matches else None
 
 
+def previous_download(parent_dir, youtube_video_id, exclude_video_dir=None):
+    excluded = Path(exclude_video_dir).resolve() if exclude_video_dir else None
+    run_dirs = sorted(
+        (path for path in Path(parent_dir).iterdir() if path.is_dir()),
+        reverse=True,
+    ) if Path(parent_dir).is_dir() else []
+    for run_dir in run_dirs:
+        video_dir = run_dir / youtube_video_id
+        if excluded is not None and video_dir.resolve() == excluded:
+            continue
+        existing = existing_download(video_dir, youtube_video_id)
+        if existing:
+            return existing
+    return None
+
+
+def copy_reused_file(source, target):
+    source_path = Path(source)
+    target_path = Path(target)
+    if source_path.suffix.lower() in VIDEO_EXTENSIONS:
+        try:
+            os.link(source_path, target_path)
+            return str(target_path)
+        except OSError:
+            pass
+    return shutil.copy2(source_path, target_path)
+
+
+def reuse_video_directory(source_video, target_video_dir):
+    source_video_dir = Path(source_video).parent
+    target_video_dir = Path(target_video_dir)
+    print(f"[reuse] {source_video_dir} -> {target_video_dir}")
+    shutil.copytree(
+        source_video_dir,
+        target_video_dir,
+        dirs_exist_ok=True,
+        copy_function=copy_reused_file,
+    )
+
+
 def copy_video_info(video_dir, youtube_video_id, parent_dir):
     source = next((path for path in info_candidates(info_cache_dir(parent_dir), youtube_video_id) if path.exists()), None)
     if source is None:
@@ -156,30 +195,29 @@ def write_video_info(video_dir, youtube_video_id, payload):
     return target
 
 
-def timestamped_download_dir(parent_dir):
-    timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M')}_init"
-    download_dir = parent_dir / timestamp
-    suffix = 2
-    while download_dir.exists():
-        download_dir = parent_dir / f"{timestamp}_{suffix}"
-        suffix += 1
-    download_dir.mkdir(parents=True, exist_ok=False)
-    return download_dir
-
-
 def download_video(video, download_dir, parent_dir, force=False, cookies_from_browser=None):
     youtube_video_id, title, url, payload = video
     video_dir = download_dir / youtube_video_id
-    video_dir.mkdir(parents=True, exist_ok=True)
-    output_template = str(video_dir / "%(id)s.%(ext)s")
 
     if not force:
         existing = existing_download(video_dir, youtube_video_id)
+        if not existing:
+            previous = previous_download(
+                parent_dir,
+                youtube_video_id,
+                exclude_video_dir=video_dir,
+            )
+            if previous:
+                reuse_video_directory(previous, video_dir)
+                existing = existing_download(video_dir, youtube_video_id)
         if existing:
             print(f"[skip] {youtube_video_id} deja telecharge: {existing}")
             if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
                 write_video_info(video_dir, youtube_video_id, payload)
             return existing
+
+    video_dir.mkdir(parents=True, exist_ok=True)
+    output_template = str(video_dir / "%(id)s.%(ext)s")
 
     options = {
         "format": DEFAULT_FORMAT,
@@ -276,19 +314,25 @@ def main():
         print(f"{len(videos)} videos trouvees.")
         return
 
-    download_dir = timestamped_download_dir(parent_download_dir)
+    download_dir = consolidate_init_dir(parent_download_dir)
     print(f"Dossier de telechargement: {download_dir}")
 
     downloaded_count = 0
     failed = []
-    attempted_downloads = 0
+    network_downloads = 0
     for video in videos:
-        if attempted_downloads:
-            delay = random.uniform(args.min_delay, args.max_delay)
-            print(f"[wait] pause de {delay:.1f} secondes avant le prochain telechargement")
-            time.sleep(delay)
+        youtube_video_id = video[0]
+        will_download = args.force or existing_download(
+            download_dir / youtube_video_id,
+            youtube_video_id,
+        ) is None
+        if will_download:
+            if network_downloads:
+                delay = random.uniform(args.min_delay, args.max_delay)
+                print(f"[wait] pause de {delay:.1f} secondes avant le prochain telechargement")
+                time.sleep(delay)
+            network_downloads += 1
         try:
-            attempted_downloads += 1
             download_video(
                 video,
                 download_dir,

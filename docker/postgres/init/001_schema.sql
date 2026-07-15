@@ -1,6 +1,8 @@
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public;
+CREATE SCHEMA IF NOT EXISTS data;
 CREATE SCHEMA IF NOT EXISTS chat;
+SET search_path TO data, public;
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     content TEXT NOT NULL,
     speakers TEXT[],
     embedding_model TEXT,
-    embedding vector(3072),
+    embedding_dimensions INTEGER,
+    embedding vector(2000),
     data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (video_id, chunk_index)
 );
@@ -102,6 +105,8 @@ CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index);
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
+    ON chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);

@@ -1,0 +1,11 @@
+{
+  "configurations": ["small-1024", "large-1024", "large-2000", "large-3072"],
+  "lexical_limit": 40,
+  "vector_limit": 40,
+  "rrf_limit": 30,
+  "rerank_limit": 5,
+  "rrf_rank_constant": 60,
+  "rerank_model": "rerank-v4.0-fast",
+  "rerank_min_interval_seconds": 6.2,
+  "top_k": [1, 5, 10]
+}

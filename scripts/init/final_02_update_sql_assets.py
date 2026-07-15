@@ -7,12 +7,17 @@ from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
-from common.pipeline_paths import analysed_infos_path, existing_chunks_dir, existing_transcripts_dir, existing_youtube_api_infos_path
+from common.pipeline_paths import analysed_infos_path, consolidate_init_dir, existing_chunks_dir, existing_transcripts_dir, existing_youtube_api_infos_path
 
 
+ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_S3_ROOT_PREFIX = "youtube"
 DEFAULT_S3_BUCKET_NAME = ""
+DATA_SCHEMA = "data"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+DEFAULT_EMBEDDING_DIMENSIONS = 2000
+SCHEMA_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "001_schema.sql"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_TRANSCRIPT_NAME = "plain_transcript.txt"
 WHISPER_TRANSCRIPT_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
@@ -31,17 +36,6 @@ LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
 LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
 LEGACY_OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
 LEGACY_OCR_SUBTITLE_ENRICHED_SUFFIX = "_ocr_subtitle_timecodes_corrected_enrichi.txt"
-FULL_RESET_TABLES = (
-    "comments",
-    "chunks",
-    "transcripts",
-    "video_transcripts",
-    "stats",
-    "video_stats",
-    "video_daily_stats",
-    "videos",
-)
-
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -67,14 +61,10 @@ def video_files(video_dir):
 
 
 def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path
-        for path in parent_dir.iterdir()
-        if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
+    candidate = consolidate_init_dir(parent_dir)
+    if not candidate.is_dir() or not any(video_files(candidate)):
         raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
+    return candidate
 
 
 def normalize_prefix(prefix):
@@ -151,10 +141,10 @@ def table_columns(cursor, table_name):
         """
         SELECT column_name
         FROM information_schema.columns
-        WHERE table_schema = 'public'
+        WHERE table_schema = %s
           AND table_name = %s
         """,
-        (table_name,),
+        (DATA_SCHEMA, table_name),
     )
     return {row[0] for row in cursor.fetchall()}
 
@@ -165,35 +155,35 @@ def table_exists(cursor, table_name):
         SELECT EXISTS (
             SELECT 1
             FROM information_schema.tables
-            WHERE table_schema = 'public'
+            WHERE table_schema = %s
               AND table_name = %s
         )
         """,
-        (table_name,),
+        (DATA_SCHEMA, table_name),
     )
     return cursor.fetchone()[0]
 
 
-def existing_tables(cursor, table_names):
+def reset_data_schema(cursor):
     cursor.execute(
         """
-        SELECT tablename
-        FROM pg_tables
-        WHERE schemaname = 'public'
-          AND tablename = ANY(%s)
-        """,
-        (list(table_names),),
+        DROP TABLE IF EXISTS
+            public.comments,
+            public.chunks,
+            public.transcripts,
+            public.video_transcripts,
+            public.stats,
+            public.video_stats,
+            public.video_daily_stats,
+            public.videos
+        CASCADE
+        """
     )
-    found = {row[0] for row in cursor.fetchall()}
-    return [table for table in table_names if table in found]
-
-
-def clear_database(cursor):
-    tables = existing_tables(cursor, FULL_RESET_TABLES)
-    if not tables:
-        return 0
-    cursor.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
-    return len(tables)
+    cursor.execute("DROP SCHEMA IF EXISTS data CASCADE")
+    cursor.execute("CREATE SCHEMA data")
+    cursor.execute("GRANT USAGE ON SCHEMA data TO PUBLIC")
+    cursor.execute("GRANT ALL ON SCHEMA data TO CURRENT_USER")
+    cursor.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def ensure_stats_table_name(cursor):
@@ -249,7 +239,8 @@ def ensure_chunks_schema(cursor):
             content TEXT NOT NULL,
             speakers TEXT[],
             embedding_model TEXT,
-            embedding vector(3072),
+            embedding_dimensions INTEGER,
+            embedding vector(2000),
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (video_id, chunk_index)
         )
@@ -258,13 +249,41 @@ def ensure_chunks_schema(cursor):
     ensure_data_collected_date_column(cursor, "chunks")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers TEXT[]")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT")
-    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(3072)")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_dimensions INTEGER")
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(2000)")
+    cursor.execute(
+        """
+        SELECT format_type(attribute.atttypid, attribute.atttypmod)
+        FROM pg_attribute attribute
+        WHERE attribute.attrelid = 'chunks'::regclass
+          AND attribute.attname = 'embedding'
+          AND NOT attribute.attisdropped
+        """
+    )
+    embedding_type = cursor.fetchone()[0]
+    if embedding_type != "vector(2000)":
+        cursor.execute("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")
+        populated_embeddings = int(cursor.fetchone()[0])
+        if populated_embeddings:
+            raise RuntimeError(
+                f"La colonne chunks.embedding est en {embedding_type} avec "
+                f"{populated_embeddings} embeddings. Regenere les embeddings en 2000 dimensions "
+                "puis relance avec --reset-database."
+            )
+        cursor.execute("DROP INDEX IF EXISTS idx_chunks_embedding_hnsw")
+        cursor.execute("ALTER TABLE chunks ALTER COLUMN embedding TYPE vector(2000)")
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS char_count")
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS alert")
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS alert_reason")
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS source_file")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index)")
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
+        ON chunks USING hnsw (embedding vector_cosine_ops)
+        """
+    )
 
 
 def legacy_video_elements_name():
@@ -276,11 +295,14 @@ def constraint_exists(cursor, constraint_name):
         """
         SELECT EXISTS (
             SELECT 1
-            FROM pg_constraint
-            WHERE conname = %s
+            FROM pg_constraint constraint_info
+            JOIN pg_namespace schema_info
+              ON schema_info.oid = constraint_info.connamespace
+            WHERE schema_info.nspname = %s
+              AND constraint_info.conname = %s
         )
         """,
-        (constraint_name,),
+        (DATA_SCHEMA, constraint_name),
     )
     return cursor.fetchone()[0]
 
@@ -516,14 +538,22 @@ def load_chunk_embedding_payload(video_path, chunk_index):
 def embedding_vector_literal(values):
     if not isinstance(values, list) or not values:
         return None
+    if len(values) != DEFAULT_EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            f"Embedding de {len(values)} dimensions recu ; "
+            f"{DEFAULT_EMBEDDING_DIMENSIONS} attendues. Regenere les embeddings du pipeline."
+        )
     return "[" + ",".join(str(float(value)) for value in values) + "]"
 
 
-def candidate_video_dirs(video_dir):
+def candidate_video_dirs(video_dir, video_ids=None):
     direct_videos = [path for path in sorted(video_dir.iterdir()) if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS]
     if direct_videos:
-        return [video_dir]
-    return [path for path in sorted(video_dir.iterdir()) if path.is_dir()]
+        candidates = [video_dir]
+    else:
+        candidates = [path for path in sorted(video_dir.iterdir()) if path.is_dir()]
+    selected_ids = set(video_ids or [])
+    return [path for path in candidates if not selected_ids or path.name in selected_ids]
 
 
 def local_video_identifier(video_path):
@@ -597,7 +627,13 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
     raw_speakers = meta_data.get("speakers", [])
     speakers = [str(name).strip() for name in raw_speakers if str(name).strip()] if isinstance(raw_speakers, list) else None
     embedding_model = embedding_payload.get("model") if isinstance(embedding_payload, dict) else None
-    embedding_literal = embedding_vector_literal(embedding_payload.get("embedding")) if isinstance(embedding_payload, dict) else None
+    embedding_values = embedding_payload.get("embedding") if isinstance(embedding_payload, dict) else None
+    embedding_literal = embedding_vector_literal(embedding_values)
+    embedding_dimensions = len(embedding_values) if embedding_literal is not None else None
+    if embedding_literal is not None and embedding_model != DEFAULT_EMBEDDING_MODEL:
+        raise ValueError(
+            f"Modele d'embedding {embedding_model!r} recu ; {DEFAULT_EMBEDDING_MODEL!r} attendu."
+        )
 
     if embedding_literal is not None:
         cursor.execute(
@@ -608,14 +644,16 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 content,
                 speakers,
                 embedding_model,
+                embedding_dimensions,
                 embedding,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, %s::vector, now())
+            VALUES (%s, %s, %s, %s, %s, %s, %s::vector, now())
             ON CONFLICT (video_id, chunk_index) DO UPDATE SET
                 content = EXCLUDED.content,
                 speakers = EXCLUDED.speakers,
                 embedding_model = EXCLUDED.embedding_model,
+                embedding_dimensions = EXCLUDED.embedding_dimensions,
                 embedding = EXCLUDED.embedding,
                 data_collected_date = now()
             """,
@@ -625,6 +663,7 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 content,
                 speakers,
                 embedding_model,
+                embedding_dimensions,
                 embedding_literal,
             ),
         )
@@ -897,6 +936,16 @@ def parse_args():
         action="store_true",
         help="Option legacy sans effet. Les assets detailles ne sont plus stockes en SQL.",
     )
+    parser.add_argument(
+        "--video-id",
+        action="append",
+        help="Limite la mise a jour a cet ID video. Option repetable.",
+    )
+    parser.add_argument(
+        "--reset-database",
+        action="store_true",
+        help="Supprime et recree le schema data avant la mise a jour.",
+    )
     return parser.parse_args()
 
 
@@ -912,8 +961,13 @@ def main():
     else:
         prefix = normalize_prefix(args.prefix) if args.prefix is not None else default_prefix(video_dir)
 
-    files = sorted(path for path in video_dir.rglob("*") if path.is_file())
-    video_dirs = candidate_video_dirs(video_dir)
+    video_dirs = candidate_video_dirs(video_dir, video_ids=args.video_id)
+    files = sorted(
+        path
+        for current_video_dir in video_dirs
+        for path in current_video_dir.rglob("*")
+        if path.is_file()
+    )
 
     print(f"Dossier source: {video_dir}")
     print(f"Bucket S3: {args.bucket or '(aucun)'}")
@@ -921,9 +975,12 @@ def main():
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:
-            ensure_schema(cursor)
-            cleared_tables = clear_database(cursor)
-            print(f"[clean] base SQL videe ({cleared_tables} tables).")
+            if args.reset_database:
+                reset_data_schema(cursor)
+                print("[clean] schema data supprime et recree.")
+            else:
+                cursor.execute("CREATE SCHEMA IF NOT EXISTS data")
+            cursor.execute("SET search_path TO data, public")
             ensure_schema(cursor)
 
             videos_count = 0

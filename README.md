@@ -184,6 +184,19 @@ Tables principales:
 - `chunks`: chunks textuels rattaches a une video via `video_id`, avec contenu, speakers, alertes et embedding quand il existe.
 - `comments`: commentaires rattaches a une video via `video_id`, avec support des reponses via `parent_comment_id`.
 
+Migrer uniquement les embeddings existants vers `text-embedding-3-large` en 2000 dimensions, sans reconstruire les autres tables:
+
+```powershell
+.\.venv\Scripts\python.exe utils/migrate_embeddings_2000.py --dry-run
+.\.venv\Scripts\python.exe utils/migrate_embeddings_2000.py
+```
+
+La migration est reprenable, conserve temporairement les anciens vecteurs dans `data.chunks.embedding_3072_backup` et cree l'index `idx_chunks_embedding_hnsw`. Apres validation de l'application, la sauvegarde peut etre supprimee manuellement:
+
+```sql
+ALTER TABLE data.chunks DROP COLUMN embedding_3072_backup;
+```
+
 Comparer les vues entre deux jours:
 
 ```sql
@@ -243,22 +256,42 @@ Tester le pipeline sur une video precise:
 .\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-Au demarrage, le script vide les tables applicatives SQL en conservant le schema, puis supprime les anciens dossiers locaux `*_init` dans `downloads/youtube/`. Il lance ensuite les steps 01 a 26. La Step 02 cree un nouveau dossier date suffixe `_init`, puis ce meme dossier est passe aux steps suivantes.
+Au demarrage, le script demande quels blocs executer: telechargement, traitement, upload S3 et mise a jour SQL. Si le telechargement est choisi et que des videos sont deja presentes dans `downloads/youtube/init`, il demande s'il faut les retelecharger. La reponse par defaut est non: les fichiers et sorties locales restent dans ce dossier unique. Repondre oui vide les anciens telechargements avant la Step 02.
 
-Un run d'initialisation remplace le precedent:
+Lorsque le retelechargement est demande, les anciens dossiers locaux sont remplaces:
 
-- localement, `downloads/youtube/` ne conserve qu'un seul dossier `*_init`;
-- dans S3, les anciens prefixes `youtube/*_init` sont supprimes avant le nouvel upload;
-- dans SQL, les donnees applicatives sont videes avant la recollecte, tout en gardant l'architecture de tables.
+- localement, toutes les videos et leurs sorties restent dans l'unique dossier `downloads/youtube/init`;
+- l'upload S3 remplace automatiquement le prefixe `youtube/init` et supprime les anciens prefixes dates;
+- la mise a jour SQL supprime et recree automatiquement le schema `data` avant de recharger les donnees.
 
 Options utiles:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --dry-run-upload --dry-run-sql
 .\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --skip-upload
 .\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py all --skip-data
 .\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --force
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --reuse-existing
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --redownload-existing
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py 3 --stages download,process
+.\.venv\Scripts\python.exe scripts/init/RUN_PIPELINE_INIT.py all --stages s3,sql
 ```
+
+`--force` regenere les sorties des etapes de traitement. Les options `--reuse-existing`
+et `--redownload-existing` pilotent separement le telechargement et permettent une
+execution non interactive.
+
+Sans `--stages`, un menu demande de choisir un seul bloc avec `1`, `2`, `3` ou `4`,
+puis affiche uniquement ses options. Avec `--stages`, les valeurs disponibles sont
+`download`, `process`, `s3`, `sql` et `all`, et plusieurs blocs peuvent etre enchaines.
+Chaque bloc propose ensuite ses options utiles:
+
+- telechargement: actualisation automatique des metadonnees, reutilisation locale et cookies navigateur;
+- traitement: regeneration, mode OpenAI, scope de review, modele de verification des images, correction et modele speakers;
+- S3: purge automatique des anciens uploads puis envoi reel;
+- SQL: recreation automatique du schema `data`, puis synchronisation complete des metadonnees, transcripts et chunks.
+
+En mode `--stages`, les options omises utilisent les defaults non interactifs. Les
+principaux overrides sont `--force` et `--image-review-model`.
 
 ## Step 02 - Download Videos
 
@@ -268,10 +301,10 @@ Telecharger en 360p les videos referencees dans la table SQL `videos`:
 python scripts/init/02_download_videos.py
 ```
 
-Chaque lancement cree un sous-dossier date suffixe `_init` dans `downloads/youtube/`, puis un dossier par video:
+Tous les lancements utilisent le meme dossier `downloads/youtube/init`, avec un sous-dossier par video. Sans `--force`, une video deja disponible localement est reutilisee sans nouvel appel a YouTube. Les anciens dossiers dates `*_init` sont automatiquement fusionnes puis supprimes:
 
 ```text
-downloads/youtube/20260628_1312_init/
+downloads/youtube/init/
   LJ-W6BjSJRo/
     LJ-W6BjSJRo.mp4
     metadata/
@@ -286,6 +319,10 @@ downloads/youtube/20260628_1312_init/
 ```
 
 Le fichier video reste a la racine du dossier video. Les metadonnees vont dans `metadata/`, et tous les fichiers generes par le pipeline vont dans `outputs/` pour eviter de melanger frames, OCR, transcripts et chunks.
+Le fichier `metadata/youtube_video_metadata.json` conserve l'objet complet renvoye par
+l'API YouTube pour la video, notamment `snippet.thumbnails` avec toutes les tailles
+disponibles, `contentDetails`, `statistics`, `kind` et `etag`. Des champs plats derives
+restent presents pour la compatibilite avec le pipeline.
 
 ## Step 03 - Extract Images
 
@@ -546,6 +583,10 @@ Le script lit `outputs/chunks/transcript_chunks_speaker_validated.json` quand il
 
 - `outputs/chunks/chunk_<index>_embedding.json`
 
+Les embeddings de production utilisent `text-embedding-3-large` en 2000 dimensions. Un fichier existant en 3072 dimensions est automatiquement regenere. PostgreSQL les stocke dans `vector(2000)` avec un index HNSW cosine.
+
+Une base deja peuplee en 3072 dimensions doit etre reconstruite apres regeneration des fichiers. Le pipeline complet le fait via l'etape SQL `--reset-database`; le script SQL refuse volontairement de tronquer silencieusement les anciens vecteurs.
+
 ## Step 25 - Upload Outputs To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
@@ -563,19 +604,19 @@ S3_ACCESS_KEY_ID=votre_access_key
 S3_SECRET_ACCESS_KEY=votre_secret_key
 ```
 
-Par defaut, le script prend le dernier dossier de `downloads/youtube/` et l'upload dans le prefixe S3 `youtube/`:
+Par defaut, le script prend `downloads/youtube/init` et l'upload dans le prefixe S3 `youtube/init`:
 
 ```text
-downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
--> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+downloads/youtube/init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+-> s3://bucket/youtube/init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
 ```
 
 Options utiles:
 
 ```powershell
 python scripts/init/25_upload_outputs_to_s3.py --dry-run
-python scripts/init/25_upload_outputs_to_s3.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/25_upload_outputs_to_s3.py --prefix youtube/20260628_1312_init
+python scripts/init/25_upload_outputs_to_s3.py --video-dir downloads/youtube/init
+python scripts/init/25_upload_outputs_to_s3.py --prefix youtube/init
 python scripts/init/25_upload_outputs_to_s3.py --clean-init-prefix
 python scripts/init/25_upload_outputs_to_s3.py --force
 ```
@@ -591,8 +632,8 @@ python scripts/init/26_update_sql_assets.py
 Le script met a jour `videos` avec un seul lien S3 par dossier video via `s3_uri`. Il utilise le meme prefixe S3 `youtube/` que la Step 25 par defaut:
 
 ```text
-downloads/youtube/20260628_1312_init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
--> s3://bucket/youtube/20260628_1312_init/LJ-W6BjSJRo
+downloads/youtube/init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4
+-> s3://bucket/youtube/init/LJ-W6BjSJRo
 ```
 
 Il met aussi a jour une seule ligne `transcripts` par video/langue avec les trois variantes trouvees dans chaque dossier `outputs/transcripts/`:
@@ -607,9 +648,10 @@ Options utiles:
 
 ```powershell
 python scripts/init/26_update_sql_assets.py --dry-run
-python scripts/init/26_update_sql_assets.py --video-dir downloads/youtube/20260628_1312_init
-python scripts/init/26_update_sql_assets.py --prefix youtube/20260628_1312_init
+python scripts/init/26_update_sql_assets.py --video-dir downloads/youtube/init
+python scripts/init/26_update_sql_assets.py --prefix youtube/init
 python scripts/init/26_update_sql_assets.py --skip-transcripts
+python scripts/init/26_update_sql_assets.py --reset-database
 ```
 
 ## Clear Database

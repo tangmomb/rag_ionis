@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import psycopg
 from fastapi import APIRouter, HTTPException
 
 from interface.backend.database import (
     ConversationNotFoundError,
-    get_database_url,
+    connect_database,
     sql_trace_for_storage,
     store_chat_message,
 )
@@ -27,7 +26,7 @@ router = APIRouter()
 
 @router.get("/video-thumbnails", response_model=list[str])
 def video_thumbnails() -> list[str]:
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """

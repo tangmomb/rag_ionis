@@ -25,6 +25,13 @@ def get_database_url() -> str:
     return database_url
 
 
+def connect_database():
+    return psycopg.connect(
+        get_database_url(),
+        options="-c search_path=data,public",
+    )
+
+
 def ensure_chat_schema() -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
@@ -34,7 +41,7 @@ def ensure_chat_schema() -> None:
         if _SCHEMA_READY:
             return
 
-        with psycopg.connect(get_database_url()) as connection:
+        with connect_database() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("CREATE SCHEMA IF NOT EXISTS chat")
                 cursor.execute(
@@ -271,7 +278,7 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
         ORDER BY id DESC
         LIMIT %s
     """
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql, (conversation_id, limit))
             rows = cursor.fetchall()
@@ -331,7 +338,7 @@ def fetch_recent_cited_video_ids(
         ORDER BY id DESC
         LIMIT %s
     """
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql, (conversation_id, limit))
             rows = cursor.fetchall()
@@ -364,7 +371,7 @@ def fetch_recent_cited_video_ids(
         WHERE (%s::text[] IS NOT NULL AND url = ANY(%s::text[]))
            OR (%s::text[] IS NOT NULL AND title = ANY(%s::text[]))
     """
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(lookup_sql, (urls, urls, titles, titles))
             matches = cursor.fetchall()
@@ -439,7 +446,7 @@ def store_chat_message(
 ) -> tuple[int, int]:
     ensure_chat_schema()
 
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         resolved_conversation_id = ensure_conversation(connection, conversation_id)
         with connection.cursor() as cursor:
             cursor.execute(

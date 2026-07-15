@@ -18,6 +18,7 @@ LEGACY_CHUNKS_SUFFIX = "_chunks.json"
 LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 EMBEDDING_SUFFIX = "_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+DEFAULT_EMBEDDING_DIMENSIONS = 2000
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -76,7 +77,20 @@ def load_chunks(path):
     return payload.get("meta_data", {}), payload.get("chunks", [])
 
 
-def create_embeddings(client, model, video_path, force=False):
+def existing_embedding_matches(path, model, dimensions):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    embedding = payload.get("embedding") if isinstance(payload, dict) else None
+    return (
+        payload.get("model") == model
+        and isinstance(embedding, list)
+        and len(embedding) == dimensions
+    )
+
+
+def create_embeddings(client, model, dimensions, video_path, force=False):
     source = chunks_path(video_path)
     if not source.exists():
         print(f"[skip] chunks introuvables: {source}")
@@ -96,13 +110,16 @@ def create_embeddings(client, model, video_path, force=False):
             continue
         chunk_index = chunk.get("chunk_index")
         target = embedding_path(video_path, chunk_index)
-        if target.exists() and not force:
+        if target.exists() and not force and existing_embedding_matches(target, model, dimensions):
             print(f"[skip] {target.name} existe deja")
             continue
-        response = client.embeddings.create(model=model, input=text)
+        if target.exists() and not force:
+            print(f"[regen] {target.name}: modele ou dimensions obsoletes")
+        response = client.embeddings.create(model=model, dimensions=dimensions, input=text)
         embedding = response.data[0].embedding
         payload = {
             "model": model,
+            "dimensions": dimensions,
             "source": relative_to_video_dir(source, video_path),
             "chunk_count": len(chunks),
             "chunk_index": chunk_index,
@@ -145,6 +162,12 @@ def parse_args():
         help="Modele d'embedding. Defaut: text-embedding-3-large",
     )
     parser.add_argument(
+        "--dimensions",
+        type=int,
+        default=DEFAULT_EMBEDDING_DIMENSIONS,
+        help="Dimensions des embeddings. Defaut: 2000",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Regenere les embeddings meme s'ils existent deja.",
@@ -164,9 +187,10 @@ def main():
 
     print(f"Dossier videos: {video_dir}")
     print(f"Modele: {args.model}", flush=True)
+    print(f"Dimensions: {args.dimensions}", flush=True)
     done = 0
     for video_path in videos:
-        if create_embeddings(client, args.model, video_path, force=args.force):
+        if create_embeddings(client, args.model, args.dimensions, video_path, force=args.force):
             done += 1
 
     print(f"{done} videos traitees pour les embeddings.")

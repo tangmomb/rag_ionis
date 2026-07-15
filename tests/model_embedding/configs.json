@@ -1,0 +1,35 @@
+{
+  "configurations": [
+    {
+      "name": "small-512",
+      "model": "text-embedding-3-small",
+      "dimensions": 512
+    },
+    {
+      "name": "small-1024",
+      "model": "text-embedding-3-small",
+      "dimensions": 1024
+    },
+    {
+      "name": "large-1024",
+      "model": "text-embedding-3-large",
+      "dimensions": 1024
+    },
+    {
+      "name": "large-1536",
+      "model": "text-embedding-3-large",
+      "dimensions": 1536
+    },
+    {
+      "name": "large-2000",
+      "model": "text-embedding-3-large",
+      "dimensions": 2000
+    },
+    {
+      "name": "large-3072",
+      "model": "text-embedding-3-large",
+      "dimensions": 3072
+    }
+  ],
+  "top_k": [1, 5, 10]
+}

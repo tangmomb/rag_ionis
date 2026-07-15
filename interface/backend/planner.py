@@ -6,11 +6,10 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
-import psycopg
 from openai import OpenAI
 
 from interface.backend.config import DEFAULT_BM25_LIMIT, DEFAULT_FINAL_K, DEFAULT_PLANNER_MODEL
-from interface.backend.database import fetch_conversation_memory, get_database_url
+from interface.backend.database import connect_database, fetch_conversation_memory
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
 
@@ -323,7 +322,7 @@ def resolve_speaker_filters(
     suggestions: list[str] = []
     ambiguous_candidates: list[str] = []
     unresolved_candidates: list[str] = []
-    with psycopg.connect(get_database_url()) as connection:
+    with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """

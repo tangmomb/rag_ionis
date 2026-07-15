@@ -1,11 +1,13 @@
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
+from common.pipeline_paths import consolidate_init_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -21,10 +23,10 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir())
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier trouve dans {parent_dir}")
-    return candidates[-1]
+    candidate = consolidate_init_dir(parent_dir)
+    if not candidate.is_dir():
+        raise FileNotFoundError(f"Dossier init introuvable dans {parent_dir}")
+    return candidate
 
 
 def s3_client(region):
@@ -77,7 +79,11 @@ def list_init_prefixes(client, bucket, root_prefix):
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
         for item in page.get("CommonPrefixes", []):
             candidate = item["Prefix"].rstrip("/")
-            if candidate.rsplit("/", 1)[-1].endswith("_init"):
+            candidate_name = candidate.rsplit("/", 1)[-1]
+            if candidate_name == "init" or re.fullmatch(
+                r"\d{8}_\d{4}_init(?:_\d+)?",
+                candidate_name,
+            ):
                 prefixes.add(candidate)
 
     return sorted(prefixes)
@@ -116,8 +122,16 @@ def print_step_progress(label, current, total):
         print(flush=True)
 
 
-def upload_directory(client, bucket, root_dir, prefix="", force=False, dry_run=False):
+def upload_directory(client, bucket, root_dir, prefix="", force=False, dry_run=False, video_ids=None):
+    selected_ids = set(video_ids or [])
     files = sorted(path for path in root_dir.rglob("*") if path.is_file())
+    if selected_ids:
+        files = [
+            path
+            for path in files
+            if path.relative_to(root_dir).parts
+            and path.relative_to(root_dir).parts[0] in selected_ids
+        ]
     if not files:
         print(f"Aucun fichier a uploader dans {root_dir}")
         return {"uploaded": 0, "skipped": 0}
@@ -185,7 +199,12 @@ def parse_args():
     parser.add_argument(
         "--clean-init-prefix",
         action="store_true",
-        help="Supprime les anciens prefixes S3 youtube/*_init avant l'upload.",
+        help="Supprime le prefixe S3 youtube/init et les anciens prefixes dates avant l'upload.",
+    )
+    parser.add_argument(
+        "--video-id",
+        action="append",
+        help="Limite l'upload a cet ID video. Option repetable.",
     )
     return parser.parse_args()
 
@@ -227,6 +246,7 @@ def main():
         prefix=prefix,
         force=args.force,
         dry_run=args.dry_run,
+        video_ids=args.video_id,
     )
     uploaded_label = "fichiers a uploader" if args.dry_run else "fichiers uploades"
     print(f"{result['uploaded']} {uploaded_label}, {result['skipped']} deja presents.")

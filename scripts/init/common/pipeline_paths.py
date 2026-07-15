@@ -1,7 +1,11 @@
 import os
+import re
+import shutil
 from pathlib import Path
 
 
+INIT_DIR_NAME = "init"
+LEGACY_INIT_DIR_PATTERN = re.compile(r"^\d{8}_\d{4}_init(?:_\d+)?$")
 OUTPUTS_DIR_NAME = "outputs"
 METADATA_DIR_NAME = "metadata"
 IMAGES_DIR_NAME = "images"
@@ -16,6 +20,50 @@ LEGACY_ANALYSED_INFOS_NAME = "analysed_infos.json"
 LEGACY_YOUTUBE_API_INFOS_NAME = "youtube_api_infos.json"
 LEGACY_YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
 LEGACY_INFO_SUFFIX = ".info.json"
+
+
+def init_dir(parent_dir):
+    return Path(parent_dir) / INIT_DIR_NAME
+
+
+def legacy_init_dirs(parent_dir):
+    parent = Path(parent_dir)
+    if not parent.is_dir():
+        return []
+    return sorted(
+        path
+        for path in parent.iterdir()
+        if path.is_dir() and LEGACY_INIT_DIR_PATTERN.fullmatch(path.name)
+    )
+
+
+def _merge_missing(source_dir, target_dir):
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in source_dir.iterdir():
+        target = target_dir / source.name
+        if not target.exists():
+            shutil.move(str(source), str(target))
+        elif source.is_dir() and target.is_dir():
+            _merge_missing(source, target)
+
+
+def consolidate_init_dir(parent_dir):
+    parent = Path(parent_dir)
+    parent.mkdir(parents=True, exist_ok=True)
+    target = init_dir(parent)
+    legacy_dirs = legacy_init_dirs(parent)
+
+    if not target.exists() and len(legacy_dirs) == 1:
+        legacy_dirs[0].rename(target)
+        return target
+
+    target.mkdir(parents=True, exist_ok=True)
+    # Le dossier fixe existant reste prioritaire. Sinon, le run date le plus
+    # recent est fusionne en premier et les plus anciens completent les trous.
+    for legacy_dir in reversed(legacy_dirs):
+        _merge_missing(legacy_dir, target)
+        shutil.rmtree(legacy_dir)
+    return target
 
 
 def video_base_dir(video_path):

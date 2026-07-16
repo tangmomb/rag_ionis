@@ -5,25 +5,22 @@ import re
 import sys
 import time
 import unicodedata
-from copy import deepcopy
 from pathlib import Path
 
 from dotenv import load_dotenv
-from common.pipeline_paths import chunks_dir
+from common.pipeline_analysis import update_analysed_infos
+from common.pipeline_paths import existing_speakers_dir, relative_to_video_dir, speakers_dir
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-CHUNKS_NAME = "transcript_chunks.json"
-CHUNKS_SPEAKER_VALIDATED_NAME = "transcript_chunks_speaker_validated.json"
-SPEAKER_VALIDATION_LOG_NAME = "speaker_validation_log.json"
+SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
+SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 BATCH_STATE_NAME = "speaker_validation_batch_state.json"
 BATCH_INPUT_NAME = "speaker_validation_batch_input.jsonl"
 BATCH_OUTPUT_NAME = "speaker_validation_batch_output.jsonl"
 BATCH_ERROR_NAME = "speaker_validation_batch_error.jsonl"
 DEFAULT_WAIT_FOR_BATCH = True
-LEGACY_CHUNKS_SUFFIX = "_chunks.json"
-LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 DEFAULT_MODEL = "gpt-5.4-nano"
 MAX_OUTPUT_TOKENS = 512
 MAX_LIVE_ATTEMPTS = 3
@@ -31,10 +28,11 @@ SYSTEM_PROMPT = (
     "Tu verifies une liste de speakers detectes automatiquement dans une video. "
     "Garde uniquement les noms qui designent vraiment des personnes physiques. "
     "Rejete les entreprises, ecoles, services, metiers, titres, lieux, slogans, URLs, "
-    "mots OCR parasites et noms incomplets. Reponds uniquement avec l'objet JSON "
-    "demande, en reprenant exactement les noms valides fournis."
+    "mots OCR parasites et noms incomplets. Tu as aussi le titre de la video pour voir "
+    "si un speaker s'y trouve. Si un speaker candidat ressemble beaucoup a celui "
+    "dans le titre, le titre prevaut: utilise l'orthographe complete du titre. "
+    "Reponds uniquement avec l'objet JSON demande."
 )
-
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -73,42 +71,28 @@ def current_openai_mode():
     return "normal"
 
 
-def chunks_path(video_path):
-    video_chunks_dir = chunks_dir(video_path)
-    preferred = video_chunks_dir / CHUNKS_NAME
-    legacy = video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_SUFFIX}"
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
+def candidates_path(video_path):
+    return existing_speakers_dir(video_path) / SPEAKER_CANDIDATES_NAME
 
 
-def corrected_chunks_path(video_path):
-    video_chunks_dir = chunks_dir(video_path)
-    preferred = video_chunks_dir / CHUNKS_SPEAKER_VALIDATED_NAME
-    legacy = video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_CORRECTED_SUFFIX}"
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
-
-
-def validation_log_path(video_path):
-    return chunks_dir(video_path) / SPEAKER_VALIDATION_LOG_NAME
+def validated_path(video_path):
+    return speakers_dir(video_path) / SPEAKERS_VALIDATED_NAME
 
 
 def batch_state_path(video_path):
-    return chunks_dir(video_path) / BATCH_STATE_NAME
+    return speakers_dir(video_path) / BATCH_STATE_NAME
 
 
 def batch_input_path(video_path):
-    return chunks_dir(video_path) / BATCH_INPUT_NAME
+    return speakers_dir(video_path) / BATCH_INPUT_NAME
 
 
 def batch_output_path(video_path):
-    return chunks_dir(video_path) / BATCH_OUTPUT_NAME
+    return speakers_dir(video_path) / BATCH_OUTPUT_NAME
 
 
 def batch_error_path(video_path):
-    return chunks_dir(video_path) / BATCH_ERROR_NAME
+    return speakers_dir(video_path) / BATCH_ERROR_NAME
 
 
 def load_json(path):
@@ -131,15 +115,39 @@ def normalize_name(name):
 def unique_speakers(payload):
     speakers = []
     seen = set()
-    for chunk in payload.get("chunks", []):
-        for speaker in chunk.get("meta_data", {}).get("speakers", []) or []:
-            speaker = " ".join(str(speaker).split()).strip()
-            key = normalize_name(speaker)
-            if not speaker or not key or key in seen:
-                continue
-            seen.add(key)
-            speakers.append(speaker)
+    for speaker in payload.get("speakers", []) or []:
+        speaker = " ".join(str(speaker).split()).strip()
+        key = normalize_name(speaker)
+        if not speaker or not key or key in seen:
+            continue
+        seen.add(key)
+        speakers.append(speaker)
     return speakers
+
+
+def candidate_entries(payload):
+    entries = []
+    for item in payload.get("candidates", []) or []:
+        if not isinstance(item, dict):
+            continue
+        name = " ".join(str(item.get("name", "")).split()).strip()
+        methods = [
+            str(method).strip()
+            for method in item.get("methods", []) or []
+            if str(method).strip()
+        ]
+        if name:
+            entries.append({"name": name, "methods": methods})
+    if entries:
+        return entries
+    return [{"name": name, "methods": []} for name in unique_speakers(payload)]
+
+
+def validation_context(payload):
+    return (
+        str(payload.get("video_title") or "").strip(),
+        candidate_entries(payload),
+    )
 
 
 def response_text(response):
@@ -200,7 +208,7 @@ def response_diagnostics_from_payload(payload):
     }
 
 
-def structured_output_config(speakers):
+def structured_output_config():
     return {
         "format": {
             "type": "json_schema",
@@ -213,7 +221,6 @@ def structured_output_config(speakers):
                         "type": "array",
                         "items": {
                             "type": "string",
-                            "enum": speakers,
                         },
                     }
                 },
@@ -224,16 +231,22 @@ def structured_output_config(speakers):
     }
 
 
-def supports_minimal_reasoning(model):
-    normalized = str(model).strip().lower()
-    return normalized.startswith("gpt-5")
-
-
-def build_response_request(model, speakers):
+def build_response_request(model, speakers, video_title="", candidates=None):
+    candidate_details = candidates or [{"name": name, "methods": []} for name in speakers]
     user_prompt = (
         "Parmi cette liste de speakers, lesquels sont vraiment des personnes ? "
-        "Place uniquement les noms valides dans valid_speakers, sans commentaire.\n\n"
-        + json.dumps(speakers, ensure_ascii=False, indent=2)
+        "Place uniquement les noms valides dans valid_speakers, sans commentaire. "
+        "Tu as aussi le titre de la video pour voir si un speaker s'y trouve. "
+        "Si un candidat ressemble beaucoup a un nom dans le titre, renvoie l'orthographe "
+        "du titre, qui prevaut.\n\n"
+        + json.dumps(
+            {
+                "video_title": video_title,
+                "candidates": candidate_details,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     )
     request_messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -243,10 +256,8 @@ def build_response_request(model, speakers):
         "model": model,
         "input": request_messages,
         "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "text": structured_output_config(speakers),
+        "text": structured_output_config(),
     }
-    if supports_minimal_reasoning(model):
-        body["reasoning"] = {"effort": "minimal"}
     request_log = {
         "model": model,
         "messages": request_messages,
@@ -254,13 +265,11 @@ def build_response_request(model, speakers):
         "max_output_tokens": MAX_OUTPUT_TOKENS,
         "text": body["text"],
     }
-    if "reasoning" in body:
-        request_log["reasoning"] = body["reasoning"]
     return body, request_log
 
 
-def ask_gpt(client, model, speakers):
-    body, request_log = build_response_request(model, speakers)
+def ask_gpt(client, model, speakers, video_title="", candidates=None):
+    body, request_log = build_response_request(model, speakers, video_title, candidates)
     if hasattr(client, "responses"):
         diagnostics = None
         for attempt in range(1, MAX_LIVE_ATTEMPTS + 1):
@@ -294,7 +303,7 @@ def ask_gpt(client, model, speakers):
     return answer, request_log
 
 
-def parse_valid_speakers(answer, original_speakers):
+def parse_valid_speakers(answer):
     text = str(answer).strip()
     if not text:
         raise ValueError("Reponse OpenAI vide pendant la validation des speakers.")
@@ -314,35 +323,7 @@ def parse_valid_speakers(answer, original_speakers):
         parsed = parsed.get("valid_speakers")
     if not isinstance(parsed, list):
         raise ValueError(f"Reponse GPT inattendue: {answer!r}")
-
-    original_by_key = {normalize_name(name): name for name in original_speakers}
-    valid = []
-    seen = set()
-    for name in parsed:
-        key = normalize_name(name)
-        if not key or key in seen or key not in original_by_key:
-            continue
-        seen.add(key)
-        valid.append(original_by_key[key])
-    return valid
-
-
-def filter_chunk_speakers(payload, valid_speakers):
-    valid_keys = {normalize_name(name) for name in valid_speakers}
-    corrected = deepcopy(payload)
-    for chunk in corrected.get("chunks", []):
-        meta_data = chunk.get("meta_data")
-        if not isinstance(meta_data, dict):
-            continue
-        speakers = meta_data.get("speakers")
-        if not isinstance(speakers, list):
-            continue
-        meta_data["speakers"] = [
-            speaker
-            for speaker in speakers
-            if normalize_name(speaker) in valid_keys
-        ]
-    return corrected
+    return parsed
 
 
 def save_batch_state(path, state):
@@ -389,75 +370,96 @@ def parse_batch_lines(path):
     return records
 
 
-def write_validation_outputs(model, source, target, log_target, speakers, valid_speakers, answer, request_log, payload):
-    corrected = filter_chunk_speakers(payload, valid_speakers)
-    corrected["speaker_validation"] = {
-        "model": model,
-        "source": source.name,
-        "answer": answer,
-        "reviewed": len(speakers),
-        "kept": len(valid_speakers),
-        "rejected": len(speakers) - len(valid_speakers),
-        "valid_speakers": valid_speakers,
+def write_validation_output(
+    model,
+    video_path,
+    source,
+    target,
+    speakers,
+    valid_speakers,
+    answer,
+    request_log,
+    video_title="",
+):
+    validated = {
+        "source": relative_to_video_dir(source, video_path),
+        "video_title": video_title,
+        "speakers": valid_speakers,
+        "validation": {
+            "model": model,
+            "answer": answer,
+            "reviewed": len(speakers),
+            "kept": len(valid_speakers),
+            "rejected": max(0, len(speakers) - len(valid_speakers)),
+            "request": request_log if speakers else None,
+        },
     }
-    target.write_text(json.dumps(corrected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    log_payload = {
-        "model": model,
-        "source": source.name,
-        "reviewed": len(speakers),
-        "kept": len(valid_speakers),
-        "rejected": len(speakers) - len(valid_speakers),
-        "requests": [
-            {
-                "speakers": speakers,
-                "request": request_log,
-                "response": answer,
-            }
-        ] if speakers else [],
-    }
-    log_target.write_text(json.dumps(log_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(validated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    update_analysed_infos(
+        video_path,
+        "validate_speakers",
+        {
+            "status": "done",
+            "validated_file": relative_to_video_dir(target, video_path),
+            "speakers": valid_speakers,
+            "reviewed": len(speakers),
+            "rejected": max(0, len(speakers) - len(valid_speakers)),
+        },
+    )
     print(
         f"[write] {target} ({len(valid_speakers)} speakers gardes, "
-        f"{len(speakers) - len(valid_speakers)} rejetes)",
+        f"{max(0, len(speakers) - len(valid_speakers))} rejetes)",
         flush=True,
     )
-    print(f"[write] log -> {log_target}", flush=True)
     return target
 
 
 def validate_file_live(client, model, video_path, force=False):
-    source = chunks_path(video_path)
-    target = corrected_chunks_path(video_path)
-    log_target = validation_log_path(video_path)
-    if target.exists() and not force:
+    source = candidates_path(video_path)
+    target = validated_path(video_path)
+    if not source.exists():
+        print(f"[skip] candidats speakers introuvables: {source}")
+        return None
+    if target.exists() and not force and target.stat().st_mtime >= source.stat().st_mtime:
         print(f"[skip] {target.name} existe deja")
         return target
-    if not source.exists():
-        print(f"[skip] chunks introuvables: {source}")
-        return None
+    if target.exists() and not force:
+        print(f"[regen] {target.name}: candidats speakers plus recents")
 
     payload = load_json(source)
     speakers = unique_speakers(payload)
+    video_title, candidates = validation_context(payload)
     if speakers:
-        answer, request_log = ask_gpt(client, model, speakers)
+        answer, request_log = ask_gpt(client, model, speakers, video_title, candidates)
         answer = answer.strip()
-        valid_speakers = parse_valid_speakers(answer, speakers)
+        valid_speakers = parse_valid_speakers(answer)
     else:
-        body, request_log = build_response_request(model, speakers)
+        body, request_log = build_response_request(model, speakers, video_title, candidates)
         _ = body
         answer = "[]"
         valid_speakers = []
 
-    return write_validation_outputs(model, source, target, log_target, speakers, valid_speakers, answer, request_log, payload)
+    return write_validation_output(
+        model,
+        video_path,
+        source,
+        target,
+        speakers,
+        valid_speakers,
+        answer,
+        request_log,
+        video_title,
+    )
 
 
-def submit_batch_validation(video_path, model, speakers):
+def submit_batch_validation(video_path, model, speakers, video_title, candidates):
     client = openai_client()
-    video_chunks_dir = chunks_dir(video_path)
-    video_chunks_dir.mkdir(parents=True, exist_ok=True)
+    video_speakers_dir = speakers_dir(video_path)
+    video_speakers_dir.mkdir(parents=True, exist_ok=True)
     input_path = batch_input_path(video_path)
     state_path = batch_state_path(video_path)
-    body, _request_log = build_response_request(model, speakers)
+    body, _request_log = build_response_request(model, speakers, video_title, candidates)
 
     with input_path.open("w", encoding="utf-8") as handle:
         record = {
@@ -475,7 +477,7 @@ def submit_batch_validation(video_path, model, speakers):
         endpoint="/v1/responses",
         completion_window="24h",
         metadata={
-            "script": "22_CHUNK_validate_chunk_speakers.py",
+            "script": Path(sys.argv[0]).name,
             "model": model,
             "video": Path(video_path).name,
         },
@@ -495,11 +497,11 @@ def submit_batch_validation(video_path, model, speakers):
 
 
 def source_name_for_state(video_path):
-    source = chunks_path(video_path)
-    return source.name if source.exists() else CHUNKS_NAME
+    source = candidates_path(video_path)
+    return source.name if source.exists() else SPEAKER_CANDIDATES_NAME
 
 
-def finalize_batch_validation(video_path, model, source, target, log_target, speakers, payload, state):
+def finalize_batch_validation(video_path, model, source, target, speakers, state):
     client = openai_client()
     output_file_id = state.get("output_file_id")
     if not output_file_id:
@@ -529,32 +531,60 @@ def finalize_batch_validation(video_path, model, source, target, log_target, spe
             "Le batch OpenAI n'a renvoye aucun texte pour speaker-validation. "
             f"Details: {json.dumps(diagnostics, ensure_ascii=False)}"
         )
-    valid_speakers = parse_valid_speakers(answer, speakers) if speakers else []
-    _body, request_log = build_response_request(model, speakers)
-    return write_validation_outputs(model, source, target, log_target, speakers, valid_speakers, answer or "[]", request_log, payload)
+    source_payload = load_json(source)
+    video_title, candidates = validation_context(source_payload)
+    valid_speakers = (
+        parse_valid_speakers(answer)
+        if speakers
+        else []
+    )
+    _body, request_log = build_response_request(model, speakers, video_title, candidates)
+    return write_validation_output(
+        model,
+        video_path,
+        source,
+        target,
+        speakers,
+        valid_speakers,
+        answer or "[]",
+        request_log,
+        video_title,
+    )
 
 
 def validate_file_batch(model, video_path, force=False, wait=False, poll_interval_seconds=30):
-    source = chunks_path(video_path)
-    target = corrected_chunks_path(video_path)
-    log_target = validation_log_path(video_path)
-    if target.exists() and not force:
+    source = candidates_path(video_path)
+    target = validated_path(video_path)
+    if not source.exists():
+        print(f"[skip] candidats speakers introuvables: {source}")
+        return None
+    if target.exists() and not force and target.stat().st_mtime >= source.stat().st_mtime:
         print(f"[skip] {target.name} existe deja")
         return target
-    if not source.exists():
-        print(f"[skip] chunks introuvables: {source}")
-        return None
+    if target.exists() and not force:
+        print(f"[regen] {target.name}: candidats speakers plus recents")
+        force = True
 
     payload = load_json(source)
     speakers = unique_speakers(payload)
+    video_title, candidates = validation_context(payload)
     if not speakers:
-        _body, request_log = build_response_request(model, speakers)
-        return write_validation_outputs(model, source, target, log_target, speakers, [], "[]", request_log, payload)
+        _body, request_log = build_response_request(model, speakers, video_title, candidates)
+        return write_validation_output(
+            model,
+            video_path,
+            source,
+            target,
+            speakers,
+            [],
+            "[]",
+            request_log,
+            video_title,
+        )
 
     if force:
         for artifact_path in (
             target,
-            log_target,
             batch_state_path(video_path),
             batch_input_path(video_path),
             batch_output_path(video_path),
@@ -565,7 +595,13 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
 
     state = load_batch_state(video_path)
     if state is None:
-        state_path = submit_batch_validation(video_path, model, speakers)
+        state_path = submit_batch_validation(
+            video_path,
+            model,
+            speakers,
+            video_title,
+            candidates,
+        )
         if not wait:
             return state_path
         state = load_batch_state(video_path)
@@ -584,12 +620,12 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
     if state["status"] != "completed":
         raise RuntimeError(f"Batch termine avec statut non supporte: {state['status']}")
 
-    return finalize_batch_validation(video_path, model, source, target, log_target, speakers, payload, state)
+    return finalize_batch_validation(video_path, model, source, target, speakers, state)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Valide les speakers des chunks avec OpenAI et produit un JSON chunks corrige."
+        description="Valide les candidats speakers avec OpenAI avant la correction du transcript."
     )
     parser.add_argument(
         "--video-dir",
@@ -626,7 +662,7 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenere le JSON chunks corrige meme s'il existe deja.",
+        help="Regenere le JSON de speakers valides meme s'il existe deja.",
     )
     return parser.parse_args()
 
@@ -645,7 +681,7 @@ def main():
     print(f"Dossier videos: {video_dir}")
     print(f"Modele validation speakers: {args.model}", flush=True)
     if args.mode != openai_mode:
-        print(f"[info] mode OpenAI global={openai_mode}, step 22 executee en mode {args.mode}.", flush=True)
+        print(f"[info] mode OpenAI global={openai_mode}, step 20B executee en mode {args.mode}.", flush=True)
     client = openai_client() if args.mode == "normal" else None
     done = 0
     for video_path in videos:
@@ -662,7 +698,7 @@ def main():
         if result:
             done += 1
 
-    print(f"{done} JSON chunks corriges generes.")
+    print(f"{done} JSON de speakers valides generes.")
 
 
 if __name__ == "__main__":

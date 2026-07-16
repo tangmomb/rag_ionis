@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { videos: [], selected: null, detail: null, tab: "summary" };
+const state = { videos: [], selected: null, detail: null, tab: "transcript", transcriptType: null };
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
@@ -72,8 +72,16 @@ function renderDetail() {
   $("#title").textContent = video.title;
   $("#empty").classList.add("hidden");
   $("#content").classList.remove("hidden");
-  $("#videoBadges").innerHTML = [video.stage, video.video_type, video.has_subtitles === true ? "Sous-titres détectés" : video.has_subtitles === false ? "Sans sous-titres" : null]
-    .filter(Boolean).map((value) => `<span class="badge">${escapeHtml(value)}</span>`).join("");
+  const standardBadges = [
+    video.stage,
+    video.video_type,
+    video.has_subtitles === true ? "Sous-titres détectés" : video.has_subtitles === false ? "Sans sous-titres" : null,
+  ].filter(Boolean).map((value) => `<span class="badge">${escapeHtml(value)}</span>`).join("");
+  const speakers = Array.isArray(video.speakers) ? video.speakers : [];
+  const speakerBadge = speakers.length
+    ? `<span class="badge speaker-badge" title="${escapeHtml(speakers.join(", "))}"><span class="badge-info">i</span>${escapeHtml(speakers.join(", "))}</span>`
+    : "";
+  $("#videoBadges").innerHTML = standardBadges + speakerBadge;
   $("#videoMeta").textContent = `${video.id} · ${formatDuration(video.duration_seconds)} · ${video.run}`;
   $("#youtubeLink").href = video.url;
   $("#stats").innerHTML = [
@@ -86,8 +94,7 @@ function renderDetail() {
   } else {
     $("#preview").innerHTML = '<div class="preview-empty">Aucun aperçu</div>';
   }
-  $("#panel-summary").innerHTML = video.summary ? `<article class="prose">${renderMarkdown(video.summary)}</article>` : emptyPanel("Le résumé n’est pas encore produit.");
-  $("#panel-transcript").innerHTML = video.transcript ? `<pre class="transcript">${escapeHtml(video.transcript)}</pre>` : emptyPanel("Le transcript n’est pas encore produit.");
+  renderTranscripts(video.transcripts || []);
   renderOcr(video.ocr);
   renderImages(video.images);
   renderChunks(video.chunks);
@@ -95,35 +102,38 @@ function renderDetail() {
   switchTab(state.tab);
 }
 
+function renderTranscripts(transcripts) {
+  const available = transcripts.filter((transcript) => transcript && transcript.content);
+  if (!available.length) {
+    $("#panel-transcript").innerHTML = state.detail.transcript
+      ? `<pre class="transcript">${escapeHtml(state.detail.transcript)}</pre>`
+      : emptyPanel("Le transcript n’est pas encore produit.");
+    return;
+  }
+  if (!available.some((transcript) => transcript.key === state.transcriptType)) {
+    state.transcriptType = available[0].key;
+  }
+  const selected = available.find((transcript) => transcript.key === state.transcriptType) || available[0];
+  $("#panel-transcript").innerHTML = `
+    <div class="transcript-types">
+      ${available.map((transcript) => `
+        <button class="transcript-type ${transcript.key === selected.key ? "active" : ""}" data-transcript-type="${escapeHtml(transcript.key)}">
+          ${escapeHtml(transcript.label)}
+        </button>`).join("")}
+    </div>
+    <div class="transcript-heading">
+      <strong>${escapeHtml(selected.label)}</strong>
+      <span>${escapeHtml(selected.path)}</span>
+    </div>
+    <pre class="transcript">${escapeHtml(selected.content)}</pre>`;
+  document.querySelectorAll(".transcript-type").forEach((button) => button.addEventListener("click", () => {
+    state.transcriptType = button.dataset.transcriptType;
+    renderTranscripts(state.detail.transcripts || []);
+  }));
+}
+
 function ocrCount(groups) {
   return Object.values(groups || {}).reduce((total, group) => total + (Array.isArray(group) ? group.length : group && typeof group === "object" ? Object.keys(group).length : 0), 0);
-}
-
-function renderMarkdown(value) {
-  const lines = value.split("\n");
-  const output = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (line.startsWith("|") && /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+/.test(lines[index + 1] || "")) {
-      const rows = [line];
-      index += 2;
-      while (index < lines.length && lines[index].trim().startsWith("|")) rows.push(lines[index++].trim());
-      index -= 1;
-      const cells = rows.map((row) => row.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
-      output.push(`<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>${cells[0].map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join("")}</tr></thead><tbody>${cells.slice(1).map((row) => `<tr>${row.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
-    } else if (line.startsWith("### ")) output.push(`<h3>${inlineMarkdown(line.slice(4))}</h3>`);
-    else if (line.startsWith("## ")) output.push(`<h2>${inlineMarkdown(line.slice(3))}</h2>`);
-    else if (line.startsWith("# ")) output.push(`<h2>${inlineMarkdown(line.slice(2))}</h2>`);
-    else if (line.startsWith("- ")) output.push(`<p class="bullet">• ${inlineMarkdown(line.slice(2))}</p>`);
-    else if (line) output.push(`<p>${inlineMarkdown(line)}</p>`);
-  }
-  return output.join("");
-}
-
-function inlineMarkdown(value) {
-  return escapeHtml(value)
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
 function renderOcr(groups) {

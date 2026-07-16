@@ -216,6 +216,7 @@ class RunPipelineInitTests(unittest.TestCase):
         self.assertEqual(statements[2], "CREATE SCHEMA data")
         self.assertIn("SET search_path TO data, public", statements[-1])
         self.assertIn("CREATE TABLE IF NOT EXISTS videos", statements[-1])
+        self.assertNotIn("video_summary", statements[-1])
         self.assertNotIn("DROP SCHEMA IF EXISTS chat", "\n".join(statements))
 
     def test_stage_options_are_forwarded_to_publication_commands(self) -> None:
@@ -300,6 +301,100 @@ class RunPipelineInitTests(unittest.TestCase):
                 step13_calls[0][1]["extra_args"],
                 ["--model", "gpt-image-test", "--limit-images", "1"],
             )
+
+    def test_whisper_pipeline_runs_speakers_before_combined_correction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            download_root = Path(temporary_dir)
+            video_id = "abcdefghijk"
+            video_dir = download_root / "init" / video_id
+            video_dir.mkdir(parents=True)
+            (video_dir / f"{video_id}.mp4").write_bytes(b"video")
+            calls = []
+
+            def capture_video_script(*args, **kwargs):
+                calls.append((args, kwargs))
+
+            argv = [
+                "run_pipeline_init.py",
+                "1",
+                "--stages",
+                "process",
+                "--download-dir",
+                str(download_root),
+            ]
+            with patch.object(sys, "argv", argv), patch.object(
+                run_pipeline,
+                "run_video_script",
+                side_effect=capture_video_script,
+            ), patch.object(
+                run_pipeline,
+                "print_post_step09_routing",
+            ), patch.object(
+                run_pipeline,
+                "selected_branch_after_step09",
+                return_value="no_sub",
+            ):
+                run_pipeline.main()
+
+            scripts = [Path(call[0][3]).name for call in calls]
+            expected = [
+                "16_WHISPER_transcribe_with_whisper.py",
+                "17A_WHISPER_propose_speakers.py",
+                "17B_WHISPER_validate_speakers.py",
+                "18_WHISPER_correct_with_ocr_and_speakers.py",
+                "19_WHISPER_enrich_transcripts.py",
+                "20_WHISPER_create_plain_transcript.py",
+                "21_CHUNK_create_transcript_chunks.py",
+                "22_CHUNK_create_chunk_embeddings.py",
+            ]
+            positions = [scripts.index(script) for script in expected]
+            self.assertEqual(positions, sorted(positions))
+
+    def test_ocr_pipeline_runs_speakers_between_steps_17_and_18(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            download_root = Path(temporary_dir)
+            video_id = "abcdefghijk"
+            video_dir = download_root / "init" / video_id
+            video_dir.mkdir(parents=True)
+            (video_dir / f"{video_id}.mp4").write_bytes(b"video")
+            calls = []
+
+            def capture_video_script(*args, **kwargs):
+                calls.append((args, kwargs))
+
+            argv = [
+                "run_pipeline_init.py",
+                "1",
+                "--stages",
+                "process",
+                "--download-dir",
+                str(download_root),
+            ]
+            with patch.object(sys, "argv", argv), patch.object(
+                run_pipeline,
+                "run_video_script",
+                side_effect=capture_video_script,
+            ), patch.object(
+                run_pipeline,
+                "print_post_step09_routing",
+            ), patch.object(
+                run_pipeline,
+                "selected_branch_after_step09",
+                return_value="has_sub",
+            ):
+                run_pipeline.main()
+
+            scripts = [Path(call[0][3]).name for call in calls]
+            expected = [
+                "17_OCR_normalize_ionis_stm.py",
+                "17A_OCR_propose_speakers.py",
+                "17B_OCR_validate_speakers.py",
+                "17C_OCR_correct_speakers.py",
+                "18_OCR_create_plain_transcript.py",
+                "19_OCR_enrich_transcripts.py",
+            ]
+            positions = [scripts.index(script) for script in expected]
+            self.assertEqual(positions, sorted(positions))
 
 
 if __name__ == "__main__":

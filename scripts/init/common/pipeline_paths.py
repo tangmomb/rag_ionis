@@ -14,6 +14,7 @@ OCR_DIR_NAME = "ocr"
 OCR_RAW_DIR_NAME = "raw"
 TRANSCRIPTS_DIR_NAME = "transcripts"
 CHUNKS_DIR_NAME = "chunks"
+SPEAKERS_DIR_NAME = "speakers"
 ANALYSED_INFOS_NAME = "pipeline_analysis.json"
 YOUTUBE_API_INFOS_NAME = "youtube_video_metadata.json"
 LEGACY_ANALYSED_INFOS_NAME = "analysed_infos.json"
@@ -108,6 +109,10 @@ def chunks_dir(video_path):
     return outputs_dir(video_path) / CHUNKS_DIR_NAME
 
 
+def speakers_dir(video_path):
+    return outputs_dir(video_path) / SPEAKERS_DIR_NAME
+
+
 def _existing(preferred, legacy):
     return legacy if legacy.exists() and not preferred.exists() else preferred
 
@@ -152,6 +157,10 @@ def existing_transcripts_dir(video_path):
 
 def existing_chunks_dir(video_path):
     return _existing(chunks_dir(video_path), video_base_dir(video_path) / CHUNKS_DIR_NAME)
+
+
+def existing_speakers_dir(video_path):
+    return _existing(speakers_dir(video_path), video_base_dir(video_path) / SPEAKERS_DIR_NAME)
 
 
 def analysed_infos_path(video_path):

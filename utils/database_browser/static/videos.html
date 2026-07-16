@@ -21,7 +21,7 @@
       <div><p class="eyebrow">SORTIES DU PIPELINE</p><h1 id="title">Sélectionnez une vidéo</h1></div>
       <button id="refresh" class="button secondary">↻ Actualiser</button>
     </header>
-    <section id="empty" class="empty"><div class="empty-icon">▶</div><h2>Explorez les données produites</h2><p>Choisissez une vidéo à gauche pour consulter son résumé, son transcript, l’OCR, les images et les chunks.</p></section>
+    <section id="empty" class="empty"><div class="empty-icon">▶</div><h2>Explorez les données produites</h2><p>Choisissez une vidéo à gauche pour consulter son transcript, l’OCR, les images et les chunks.</p></section>
     <section id="content" class="video-content hidden">
       <section class="video-overview">
         <div id="preview" class="video-preview"></div>
@@ -33,15 +33,13 @@
         <div id="stats" class="video-stats"></div>
       </section>
       <nav id="tabs" class="tabs" aria-label="Données de la vidéo">
-        <button class="tab active" data-tab="summary">Résumé</button>
-        <button class="tab" data-tab="transcript">Transcript</button>
+        <button class="tab active" data-tab="transcript">Transcript</button>
         <button class="tab" data-tab="ocr">OCR</button>
         <button class="tab" data-tab="images">Images</button>
         <button class="tab" data-tab="chunks">Chunks</button>
         <button class="tab" data-tab="files">Fichiers</button>
       </nav>
-      <section id="panel-summary" class="data-panel"></section>
-      <section id="panel-transcript" class="data-panel hidden"></section>
+      <section id="panel-transcript" class="data-panel"></section>
       <section id="panel-ocr" class="data-panel hidden"></section>
       <section id="panel-images" class="data-panel hidden"></section>
       <section id="panel-chunks" class="data-panel hidden"></section>

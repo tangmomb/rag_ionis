@@ -361,7 +361,8 @@ def run_step(label, command, env):
 
 
 def run_step_numbered(index, total, label, command, env):
-    print(f"\n[step {index:02d}/{total:02d}] {label}", flush=True)
+    index_label = f"{index:02d}" if isinstance(index, int) else str(index).upper()
+    print(f"\n[step {index_label}/{total:02d}] {label}", flush=True)
     run_step(label, command, env)
 
 
@@ -464,12 +465,12 @@ def parse_args():
     parser.add_argument(
         "--skip-upload",
         action="store_true",
-        help="Ne lance pas la Step 25 d'upload S3.",
+        help="Ne lance pas la Step 23 d'upload S3.",
     )
     parser.add_argument(
         "--skip-sql",
         action="store_true",
-        help="Ne lance pas la Step 26 de mise a jour SQL.",
+        help="Ne lance pas la Step 24 de mise a jour SQL.",
     )
     parser.add_argument(
         "--force",
@@ -495,12 +496,12 @@ def parse_args():
         "--correction-mode",
         choices=("aggressive", "balanced", "conservative"),
         default=None,
-        help="Sensibilite de correction des noms propres pendant la Step 17. Defaut: balanced.",
+        help="Sensibilite de correction des noms propres pendant la Step 18. Defaut: balanced.",
     )
     parser.add_argument(
         "--chunk-speaker-validation-model",
         default=None,
-        help="Modele OpenAI pour valider les speakers des chunks. Defaut: gpt-5.4-nano.",
+        help="Modele OpenAI pour valider les speakers du transcript. Defaut: gpt-5.4-nano.",
     )
     parser.add_argument(
         "--image-review-model",
@@ -666,7 +667,7 @@ def main():
         print("SQL: purge automatique puis upload complet", flush=True)
 
     download_parent.mkdir(parents=True, exist_ok=True)
-    total_steps = 25
+    total_steps = 24
 
     if stages.download:
         if args.redownload_existing:
@@ -811,6 +812,34 @@ def main():
                 force=args.force,
             )
             run_video_script(
+                "17A",
+                total_steps,
+                "Step 17A - Propose Speakers From Corrected OCR",
+                branch_dir / "17A_OCR_propose_speakers.py",
+                run_dir,
+                env,
+                force=args.force,
+            )
+            run_video_script(
+                "17B",
+                total_steps,
+                "Step 17B - Validate Speakers (OpenAI)",
+                branch_dir / "17B_OCR_validate_speakers.py",
+                run_dir,
+                env,
+                extra_args=["--model", args.chunk_speaker_validation_model],
+                force=args.force,
+            )
+            run_video_script(
+                "17C",
+                total_steps,
+                "Step 17C - Assign Speakers In OCR Transcript",
+                branch_dir / "17C_OCR_correct_speakers.py",
+                run_dir,
+                env,
+                force=args.force,
+            )
+            run_video_script(
                 18,
                 total_steps,
                 "Step 18 - Create Plain Transcript",
@@ -829,15 +858,6 @@ def main():
                 force=args.force,
             )
             run_video_script(
-                20,
-                total_steps,
-                "Step 20 - Video Summary",
-                branch_dir / "20_OCR_generate_video_summary.py",
-                run_dir,
-                env,
-                force=args.force,
-            )
-            run_video_script(
                 21,
                 total_steps,
                 "Step 21 - Create Transcript Chunks",
@@ -849,18 +869,8 @@ def main():
             run_video_script(
                 22,
                 total_steps,
-                "Step 22 - Validate Chunk Speakers (OpenAI)",
-                branch_dir / "22_CHUNK_validate_chunk_speakers.py",
-                run_dir,
-                env,
-                extra_args=["--model", args.chunk_speaker_validation_model],
-                force=args.force,
-            )
-            run_video_script(
-                23,
-                total_steps,
-                "Step 23 - Create Chunk Embeddings",
-                branch_dir / "23_CHUNK_create_chunk_embeddings.py",
+                "Step 22 - Create Chunk Embeddings",
+                branch_dir / "22_CHUNK_create_chunk_embeddings.py",
                 run_dir,
                 env,
                 force=args.force,
@@ -876,29 +886,39 @@ def main():
                 force=args.force,
             )
             run_video_script(
-                17,
+                "17A",
                 total_steps,
-                "Step 17 - Correct Transcript Timecodes",
-                branch_dir / "17_WHISPER_correct_transcript_timecodes.py",
+                "Step 17A - Propose Speakers From Raw Whisper",
+                branch_dir / "17A_WHISPER_propose_speakers.py",
+                run_dir,
+                env,
+                force=args.force,
+            )
+            run_video_script(
+                "17B",
+                total_steps,
+                "Step 17B - Validate Speakers (OpenAI)",
+                branch_dir / "17B_WHISPER_validate_speakers.py",
+                run_dir,
+                env,
+                extra_args=["--model", args.chunk_speaker_validation_model],
+                force=args.force,
+            )
+            run_video_script(
+                18,
+                total_steps,
+                "Step 18 - Correct Whisper With OCR And GPT Speakers",
+                branch_dir / "18_WHISPER_correct_with_ocr_and_speakers.py",
                 run_dir,
                 env,
                 extra_args=["--mode", args.correction_mode],
                 force=args.force,
             )
             run_video_script(
-                18,
-                total_steps,
-                "Step 18 - Enrich Timecodes",
-                branch_dir / "18_WHISPER_enrich_transcripts.py",
-                run_dir,
-                env,
-                force=args.force,
-            )
-            run_video_script(
                 19,
                 total_steps,
-                "Step 19 - Video Summary",
-                branch_dir / "19_WHISPER_generate_video_summary.py",
+                "Step 19 - Enrich Corrected Whisper",
+                branch_dir / "19_WHISPER_enrich_transcripts.py",
                 run_dir,
                 env,
                 force=args.force,
@@ -924,18 +944,8 @@ def main():
             run_video_script(
                 22,
                 total_steps,
-                "Step 22 - Validate Chunk Speakers (OpenAI)",
-                branch_dir / "22_CHUNK_validate_chunk_speakers.py",
-                run_dir,
-                env,
-                extra_args=["--model", args.chunk_speaker_validation_model],
-                force=args.force,
-            )
-            run_video_script(
-                23,
-                total_steps,
-                "Step 23 - Create Chunk Embeddings",
-                branch_dir / "24_CHUNK_create_chunk_embeddings.py",
+                "Step 22 - Create Chunk Embeddings",
+                branch_dir / "22_CHUNK_create_chunk_embeddings.py",
                 run_dir,
                 env,
                 force=args.force,
@@ -952,8 +962,8 @@ def main():
             "--force",
         )
         for video_id in selected_video_ids:
-            step25.append(f"--video-id={video_id}")
-        run_step_numbered(24, total_steps, "Step 24 - Upload Outputs To S3", step25, env)
+            step25.extend(["--video-id", video_id])
+        run_step_numbered(23, total_steps, "Step 23 - Upload Outputs To S3", step25, env)
 
     if stages.update_sql:
         step26 = step_command(
@@ -963,8 +973,8 @@ def main():
             "--reset-database",
         )
         for video_id in selected_video_ids:
-            step26.append(f"--video-id={video_id}")
-        run_step_numbered(25, total_steps, "Step 25 - Update SQL Assets", step26, env)
+            step26.extend(["--video-id", video_id])
+        run_step_numbered(24, total_steps, "Step 24 - Update SQL Assets", step26, env)
 
     print("\nPipeline termine.", flush=True)
     print(f"Dossier traite: {video_dir}", flush=True)

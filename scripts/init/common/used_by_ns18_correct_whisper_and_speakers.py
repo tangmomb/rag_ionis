@@ -9,6 +9,7 @@ from pathlib import Path
 
 from common.pipeline_analysis import analysed_infos_path, update_analysed_infos
 from common.pipeline_paths import existing_ocr_dir, existing_transcripts_dir, relative_to_video_dir
+from common.used_by_pre21c_correct_speaker_transcripts import correct_speaker_files
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -451,15 +452,22 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
     target = corrected_path(source)
     words_target = corrected_words_path(source)
 
-    if target.exists() and not force:
-        print(f"[skip] {target.name} existe deja")
-        return target
     if not source.exists():
         print(f"[skip] timecodes introuvable: {source}")
         return None
     if not analyse.exists():
         print(f"[skip] analyse introuvable: {analyse}")
         return None
+    if (
+        target.exists()
+        and not force
+        and target.stat().st_mtime >= max(source.stat().st_mtime, analyse.stat().st_mtime)
+    ):
+        print(f"[skip] {target.name} existe deja")
+        correct_speaker_files(video_path, [target], force=False)
+        return target
+    if target.exists() and not force:
+        print(f"[regen] {target.name}: Whisper brut ou OCR plus recent")
 
     settings = correction_settings(mode)
     lexicon_counts, lexicon_forms, lexicon_by_initial, name_phrases = load_ocr_lexicon(analyse, settings["min_count"])
@@ -490,12 +498,15 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
     )
     print(f"[ok] {target}")
     print(f"[ok] {words_target}")
+    correct_speaker_files(video_path, [target], force=force)
     return target
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Corrige les timecodes en utilisant les noms propres trouves dans 01_processed_ocr_items.json."
+        description=(
+            "Corrige le transcript Whisper avec l'OCR puis applique les noms de speakers valides par GPT."
+        )
     )
     parser.add_argument(
         "--video-dir",
@@ -548,7 +559,7 @@ def main():
         if correct_file(video_path, force=args.force, mode=args.mode):
             done += 1
 
-    print(f"{done} fichiers corriges.")
+    print(f"{done} transcripts Whisper corriges avec OCR et speakers GPT.")
 
 
 if __name__ == "__main__":

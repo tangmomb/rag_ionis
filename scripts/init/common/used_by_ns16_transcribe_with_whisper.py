@@ -1,4 +1,5 @@
 import argparse
+import gc
 import json
 import os
 import shutil
@@ -16,6 +17,8 @@ except ImportError:  # pragma: no cover
     torch = None
 
 
+ROOT_DIR = Path(__file__).resolve().parents[3]
+load_dotenv(ROOT_DIR / ".env", override=True)
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
 TRANSCRIPT_WHISPER_DIR_NAME = "transcripts"
@@ -34,6 +37,33 @@ DEFAULT_TRANSCRIBE_COMPUTE_TYPE = os.getenv(
 )
 DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
 STRICT_CUDA = os.getenv("WHISPERX_STRICT_CUDA", "1").lower() not in {"0", "false", "no"}
+DEFAULT_DIARIZATION_MODEL = os.getenv(
+    "WHISPERX_DIARIZATION_MODEL",
+    "pyannote/speaker-diarization-community-1",
+)
+REQUESTED_DIARIZATION_DEVICE = os.getenv("WHISPERX_DIARIZATION_DEVICE", "").strip()
+_diarization_cache_dir = Path(
+    os.getenv("WHISPERX_DIARIZATION_CACHE_DIR", "models/huggingface")
+)
+DEFAULT_DIARIZATION_CACHE_DIR = (
+    _diarization_cache_dir
+    if _diarization_cache_dir.is_absolute()
+    else ROOT_DIR / _diarization_cache_dir
+)
+
+
+def optional_positive_int_env(name):
+    value = str(os.getenv(name, "")).strip()
+    if not value:
+        return None
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError(f"{name} doit etre un entier positif.")
+    return parsed
+
+
+DEFAULT_MIN_SPEAKERS = optional_positive_int_env("WHISPERX_MIN_SPEAKERS")
+DEFAULT_MAX_SPEAKERS = optional_positive_int_env("WHISPERX_MAX_SPEAKERS")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -127,6 +157,20 @@ def extract_audio(video_path, audio_dir):
     return audio_path
 
 
+def resolved_device(requested_device):
+    if requested_device == "cuda" and (torch is None or not torch.cuda.is_available()):
+        message = (
+            "Le device CUDA est demande, mais le GPU n'est pas accessible dans cet "
+            "environnement Python. Verifie l'installation PyTorch CUDA, les pilotes NVIDIA "
+            "et la visibilite du GPU dans la .venv."
+        )
+        if STRICT_CUDA:
+            raise RuntimeError(message)
+        print(f"[warn] {message} Fallback sur cpu.")
+        return "cpu"
+    return requested_device
+
+
 def load_whisperx_model():
     try:
         import whisperx
@@ -135,16 +179,7 @@ def load_whisperx_model():
             "Le package whisperx est absent. Installe-le avec `pip install whisperx`."
         ) from error
 
-    if DEFAULT_TRANSCRIBE_DEVICE == "cuda" and (torch is None or not torch.cuda.is_available()):
-        message = (
-            "WHISPERX_DEVICE=cuda est demande, mais le GPU n'est pas accessible dans cette "
-            "environnement Python. Verifie l'installation PyTorch CUDA, les pilotes NVIDIA "
-            "et la visibilite du GPU dans la .venv."
-        )
-        if STRICT_CUDA:
-            raise RuntimeError(message)
-        print(f"[warn] {message} Fallback sur cpu.")
-    device = DEFAULT_TRANSCRIBE_DEVICE if DEFAULT_TRANSCRIBE_DEVICE != "cuda" or (torch is not None and torch.cuda.is_available()) else "cpu"
+    device = resolved_device(DEFAULT_TRANSCRIBE_DEVICE)
     compute_type = DEFAULT_TRANSCRIBE_COMPUTE_TYPE
     if device == "cpu" and compute_type == "float16":
         compute_type = "int8"
@@ -158,7 +193,61 @@ def load_whisperx_model():
         device,
         compute_type=compute_type,
     )
-    return whisperx, model
+    return whisperx, model, device
+
+
+def huggingface_token():
+    for name in ("HUGGINGFACE_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        token = str(os.getenv(name, "")).strip()
+        if token:
+            return token
+    return None
+
+
+def load_diarization_pipeline(device):
+    try:
+        from whisperx.diarize import DiarizationPipeline
+    except ImportError as error:
+        raise RuntimeError(
+            "La diarisation WhisperX/Pyannote est indisponible. Reinstalle `whisperx`."
+        ) from error
+
+    model_path = Path(DEFAULT_DIARIZATION_MODEL)
+    token = huggingface_token()
+    if not model_path.exists() and not token:
+        raise RuntimeError(
+            "HUGGINGFACE_TOKEN est requis pour le premier telechargement du modele "
+            f"{DEFAULT_DIARIZATION_MODEL}. Il n'est plus necessaire avec un chemin local."
+        )
+
+    DEFAULT_DIARIZATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    diarization_device = resolved_device(REQUESTED_DIARIZATION_DEVICE or device)
+    print(
+        f"[diarization] model={DEFAULT_DIARIZATION_MODEL} device={diarization_device} "
+        f"cache={DEFAULT_DIARIZATION_CACHE_DIR}"
+    )
+    try:
+        pipeline = DiarizationPipeline(
+            model_name=DEFAULT_DIARIZATION_MODEL,
+            token=token,
+            device=diarization_device,
+            cache_dir=str(DEFAULT_DIARIZATION_CACHE_DIR),
+        )
+    except Exception as error:
+        try:
+            from huggingface_hub.errors import GatedRepoError
+        except ImportError:  # pragma: no cover
+            GatedRepoError = ()
+        if GatedRepoError and isinstance(error, GatedRepoError):
+            raise RuntimeError(
+                "Acces refuse au modele Pyannote. Le token HUGGINGFACE_TOKEN est present, "
+                "mais son compte n'a pas accepte les conditions de "
+                "https://huggingface.co/pyannote/speaker-diarization-community-1 "
+                "ou le token appartient a un autre compte. Accepte l'acces avec le meme "
+                "compte que celui du token, puis relance la Step 16."
+            ) from error
+        raise
+    return pipeline, diarization_device
 
 
 def format_timestamp(seconds):
@@ -177,11 +266,21 @@ def format_timestamped_transcript(segments):
         end = format_timestamp(segment.get("end", 0))
         text = str(segment.get("text", "")).strip()
         if text:
-            lines.append(f"[{start}-{end}] {text}")
+            speaker = str(segment.get("speaker", "")).strip()
+            speaker_prefix = f"{speaker}: " if speaker else ""
+            lines.append(f"[{start}-{end}] {speaker_prefix}{text}")
     return "\n".join(lines)
 
 
-def transcribe_with_whisperx(whisperx, model, audio_path):
+def transcribe_with_whisperx(
+    whisperx,
+    model,
+    audio_path,
+    device,
+    diarization_pipeline=None,
+    min_speakers=None,
+    max_speakers=None,
+):
     result = model.transcribe(
         str(audio_path),
         batch_size=DEFAULT_TRANSCRIBE_BATCH_SIZE,
@@ -189,22 +288,55 @@ def transcribe_with_whisperx(whisperx, model, audio_path):
     )
     segments = result.get("segments", [])
     if not segments:
-        return ""
+        return "", []
 
     language_code = result.get("language") or DEFAULT_TRANSCRIBE_LANGUAGE
-    align_model, metadata = whisperx.load_align_model(language_code=language_code, device=DEFAULT_TRANSCRIBE_DEVICE)
+    align_model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
     aligned = whisperx.align(
         segments,
         align_model,
         metadata,
         str(audio_path),
-        DEFAULT_TRANSCRIBE_DEVICE,
+        device,
         return_char_alignments=False,
     )
-    return format_timestamped_transcript(aligned.get("segments", segments))
+    del align_model
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    if diarization_pipeline is not None:
+        diarized_segments = diarization_pipeline(
+            str(audio_path),
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+        aligned = whisperx.assign_word_speakers(diarized_segments, aligned)
+
+    final_segments = aligned.get("segments", segments)
+    speakers = sorted(
+        {
+            str(segment.get("speaker")).strip()
+            for segment in final_segments
+            if str(segment.get("speaker", "")).strip()
+        }
+    )
+    return format_timestamped_transcript(final_segments), speakers
 
 
-def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=False):
+def transcribe_video(
+    whisperx,
+    model,
+    video_path,
+    transcript_dir,
+    audio_dir,
+    device,
+    diarization_pipeline=None,
+    diarization_device=None,
+    min_speakers=None,
+    max_speakers=None,
+    force=False,
+):
     output_path = transcript_path(transcript_dir, video_path)
     if output_path.exists() and not force:
         print(f"[skip] {output_path.name} existe deja")
@@ -212,7 +344,16 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
 
     print(f"[audio] {video_path.name}")
     audio_path = extract_audio(video_path, audio_dir)
-    text = transcribe_with_whisperx(whisperx, model, audio_path).strip()
+    text, speakers = transcribe_with_whisperx(
+        whisperx,
+        model,
+        audio_path,
+        device,
+        diarization_pipeline=diarization_pipeline,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+    )
+    text = text.strip()
     output_path.write_text(text + "\n", encoding="utf-8")
     update_analysed_infos(
         video_path,
@@ -220,9 +361,18 @@ def transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, for
         {
             "status": "done",
             "model": DEFAULT_TRANSCRIBE_MODEL,
-            "device": DEFAULT_TRANSCRIBE_DEVICE,
+            "device": device,
             "transcript_timecodes_file": relative_to_video_dir(output_path, video_path),
             "char_count": len(text),
+            "diarization": {
+                "enabled": diarization_pipeline is not None,
+                "model": DEFAULT_DIARIZATION_MODEL if diarization_pipeline is not None else None,
+                "device": diarization_device,
+                "speaker_ids": speakers,
+                "speaker_count": len(speakers),
+                "min_speakers": min_speakers,
+                "max_speakers": max_speakers,
+            },
         },
     )
     print(f"[ok] {output_path}")
@@ -258,6 +408,23 @@ def parse_args():
         help="Conserve les fichiers audio extraits dans outputs/transcripts/audio.",
     )
     parser.add_argument(
+        "--no-diarize",
+        action="store_true",
+        help="Desactive exceptionnellement la separation des voix.",
+    )
+    parser.add_argument(
+        "--min-speakers",
+        type=int,
+        default=DEFAULT_MIN_SPEAKERS,
+        help="Nombre minimum de voix a detecter. Defaut: detection automatique.",
+    )
+    parser.add_argument(
+        "--max-speakers",
+        type=int,
+        default=DEFAULT_MAX_SPEAKERS,
+        help="Nombre maximum de voix a detecter. Defaut: detection automatique.",
+    )
+    parser.add_argument(
         "--has-subtitles",
         choices=("true", "false"),
         default="false",
@@ -267,8 +434,17 @@ def parse_args():
 
 
 def main():
-    load_dotenv(override=True)
     args = parse_args()
+    if args.min_speakers is not None and args.min_speakers < 1:
+        raise ValueError("--min-speakers doit etre positif.")
+    if args.max_speakers is not None and args.max_speakers < 1:
+        raise ValueError("--max-speakers doit etre positif.")
+    if (
+        args.min_speakers is not None
+        and args.max_speakers is not None
+        and args.min_speakers > args.max_speakers
+    ):
+        raise ValueError("--min-speakers ne peut pas depasser --max-speakers.")
 
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     videos = list(video_files(video_dir))
@@ -295,7 +471,11 @@ def main():
         print("Aucune video a transcrire avec WhisperX.")
         return
 
-    whisperx, model = load_whisperx_model()
+    whisperx, model, device = load_whisperx_model()
+    diarization_pipeline = None
+    diarization_device = None
+    if not args.no_diarize:
+        diarization_pipeline, diarization_device = load_diarization_pipeline(device)
 
     done = 0
     failed = []
@@ -306,7 +486,19 @@ def main():
             transcript_dir.mkdir(parents=True, exist_ok=True)
             audio_dir.mkdir(parents=True, exist_ok=True)
             print(f"Dossier transcriptions: {transcript_dir}")
-            if transcribe_video(whisperx, model, video_path, transcript_dir, audio_dir, force=args.force):
+            if transcribe_video(
+                whisperx,
+                model,
+                video_path,
+                transcript_dir,
+                audio_dir,
+                device,
+                diarization_pipeline=diarization_pipeline,
+                diarization_device=diarization_device,
+                min_speakers=args.min_speakers,
+                max_speakers=args.max_speakers,
+                force=args.force,
+            ):
                 done += 1
         except Exception as error:
             print(f"[error] {video_path.name}: {error}")

@@ -4,14 +4,19 @@ import sys
 from pathlib import Path
 
 from common.pipeline_analysis import update_analysed_infos
-from common.pipeline_paths import existing_images_dir, existing_interview_dir
+from common.pipeline_paths import (
+    existing_images_dir,
+    existing_interview_dir,
+    existing_youtube_api_infos_path,
+)
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 MANIFEST_NAME = "frame_classification_manifest.json"
 LEGACY_MANIFEST_NAME = "manifest.json"
 INTERVIEW_MANIFEST_NAME = "interview_detection_manifest.json"
-MOTION_DESIGN_MAX_FOOTAGE_RATIO = 0.05
+MOTION_DESIGN_MAX_FOOTAGE_RATIO = 0.15
+MOTION_DESIGN_MAX_DURATION_SECONDS = 180
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -84,7 +89,7 @@ def manifest_class_counts(payload):
     return counts["footage"], counts["graphic"], counts["mixture"]
 
 
-def infer_video_type_from_manifest(payload):
+def infer_video_type_from_manifest(payload, duration_seconds=None):
     footage_count, graphic_count, mixture_count = manifest_class_counts(payload)
     total_count = footage_count + graphic_count + mixture_count
     labels = {
@@ -93,11 +98,36 @@ def infer_video_type_from_manifest(payload):
         if str(item.get("pred_label", "")).strip()
     }
     footage_ratio = (footage_count / total_count) if total_count > 0 else 0.0
-    if total_count > 0 and footage_ratio < MOTION_DESIGN_MAX_FOOTAGE_RATIO:
+    short_enough_for_motion_design = (
+        isinstance(duration_seconds, (int, float))
+        and not isinstance(duration_seconds, bool)
+        and duration_seconds < MOTION_DESIGN_MAX_DURATION_SECONDS
+    )
+    if (
+        short_enough_for_motion_design
+        and total_count > 0
+        and footage_ratio < MOTION_DESIGN_MAX_FOOTAGE_RATIO
+    ):
         return "motion_design"
-    if labels and "footage" not in labels:
+    if short_enough_for_motion_design and labels and "footage" not in labels:
         return "motion_design"
     return "video_recording"
+
+
+def video_duration_seconds(video_path):
+    source = existing_youtube_api_infos_path(video_path)
+    if not source.exists():
+        return None
+    try:
+        value = load_json(source).get("duration_seconds")
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def write_analysed_infos(video_path, video_type):
@@ -120,9 +150,14 @@ def infer_for_video(video_path, force=False):
             return True
 
     payload = load_json(source)
-    video_type = infer_video_type_from_manifest(payload)
+    duration_seconds = video_duration_seconds(video_path)
+    video_type = infer_video_type_from_manifest(payload, duration_seconds=duration_seconds)
     write_analysed_infos(video_path, video_type)
-    print(f"[ok] {video_path.name}: video_type={video_type}", flush=True)
+    duration_label = f"{duration_seconds:g}s" if duration_seconds is not None else "inconnue"
+    print(
+        f"[ok] {video_path.name}: video_type={video_type}, duree={duration_label}",
+        flush=True,
+    )
     return True
 
 

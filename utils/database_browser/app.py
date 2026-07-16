@@ -86,11 +86,65 @@ def first_existing(paths: list[Path]) -> Path | None:
     return next((path for path in paths if path.is_file()), None)
 
 
+TRANSCRIPT_VARIANTS = (
+    ("plain", "Plain transcript", ("plain_transcript.txt",)),
+    (
+        "raw_timecoded",
+        "Timecodé brut",
+        ("whisper_transcript_timecoded.txt", "ocr_subtitles_timecoded.txt"),
+    ),
+    (
+        "corrected_timecoded",
+        "Timecodé corrigé",
+        (
+            "whisper_transcript_timecoded_corrected.txt",
+            "ocr_subtitles_timecoded_corrected.txt",
+        ),
+    ),
+    (
+        "enriched",
+        "Enrichi",
+        (
+            "whisper_transcript_timecoded_corrected_enriched.txt",
+            "ocr_subtitles_timecoded_corrected_enriched.txt",
+        ),
+    ),
+    ("ocr_plain", "Sous-titres OCR", ("ocr_subtitles.txt",)),
+)
+
+
+def transcript_directories(video_dir: Path) -> list[Path]:
+    return sorted(path for path in (video_dir / "outputs").glob("transcripts*") if path.is_dir())
+
+
+def transcript_variant_paths(video_dir: Path) -> list[dict[str, Any]]:
+    directories = transcript_directories(video_dir)
+    variants = []
+    seen_paths = set()
+    for key, label, names in TRANSCRIPT_VARIANTS:
+        candidates = [
+            directory / name
+            for name in names
+            for directory in directories
+        ]
+        path = first_existing(candidates)
+        if path is None or path.resolve() in seen_paths:
+            continue
+        seen_paths.add(path.resolve())
+        variants.append({"key": key, "label": label, "path": path})
+    return variants
+
+
 def video_directories() -> list[tuple[Path, Path]]:
     if not DOWNLOAD_ROOT.is_dir():
         return []
     videos: list[tuple[Path, Path]] = []
-    for run_dir in sorted(DOWNLOAD_ROOT.glob("*_init*"), reverse=True):
+    run_dirs = [
+        path
+        for path in DOWNLOAD_ROOT.iterdir()
+        if path.is_dir() and (path.name == "init" or path.name.endswith("_init"))
+    ]
+    for run_dir in sorted(run_dirs, key=lambda path: (path.name == "init", path.name), reverse=True):
         if not run_dir.is_dir():
             continue
         for video_dir in sorted(path for path in run_dir.iterdir() if path.is_dir()):
@@ -100,13 +154,19 @@ def video_directories() -> list[tuple[Path, Path]]:
 
 
 def video_output_paths(video_dir: Path) -> dict[str, Path | None]:
-    transcript_dirs = sorted(path for path in (video_dir / "outputs").glob("transcripts*") if path.is_dir())
+    transcript_variants = transcript_variant_paths(video_dir)
     return {
         "analysis": first_existing(
             [video_dir / "metadata" / "pipeline_analysis.json", video_dir / "outputs" / "metadata" / "pipeline_analysis.json"]
         ),
-        "summary": first_existing([path / "video_summary.md" for path in transcript_dirs]),
-        "transcript": first_existing([path / "plain_transcript.txt" for path in transcript_dirs]),
+        "transcript": next(
+            (
+                variant["path"]
+                for variant in transcript_variants
+                if variant["key"] == "plain"
+            ),
+            transcript_variants[0]["path"] if transcript_variants else None,
+        ),
         "ocr": first_existing(
             [
                 video_dir / "outputs" / "ocr" / "03_reviewed_ocr_overlays.json",
@@ -116,7 +176,6 @@ def video_output_paths(video_dir: Path) -> dict[str, Path | None]:
         ),
         "chunks": first_existing(
             [
-                video_dir / "outputs" / "chunks" / "transcript_chunks_speaker_validated.json",
                 video_dir / "outputs" / "chunks" / "transcript_chunks.json",
             ]
         ),
@@ -140,7 +199,24 @@ def ocr_groups(path: Path | None) -> dict[str, Any]:
     return {}
 
 
-def video_summary(run_dir: Path, video_dir: Path) -> dict[str, Any]:
+def video_speakers(video_dir: Path) -> list[str]:
+    path = video_dir / "outputs" / "speakers" / "speakers_validated.json"
+    payload = read_json(path)
+    if not isinstance(payload, dict) or not isinstance(payload.get("speakers"), list):
+        return []
+    speakers = []
+    seen = set()
+    for value in payload["speakers"]:
+        name = " ".join(str(value).split()).strip()
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        speakers.append(name)
+    return speakers
+
+
+def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
     metadata = read_json(video_dir / "metadata" / "youtube_video_metadata.json") or {}
     paths = video_output_paths(video_dir)
     analysis = read_json(paths["analysis"]) if paths["analysis"] else {}
@@ -153,8 +229,6 @@ def video_summary(run_dir: Path, video_dir: Path) -> dict[str, Any]:
         stage = "Prête"
     elif chunks:
         stage = "Chunks"
-    elif paths["summary"]:
-        stage = "Résumé"
     elif paths["transcript"]:
         stage = "Transcript"
     elif paths["ocr"]:
@@ -174,11 +248,11 @@ def video_summary(run_dir: Path, video_dir: Path) -> dict[str, Any]:
         "url": metadata.get("url") or f"https://www.youtube.com/watch?v={video_dir.name}",
         "video_type": analysis.get("video_type"),
         "has_subtitles": analysis.get("has_subtitles"),
+        "speakers": video_speakers(video_dir),
         "stage": stage,
         "image_count": len(images),
         "chunk_count": len(chunks),
         "embedding_count": embedding_count,
-        "has_summary": bool(paths["summary"]),
         "has_transcript": bool(paths["transcript"]),
         "has_ocr": bool(paths["ocr"]),
         "preview_path": preview,
@@ -206,13 +280,13 @@ def selected_video(run_name: str, video_id: str) -> tuple[Path, Path]:
 
 @app.get("/api/videos")
 def videos() -> list[dict[str, Any]]:
-    return [video_summary(run_dir, video_dir) for run_dir, video_dir in video_directories()]
+    return [video_overview(run_dir, video_dir) for run_dir, video_dir in video_directories()]
 
 
 @app.get("/api/videos/{run_name}/{video_id}")
 def video_detail(run_name: str, video_id: str) -> dict[str, Any]:
     run_dir, video_dir = selected_video(run_name, video_id)
-    result = video_summary(run_dir, video_dir)
+    result = video_overview(run_dir, video_dir)
     paths = video_output_paths(video_dir)
     groups = ocr_groups(paths["ocr"])
     images = [
@@ -229,10 +303,19 @@ def video_detail(run_name: str, video_id: str) -> dict[str, Any]:
         for path in sorted(video_dir.rglob("*"))
         if path.is_file() and ".embedding_cache" not in path.parts and path.suffix.lower() not in VIDEO_EXTENSIONS
     ][:1000]
+    transcripts = [
+        {
+            "key": variant["key"],
+            "label": variant["label"],
+            "path": variant["path"].relative_to(video_dir).as_posix(),
+            "content": read_text(variant["path"]),
+        }
+        for variant in transcript_variant_paths(video_dir)
+    ]
     result.update(
         {
-            "summary": read_text(paths["summary"]),
             "transcript": read_text(paths["transcript"]),
+            "transcripts": transcripts,
             "ocr": groups,
             "chunks": chunk_items(paths["chunks"])[:500],
             "images": images,

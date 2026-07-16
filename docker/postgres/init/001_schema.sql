@@ -38,7 +38,6 @@ CREATE TABLE IF NOT EXISTS transcripts (
     transcript TEXT,
     transcript_timecodes TEXT,
     transcript_timecodes_enrichi TEXT,
-    video_summary TEXT,
     data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (video_id, language_code)
 );

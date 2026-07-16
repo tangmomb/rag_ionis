@@ -11,7 +11,7 @@ INIT_DIR = ROOT_DIR / "scripts" / "init"
 if str(INIT_DIR) not in sys.path:
     sys.path.insert(0, str(INIT_DIR))
 
-from common import used_by_hs22_ns22_validate_chunk_speakers as speaker_validation
+from common import used_by_pre21b_validate_speakers as speaker_validation
 
 
 class FakeResponses:
@@ -31,28 +31,56 @@ class FakeResponses:
 
 
 class ValidateChunkSpeakersTests(unittest.TestCase):
-    def test_request_uses_strict_schema_and_minimal_reasoning_for_gpt5(self) -> None:
+    def test_request_uses_strict_schema_without_reasoning_override(self) -> None:
         speakers = ["Lou-Anne Corveddu", "Ionis-STM"]
+        candidates = [
+            {"name": "Lou-Anne Corveddu", "methods": ["ocr_lower_third"]},
+            {"name": "Ionis-STM", "methods": ["ocr_lower_third"]},
+        ]
 
-        body, request_log = speaker_validation.build_response_request("gpt-5-nano", speakers)
+        body, request_log = speaker_validation.build_response_request(
+            "gpt-5.4-nano",
+            speakers,
+            "Lou-Anne Corvedu présente son métier",
+            candidates,
+        )
 
         schema = body["text"]["format"]["schema"]
-        self.assertEqual(body["reasoning"], {"effort": "minimal"})
+        self.assertNotIn("reasoning", body)
+        self.assertNotIn("reasoning", request_log)
         self.assertTrue(body["text"]["format"]["strict"])
-        self.assertEqual(schema["properties"]["valid_speakers"]["items"]["enum"], speakers)
+        self.assertEqual(schema["properties"]["valid_speakers"]["items"]["type"], "string")
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(request_log["text"], body["text"])
+        prompt = body["input"][1]["content"]
+        self.assertIn("video_title", prompt)
+        self.assertIn("Lou-Anne Corvedu présente son métier", prompt)
+        self.assertIn("ocr_lower_third", prompt)
 
     def test_parser_accepts_structured_and_legacy_answers(self) -> None:
         speakers = ["Lou-Anne Corveddu", "Ionis-STM"]
 
         structured = speaker_validation.parse_valid_speakers(
-            '{"valid_speakers":["Lou-Anne Corveddu"]}', speakers
+            '{"valid_speakers":["Lou-Anne Corveddu"]}'
         )
-        legacy = speaker_validation.parse_valid_speakers('["Lou-Anne Corveddu"]', speakers)
+        legacy = speaker_validation.parse_valid_speakers('["Lou-Anne Corveddu"]')
 
         self.assertEqual(structured, ["Lou-Anne Corveddu"])
         self.assertEqual(legacy, ["Lou-Anne Corveddu"])
+
+    def test_model_output_is_kept_without_matching_the_original_candidate(self) -> None:
+        valid = speaker_validation.parse_valid_speakers(
+            '{"valid_speakers":["Loucif Ouyahia"]}'
+        )
+
+        self.assertEqual(valid, ["Loucif Ouyahia"])
+
+    def test_model_output_is_not_cleaned_or_deduplicated(self) -> None:
+        valid = speaker_validation.parse_valid_speakers(
+            '{"valid_speakers":["  Loucif   Ouyahia  ","  Loucif   Ouyahia  ",""]}'
+        )
+
+        self.assertEqual(valid, ["  Loucif   Ouyahia  ", "  Loucif   Ouyahia  ", ""])
 
     def test_empty_response_is_retried(self) -> None:
         responses = FakeResponses(["", '{"valid_speakers":["Lou-Anne Corveddu"]}'])
@@ -73,7 +101,7 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
 
     def test_empty_parser_input_has_clear_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "Reponse OpenAI vide"):
-            speaker_validation.parse_valid_speakers("", ["Lou-Anne Corveddu"])
+            speaker_validation.parse_valid_speakers("")
 
 
 if __name__ == "__main__":

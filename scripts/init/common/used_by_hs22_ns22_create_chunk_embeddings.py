@@ -13,9 +13,7 @@ from common.pipeline_paths import chunks_dir, existing_chunks_dir, relative_to_v
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CHUNKS_NAME = "transcript_chunks.json"
-CHUNKS_SPEAKER_VALIDATED_NAME = "transcript_chunks_speaker_validated.json"
 LEGACY_CHUNKS_SUFFIX = "_chunks.json"
-LEGACY_CHUNKS_CORRECTED_SUFFIX = "_chunks_corrected.json"
 EMBEDDING_SUFFIX = "_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_EMBEDDING_DIMENSIONS = 2000
@@ -54,8 +52,6 @@ def latest_video_dir(parent_dir):
 def chunks_path(video_path):
     video_chunks_dir = existing_chunks_dir(video_path)
     candidates = (
-        video_chunks_dir / CHUNKS_SPEAKER_VALIDATED_NAME,
-        video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_CORRECTED_SUFFIX}",
         video_chunks_dir / CHUNKS_NAME,
         video_chunks_dir / f"{video_path.stem}{LEGACY_CHUNKS_SUFFIX}",
     )
@@ -77,7 +73,7 @@ def load_chunks(path):
     return payload.get("meta_data", {}), payload.get("chunks", [])
 
 
-def existing_embedding_matches(path, model, dimensions):
+def existing_embedding_matches(path, model, dimensions, expected_text=None):
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -87,6 +83,7 @@ def existing_embedding_matches(path, model, dimensions):
         payload.get("model") == model
         and isinstance(embedding, list)
         and len(embedding) == dimensions
+        and (expected_text is None or payload.get("content") == expected_text)
     )
 
 
@@ -110,11 +107,16 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
             continue
         chunk_index = chunk.get("chunk_index")
         target = embedding_path(video_path, chunk_index)
-        if target.exists() and not force and existing_embedding_matches(target, model, dimensions):
+        if target.exists() and not force and existing_embedding_matches(
+            target,
+            model,
+            dimensions,
+            expected_text=text,
+        ):
             print(f"[skip] {target.name} existe deja")
             continue
         if target.exists() and not force:
-            print(f"[regen] {target.name}: modele ou dimensions obsoletes")
+            print(f"[regen] {target.name}: contenu, modele ou dimensions obsoletes")
         response = client.embeddings.create(model=model, dimensions=dimensions, input=text)
         embedding = response.data[0].embedding
         payload = {

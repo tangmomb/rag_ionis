@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 downloads/
+models/huggingface/
 *.log
 others/
 .venv_py310_backup_20260705_140330/

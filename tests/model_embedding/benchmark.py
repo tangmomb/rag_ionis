@@ -149,11 +149,11 @@ def load_cases(path: Path) -> list[EvalCase]:
 
 def chunk_source_priority(path: Path) -> int | None:
     name = path.name
-    if name == "transcript_chunks_speaker_validated.json":
+    if name == "transcript_chunks.json":
         return 0
     if name.endswith("_chunks_corrected.json"):
         return 1
-    if name == "transcript_chunks.json":
+    if name == "transcript_chunks_speaker_validated.json":
         return 2
     if name.endswith("_chunks.json") and not name.endswith("_embedding.json"):
         return 3

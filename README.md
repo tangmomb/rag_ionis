@@ -465,121 +465,122 @@ python scripts/init/15_extract_ocr_subtitles.py
 
 Le script ne traite une video que si `metadata/pipeline_analysis.json` contient `has_subtitles: true`. Il lit alors `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, et ecrit `outputs/transcripts/ocr_subtitles.txt` ainsi que `outputs/transcripts/ocr_subtitles_timecoded.txt`.
 
+### Branche avec sous-titres OCR
+
+Après la correction des espaces à l’étape 16 et la normalisation `Ionis-STM` à l’étape 17, la partie speakers s’exécute avant la création du plain transcript :
+
+```text
+17  Normalisation Ionis-STM
+17A Proposition speakers depuis ocr_subtitles_timecoded_corrected.txt
+17B Validation GPT
+17C Attribution des lignes OCR aux speakers dans ocr_subtitles_timecoded_corrected.txt
+18  Création du plain transcript
+19  Enrichissement
+```
+
+Les scripts correspondants sont `17A_OCR_propose_speakers.py`, `17B_OCR_validate_speakers.py` et `17C_OCR_correct_speakers.py` dans `scripts/init/has_sub/`.
+L'etape 17C corrige d'abord les noms selon la validation GPT. Avec un seul speaker
+valide, elle applique directement son nom a chaque ligne. Avec plusieurs speakers,
+elle diarise l'audio avec Pyannote, associe les voix aux noms grace aux presentations
+parlees et aux cartouches OCR horodates, puis modifie le TXT existant sans creer de
+nouveau transcript. Le detail est conserve dans
+`outputs/speakers/speaker_diarization.json`.
+
 ## Step 16 - Transcribe With Whisper
 
 Transcrire localement avec `whisperx` les videos du dernier dossier de telechargement uniquement si `metadata/pipeline_analysis.json` contient `has_subtitles: false`:
 
 ```powershell
-python scripts/init/16_transcribe_with_whisper.py
+python scripts/init/no_sub/16_WHISPER_transcribe_with_whisper.py --video-dir downloads/youtube/init
 ```
 
-Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, puis aligne les segments pour produire des timecodes. Il ecrit `outputs/transcripts/whisper_transcript_timecoded.txt`.
+Le script extrait un fichier audio temporaire avec ffmpeg, transcrit localement avec `whisperx` en francais sur GPU, aligne les segments, puis execute la diarisation Pyannote pour attribuer des identifiants `SPEAKER_00`, `SPEAKER_01`, etc. Dans la branche sans sous-titres, il ecrit `outputs/transcripts_whisper/whisper_transcript_timecoded.txt`.
 
-Les parametres utiles se reglant via `.env` sont `WHISPERX_MODEL`, `WHISPERX_LANGUAGE`, `WHISPERX_DEVICE`, `WHISPERX_COMPUTE_TYPE` et `WHISPERX_BATCH_SIZE`.
+Les parametres utiles se reglant via `.env` sont `WHISPERX_MODEL`, `WHISPERX_LANGUAGE`, `WHISPERX_DEVICE`, `WHISPERX_COMPUTE_TYPE`, `WHISPERX_BATCH_SIZE`, `HUGGINGFACE_TOKEN`, `WHISPERX_DIARIZATION_MODEL`, `WHISPERX_DIARIZATION_DEVICE`, `WHISPERX_MIN_SPEAKERS` et `WHISPERX_MAX_SPEAKERS`. Le token Hugging Face sert au premier telechargement du modele Pyannote; la transcription et la diarisation sont executees localement.
 
 Pour forcer un usage GPU, garde `WHISPERX_DEVICE=cuda` et `WHISPERX_COMPUTE_TYPE=float16`. Pour des machines plus legeres, `WHISPERX_DEVICE=cpu` et `WHISPERX_COMPUTE_TYPE=int8` restent possibles. Le modele par defaut est maintenant `large-v3`.
 
 Quand la transcription produit des timecodes, le fichier attendu par les steps suivantes est `whisper_transcript_timecoded.txt`.
 
-## Step 17 - Correct Transcript Timecodes
+## Step 17A - Propose Speakers From Raw Whisper
 
-Corriger certains mots du transcript timecode en les comparant aux mots OCR trouves dans `processed_ocr_items.json`, pour essayer de recuperer des noms propres visibles a l'ecran:
-
-```powershell
-python scripts/init/17_correct_transcript_timecodes.py
-```
-
-Le script lit `outputs/transcripts/whisper_transcript_timecoded.txt` ou `outputs/transcripts/ocr_subtitles_timecoded.txt`, puis ecrit `whisper_transcript_timecoded_corrected.txt` ou `ocr_subtitles_timecoded_corrected.txt`. Il conserve la casse reelle vue par l'OCR et se concentre sur les zones `name`, `lower_third`, `title`, `logo` et `graphic` pour limiter les faux positifs.
-
-Le niveau de correction est ajustable:
+Rechercher les candidats speakers directement dans le transcript Whisper brut et les cartouches OCR:
 
 ```powershell
-python scripts/init/17_correct_transcript_timecodes.py --mode conservative
-python scripts/init/17_correct_transcript_timecodes.py --mode balanced
-python scripts/init/17_correct_transcript_timecodes.py --mode aggressive
+python scripts/init/no_sub/17A_WHISPER_propose_speakers.py --video-dir downloads/youtube/init
 ```
 
-`conservative` corrige peu, `aggressive` accepte plus de noms proches, et `balanced` est le defaut.
+Le script privilegie `outputs/transcripts_whisper/whisper_transcript_timecoded.txt`, combine les introductions du type `je m'appelle ...` ou `je suis ...` avec les noms identifies dans les cartouches OCR, puis ecrit `outputs/speakers/speaker_candidates.json`.
 
-## Step 18 - Enrich Timecodes
+## Step 17B - Validate Speakers With GPT
 
-Ajouter les textes visibles a l'ecran dans les timecodes corriges:
+Valider les candidats avec OpenAI avant toute correction du transcript:
 
 ```powershell
-python scripts/init/18_enrich_transcripts.py
+python scripts/init/no_sub/17B_WHISPER_validate_speakers.py --video-dir downloads/youtube/init
 ```
 
-Le script n'appelle aucune API. Il combine les fichiers corriges avec les overlays filtres de `outputs/ocr/`, et ajoute le suffixe `_enriched.txt` au fichier source. Un fichier `whisper_transcript_timecoded_corrected.txt` produit donc `whisper_transcript_timecoded_corrected_enriched.txt`; un fichier `ocr_subtitles_timecoded_corrected.txt` produit `ocr_subtitles_timecoded_corrected_enriched.txt`.
+Le script envoie au modele le titre ainsi que la methode de chaque candidat, puis ecrit `outputs/speakers/speakers_validated.json`. Si un candidat ressemble fortement a un nom du titre, l'orthographe du titre prevaut. La reponse du modele est conservee sans filtre local.
 
-## Step 19 - Video Summary
+## Step 18 - Correct Whisper With OCR And GPT Speakers
 
-Produire un resume Markdown depuis le fichier enrichi, sous forme de tableau timecode/fait associe:
+Produire le transcript Whisper corrige en une seule etape:
 
 ```powershell
-python scripts/init/19_generate_video_summary.py
+python scripts/init/no_sub/18_WHISPER_correct_with_ocr_and_speakers.py --video-dir downloads/youtube/init
 ```
 
-Le script lit `outputs/transcripts/*_enriched.txt` et ecrit `outputs/transcripts/video_summary.md`. Il conserve les lignes timecodees du fichier enrichi et les transforme en tableau Markdown avec une colonne `Timecode` et une colonne `Fait associe`.
+Le script corrige d'abord les noms propres avec les donnees OCR, produit `whisper_transcript_timecoded_corrected.txt`, puis applique immediatement dans ce meme fichier les noms de speakers valides par GPT. Les remplacements speakers sont traces dans `outputs/speakers/speaker_transcript_corrections.json`.
 
-La step suivante `20_create_plain_transcript.py` produit le fichier sans timecodes uniquement depuis `whisper_transcript_timecoded_corrected.txt`.
+Le niveau de correction OCR reste ajustable avec `--mode conservative`, `--mode balanced` ou `--mode aggressive`.
+
+## Step 19 - Enrich Corrected Whisper
+
+Ajouter les textes visibles a l'ecran au transcript deja corrige:
+
+```powershell
+python scripts/init/no_sub/19_WHISPER_enrich_transcripts.py --video-dir downloads/youtube/init
+```
+
+Le script combine `whisper_transcript_timecoded_corrected.txt` avec les overlays filtres de `outputs/ocr/` et produit `whisper_transcript_timecoded_corrected_enriched.txt`.
+
+Dans le fichier enrichi, les labels de diarisation sont remplaces selon l'ordre de `speakers_validated.json`: `SPEAKER_00` par le premier speaker, `SPEAKER_01` par le deuxieme, etc. S'il n'y a qu'un speaker valide, `SPEAKER_00` prend son nom.
+
+Les textes OCR de type `graphic` sont marques `INTERCALAIRE`, et les autres textes ajoutes a l'image sont marques `ANIMATIONS`.
+
+Le fichier enrichi regroupe toutes les paroles, puis toutes les `ANIMATIONS`, puis tous les `INTERCALAIRE`. L'ordre chronologique est conserve uniquement a l'interieur de chaque groupe, avec une ligne vide entre les groupes.
 
 ## Step 20 - Create Plain Transcript
 
-Creer le transcript sans timecodes depuis la version corrigee:
+Creer le transcript sans timecodes depuis la version finale corrigee:
 
 ```powershell
-python scripts/init/20_create_plain_transcript.py
+python scripts/init/no_sub/20_WHISPER_create_plain_transcript.py --video-dir downloads/youtube/init
 ```
 
-Le script lit uniquement `whisper_transcript_timecoded_corrected.txt` et produit `plain_transcript.txt`. Les fichiers `ocr_subtitles_timecoded_corrected.txt` ne generent pas de transcript plain.
+Le script lit `whisper_transcript_timecoded_corrected.txt`, qui contient deja les corrections OCR et speakers GPT, puis produit `plain_transcript.txt`.
+
+Pour une video `motion_design` dont le transcript Whisper brut est vide, il utilise les overlays OCR enrichis et commence le fichier par `Textes présents sur la vidéo :`.
 
 ## Step 21 - Create Transcript Chunks
 
-Decouper les transcripts sans timecodes en chunks JSON, avec une limite de 1000 caracteres espaces compris et une coupe au prochain point apres depassement:
+Decouper le transcript en chunks JSON, avec une limite de 1000 caracteres espaces compris et une coupe au prochain point apres depassement:
 
 ```powershell
-python scripts/init/21_create_transcript_chunks.py
+python scripts/init/no_sub/21_CHUNK_create_transcript_chunks.py --video-dir downloads/youtube/init
 ```
 
-Le script lit d'abord `outputs/transcripts/plain_transcript.txt`, sinon `outputs/transcripts/ocr_subtitles.txt`, et ecrit `outputs/chunks/transcript_chunks.json`.
+Le script lit le transcript corrige sur place et `outputs/speakers/speakers_validated.json`, puis ecrit `outputs/chunks/transcript_chunks.json`. La recherche, la validation et la correction des speakers ne sont plus executees pendant la creation des chunks.
 
-La detection des speakers combine les introductions du type `je m'appelle ...`, les noms propres detectes dans le transcript par spaCy, et les noms propres visibles dans `outputs/ocr/corrected_ocr_items.json` quand il existe, sinon `outputs/ocr/processed_ocr_items.json`, quand ils apparaissent dans un item OCR dont `kind` n'est ni `subtitle` ni `ocr_error`. Le modele francais `fr_core_news_lg` fournit le parser et la reconnaissance d'entites sans imposer l'ancienne version de Protobuf incompatible avec OpenTelemetry. Le filtre OCR evite de garder les prenoms simplement cites dans le transcript. Le modele est declare dans `requirements.txt`; si l'environnement ne le trouve pas, le reinstaller avec:
-
-```powershell
-python -m spacy download fr_core_news_lg
-```
-
-## Step 22 - Validate Chunk Speakers
-
-Valider la liste des speakers detectes dans les chunks avec OpenAI:
-
-```powershell
-python scripts/init/22_validate_chunk_speakers.py
-```
-
-Le script lit `outputs/chunks/transcript_chunks.json`, recupere les valeurs `meta_data.speakers`, demande au modele quels speakers sont vraiment des personnes physiques, puis ecrit `outputs/chunks/transcript_chunks_speaker_validated.json`. Par defaut, le modele est `gpt-5.4-nano`, configurable avec `--model` ou `CHUNK_SPEAKER_VALIDATION_MODEL`; l'alias compact `gpt5.4nano` est aussi accepte.
-
-Les chunks conservent leur contenu; seule la liste `speakers` est filtree. Une trace `speaker_validation` est ajoutee au JSON corrige avec les noms gardes et le nombre de rejets. Le script ecrit aussi `outputs/chunks/speaker_validation_log.json` avec la demande envoyee a GPT et sa reponse brute.
-
-## Step 23 - Split Alert Chunks
-
-Redecouper les chunks trop longs marques `ALERT`:
-
-```powershell
-python scripts/init/23_split_alert_chunks.py
-```
-
-Le script lit `outputs/chunks/transcript_chunks_speaker_validated.json` quand il existe, sinon `outputs/chunks/transcript_chunks.json`, et met a jour le fichier choisi en place.
-
-## Step 24 - Create Transcript Embeddings
+## Step 22 - Create Transcript Embeddings
 
 Creer les embeddings a partir des chunks:
 
 ```powershell
-python scripts/init/24_create_chunk_embeddings.py
+python scripts/init/no_sub/22_CHUNK_create_chunk_embeddings.py --video-dir downloads/youtube/init
 ```
 
-Le script lit `outputs/chunks/transcript_chunks_speaker_validated.json` quand il existe, sinon `outputs/chunks/transcript_chunks.json`, et ecrit un fichier JSON par chunk dans `outputs/chunks/`:
+Le script lit `outputs/chunks/transcript_chunks.json` et ecrit un fichier JSON par chunk dans `outputs/chunks/`:
 
 - `outputs/chunks/chunk_<index>_embedding.json`
 
@@ -587,7 +588,7 @@ Les embeddings de production utilisent `text-embedding-3-large` en 2000 dimensio
 
 Une base deja peuplee en 3072 dimensions doit etre reconstruite apres regeneration des fichiers. Le pipeline complet le fait via l'etape SQL `--reset-database`; le script SQL refuse volontairement de tronquer silencieusement les anciens vecteurs.
 
-## Step 25 - Upload Outputs To S3
+## Step 23 - Upload Outputs To S3
 
 Uploader le dernier dossier de videos vers le bucket S3 en conservant la meme arborescence:
 
@@ -621,7 +622,7 @@ python scripts/init/25_upload_outputs_to_s3.py --clean-init-prefix
 python scripts/init/25_upload_outputs_to_s3.py --force
 ```
 
-## Step 26 - Update SQL Assets
+## Step 24 - Update SQL Assets
 
 Mettre a jour la base SQL avec le lien S3 du dossier video et synchroniser les transcripts disponibles:
 
@@ -629,7 +630,7 @@ Mettre a jour la base SQL avec le lien S3 du dossier video et synchroniser les t
 python scripts/init/26_update_sql_assets.py
 ```
 
-Le script met a jour `videos` avec un seul lien S3 par dossier video via `s3_uri`. Il utilise le meme prefixe S3 `youtube/` que la Step 25 par defaut:
+Le script met a jour `videos` avec un seul lien S3 par dossier video via `s3_uri`. Il utilise le meme prefixe S3 `youtube/` que la Step 23 par defaut:
 
 ```text
 downloads/youtube/init/LJ-W6BjSJRo/LJ-W6BjSJRo.mp4

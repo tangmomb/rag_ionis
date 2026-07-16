@@ -20,7 +20,7 @@ if "openai" not in sys.modules:
     openai_stub.OpenAI = object
     sys.modules["openai"] = openai_stub
 
-from common import used_by_hs23_ns24_create_chunk_embeddings as chunk_embeddings
+from common import used_by_hs22_ns22_create_chunk_embeddings as chunk_embeddings
 from interface.backend.config import DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL
 
 
@@ -35,7 +35,13 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "embedding.json"
             path.write_text(
-                json.dumps({"model": DEFAULT_EMBEDDING_MODEL, "embedding": [0.0] * 2000}),
+                json.dumps(
+                    {
+                        "model": DEFAULT_EMBEDDING_MODEL,
+                        "content": "Texte actuel",
+                        "embedding": [0.0] * 2000,
+                    }
+                ),
                 encoding="utf-8",
             )
             self.assertTrue(
@@ -45,6 +51,14 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
             )
             self.assertFalse(
                 chunk_embeddings.existing_embedding_matches(path, DEFAULT_EMBEDDING_MODEL, 3072)
+            )
+            self.assertFalse(
+                chunk_embeddings.existing_embedding_matches(
+                    path,
+                    DEFAULT_EMBEDDING_MODEL,
+                    DEFAULT_EMBEDDING_DIMENSIONS,
+                    expected_text="Nouveau texte",
+                )
             )
 
     def test_chunk_generation_requests_2000_dimensions(self):

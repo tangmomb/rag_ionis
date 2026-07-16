@@ -27,7 +27,6 @@ OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
 OCR_SUBTITLE_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
 OCR_SUBTITLE_TIMECODED_CORRECTED_NAME = "ocr_subtitles_timecoded_corrected.txt"
 OCR_SUBTITLE_ENRICHED_NAME = "ocr_subtitles_timecoded_corrected_enriched.txt"
-VIDEO_SUMMARY_NAME = "video_summary.md"
 LEGACY_ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected_enrichi.txt"
 LEGACY_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected.txt"
 LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
@@ -332,7 +331,6 @@ def ensure_transcripts_schema(cursor):
             transcript TEXT,
             transcript_timecodes TEXT,
             transcript_timecodes_enrichi TEXT,
-            video_summary TEXT,
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
@@ -341,7 +339,6 @@ def ensure_transcripts_schema(cursor):
     cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript TEXT")
     cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes TEXT")
     cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes_enrichi TEXT")
-    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS video_summary TEXT")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS updated_at")
 
     columns = table_columns(cursor, "transcripts")
@@ -364,8 +361,6 @@ def ensure_transcripts_schema(cursor):
         if {"transcript_type", "text"}.issubset(columns):
             enriched_expression = f"COALESCE({enriched_expression}, MAX(text) FILTER (WHERE transcript_type = 'enriched'))"
 
-        summary_expression = "MAX(video_summary)" if "video_summary" in columns else "NULL::text"
-
         cursor.execute(
             f"""
             CREATE TEMP TABLE transcripts_merged ON COMMIT DROP AS
@@ -376,7 +371,6 @@ def ensure_transcripts_schema(cursor):
                 {plain_expression} AS transcript,
                 {timecodes_expression} AS transcript_timecodes,
                 {enriched_expression} AS transcript_timecodes_enrichi,
-                {summary_expression} AS video_summary,
                 MIN(data_collected_date) AS data_collected_date
             FROM transcripts
             GROUP BY video_id, language_code
@@ -399,7 +393,6 @@ def ensure_transcripts_schema(cursor):
                 transcript,
                 transcript_timecodes,
                 transcript_timecodes_enrichi,
-                video_summary,
                 data_collected_date
             )
             SELECT
@@ -409,7 +402,6 @@ def ensure_transcripts_schema(cursor):
                 transcript,
                 transcript_timecodes,
                 transcript_timecodes_enrichi,
-                video_summary,
                 data_collected_date
             FROM transcripts_merged
             """
@@ -432,6 +424,7 @@ def ensure_transcripts_schema(cursor):
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_plain")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecoded")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_enriched")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS video_summary")
     cursor.execute(
         """
         DO $$
@@ -513,7 +506,6 @@ def extract_thumbnail_medium_url(payload):
 def load_chunks_payload(video_path):
     chunks_dir = existing_chunks_dir(video_path)
     candidates = (
-        chunks_dir / "transcript_chunks_speaker_validated.json",
         chunks_dir / "transcript_chunks.json",
     )
     for candidate in candidates:
@@ -578,7 +570,6 @@ def load_video_analysis(video_path):
 def load_video_speakers(video_path):
     chunks_dir = video_path / "outputs" / "chunks"
     candidates = (
-        chunks_dir / "transcript_chunks_speaker_validated.json",
         chunks_dir / "transcript_chunks.json",
     )
     for candidate in candidates:
@@ -604,17 +595,6 @@ def load_video_speakers(video_path):
         if speakers:
             return speakers
     return None
-
-
-def load_video_summary(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
-    if not transcript_dir.exists():
-        return None
-    summary_path = transcript_dir / VIDEO_SUMMARY_NAME
-    if not summary_path.exists():
-        return None
-    text = summary_path.read_text(encoding="utf-8").strip()
-    return text or None
 
 
 def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
@@ -850,7 +830,7 @@ def transcript_paths(video_dir):
     return found
 
 
-def upsert_transcript(cursor, video_id, transcript_type, transcript_path, video_summary=None):
+def upsert_transcript(cursor, video_id, transcript_type, transcript_path):
     text = transcript_path.read_text(encoding="utf-8").strip()
     if not text:
         return False
@@ -861,36 +841,19 @@ def upsert_transcript(cursor, video_id, transcript_type, transcript_path, video_
     }
     column = column_by_type[transcript_type]
 
-    if video_summary is not None:
-        cursor.execute(
-            f"""
+    cursor.execute(
+        f"""
         INSERT INTO transcripts (
-                video_id,
-                language_code,
-                {column},
-                video_summary
-            )
-            VALUES (%s, 'fr', %s, %s)
-            ON CONFLICT (video_id, language_code) DO UPDATE SET
-                {column} = EXCLUDED.{column},
-                video_summary = COALESCE(EXCLUDED.video_summary, transcripts.video_summary)
-            """,
-            (video_id, text, video_summary),
+            video_id,
+            language_code,
+            {column}
         )
-    else:
-        cursor.execute(
-            f"""
-            INSERT INTO transcripts (
-                video_id,
-                language_code,
-                {column}
-            )
-            VALUES (%s, 'fr', %s)
-            ON CONFLICT (video_id, language_code) DO UPDATE SET
-                {column} = EXCLUDED.{column}
-            """,
-            (video_id, text),
-        )
+        VALUES (%s, 'fr', %s)
+        ON CONFLICT (video_id, language_code) DO UPDATE SET
+            {column} = EXCLUDED.{column}
+        """,
+        (video_id, text),
+    )
     return True
 
 
@@ -1030,7 +993,6 @@ def main():
                                 chunks_count += 1
                             elif args.dry_run:
                                 chunks_count += 1
-                    video_summary = load_video_summary(current_video_dir)
                     for transcript_type, transcript_path in transcript_paths(current_video_dir):
                         print(f"[transcript] {current_video_dir.name}: {transcript_type} - {transcript_path.name}")
                         if not args.dry_run and upsert_transcript(
@@ -1038,7 +1000,6 @@ def main():
                             video_id,
                             transcript_type,
                             transcript_path,
-                            video_summary=video_summary,
                         ):
                             transcripts_count += 1
                         elif args.dry_run:

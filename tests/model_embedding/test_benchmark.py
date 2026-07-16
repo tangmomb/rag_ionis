@@ -50,7 +50,7 @@ class ModelEmbeddingBenchmarkTests(unittest.TestCase):
             cases = load_cases(path)
         self.assertEqual(cases[0].relevant, ("video-a:1", "video-a:2"))
 
-    def test_discover_chunks_prefers_speaker_validated_file(self):
+    def test_discover_chunks_prefers_current_transcript_chunks_file(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             video_dir = Path(temporary_dir) / "video-a"
             chunks_dir = video_dir / "outputs" / "chunks"
@@ -66,7 +66,7 @@ class ModelEmbeddingBenchmarkTests(unittest.TestCase):
             chunks = discover_chunks(Path(temporary_dir))
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].key, "video-a:1")
-        self.assertEqual(chunks[0].content, "valide")
+        self.assertEqual(chunks[0].content, "ancien")
 
     def test_evaluate_configuration_computes_recall_and_mrr(self):
         chunks = [

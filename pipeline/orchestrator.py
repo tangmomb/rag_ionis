@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .context import VideoContext
+from .context import PipelineContext
 from .executor import execute_tasks
-from .manifest import read_manifest, write_manifest
+from .manifest import write_manifest
 from .options import PipelineOptions
 from .planner import inspection_plan, processing_plan
 
@@ -14,18 +14,12 @@ def plan_video(
     options: PipelineOptions,
     *,
     include_inspection: bool = False,
-) -> VideoContext:
-    context = VideoContext.inspect(video_path)
+) -> PipelineContext:
+    context = PipelineContext.inspect(video_path, options)
     tasks = inspection_plan() if include_inspection else (
         processing_plan(context) if context.routing_ready else inspection_plan()
     )
-    previous = read_manifest(context.manifest_path)
-    write_manifest(
-        context,
-        options,
-        tasks,
-        execution=previous.get("execution"),
-    )
+    write_manifest(context, tasks=tasks)
     return context
 
 
@@ -35,33 +29,26 @@ def inspect_video(
     *,
     probe_only: bool = False,
     dry_run: bool = False,
-) -> VideoContext:
-    context = VideoContext.inspect(video_path)
+) -> PipelineContext:
+    context = PipelineContext.inspect(video_path, options)
     tasks = inspection_plan()
-    write_manifest(context, options, tasks)
+    write_manifest(context, tasks=tasks)
     print(f"[manifest] {context.manifest_path}", flush=True)
     if probe_only:
         return context
 
-    execute_tasks(context, options, tasks, dry_run=dry_run)
+    execute_tasks(context, dry_run=dry_run)
     if dry_run:
         return context
 
-    refreshed = VideoContext.inspect(video_path)
-    downstream = processing_plan(refreshed)
-    inspection_execution = read_manifest(context.manifest_path).get("execution")
-    write_manifest(
-        refreshed,
-        options,
-        downstream,
-        execution=inspection_execution,
-    )
+    downstream = processing_plan(context)
+    write_manifest(context, tasks=downstream)
     print(
-        f"[route] {refreshed.routing()['pipeline_id']} -> "
+        f"[route] {context.routing()['pipeline_id']} -> "
         f"{len(downstream)} utilitaire(s)",
         flush=True,
     )
-    return refreshed
+    return context
 
 
 def run_video(
@@ -70,8 +57,8 @@ def run_video(
     *,
     skip_inspection: bool = False,
     dry_run: bool = False,
-) -> VideoContext:
-    context = VideoContext.inspect(video_path)
+) -> PipelineContext:
+    context = PipelineContext.inspect(video_path, options)
     if not skip_inspection or not context.routing_ready:
         context = inspect_video(
             video_path,
@@ -83,12 +70,6 @@ def run_video(
             return context
 
     tasks = processing_plan(context)
-    previous_execution = read_manifest(context.manifest_path).get("execution")
-    write_manifest(
-        context,
-        options,
-        tasks,
-        execution=previous_execution,
-    )
-    execute_tasks(context, options, tasks, dry_run=dry_run)
+    write_manifest(context, tasks=tasks)
+    execute_tasks(context, dry_run=dry_run)
     return context

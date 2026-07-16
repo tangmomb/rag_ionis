@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pipeline.context import LONG_VIDEO_THRESHOLD_SECONDS, VideoContext
+from pipeline.catalog import TASKS, TaskSpec
+from pipeline.context import LONG_VIDEO_THRESHOLD_SECONDS, PipelineContext
+from pipeline.executor import execute_tasks
 from pipeline.manifest import build_manifest
 from pipeline.options import PipelineOptions
 from pipeline.planner import inspection_plan, processing_plan
@@ -40,7 +42,7 @@ class PipelineRoutingTests(unittest.TestCase):
         self,
         video: Path,
         duration_seconds: float,
-    ) -> VideoContext:
+    ) -> PipelineContext:
         media = {
             "path": video.resolve().as_posix(),
             "filename": video.name,
@@ -53,7 +55,7 @@ class PipelineRoutingTests(unittest.TestCase):
             "has_audio": True,
         }
         with patch("pipeline.context.probe_video", return_value=media):
-            return VideoContext.inspect(video)
+            return PipelineContext.inspect(video)
 
     def options(self) -> PipelineOptions:
         return PipelineOptions(
@@ -134,7 +136,7 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertIsNone(manifest["features"]["has_subtitles"]["value"])
         self.assertIn("has_subtitles", manifest["routing"]["missing_features"])
 
-    def test_plan_records_semantic_utility_commands(self) -> None:
+    def test_plan_records_python_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video = self.make_video(
                 Path(temporary_directory),
@@ -150,10 +152,103 @@ class PipelineRoutingTests(unittest.TestCase):
 
         tasks = {task["id"]: task for task in manifest["plan"]["tasks"]}
         self.assertEqual(
-            tasks["transcript.whisper"]["command"][1:3],
-            ["-m", "pipeline.steps.transcripts.transcribe_with_whisper"],
+            tasks["transcript.whisper"]["handler"],
+            "pipeline.step_handlers.transcribe_whisper",
         )
-        self.assertIn("--video-dir", tasks["transcript.whisper"]["command"])
+        self.assertNotIn("command", tasks["transcript.whisper"])
+
+    def test_executor_passes_one_mutable_context_and_checkpoints_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video = self.make_video(
+                Path(temporary_directory),
+                has_subtitles=False,
+                video_type="interview",
+            )
+            context = self.context(video, 180)
+            artifact = video.parent / "outputs" / "test.txt"
+
+            def handler(pipeline_context):
+                self.assertIs(pipeline_context, context)
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text("ok", encoding="utf-8")
+                pipeline_context.analysis["handler_ran"] = True
+                pipeline_context.record_artifacts("test.handler", artifact)
+
+            spec = TaskSpec(
+                "test.handler",
+                "processing",
+                "Test handler",
+                handler,
+            )
+            context.set_plan(
+                [
+                    {
+                        "id": spec.id,
+                        "phase": spec.phase,
+                        "title": spec.title,
+                        "reason": "test",
+                        "handler": spec.entrypoint,
+                    }
+                ]
+            )
+            with patch.dict(TASKS, {spec.id: spec}):
+                execute_tasks(context)
+
+            manifest = json.loads(
+                context.manifest_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(manifest["execution"]["status"], "completed")
+        self.assertEqual(
+            manifest["execution"]["tasks"]["test.handler"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            manifest["artifacts"]["by_task"]["test.handler"],
+            ["outputs/test.txt"],
+        )
+
+    def test_executor_checkpoints_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video = self.make_video(
+                Path(temporary_directory),
+                has_subtitles=False,
+                video_type="interview",
+            )
+            context = self.context(video, 180)
+
+            def failing_handler(pipeline_context):
+                raise RuntimeError(f"boom:{pipeline_context.video_id}")
+
+            spec = TaskSpec(
+                "test.failure",
+                "processing",
+                "Test failure",
+                failing_handler,
+            )
+            context.set_plan(
+                [
+                    {
+                        "id": spec.id,
+                        "phase": spec.phase,
+                        "title": spec.title,
+                        "reason": "test",
+                        "handler": spec.entrypoint,
+                    }
+                ]
+            )
+            with patch.dict(TASKS, {spec.id: spec}):
+                with self.assertRaisesRegex(RuntimeError, "boom:abcdefghijk"):
+                    execute_tasks(context)
+
+            manifest = json.loads(
+                context.manifest_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(manifest["execution"]["status"], "failed")
+        failure = manifest["execution"]["tasks"]["test.failure"]
+        self.assertEqual(failure["status"], "failed")
+        self.assertEqual(failure["error"], "boom:abcdefghijk")
 
 
 if __name__ == "__main__":

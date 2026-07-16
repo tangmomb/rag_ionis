@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from pipeline.support.analysis import update_analysed_infos
 from pipeline.support.paddle_ocr import (
@@ -56,6 +57,95 @@ def print_step_progress(label, current, total):
     print(f"\r[{label}] {percent:3d}% ({current}/{total})", end="", flush=True)
     if current >= total:
         print(flush=True)
+
+
+def extract_for_video(
+    video_path,
+    *,
+    device="gpu:0",
+    lang="fr",
+    min_confidence=DEFAULT_MIN_CONFIDENCE,
+    force=False,
+    ocr=None,
+):
+    args = SimpleNamespace(
+        device=device,
+        lang=lang,
+        min_confidence=min_confidence,
+    )
+    images_dir = existing_images_dir(video_path)
+    ocr_dir = output_ocr_raw_dir(video_path)
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+    group_output_paths = {
+        group_name: existing_raw_ocr_path(ocr_dir, group_name)
+        for group_name in IMAGE_GROUPS
+    }
+    if all(path.exists() for path in group_output_paths.values()) and not force:
+        print(f"[skip] OCR brut deja genere pour {video_path.name}")
+        return list(group_output_paths.values())
+
+    images = image_files(images_dir)
+    if not images:
+        print(f"[skip] {video_path.name}: aucune image", flush=True)
+        empty_payload = base_payload(args, [])
+        return [
+            write_group_raw_outputs(ocr_dir, group_name, empty_payload)
+            for group_name in IMAGE_GROUPS
+        ]
+
+    if ocr is None:
+        ocr = LocalPaddleOCR(
+            device=device,
+            lang=lang,
+            min_confidence=min_confidence,
+        )
+
+    print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
+    raw_items_by_group = {group_name: [] for group_name in IMAGE_GROUPS}
+    total_images = len(images)
+    for index, image_path in enumerate(images, start=1):
+        image_name = image_path.relative_to(images_dir).as_posix()
+        raw_result = ocr.recognize_raw(image_path)
+        item = {
+            "image": image_name,
+            "raw": raw_result,
+        }
+        group_name = Path(image_name).parts[0] if Path(image_name).parts else ""
+        if group_name in raw_items_by_group:
+            raw_items_by_group[group_name].append(item)
+        print_step_progress(f"ocr {video_path.name}", index, total_images)
+
+    raw_files = {}
+    paths = []
+    for group_name in IMAGE_GROUPS:
+        group_path = write_group_raw_outputs(
+            ocr_dir,
+            group_name,
+            base_payload(args, raw_items_by_group[group_name]),
+        )
+        paths.append(group_path)
+        raw_files[group_name] = relative_to_video_dir(group_path, video_path)
+    update_analysed_infos(
+        video_path,
+        "extract_raw_ocr",
+        {
+            "status": "done",
+            "raw_files": raw_files,
+            "image_count": sum(len(items) for items in raw_items_by_group.values()),
+            "image_counts": {
+                group_name: len(items)
+                for group_name, items in raw_items_by_group.items()
+            },
+            "device": device,
+            "lang": lang,
+            "min_confidence": min_confidence,
+        },
+    )
+    print(
+        f"[done] {video_path.name}: {sum(len(items) for items in raw_items_by_group.values())} images OCR brutes",
+        flush=True,
+    )
+    return paths
 
 
 def parse_args():
@@ -121,67 +211,13 @@ def main():
     ocr = LocalPaddleOCR(device=args.device, lang=args.lang, min_confidence=args.min_confidence)
 
     for video_path in videos:
-        images_dir = existing_images_dir(video_path)
-        ocr_dir = output_ocr_raw_dir(video_path)
-        ocr_dir.mkdir(parents=True, exist_ok=True)
-        group_output_paths = {
-            group_name: existing_raw_ocr_path(ocr_dir, group_name)
-            for group_name in IMAGE_GROUPS
-        }
-        if all(path.exists() for path in group_output_paths.values()) and not args.force:
-            print(f"[skip] OCR brut deja genere pour {video_path.name}")
-            continue
-
-        images = image_files(images_dir)
-        if not images:
-            print(f"[skip] {video_path.name}: aucune image", flush=True)
-            empty_payload = base_payload(args, [])
-            for group_name in IMAGE_GROUPS:
-                write_group_raw_outputs(ocr_dir, group_name, empty_payload)
-            continue
-
-        print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
-        raw_items_by_group = {group_name: [] for group_name in IMAGE_GROUPS}
-        total_images = len(images)
-        for index, image_path in enumerate(images, start=1):
-            image_name = image_path.relative_to(images_dir).as_posix()
-            raw_result = ocr.recognize_raw(image_path)
-            item = {
-                "image": image_name,
-                "raw": raw_result,
-            }
-            group_name = Path(image_name).parts[0] if Path(image_name).parts else ""
-            if group_name in raw_items_by_group:
-                raw_items_by_group[group_name].append(item)
-            print_step_progress(f"ocr {video_path.name}", index, total_images)
-
-        raw_files = {}
-        for group_name in IMAGE_GROUPS:
-            group_path = write_group_raw_outputs(
-                ocr_dir,
-                group_name,
-                base_payload(args, raw_items_by_group[group_name]),
-            )
-            raw_files[group_name] = relative_to_video_dir(group_path, video_path)
-        update_analysed_infos(
+        extract_for_video(
             video_path,
-            "extract_raw_ocr",
-            {
-                "status": "done",
-                "raw_files": raw_files,
-                "image_count": sum(len(items) for items in raw_items_by_group.values()),
-                "image_counts": {
-                    group_name: len(items)
-                    for group_name, items in raw_items_by_group.items()
-                },
-                "device": args.device,
-                "lang": args.lang,
-                "min_confidence": args.min_confidence,
-            },
-        )
-        print(
-            f"[done] {video_path.name}: {sum(len(items) for items in raw_items_by_group.values())} images OCR brutes",
-            flush=True,
+            device=args.device,
+            lang=args.lang,
+            min_confidence=args.min_confidence,
+            force=args.force,
+            ocr=ocr,
         )
 
 

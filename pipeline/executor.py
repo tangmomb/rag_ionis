@@ -1,64 +1,46 @@
 from __future__ import annotations
 
-import os
-import subprocess
-from pathlib import Path
-from typing import Iterable
-
-from .catalog import PROJECT_ROOT, task_command, task_environment
-from .context import VideoContext
-from .manifest import update_execution
-from .options import PipelineOptions
-from .planner import PlannedTask
+from .catalog import TASKS
+from .context import PipelineContext
+from .manifest import write_manifest
 
 
 def execute_tasks(
-    context: VideoContext,
-    options: PipelineOptions,
-    tasks: Iterable[PlannedTask],
+    context: PipelineContext,
     *,
     dry_run: bool = False,
 ) -> None:
-    task_list = list(tasks)
+    task_ids = [
+        str(task["id"])
+        for task in context.plan
+        if task.get("id")
+    ]
     if dry_run:
-        for task in task_list:
-            print("[dry-run] " + " ".join(task_command(task.id, context, options)))
+        for task_id in task_ids:
+            spec = TASKS[task_id]
+            print(f"[dry-run] {task_id} -> {spec.entrypoint}")
         return
 
-    update_execution(context.manifest_path, pipeline_status="running")
-    env = os.environ.copy()
-    env.update(task_environment(context, options))
-    for index, task in enumerate(task_list, start=1):
-        command = task_command(task.id, context, options)
+    context.execution.start_pipeline()
+    write_manifest(context)
+    for index, task_id in enumerate(task_ids, start=1):
+        spec = TASKS[task_id]
         print(
-            f"\n[{index}/{len(task_list)}] {task.id} - "
-            + " ".join(command),
+            f"\n[{index}/{len(task_ids)}] {task_id} -> {spec.entrypoint}",
             flush=True,
         )
-        update_execution(
-            context.manifest_path,
-            task_id=task.id,
-            task_status="running",
-        )
+        context.execution.start_task(task_id)
+        write_manifest(context)
         try:
-            subprocess.run(
-                command,
-                cwd=PROJECT_ROOT,
-                env=env,
-                check=True,
-            )
+            with context.runtime_environment():
+                spec.handler(context)
         except Exception as error:
-            update_execution(
-                context.manifest_path,
-                pipeline_status="failed",
-                task_id=task.id,
-                task_status="failed",
-                error=str(error),
-            )
+            context.execution.fail_task(task_id, error)
+            context.execution.fail_pipeline()
+            write_manifest(context)
             raise
-        update_execution(
-            context.manifest_path,
-            task_id=task.id,
-            task_status="completed",
-        )
-    update_execution(context.manifest_path, pipeline_status="completed")
+        context.execution.complete_task(task_id)
+        write_manifest(context)
+
+    context.execution.complete_pipeline()
+    write_manifest(context)

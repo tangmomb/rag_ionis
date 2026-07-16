@@ -83,6 +83,78 @@ def write_outputs(ocr_dir, result):
     print(f"[write] location -> {json_path}", flush=True)
 
 
+def extract_for_video(video_path, *, force=False):
+    ocr_dir = existing_ocr_dir(video_path)
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+    sources = raw_paths(ocr_dir)
+    target = location_path(ocr_dir)
+    if target.exists() and not force:
+        print(f"[skip] {target.name} existe deja")
+        return target
+    available_sources = {
+        group_name: path
+        for group_name, path in sources.items()
+        if path.exists()
+    }
+    if not available_sources:
+        print(f"[skip] OCR brut introuvable dans: {ocr_dir}")
+        return None
+
+    box_items = []
+    total_boxes = 0
+    source_names = []
+    total_images = 0
+    for group_name in RAW_GROUPS:
+        source = available_sources.get(group_name)
+        if source is None:
+            continue
+        payload = load_json(source)
+        raw_items = payload.get("items", [])
+        source_names.append(source.name)
+        for index, raw_item in enumerate(raw_items, start=1):
+            image_name = raw_item.get("image")
+            if not image_name:
+                continue
+            boxes = boxes_from_raw_result(raw_item.get("raw"))
+            total_boxes += len(boxes)
+            total_images += 1
+            box_items.append(
+                {
+                    "image": image_name,
+                    "boxes": boxes,
+                }
+            )
+            print(
+                f"[boxes {group_name} {index}/{len(raw_items)}] {image_name}: {len(boxes)} box(es)",
+                flush=True,
+            )
+
+    box_items.sort(key=sort_key)
+    write_outputs(
+        ocr_dir,
+        {
+            "sources": source_names,
+            "items": box_items,
+        },
+    )
+    update_analysed_infos(
+        video_path,
+        "ocr_boxes",
+        {
+            "status": "done",
+            "sources": [
+                relative_to_video_dir(ocr_dir / name, video_path)
+                for name in source_names
+            ],
+            "boxes_file": relative_to_video_dir(target, video_path),
+            "image_count": total_images,
+            "box_count": total_boxes,
+        },
+    )
+    print(f"[done] {video_path.name}: {total_boxes} box(es)", flush=True)
+    return target
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Extrait les emplacements OCR depuis les JSON bruts et produit un ocr_box_locations.json unique."
@@ -123,69 +195,8 @@ def main():
     print(f"Dossier videos: {video_dir}")
     done = 0
     for video_path in videos:
-        ocr_dir = existing_ocr_dir(video_path)
-        ocr_dir.mkdir(parents=True, exist_ok=True)
-        sources = raw_paths(ocr_dir)
-        target = location_path(ocr_dir)
-        if target.exists() and not args.force:
-            print(f"[skip] {target.name} existe deja")
-            continue
-        available_sources = {group_name: path for group_name, path in sources.items() if path.exists()}
-        if not available_sources:
-            print(f"[skip] OCR brut introuvable dans: {ocr_dir}")
-            continue
-
-        box_items = []
-        total_boxes = 0
-        source_names = []
-        total_images = 0
-        for group_name in RAW_GROUPS:
-            source = available_sources.get(group_name)
-            if source is None:
-                continue
-            payload = load_json(source)
-            raw_items = payload.get("items", [])
-            source_names.append(source.name)
-            for index, raw_item in enumerate(raw_items, start=1):
-                image_name = raw_item.get("image")
-                if not image_name:
-                    continue
-                boxes = boxes_from_raw_result(raw_item.get("raw"))
-                total_boxes += len(boxes)
-                total_images += 1
-                box_items.append(
-                    {
-                        "image": image_name,
-                        "boxes": boxes,
-                    }
-                )
-                print(
-                    f"[boxes {group_name} {index}/{len(raw_items)}] {image_name}: {len(boxes)} box(es)",
-                    flush=True,
-                )
-
-        box_items.sort(key=sort_key)
-
-        write_outputs(
-            ocr_dir,
-            {
-                "sources": source_names,
-                "items": box_items,
-            },
-        )
-        update_analysed_infos(
-            video_path,
-            "ocr_boxes",
-            {
-                "status": "done",
-                "sources": [relative_to_video_dir(ocr_dir / name, video_path) for name in source_names],
-                "boxes_file": relative_to_video_dir(target, video_path),
-                "image_count": total_images,
-                "box_count": total_boxes,
-            },
-        )
-        print(f"[done] {video_path.name}: {total_boxes} box(es)", flush=True)
-        done += 1
+        if extract_for_video(video_path, force=args.force):
+            done += 1
 
     print(f"{done} JSON OCR location generes.")
 

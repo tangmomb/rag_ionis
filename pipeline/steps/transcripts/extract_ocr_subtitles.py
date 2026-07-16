@@ -176,6 +176,50 @@ def render_subtitles_timecodes(items):
     return "\n".join(lines)
 
 
+def extract_for_video(video_path, *, force=False):
+    if analysed_has_subtitles(video_path) is not True:
+        print(
+            f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas true"
+        )
+        return None
+
+    source = processed_ocr_path(video_path)
+    target_timecodes = subtitle_timecodes_path(video_path)
+    if target_timecodes.exists() and not force:
+        print(f"[skip] {target_timecodes.name} existe deja")
+        return target_timecodes
+    if not source.exists():
+        print(f"[skip] OCR traite introuvable: {source}")
+        return None
+
+    items = load_processed_items(source)
+    if not has_ocr_subtitles(items):
+        print(f"[skip] aucun kind=subtitle dans {source.name}")
+        return None
+    subtitles = collect_subtitles(items)
+    timecoded_text = render_subtitles_timecodes(subtitles)
+    target_timecodes.parent.mkdir(parents=True, exist_ok=True)
+    target_timecodes.write_text(
+        timecoded_text + ("\n" if timecoded_text else ""),
+        encoding="utf-8",
+    )
+    update_analysed_infos(
+        video_path,
+        "ocr_subtitles",
+        {
+            "status": "done",
+            "source": relative_to_video_dir(source, video_path),
+            "subtitle_timecodes_file": relative_to_video_dir(
+                target_timecodes,
+                video_path,
+            ),
+            "subtitle_count": len(subtitles),
+        },
+    )
+    print(f"[ok] {target_timecodes}")
+    return target_timecodes
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Consolide les sous-titres OCR a partir du JSON OCR traite."
@@ -222,44 +266,14 @@ def main():
     print(f"Dossier videos: {video_dir}")
     done = 0
     for video_path in videos:
-        has_subtitles = analysed_has_subtitles(video_path)
         expected_has_subtitles = args.has_subtitles == "true"
-        if has_subtitles is not expected_has_subtitles:
+        if expected_has_subtitles is not True:
             print(
-                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
+                f"[skip] {video_path.name}: extraction OCR reservee a has_subtitles=true"
             )
             continue
-
-        source = processed_ocr_path(video_path)
-        target_timecodes = subtitle_timecodes_path(video_path)
-        if target_timecodes.exists() and not args.force:
-            print(f"[skip] {target_timecodes.name} existe deja")
+        if extract_for_video(video_path, force=args.force):
             done += 1
-            continue
-        if not source.exists():
-            print(f"[skip] OCR traite introuvable: {source}")
-            continue
-
-        items = load_processed_items(source)
-        if not has_ocr_subtitles(items):
-            print(f"[skip] aucun kind=subtitle dans {source.name}")
-            continue
-        subtitles = collect_subtitles(items)
-        timecoded_text = render_subtitles_timecodes(subtitles)
-        target_timecodes.parent.mkdir(parents=True, exist_ok=True)
-        target_timecodes.write_text(timecoded_text + ("\n" if timecoded_text else ""), encoding="utf-8")
-        update_analysed_infos(
-            video_path,
-            "ocr_subtitles",
-            {
-            "status": "done",
-            "source": relative_to_video_dir(source, video_path),
-            "subtitle_timecodes_file": relative_to_video_dir(target_timecodes, video_path),
-            "subtitle_count": len(subtitles),
-            },
-        )
-        print(f"[ok] {target_timecodes}")
-        done += 1
 
     print(f"{done} subtitles OCR generes.")
 

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .catalog import TASKS, task_command
-from .context import VideoContext
-from .options import PipelineOptions
+from .catalog import TASKS
+from .context import PipelineContext
 
 
 INSPECTION_TASKS = (
@@ -53,8 +52,7 @@ class PlannedTask:
 
     def to_dict(
         self,
-        context: VideoContext,
-        options: PipelineOptions,
+        context: PipelineContext | None = None,
     ) -> dict[str, object]:
         spec = TASKS[self.id]
         return {
@@ -62,7 +60,7 @@ class PlannedTask:
             "phase": spec.phase,
             "title": spec.title,
             "reason": self.reason,
-            "command": task_command(self.id, context, options),
+            "handler": spec.entrypoint,
         }
 
 
@@ -70,7 +68,7 @@ def inspection_plan() -> list[PlannedTask]:
     return [PlannedTask(task_id, "inspection_required") for task_id in INSPECTION_TASKS]
 
 
-def processing_plan(context: VideoContext) -> list[PlannedTask]:
+def processing_plan(context: PipelineContext) -> list[PlannedTask]:
     if not context.routing_ready:
         raise RuntimeError(
             "Le plan de traitement exige has_subtitles et video_type. "

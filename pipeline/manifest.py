@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .context import LONG_VIDEO_THRESHOLD_SECONDS, VideoContext
+from .context import (
+    LONG_VIDEO_THRESHOLD_SECONDS,
+    PipelineContext,
+    PipelineExecution,
+    utc_now,
+)
 from .options import PipelineOptions
 from .planner import PlannedTask
 
 
-SCHEMA_VERSION = 2
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+SCHEMA_VERSION = 3
 
 
 def read_manifest(path: str | Path) -> dict[str, Any]:
@@ -28,19 +28,36 @@ def read_manifest(path: str | Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _plan_payload(
+    context: PipelineContext,
+    tasks: Iterable[PlannedTask] | None,
+) -> list[dict[str, Any]]:
+    if tasks is not None:
+        return [task.to_dict(context) for task in tasks]
+    return list(context.plan)
+
+
 def build_manifest(
-    context: VideoContext,
-    options: PipelineOptions,
-    tasks: Iterable[PlannedTask],
+    context: PipelineContext,
+    options: PipelineOptions | None = None,
+    tasks: Iterable[PlannedTask] | None = None,
     *,
     execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    task_list = list(tasks)
+    selected_options = options or context.options
+    task_list = _plan_payload(context, tasks)
+    execution_payload = (
+        execution
+        if execution is not None
+        else context.execution.to_dict()
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": utc_now(),
         "video": {
             "id": context.video_id,
+            "url": context.video_url,
+            "title": context.title,
             **context.media,
         },
         "questions": {
@@ -91,63 +108,39 @@ def build_manifest(
             ),
         },
         "routing": context.routing(),
-        "options": options.to_dict(),
+        "options": selected_options.to_dict(),
+        "artifacts": context.artifacts.to_dict(),
         "plan": {
             "task_count": len(task_list),
-            "tasks": [
-                task.to_dict(context, options)
-                for task in task_list
-            ],
+            "tasks": task_list,
         },
-        "execution": execution or {"status": "not_started", "tasks": {}},
+        "execution": execution_payload,
     }
 
 
 def write_manifest(
-    context: VideoContext,
-    options: PipelineOptions,
-    tasks: Iterable[PlannedTask],
+    context: PipelineContext,
+    options: PipelineOptions | None = None,
+    tasks: Iterable[PlannedTask] | None = None,
     *,
     execution: dict[str, Any] | None = None,
 ) -> Path:
+    if options is not None:
+        context.options = options
+    if tasks is not None:
+        context.set_plan([task.to_dict(context) for task in tasks])
+    if execution is not None:
+        context.execution = PipelineExecution.from_dict(execution)
+        context.execution.ensure_tasks(
+            [str(task["id"]) for task in context.plan if task.get("id")]
+        )
+
     context.metadata_dir.mkdir(parents=True, exist_ok=True)
-    payload = build_manifest(
-        context,
-        options,
-        tasks,
-        execution=execution,
-    )
-    context.manifest_path.write_text(
+    payload = build_manifest(context)
+    temporary_path = context.manifest_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    temporary_path.replace(context.manifest_path)
     return context.manifest_path
-
-
-def update_execution(
-    manifest_path: str | Path,
-    *,
-    pipeline_status: str | None = None,
-    task_id: str | None = None,
-    task_status: str | None = None,
-    error: str | None = None,
-) -> None:
-    target = Path(manifest_path)
-    payload = read_manifest(target)
-    execution = payload.setdefault("execution", {"status": "not_started", "tasks": {}})
-    if pipeline_status is not None:
-        execution["status"] = pipeline_status
-    if task_id is not None and task_status is not None:
-        tasks = execution.setdefault("tasks", {})
-        task = tasks.setdefault(task_id, {})
-        task["status"] = task_status
-        if task_status == "running":
-            task["started_at"] = utc_now()
-        else:
-            task["finished_at"] = utc_now()
-        if error:
-            task["error"] = error
-    target.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )

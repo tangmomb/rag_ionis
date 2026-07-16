@@ -1,13 +1,13 @@
-"""Pipeline video pilote par manifeste."""
+"""Pipeline video pilote par un contexte mutable et checkpointable."""
 
-from .context import LONG_VIDEO_THRESHOLD_SECONDS, VideoContext
+from .context import LONG_VIDEO_THRESHOLD_SECONDS, PipelineContext
 from .options import PipelineOptions
 from .orchestrator import inspect_video, plan_video, run_video
 
 __all__ = [
     "LONG_VIDEO_THRESHOLD_SECONDS",
+    "PipelineContext",
     "PipelineOptions",
-    "VideoContext",
     "inspect_video",
     "plan_video",
     "run_video",

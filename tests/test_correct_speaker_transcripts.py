@@ -10,13 +10,12 @@ from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from common import used_by_hs21_ns21_create_transcript_chunks as chunk_creation
-from common import used_by_ns18_correct_whisper_and_speakers as combined_correction
-from common import used_by_pre21c_correct_speaker_transcripts as speaker_correction
+from pipeline.steps.chunks import create_transcript_chunks as chunk_creation
+from pipeline.steps.transcripts import correct_whisper_transcript as combined_correction
+from pipeline.steps.speakers import correct_speaker_transcripts as speaker_correction
 
 
 class CorrectSpeakerTranscriptsTests(unittest.TestCase):

@@ -11,16 +11,15 @@ from unittest.mock import Mock, patch
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-INIT_DIR = PROJECT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 if "openai" not in sys.modules:
     openai_stub = ModuleType("openai")
     openai_stub.OpenAI = object
     sys.modules["openai"] = openai_stub
 
-from common import used_by_hs22_ns22_create_chunk_embeddings as chunk_embeddings
+from pipeline.steps.embeddings import create_chunk_embeddings as chunk_embeddings
 from interface.backend.config import DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL
 
 

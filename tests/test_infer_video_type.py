@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-MODULE_PATH = INIT_DIR / "06_infer_video_type.py"
-SPEC = importlib.util.spec_from_file_location("infer_video_type_step", MODULE_PATH)
-infer_video_type = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(infer_video_type)
+from pipeline.steps.inspection import infer_video_type
 
 
 class InferVideoTypeTests(unittest.TestCase):
@@ -71,6 +68,22 @@ class InferVideoTypeTests(unittest.TestCase):
             ),
             "video_recording",
         )
+
+    def test_duration_can_be_read_from_generated_video_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory)
+            metadata_dir = video_dir / "metadata"
+            metadata_dir.mkdir()
+            video = video_dir / "video.mp4"
+            video.touch()
+            (metadata_dir / "video_manifest.json").write_text(
+                json.dumps({"video": {"duration_seconds": 91.02}}),
+                encoding="utf-8",
+            )
+
+            duration = infer_video_type.video_duration_seconds(video)
+
+        self.assertEqual(duration, 91.02)
 
 
 if __name__ == "__main__":

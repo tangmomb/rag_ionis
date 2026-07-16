@@ -9,11 +9,10 @@ from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from common import used_by_hs19_ns18_enrich_transcripts as enrichment
+from pipeline.steps.transcripts import enrich_transcripts as enrichment
 
 
 class EnrichTranscriptsTests(unittest.TestCase):

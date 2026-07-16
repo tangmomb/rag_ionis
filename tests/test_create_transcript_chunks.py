@@ -9,13 +9,12 @@ from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from common import used_by_pre21a_propose_speakers as speaker_proposal
-from common import used_by_pre21b_validate_speakers as speaker_validation
-from common import used_by_hs21_ns21_create_transcript_chunks as chunk_creation
+from pipeline.steps.speakers import propose_speakers as speaker_proposal
+from pipeline.steps.speakers import validate_speakers as speaker_validation
+from pipeline.steps.chunks import create_transcript_chunks as chunk_creation
 
 
 class CreateTranscriptChunksTests(unittest.TestCase):

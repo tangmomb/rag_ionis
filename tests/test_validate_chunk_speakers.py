@@ -7,11 +7,10 @@ from types import SimpleNamespace
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from common import used_by_pre21b_validate_speakers as speaker_validation
+from pipeline.steps.speakers import validate_speakers as speaker_validation
 
 
 class FakeResponses:

@@ -8,11 +8,10 @@ from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from common import used_by_ns16_transcribe_with_whisper as transcription
+from pipeline.steps.transcripts import transcribe_with_whisper as transcription
 
 
 class WhisperXDiarizationTests(unittest.TestCase):

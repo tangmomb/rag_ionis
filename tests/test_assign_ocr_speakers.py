@@ -8,11 +8,10 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-INIT_DIR = ROOT_DIR / "scripts" / "init"
-if str(INIT_DIR) not in sys.path:
-    sys.path.insert(0, str(INIT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from common import used_by_hs17c_assign_ocr_speakers as assignment
+from pipeline.steps.speakers import assign_ocr_speakers as assignment
 
 
 class AssignOcrSpeakersTests(unittest.TestCase):

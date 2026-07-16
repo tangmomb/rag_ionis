@@ -17,6 +17,8 @@ DEFAULT_S3_BUCKET_NAME = ""
 DATA_SCHEMA = "data"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_EMBEDDING_DIMENSIONS = 2000
+CHUNK_LEVELS = {"global", "section", "detail"}
+DEFAULT_CHUNK_LEVEL = "detail"
 SCHEMA_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "001_schema.sql"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_TRANSCRIPT_NAME = "plain_transcript.txt"
@@ -89,6 +91,9 @@ def ensure_schema(cursor):
             description TEXT,
             url TEXT NOT NULL,
             duration_seconds INTEGER,
+            is_long_video BOOLEAN GENERATED ALWAYS AS (
+                COALESCE(duration_seconds > 600, FALSE)
+            ) STORED,
             thumbnail_medium_url TEXT,
             has_subtitles BOOLEAN,
             video_type TEXT,
@@ -97,6 +102,14 @@ def ensure_schema(cursor):
             published_at TIMESTAMPTZ,
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
         )
+        """
+    )
+    cursor.execute(
+        """
+        ALTER TABLE videos
+        ADD COLUMN IF NOT EXISTS is_long_video BOOLEAN GENERATED ALWAYS AS (
+            COALESCE(duration_seconds > 600, FALSE)
+        ) STORED
         """
     )
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_medium_url TEXT")
@@ -235,17 +248,86 @@ def ensure_chunks_schema(cursor):
             id BIGSERIAL PRIMARY KEY,
             video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
+            chunk_level TEXT NOT NULL DEFAULT 'detail'
+                CONSTRAINT chunks_chunk_level_check
+                CHECK (chunk_level IN ('global', 'section', 'detail')),
+            chunk_parent_id BIGINT,
             content TEXT NOT NULL,
             speakers TEXT[],
             embedding_model TEXT,
             embedding_dimensions INTEGER,
             embedding vector(2000),
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (video_id, chunk_index)
+            CONSTRAINT chunks_video_id_id_key UNIQUE (video_id, id),
+            CONSTRAINT chunks_video_id_chunk_level_chunk_index_key
+                UNIQUE (video_id, chunk_level, chunk_index),
+            CONSTRAINT chunks_video_id_chunk_parent_id_fkey
+                FOREIGN KEY (video_id, chunk_parent_id)
+                REFERENCES chunks(video_id, id) ON DELETE CASCADE,
+            CONSTRAINT chunks_chunk_parent_not_self_check
+                CHECK (chunk_parent_id IS NULL OR chunk_parent_id <> id)
         )
         """
     )
     ensure_data_collected_date_column(cursor, "chunks")
+    cursor.execute(
+        "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_level TEXT NOT NULL DEFAULT 'detail'"
+    )
+    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_parent_id BIGINT")
+    cursor.execute(
+        """
+        UPDATE chunks
+        SET chunk_level = 'detail'
+        WHERE chunk_level IS NULL
+           OR chunk_level NOT IN ('global', 'section', 'detail')
+        """
+    )
+    cursor.execute("ALTER TABLE chunks ALTER COLUMN chunk_level SET DEFAULT 'detail'")
+    cursor.execute("ALTER TABLE chunks ALTER COLUMN chunk_level SET NOT NULL")
+    cursor.execute("ALTER TABLE chunks DROP CONSTRAINT IF EXISTS chunks_video_id_chunk_index_key")
+    if not constraint_exists(cursor, "chunks_chunk_level_check"):
+        cursor.execute(
+            """
+            ALTER TABLE chunks
+            ADD CONSTRAINT chunks_chunk_level_check
+            CHECK (chunk_level IN ('global', 'section', 'detail'))
+            """
+        )
+    if not constraint_exists(cursor, "chunks_video_id_id_key"):
+        cursor.execute(
+            """
+            ALTER TABLE chunks
+            ADD CONSTRAINT chunks_video_id_id_key
+            UNIQUE (video_id, id)
+            """
+        )
+    if constraint_exists(cursor, "chunks_chunk_parent_id_fkey"):
+        cursor.execute("ALTER TABLE chunks DROP CONSTRAINT chunks_chunk_parent_id_fkey")
+    if not constraint_exists(cursor, "chunks_video_id_chunk_parent_id_fkey"):
+        cursor.execute(
+            """
+            ALTER TABLE chunks
+            ADD CONSTRAINT chunks_video_id_chunk_parent_id_fkey
+            FOREIGN KEY (video_id, chunk_parent_id)
+            REFERENCES chunks(video_id, id) ON DELETE CASCADE
+            """
+        )
+    if not constraint_exists(cursor, "chunks_chunk_parent_not_self_check"):
+        cursor.execute(
+            """
+            ALTER TABLE chunks
+            ADD CONSTRAINT chunks_chunk_parent_not_self_check
+            CHECK (chunk_parent_id IS NULL OR chunk_parent_id <> id)
+            """
+        )
+    if not constraint_exists(cursor, "chunks_video_id_chunk_level_chunk_index_key"):
+        cursor.execute(
+            """
+            ALTER TABLE chunks
+            ADD CONSTRAINT chunks_video_id_chunk_level_chunk_index_key
+            UNIQUE (video_id, chunk_level, chunk_index)
+            """
+        )
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers TEXT[]")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_dimensions INTEGER")
@@ -277,6 +359,8 @@ def ensure_chunks_schema(cursor):
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS source_file")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_level ON chunks(video_id, chunk_level)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_parent_id ON chunks(chunk_parent_id)")
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
@@ -515,15 +599,24 @@ def load_chunks_payload(video_path):
     return None, None
 
 
-def load_chunk_embedding_payload(video_path, chunk_index):
+def load_chunk_embedding_payload(video_path, chunk_index, chunk_level=DEFAULT_CHUNK_LEVEL):
     if chunk_index is None:
         return None
     chunks_dir = existing_chunks_dir(video_path)
-    candidate = chunks_dir / f"chunk_{int(chunk_index):02d}_embedding.json"
-    if candidate.exists():
-        payload = load_json(candidate)
-        if isinstance(payload, dict):
-            return payload
+    normalized_level = str(chunk_level or DEFAULT_CHUNK_LEVEL).strip().lower()
+    if normalized_level not in CHUNK_LEVELS:
+        raise ValueError(f"Niveau de chunk invalide: {normalized_level!r}")
+    if normalized_level == DEFAULT_CHUNK_LEVEL:
+        candidates = [chunks_dir / f"chunk_{int(chunk_index):02d}_embedding.json"]
+    else:
+        candidates = [
+            chunks_dir / f"chunk_{normalized_level}_{int(chunk_index):02d}_embedding.json"
+        ]
+    for candidate in candidates:
+        if candidate.exists():
+            payload = load_json(candidate)
+            if isinstance(payload, dict):
+                return payload
     return None
 
 
@@ -599,9 +692,16 @@ def load_video_speakers(video_path):
 
 def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
     chunk_index = parse_int(chunk_payload.get("chunk_index"))
+    chunk_level = str(chunk_payload.get("chunk_level") or DEFAULT_CHUNK_LEVEL).strip().lower()
+    chunk_parent_id = parse_int(chunk_payload.get("chunk_parent_id"))
     content = str(chunk_payload.get("content") or "").strip()
     if chunk_index is None or not content:
         return False
+    if chunk_level not in CHUNK_LEVELS:
+        raise ValueError(
+            f"Niveau de chunk {chunk_level!r} invalide ; valeurs attendues : "
+            f"{', '.join(sorted(CHUNK_LEVELS))}."
+        )
 
     meta_data = chunk_payload.get("meta_data", {}) if isinstance(chunk_payload.get("meta_data"), dict) else {}
     raw_speakers = meta_data.get("speakers", [])
@@ -621,6 +721,8 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
             INSERT INTO chunks (
                 video_id,
                 chunk_index,
+                chunk_level,
+                chunk_parent_id,
                 content,
                 speakers,
                 embedding_model,
@@ -628,8 +730,9 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 embedding,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s::vector, now())
-            ON CONFLICT (video_id, chunk_index) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, now())
+            ON CONFLICT (video_id, chunk_level, chunk_index) DO UPDATE SET
+                chunk_parent_id = COALESCE(EXCLUDED.chunk_parent_id, chunks.chunk_parent_id),
                 content = EXCLUDED.content,
                 speakers = EXCLUDED.speakers,
                 embedding_model = EXCLUDED.embedding_model,
@@ -640,6 +743,8 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
             (
                 video_id,
                 chunk_index,
+                chunk_level,
+                chunk_parent_id,
                 content,
                 speakers,
                 embedding_model,
@@ -653,13 +758,16 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
             INSERT INTO chunks (
                 video_id,
                 chunk_index,
+                chunk_level,
+                chunk_parent_id,
                 content,
                 speakers,
                 embedding_model,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, now())
-            ON CONFLICT (video_id, chunk_index) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT (video_id, chunk_level, chunk_index) DO UPDATE SET
+                chunk_parent_id = COALESCE(EXCLUDED.chunk_parent_id, chunks.chunk_parent_id),
                 content = EXCLUDED.content,
                 speakers = EXCLUDED.speakers,
                 embedding_model = EXCLUDED.embedding_model,
@@ -668,6 +776,8 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
             (
                 video_id,
                 chunk_index,
+                chunk_level,
+                chunk_parent_id,
                 content,
                 speakers,
                 embedding_model,
@@ -983,7 +1093,11 @@ def main():
                     chunks_payload, chunks_source = load_chunks_payload(current_video_dir)
                     if chunks_payload and chunks_source:
                         for chunk_payload in chunks_payload.get("chunks", []):
-                            embedding_payload = load_chunk_embedding_payload(current_video_dir, chunk_payload.get("chunk_index"))
+                            embedding_payload = load_chunk_embedding_payload(
+                                current_video_dir,
+                                chunk_payload.get("chunk_index"),
+                                chunk_payload.get("chunk_level"),
+                            )
                             if not args.dry_run and upsert_chunk(
                                 cursor,
                                 video_id,

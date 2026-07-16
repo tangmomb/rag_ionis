@@ -178,10 +178,10 @@ docker compose exec postgres psql -U rag_ionis -d rag_ionis -c "SELECT extname F
 
 Tables principales:
 
-- `videos`: videos de la chaine IONIS-STM, avec titre, lien et metadonnees stables.
+- `videos`: videos de la chaine IONIS-STM, avec titre, lien et metadonnees stables. La colonne generee `is_long_video` vaut `true` lorsque `duration_seconds` depasse 600 secondes.
 - `stats`: statistiques quotidiennes rattachees a une video via `video_id`, avec vues, likes et nombre de commentaires.
 - `transcripts`: transcriptions rattachees a une video via `video_id`, avec une ligne par video/langue et les variantes `transcript`, `transcript_timecodes`, `transcript_timecodes_enrichi`.
-- `chunks`: chunks textuels rattaches a une video via `video_id`, avec contenu, speakers, alertes et embedding quand il existe.
+- `chunks`: chunks textuels rattaches a une video via `video_id`, avec contenu, speakers et embedding quand il existe. `chunk_level` organise les contenus en niveaux `global`, `section` et `detail`; `chunk_parent_id` relie une section a son chunk global ou un detail a sa section.
 - `comments`: commentaires rattaches a une video via `video_id`, avec support des reponses via `parent_comment_id`.
 
 Migrer uniquement les embeddings existants vers `text-embedding-3-large` en 2000 dimensions, sans reconstruire les autres tables:
@@ -582,7 +582,8 @@ python scripts/init/no_sub/22_CHUNK_create_chunk_embeddings.py --video-dir downl
 
 Le script lit `outputs/chunks/transcript_chunks.json` et ecrit un fichier JSON par chunk dans `outputs/chunks/`:
 
-- `outputs/chunks/chunk_<index>_embedding.json`
+- `outputs/chunks/chunk_<index>_embedding.json` pour les chunks `detail`;
+- `outputs/chunks/chunk_global_<index>_embedding.json` et `chunk_section_<index>_embedding.json` pour les niveaux superieurs.
 
 Les embeddings de production utilisent `text-embedding-3-large` en 2000 dimensions. Un fichier existant en 3072 dimensions est automatiquement regenere. PostgreSQL les stocke dans `vector(2000)` avec un index HNSW cosine.
 

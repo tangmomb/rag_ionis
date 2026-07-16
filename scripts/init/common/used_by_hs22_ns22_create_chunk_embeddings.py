@@ -17,6 +17,8 @@ LEGACY_CHUNKS_SUFFIX = "_chunks.json"
 EMBEDDING_SUFFIX = "_embedding.json"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_EMBEDDING_DIMENSIONS = 2000
+DEFAULT_CHUNK_LEVEL = "detail"
+CHUNK_LEVELS = {"global", "section", "detail"}
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -61,11 +63,15 @@ def chunks_path(video_path):
     return video_chunks_dir / CHUNKS_NAME
 
 
-def embedding_path(video_path, chunk_index):
+def embedding_path(video_path, chunk_index, chunk_level=DEFAULT_CHUNK_LEVEL):
     chunk_label = str(chunk_index).replace(".", "_")
     if chunk_label.isdigit():
         chunk_label = f"{int(chunk_label):02d}"
-    return chunks_dir(video_path) / f"chunk_{chunk_label}{EMBEDDING_SUFFIX}"
+    normalized_level = str(chunk_level or DEFAULT_CHUNK_LEVEL).strip().lower()
+    if normalized_level not in CHUNK_LEVELS:
+        raise ValueError(f"Niveau de chunk invalide: {normalized_level!r}")
+    level_label = "" if normalized_level == DEFAULT_CHUNK_LEVEL else f"{normalized_level}_"
+    return chunks_dir(video_path) / f"chunk_{level_label}{chunk_label}{EMBEDDING_SUFFIX}"
 
 
 def load_chunks(path):
@@ -106,7 +112,8 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
         if not text:
             continue
         chunk_index = chunk.get("chunk_index")
-        target = embedding_path(video_path, chunk_index)
+        chunk_level = str(chunk.get("chunk_level") or DEFAULT_CHUNK_LEVEL).strip().lower()
+        target = embedding_path(video_path, chunk_index, chunk_level)
         if target.exists() and not force and existing_embedding_matches(
             target,
             model,
@@ -125,6 +132,8 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
             "source": relative_to_video_dir(source, video_path),
             "chunk_count": len(chunks),
             "chunk_index": chunk_index,
+            "chunk_level": chunk_level,
+            "chunk_parent_id": chunk.get("chunk_parent_id"),
             "char_count": chunk.get("char_count"),
             "meta_data": {
                 **source_meta_data,

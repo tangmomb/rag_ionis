@@ -146,6 +146,8 @@ def build_chunks_payload(text, speakers):
         "chunks": [
             {
                 "chunk_index": index + 1,
+                "chunk_level": "detail",
+                "chunk_parent_id": None,
                 "meta_data": {"speakers": speakers},
                 "content": chunk,
                 "alert": word_count(chunk) > ALERT_WORD_THRESHOLD,

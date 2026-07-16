@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS videos (
     description TEXT,
     url TEXT NOT NULL,
     duration_seconds INTEGER,
+    is_long_video BOOLEAN GENERATED ALWAYS AS (
+        COALESCE(duration_seconds > 600, FALSE)
+    ) STORED,
     thumbnail_medium_url TEXT,
     has_subtitles BOOLEAN,
     video_type TEXT,
@@ -46,13 +49,24 @@ CREATE TABLE IF NOT EXISTS chunks (
     id BIGSERIAL PRIMARY KEY,
     video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
+    chunk_level TEXT NOT NULL DEFAULT 'detail'
+        CONSTRAINT chunks_chunk_level_check
+        CHECK (chunk_level IN ('global', 'section', 'detail')),
+    chunk_parent_id BIGINT,
     content TEXT NOT NULL,
     speakers TEXT[],
     embedding_model TEXT,
     embedding_dimensions INTEGER,
     embedding vector(2000),
     data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (video_id, chunk_index)
+    CONSTRAINT chunks_video_id_id_key UNIQUE (video_id, id),
+    CONSTRAINT chunks_video_id_chunk_level_chunk_index_key
+        UNIQUE (video_id, chunk_level, chunk_index),
+    CONSTRAINT chunks_video_id_chunk_parent_id_fkey
+        FOREIGN KEY (video_id, chunk_parent_id)
+        REFERENCES chunks(video_id, id) ON DELETE CASCADE,
+    CONSTRAINT chunks_chunk_parent_not_self_check
+        CHECK (chunk_parent_id IS NULL OR chunk_parent_id <> id)
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -104,6 +118,8 @@ CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index);
+CREATE INDEX IF NOT EXISTS idx_chunks_video_level ON chunks(video_id, chunk_level);
+CREATE INDEX IF NOT EXISTS idx_chunks_parent_id ON chunks(chunk_parent_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
     ON chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);

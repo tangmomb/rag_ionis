@@ -79,6 +79,8 @@ class ChunkSource(BaseModel):
     video_url: str
     thumbnail_medium_url: str | None = None
     chunk_index: int
+    chunk_level: Literal["global", "section", "detail"] | None = None
+    chunk_parent_id: int | None = None
     bm25_score: float | None = None
     vector_score: float | None = None
     rrf_score: float | None = None

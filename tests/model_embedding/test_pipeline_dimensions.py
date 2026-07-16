@@ -61,6 +61,20 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
                 )
             )
 
+    def test_hierarchical_embedding_paths_do_not_collide(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            video = root / "video.mp4"
+
+            with patch.object(chunk_embeddings, "chunks_dir", return_value=root):
+                detail = chunk_embeddings.embedding_path(video, 1, "detail")
+                section = chunk_embeddings.embedding_path(video, 1, "section")
+                global_chunk = chunk_embeddings.embedding_path(video, 1, "global")
+
+            self.assertEqual(detail.name, "chunk_01_embedding.json")
+            self.assertEqual(section.name, "chunk_section_01_embedding.json")
+            self.assertEqual(global_chunk.name, "chunk_global_01_embedding.json")
+
     def test_chunk_generation_requests_2000_dimensions(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -95,6 +109,8 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
             payload = json.loads(target.read_text(encoding="utf-8"))
             self.assertEqual(payload["dimensions"], 2000)
             self.assertEqual(len(payload["embedding"]), 2000)
+            self.assertEqual(payload["chunk_level"], "detail")
+            self.assertIsNone(payload["chunk_parent_id"])
 
 
 if __name__ == "__main__":

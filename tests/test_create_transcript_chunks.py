@@ -125,6 +125,8 @@ class CreateTranscriptChunksTests(unittest.TestCase):
                 chunks_payload["chunks"][0]["meta_data"]["speakers"],
                 ["Sophie Vanderpol"],
             )
+            self.assertEqual(chunks_payload["chunks"][0]["chunk_level"], "detail")
+            self.assertIsNone(chunks_payload["chunks"][0]["chunk_parent_id"])
 
 
 if __name__ == "__main__":

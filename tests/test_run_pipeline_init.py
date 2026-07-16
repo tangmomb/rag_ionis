@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,60 @@ update_sql = load_script("update_sql_for_tests", "final_02_update_sql_assets.py"
 
 
 class RunPipelineInitTests(unittest.TestCase):
+    def test_hierarchical_embedding_loader_uses_level_specific_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            chunks_dir = Path(temporary_dir)
+            (chunks_dir / "chunk_01_embedding.json").write_text(
+                json.dumps({"content": "detail"}),
+                encoding="utf-8",
+            )
+            (chunks_dir / "chunk_section_01_embedding.json").write_text(
+                json.dumps({"content": "section"}),
+                encoding="utf-8",
+            )
+
+            with patch.object(update_sql, "existing_chunks_dir", return_value=chunks_dir):
+                payload = update_sql.load_chunk_embedding_payload(
+                    Path("video"),
+                    chunk_index=1,
+                    chunk_level="section",
+                )
+
+        self.assertEqual(payload["content"], "section")
+
+    def test_chunk_upsert_defaults_to_detail_level(self) -> None:
+        class RecordingCursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params=None):
+                self.calls.append((sql, params))
+
+        cursor = RecordingCursor()
+
+        inserted = update_sql.upsert_chunk(
+            cursor,
+            video_id=12,
+            chunk_payload={"chunk_index": 3, "content": "Contenu"},
+        )
+
+        self.assertTrue(inserted)
+        sql, params = cursor.calls[0]
+        self.assertIn("ON CONFLICT (video_id, chunk_level, chunk_index)", sql)
+        self.assertEqual(params[:4], (12, 3, "detail", None))
+
+    def test_chunk_upsert_rejects_unknown_level(self) -> None:
+        with self.assertRaises(ValueError):
+            update_sql.upsert_chunk(
+                cursor=None,
+                video_id=12,
+                chunk_payload={
+                    "chunk_index": 3,
+                    "chunk_level": "chapter",
+                    "content": "Contenu",
+                },
+            )
+
     def test_youtube_metadata_keeps_the_complete_api_video(self) -> None:
         video = {
             "kind": "youtube#video",
@@ -216,6 +271,7 @@ class RunPipelineInitTests(unittest.TestCase):
         self.assertEqual(statements[2], "CREATE SCHEMA data")
         self.assertIn("SET search_path TO data, public", statements[-1])
         self.assertIn("CREATE TABLE IF NOT EXISTS videos", statements[-1])
+        self.assertIn("is_long_video BOOLEAN GENERATED ALWAYS", statements[-1])
         self.assertNotIn("video_summary", statements[-1])
         self.assertNotIn("DROP SCHEMA IF EXISTS chat", "\n".join(statements))
 

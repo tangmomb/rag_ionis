@@ -365,6 +365,8 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             v.url,
             v.thumbnail_medium_url,
             c.chunk_index,
+            c.chunk_level,
+            c.chunk_parent_id,
             c.content,
             c.speakers,
             ts_rank_cd(
@@ -391,9 +393,11 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             "video_url": row[2],
             "thumbnail_medium_url": row[3],
             "chunk_index": row[4],
-            "text": row[5],
-            "speakers": row[6] or [],
-            "bm25_score": float(row[7]) if row[7] is not None else None,
+            "chunk_level": row[5],
+            "chunk_parent_id": int(row[6]) if row[6] is not None else None,
+            "text": row[7],
+            "speakers": row[8] or [],
+            "bm25_score": float(row[9]) if row[9] is not None else None,
         }
         for row in rows
     ]
@@ -423,6 +427,8 @@ def fetch_vector_chunks(
             v.url,
             v.thumbnail_medium_url,
             c.chunk_index,
+            c.chunk_level,
+            c.chunk_parent_id,
             c.content,
             c.speakers,
             1 - (c.embedding <=> %s::vector(2000)) AS score
@@ -455,9 +461,11 @@ def fetch_vector_chunks(
             "video_url": row[2],
             "thumbnail_medium_url": row[3],
             "chunk_index": row[4],
-            "text": row[5],
-            "speakers": row[6] or [],
-            "vector_score": float(row[7]) if row[7] is not None else None,
+            "chunk_level": row[5],
+            "chunk_parent_id": int(row[6]) if row[6] is not None else None,
+            "text": row[7],
+            "speakers": row[8] or [],
+            "vector_score": float(row[9]) if row[9] is not None else None,
         }
         for row in rows
     ]

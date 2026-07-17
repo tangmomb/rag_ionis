@@ -16,14 +16,12 @@ def probe_video(video_path: str | Path) -> dict[str, Any]:
 
     source_size = metadata.get("source_size") or metadata.get("size") or (None, None)
     width, height = source_size
-    duration = metadata.get("duration")
     fps = metadata.get("fps")
     return {
         "path": video.resolve().as_posix(),
         "filename": video.name,
         "extension": video.suffix.lower(),
         "size_bytes": video.stat().st_size,
-        "duration_seconds": float(duration) if duration is not None else None,
         "width": int(width) if width is not None else None,
         "height": int(height) if height is not None else None,
         "fps": float(fps) if fps is not None else None,

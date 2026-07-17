@@ -17,14 +17,16 @@ from .contracts import (
 from .options import PipelineOptions
 from .probe import probe_video
 from .support.json_io import read_json
+from .support.youtube_metadata import (
+    load_youtube_metadata,
+    youtube_duration_seconds,
+)
 
 
 LONG_VIDEO_THRESHOLD_SECONDS = 600
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 ANALYSIS_NAME = "pipeline_analysis.json"
 MANIFEST_NAME = "video_manifest.json"
-YOUTUBE_METADATA_NAME = "youtube_video_metadata.json"
-
 
 def load_json(
     path: Path,
@@ -128,6 +130,10 @@ class PipelineContext:
         if not analysis_payload:
             analysis_payload = cls._manifest_routing_facts(previous_manifest)
 
+        source_metadata = load_youtube_metadata(video)
+        media = probe_video(video)
+        media["duration_seconds"] = youtube_duration_seconds(source_metadata)
+
         manifest_options = previous_manifest.get("options")
         selected_options = (
             options
@@ -157,11 +163,8 @@ class PipelineContext:
         context = cls(
             video_path=video,
             options=selected_options,
-            media=probe_video(video),
-            source_metadata=load_json(
-                metadata_dir / YOUTUBE_METADATA_NAME,
-                strict=False,
-            ),
+            media=media,
+            source_metadata=source_metadata,
             routing_facts=previous_facts,
             artifacts=PipelineArtifacts.from_dict(
                 previous_manifest.get("artifacts")

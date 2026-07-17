@@ -54,6 +54,10 @@ class PipelineExecutionTests(unittest.TestCase):
             json.dumps(facts),
             encoding="utf-8",
         )
+        (metadata_dir / "youtube_video_metadata.json").write_text(
+            json.dumps({"duration_seconds": 180}),
+            encoding="utf-8",
+        )
         context = PipelineContext(
             video_path=video,
             options=options or PipelineOptions(),
@@ -741,10 +745,15 @@ class PipelineExecutionTests(unittest.TestCase):
 
 class ManifestCompatibilityTests(unittest.TestCase):
     def inspect_context(self, video: Path) -> PipelineContext:
+        metadata_dir = video.parent / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        (metadata_dir / "youtube_video_metadata.json").write_text(
+            json.dumps({"duration_seconds": 180}),
+            encoding="utf-8",
+        )
         media = {
             "path": video.resolve().as_posix(),
             "filename": video.name,
-            "duration_seconds": 180.0,
         }
         with patch("pipeline.context.probe_video", return_value=media):
             return PipelineContext.inspect(video)

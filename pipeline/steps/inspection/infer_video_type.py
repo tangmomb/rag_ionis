@@ -1,13 +1,14 @@
-import json
 from pathlib import Path
 
-from pipeline.probe import probe_video
 from pipeline.support.analysis import update_routing_facts
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import (
     existing_images_dir,
     existing_interview_dir,
-    existing_youtube_api_infos_path,
+)
+from pipeline.support.youtube_metadata import (
+    load_youtube_metadata,
+    youtube_duration_seconds,
 )
 
 MANIFEST_NAME = "frame_classification_manifest.json"
@@ -82,31 +83,7 @@ def infer_video_type_from_manifest(payload, duration_seconds=None):
 
 
 def video_duration_seconds(video_path):
-    sources = [
-        (existing_youtube_api_infos_path(video_path), ("duration_seconds",)),
-        (
-            Path(video_path).parent / "metadata" / "video_manifest.json",
-            ("video", "duration_seconds"),
-        ),
-    ]
-    for source, keys in sources:
-        if not source.exists():
-            continue
-        try:
-            value = load_json(source)
-            for key in keys:
-                value = value[key]
-            if isinstance(value, bool):
-                continue
-            return float(value)
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-
-    try:
-        value = probe_video(video_path).get("duration_seconds")
-        return float(value) if value is not None else None
-    except (OSError, RuntimeError, ValueError):
-        return None
+    return youtube_duration_seconds(load_youtube_metadata(video_path))
 
 
 def write_analysed_infos(video_path, video_type):

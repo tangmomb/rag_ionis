@@ -43,10 +43,13 @@ class PipelineRoutingTests(unittest.TestCase):
         video: Path,
         duration_seconds: float,
     ) -> PipelineContext:
+        (video.parent / "metadata" / "youtube_video_metadata.json").write_text(
+            json.dumps({"duration_seconds": duration_seconds}),
+            encoding="utf-8",
+        )
         media = {
             "path": video.resolve().as_posix(),
             "filename": video.name,
-            "duration_seconds": duration_seconds,
             "width": 1280,
             "height": 720,
             "fps": 25.0,

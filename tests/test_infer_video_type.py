@@ -69,15 +69,15 @@ class InferVideoTypeTests(unittest.TestCase):
             "video_recording",
         )
 
-    def test_duration_can_be_read_from_generated_video_manifest(self):
+    def test_duration_is_read_from_youtube_metadata(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory)
             metadata_dir = video_dir / "metadata"
             metadata_dir.mkdir()
             video = video_dir / "video.mp4"
             video.touch()
-            (metadata_dir / "video_manifest.json").write_text(
-                json.dumps({"video": {"duration_seconds": 91.02}}),
+            (metadata_dir / "youtube_video_metadata.json").write_text(
+                json.dumps({"duration_seconds": 91.02}),
                 encoding="utf-8",
             )
 

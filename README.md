@@ -25,7 +25,7 @@ pipeline/
   __main__.py       # point d'entrée de python -m pipeline
   cli.py            # commandes inspect, plan, run et task
   discovery.py      # sélection all, nombre, ID ou chemin
-  probe.py          # lecture durée, codecs, résolution, FPS et audio
+  probe.py          # lecture codecs, résolution, FPS et audio
   contracts.py      # RoutingFacts, PlannedTask, TaskResult et RunExecution
   context.py        # état mutable d'une vidéo et validation des artefacts
   options.py        # options communes validées
@@ -50,6 +50,7 @@ downloads/youtube/init/
   VIDEO_ID/
     VIDEO_ID.mp4
     metadata/
+      youtube_video_metadata.json
       video_manifest.json
       pipeline_analysis.json
     outputs/
@@ -93,7 +94,7 @@ surprise.
 |---|---|
 | `cli.py` | Parse les commandes, les options et le sélecteur de vidéos ; exécute aussi une tâche isolée du registre. |
 | `discovery.py` | Trouve les vidéos et applique les sélecteurs `all`, nombre, ID ou chemin. |
-| `probe.py` | Lit directement le fichier vidéo avec FFmpeg : durée, codecs, résolution, FPS, audio et rotation. |
+| `probe.py` | Lit directement le fichier vidéo avec FFmpeg : codecs, résolution, FPS, audio et rotation. |
 | `contracts.py` | Définit les contrats typés `RoutingFacts`, `PlannedTask`, `TaskResult`, `TaskExecution` et `RunExecution`. |
 | `context.py` | Définit le `PipelineContext` mutable : vidéo, options, faits de routage, plan, artefacts et exécutions. |
 | `options.py` | Valide les options communes transmises aux étapes. |
@@ -138,7 +139,7 @@ flux :
 flowchart TD
     A["Sélectionner une vidéo"] --> B["Créer PipelineContext"]
     B --> C["Sonder le fichier vidéo"]
-    B --> D["Lire pipeline_analysis.json"]
+    B --> D["Lire les JSON YouTube et d'analyse"]
     C --> E["Checkpoint du contexte d'inspection"]
     D --> E
     E --> F["Appeler les 7 handlers d'inspection"]
@@ -161,8 +162,10 @@ flowchart TD
 En pratique :
 
 1. `discovery.py` résout le sélecteur en chemin vidéo.
-2. `PipelineContext.inspect()` appelle `probe_video()` et lit les observations déjà
-   présentes dans `metadata/pipeline_analysis.json`.
+2. `PipelineContext.inspect()` lit obligatoirement `duration_seconds` dans
+   `metadata/youtube_video_metadata.json`, appelle `probe_video()` pour les
+   caractéristiques du conteneur, puis recharge les observations déjà présentes
+   dans `metadata/pipeline_analysis.json`.
 3. L'inspection visuelle et OCR calcule `video_type` et `has_subtitles`.
 4. Chaque handler retourne un `TaskResult` avec son statut et ses artefacts.
 5. `processing_plan()` choisit la branche de transcript et le profil de chunks.
@@ -180,7 +183,8 @@ et retransmettre quinze paramètres.
 
 Il contient notamment :
 
-- `video_path`, les informations techniques sondées et les métadonnées YouTube ;
+- `video_path`, les informations techniques sondées et les métadonnées YouTube,
+  dont la durée de référence ;
 - `options`, c'est-à-dire les réglages effectifs du lancement ;
 - `routing_facts`, instance immuable de `RoutingFacts` chargée depuis
   `metadata/pipeline_analysis.json` ;
@@ -238,7 +242,8 @@ Les informations sont volontairement réparties selon leur nature :
 
 | Fichier ou dossier | Contenu | Gestion |
 |---|---|---|
-| `VIDEO_ID.mp4` | Source technique pour la durée, les codecs et la résolution. | Entrée, jamais modifiée. |
+| `VIDEO_ID.mp4` | Source technique pour les codecs, le FPS, l'audio et la résolution. | Entrée, jamais modifiée. |
+| `metadata/youtube_video_metadata.json` | Métadonnées de l'API YouTube, notamment la durée de référence `duration_seconds`. | Produit par l'ingestion ; obligatoire pour inspecter et router la vidéo. |
 | `metadata/pipeline_analysis.json` | Uniquement les faits de routage : `video_type`, `has_subtitles` et ses détails. | Mis à jour par les étapes d'inspection concernées. |
 | `metadata/video_manifest.json` | Plan, exécution courante, historique, artefacts, options et vues dérivées de la route. | Réécrit atomiquement par l'orchestrateur ; ne pas modifier manuellement. |
 | `outputs/` | Frames, OCR, transcripts, speakers, chunks et embeddings. | Généré par les étapes métier. |
@@ -249,8 +254,9 @@ des faits et de la durée.
 
 ## Règles de routage
 
-La durée est sondée directement dans la vidéo, sans dépendre des métadonnées
-YouTube.
+La durée de référence est lue exclusivement dans
+`metadata/youtube_video_metadata.json`, produit par l'API YouTube. FFmpeg reste
+utilisé uniquement pour les autres caractéristiques du fichier.
 
 | Caractéristique | Décision |
 |---|---|
@@ -453,7 +459,7 @@ Les sections principales ont chacune un rôle précis :
 
 | Section | Description |
 |---|---|
-| `video` | Informations techniques retournées par `probe.py`. |
+| `video` | Informations techniques de `probe.py`, enrichies avec la durée de référence issue du JSON YouTube. |
 | `routing_facts` | Source typée du routage : sous-titres, type de vidéo et détails de détection. |
 | `route` | Route dérivée, stratégies choisies et caractéristiques manquantes. |
 | `options` | Options effectives utilisées pour générer le plan. |

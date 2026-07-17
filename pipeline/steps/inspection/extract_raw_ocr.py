@@ -1,25 +1,30 @@
-import argparse
-import json
-from pathlib import Path
-from types import SimpleNamespace
+from __future__ import annotations
 
-from pipeline.support.analysis import update_analysed_infos
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from pipeline.support.json_io import write_json
 from pipeline.support.paddle_ocr import (
     LocalPaddleOCR,
-    configure_stdio,
     image_files,
-    image_video_dirs,
-    latest_video_dir,
 )
-from pipeline.support.paths import existing_images_dir, ocr_raw_dir as output_ocr_raw_dir, relative_to_video_dir
+from pipeline.support.paths import existing_images_dir, ocr_raw_dir as output_ocr_raw_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MIN_CONFIDENCE = 0.9
 IMAGE_GROUPS = ("footage", "graphic", "mixture")
 
 
-configure_stdio()
+@dataclass(frozen=True)
+class RawOcrOptions:
+    device: str = "gpu:0"
+    lang: str = "fr"
+    min_confidence: float = DEFAULT_MIN_CONFIDENCE
+
+
+class RawOcrRecognizer(Protocol):
+    def recognize_raw(self, image_path: Path) -> object: ...
 
 
 def raw_ocr_name(group_name):
@@ -36,16 +41,19 @@ def existing_raw_ocr_path(ocr_dir, group_name):
 
 def write_group_raw_outputs(ocr_dir, group_name, raw_result):
     json_path = ocr_dir / raw_ocr_name(group_name)
-    json_path.write_text(json.dumps(raw_result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(json_path, raw_result)
     print(f"[write] raw {group_name} -> {json_path}", flush=True)
     return json_path
 
 
-def base_payload(args, items):
+def base_payload(
+    options: RawOcrOptions,
+    items: list[dict[str, object]],
+) -> dict[str, object]:
     return {
-        "device": args.device,
-        "lang": args.lang,
-        "min_confidence": args.min_confidence,
+        "device": options.device,
+        "lang": options.lang,
+        "min_confidence": options.min_confidence,
         "items": items,
     }
 
@@ -60,15 +68,15 @@ def print_step_progress(label, current, total):
 
 
 def extract_for_video(
-    video_path,
+    video_path: Path,
     *,
-    device="gpu:0",
-    lang="fr",
-    min_confidence=DEFAULT_MIN_CONFIDENCE,
-    force=False,
-    ocr=None,
-):
-    args = SimpleNamespace(
+    device: str = "gpu:0",
+    lang: str = "fr",
+    min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    force: bool = False,
+    ocr: RawOcrRecognizer | None = None,
+) -> list[Path]:
+    options = RawOcrOptions(
         device=device,
         lang=lang,
         min_confidence=min_confidence,
@@ -87,7 +95,7 @@ def extract_for_video(
     images = image_files(images_dir)
     if not images:
         print(f"[skip] {video_path.name}: aucune image", flush=True)
-        empty_payload = base_payload(args, [])
+        empty_payload = base_payload(options, [])
         return [
             write_group_raw_outputs(ocr_dir, group_name, empty_payload)
             for group_name in IMAGE_GROUPS
@@ -115,111 +123,16 @@ def extract_for_video(
             raw_items_by_group[group_name].append(item)
         print_step_progress(f"ocr {video_path.name}", index, total_images)
 
-    raw_files = {}
     paths = []
     for group_name in IMAGE_GROUPS:
         group_path = write_group_raw_outputs(
             ocr_dir,
             group_name,
-            base_payload(args, raw_items_by_group[group_name]),
+            base_payload(options, raw_items_by_group[group_name]),
         )
         paths.append(group_path)
-        raw_files[group_name] = relative_to_video_dir(group_path, video_path)
-    update_analysed_infos(
-        video_path,
-        "extract_raw_ocr",
-        {
-            "status": "done",
-            "raw_files": raw_files,
-            "image_count": sum(len(items) for items in raw_items_by_group.values()),
-            "image_counts": {
-                group_name: len(items)
-                for group_name, items in raw_items_by_group.items()
-            },
-            "device": device,
-            "lang": lang,
-            "min_confidence": min_confidence,
-        },
-    )
     print(
         f"[done] {video_path.name}: {sum(len(items) for items in raw_items_by_group.values())} images OCR brutes",
         flush=True,
     )
     return paths
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="OCR local brut des images contenant du texte avec PaddleOCR."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit-videos",
-        type=int,
-        help="Nombre maximum de videos a analyser.",
-    )
-    parser.add_argument(
-        "--device",
-        default="gpu:0",
-        help="Device PaddleOCR, par exemple gpu:0 ou cpu. Defaut: gpu:0",
-    )
-    parser.add_argument(
-        "--lang",
-        default="fr",
-        help="Langue OCR PaddleOCR. Defaut: fr",
-    )
-    parser.add_argument(
-        "--min-confidence",
-        type=float,
-        default=DEFAULT_MIN_CONFIDENCE,
-        help=f"rec_score minimum pour garder une detection OCR. Defaut: {DEFAULT_MIN_CONFIDENCE}",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere le JSON OCR brut meme s'il existe deja.",
-    )
-    parser.add_argument("--model", help=argparse.SUPPRESS)
-    parser.add_argument("--detail", help=argparse.SUPPRESS)
-    parser.add_argument("--batch-size", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--images-manifest", help=argparse.SUPPRESS)
-    parser.add_argument("--batch-api", action="store_true", help=argparse.SUPPRESS)
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(image_video_dirs(video_dir))
-    if args.limit_videos is not None:
-        videos = videos[: args.limit_videos]
-
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    print(f"OCR local: PaddleOCR ({args.device}, lang={args.lang})", flush=True)
-    ocr = LocalPaddleOCR(device=args.device, lang=args.lang, min_confidence=args.min_confidence)
-
-    for video_path in videos:
-        extract_for_video(
-            video_path,
-            device=args.device,
-            lang=args.lang,
-            min_confidence=args.min_confidence,
-            force=args.force,
-            ocr=ocr,
-        )
-
-
-if __name__ == "__main__":
-    main()

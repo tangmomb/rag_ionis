@@ -1,20 +1,17 @@
-import argparse
 import json
 import re
 import shutil
-import sys
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline.support.analysis import update_analysed_infos
+from pipeline.support.json_io import write_json
 from pipeline.support.paths import existing_images_dir, images_dir, relative_to_video_dir
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MODEL_PATH = Path("models/frame_filter_2026-07-02_21-30-31.joblib")
 DEFAULT_EMBEDDING_CACHE_DIRNAME = ".embedding_cache"
 DEFAULT_BATCH_SIZE = 16
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 FOOTAGE_DIR_NAME = "footage"
 GRAPHIC_DIR_NAME = "graphic"
 MIXTURE_DIR_NAME = "mixture"
@@ -30,35 +27,13 @@ SECOND_PATTERN = re.compile(r"^seconde_(\d+(?:_\d+)?)$")
 TIMECODE_PATTERN = re.compile(r"^(?:(\d{2})_)?(\d{2})_(\d{2})$")
 
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
+@dataclass(frozen=True)
+class ClassificationOptions:
+    model: str | Path = DEFAULT_MODEL_PATH
+    batch_size: int = DEFAULT_BATCH_SIZE
+    device: str | None = None
+    cache_dir: str | Path | None = None
+    force: bool = False
 
 
 def seconds_from_image_name(name):
@@ -472,7 +447,7 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
         "backbones": prediction_payload["backbones"],
         "items": sorted(items, key=lambda item: item["image"]),
     }
-    features_path.write_text(json.dumps(features_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(features_path, features_payload)
 
     manifest = {
         "method": "frame_filter_model",
@@ -494,20 +469,7 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
         ],
         "items": sorted(items, key=lambda item: item["image"]),
     }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "classify_images",
-        {
-            "status": "done",
-            "model": str(Path(model_path).as_posix()),
-            "footage_count": role_counts.get("footage", 0),
-            "graphic_count": role_counts.get("graphic", 0),
-            "mixture_count": role_counts.get("mixture", 0),
-            "manifest": relative_to_video_dir(manifest_path, video_path),
-            "features": relative_to_video_dir(features_path, video_path),
-        },
-    )
+    write_json(manifest_path, manifest)
     print(
         f"[ok] {video_path.name}: footage={role_counts.get('footage', 0)}, graphic={role_counts.get('graphic', 0)}, mixture={role_counts.get('mixture', 0)} -> {manifest_path}",
         flush=True,
@@ -536,77 +498,30 @@ def classify_video_images(video_path, args):
     return write_outputs(video_path, paths, video_images_dir, args.force, prediction_payload, model_path)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Classe les images extraites en footage/graphic/mixture avec un modele joblib DINO+CLIP."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec videos.",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit-videos",
-        type=int,
-        help="Nombre maximum de videos a analyser.",
-    )
-    parser.add_argument(
-        "--model-path",
-        "--model",
-        dest="model",
-        default=str(DEFAULT_MODEL_PATH),
-        help=f"Chemin du modele joblib. Defaut: {DEFAULT_MODEL_PATH}",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help=f"Taille de batch pour les embeddings. Defaut: {DEFAULT_BATCH_SIZE}",
-    )
-    parser.add_argument(
-        "--device",
-        help="Device pour les embeddings, ex: cuda ou cpu. Defaut: auto.",
-    )
-    parser.add_argument(
-        "--cache-dir",
-        help="Dossier de cache des embeddings. Defaut: outputs/images/.embedding_cache",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere la classification meme si le manifeste existe deja.",
-    )
-    return parser.parse_args()
+def classify_video(
+    video_path,
+    *,
+    model: str | Path = DEFAULT_MODEL_PATH,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    device: str | None = None,
+    cache_dir: str | Path | None = None,
+    force: bool = False,
+):
+    """API Python nommee pour classifier les frames d'une video."""
 
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if args.limit_videos is not None:
-        videos = videos[: args.limit_videos]
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    print(f"Classification modele: {args.model}", flush=True)
-
-    done = 0
-    for video_path in videos:
-        if args.cache_dir:
-            cache_dir = Path(args.cache_dir)
-        else:
-            cache_dir = existing_images_dir(video_path) / DEFAULT_EMBEDDING_CACHE_DIRNAME
-        args.cache_dir = str(cache_dir)
-        if classify_video_images(video_path, args):
-            done += 1
-    print(f"{done} classification(s) image creee(s).")
-
-
-if __name__ == "__main__":
-    main()
+    image_directory = existing_images_dir(video_path)
+    selected_cache_dir = (
+        cache_dir
+        if cache_dir is not None
+        else image_directory / DEFAULT_EMBEDDING_CACHE_DIRNAME
+    )
+    return classify_video_images(
+        video_path,
+        ClassificationOptions(
+            model=model,
+            batch_size=batch_size,
+            device=device,
+            cache_dir=selected_cache_dir,
+            force=force,
+        ),
+    )

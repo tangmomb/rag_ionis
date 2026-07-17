@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, Mapping
+
+
+OpenAIMode = Literal["normal", "batch"]
+ReviewScope = Literal["duo", "all"]
+CorrectionMode = Literal["conservative", "balanced", "aggressive"]
 
 
 @dataclass(frozen=True)
 class PipelineOptions:
     force: bool = False
-    openai_mode: str = "normal"
-    review_scope: str = "duo"
+    openai_mode: OpenAIMode = "normal"
+    review_scope: ReviewScope = "duo"
     image_review_model: str = field(
         default_factory=lambda: os.getenv(
             "OCR_OTHERS_REVIEW_MODEL",
@@ -21,7 +27,7 @@ class PipelineOptions:
             "gpt-5.4-nano",
         )
     )
-    correction_mode: str = "balanced"
+    correction_mode: CorrectionMode = "balanced"
     frame_interval_seconds: float = 0.5
     details_per_section: int = 6
 
@@ -39,3 +45,14 @@ class PipelineOptions:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "PipelineOptions":
+        known = {
+            field_name: payload[field_name]
+            for field_name in cls.__dataclass_fields__
+            if field_name in payload and field_name != "force"
+        }
+        # ``force`` est une instruction propre à une invocation, jamais un
+        # état à réactiver depuis un ancien manifeste.
+        return cls(force=False, **known)

@@ -1,36 +1,27 @@
-import argparse
-import json
 from pathlib import Path
 
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paddle_ocr import (
     box_bounds,
     box_geometry,
     collapse_answer_overlay_items,
     collapse_graphic_sequence_items,
-    configure_stdio,
     deduplicate_items,
     filter_decor_items,
     graphic_kind_for_image,
     image_size,
-    image_video_dirs,
-    latest_video_dir,
     mark_last_graphic_sequence_as_outro,
     ocr_items_from_raw_result,
     refine_subtitle_kinds,
     seconds_from_image_name,
     subtitle_text_signal,
 )
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
-from pipeline.support.paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
+from pipeline.support.paths import existing_images_dir, existing_ocr_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DEFAULT_MIN_CONFIDENCE = 0.9
 RAW_GROUPS = ("footage", "graphic", "mixture")
 PROCESSED_NAME = "01_processed_ocr_items.json"
-
-
-configure_stdio()
 
 
 def raw_paths(ocr_dir):
@@ -47,7 +38,7 @@ def processed_path(ocr_dir):
 
 
 def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def sort_key(item):
@@ -57,18 +48,6 @@ def sort_key(item):
         parsed_second if parsed_second is not None else float("inf"),
         image_name,
     )
-
-
-def analysed_has_subtitles(video_path):
-    path = analysed_infos_path(video_path)
-    if not path.exists():
-        return None
-    try:
-        payload = load_json(path)
-    except Exception:
-        return None
-    value = payload.get("has_subtitles")
-    return value if isinstance(value, bool) else None
 
 
 def strip_subtitle_kind(items, images_dir):
@@ -112,46 +91,8 @@ def normalize_output_kinds(items):
 
 def write_outputs(ocr_dir, result):
     json_path = processed_path(ocr_dir)
-    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(json_path, result)
     print(f"[write] {len(result.get('items', []))} items -> {json_path}", flush=True)
-
-
-def add_common_args(parser):
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit-videos",
-        type=int,
-        help="Nombre maximum de videos a analyser.",
-    )
-    parser.add_argument(
-        "--min-confidence",
-        type=float,
-        help="rec_score minimum pour garder une detection OCR. Defaut: valeur du JSON brut ou 0.9.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere le JSON OCR processed meme s'il existe deja.",
-    )
-
-
-def iter_matching_videos(video_dir, limit_videos, expected_has_subtitles):
-    videos = list(image_video_dirs(video_dir))
-    if limit_videos is not None:
-        videos = videos[:limit_videos]
-
-    for video_path in videos:
-        has_subtitles = analysed_has_subtitles(video_path)
-        if has_subtitles is expected_has_subtitles:
-            yield video_path
 
 
 def process_video(video_path, min_confidence_override=None, force=False, strip_subtitles=False):
@@ -218,63 +159,5 @@ def process_video(video_path, min_confidence_override=None, force=False, strip_s
             "items": processed_items,
         },
     )
-    update_analysed_infos(
-        video_path,
-        "ocr_processed",
-        {
-            "status": "done",
-            "sources": [relative_to_video_dir(ocr_dir / name, video_path) for name in source_names],
-            "processed_file": relative_to_video_dir(target, video_path),
-            "item_count": len(processed_items),
-            "min_confidence": min_confidence,
-        },
-    )
     print(f"[done] {video_path.name}: {len(items)} items intermediaires", flush=True)
     return True
-
-
-def process_matching_videos(args, expected_has_subtitles):
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(iter_matching_videos(video_dir, args.limit_videos, expected_has_subtitles))
-
-    if not videos:
-        label = "has_subtitles=true" if expected_has_subtitles else "has_subtitles=false"
-        print(f"Aucune video a traiter dans {video_dir} pour {label}")
-        return 0
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        if process_video(
-            video_path,
-            min_confidence_override=args.min_confidence,
-            force=args.force,
-            strip_subtitles=not expected_has_subtitles,
-        ):
-            done += 1
-    print(f"{done} JSON OCR processed generes.")
-    return done
-
-
-def parse_combined_args():
-    parser = argparse.ArgumentParser(
-        description="Transforme l'OCR brut en OCR processed sans relancer PaddleOCR."
-    )
-    add_common_args(parser)
-    parser.add_argument(
-        "--transcript-strategy",
-        choices=("ocr", "whisper"),
-        required=True,
-        help="Strategie choisie par le manifeste; controle la conservation des sous-titres OCR.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_combined_args()
-    expected_has_subtitles = args.transcript_strategy == "ocr"
-    process_matching_videos(args, expected_has_subtitles=expected_has_subtitles)
-
-
-if __name__ == "__main__":
-    main()

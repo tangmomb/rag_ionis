@@ -33,7 +33,6 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             with (
                 patch.object(plain_transcript, "analysed_video_type", return_value="motion_design"),
                 patch.object(plain_transcript, "whisper_timecoded_path", return_value=raw_whisper),
-                patch.object(plain_transcript, "update_analysed_infos"),
             ):
                 target = plain_transcript.convert_file(video, source, force=True)
 
@@ -55,7 +54,6 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             with (
                 patch.object(plain_transcript, "analysed_video_type", return_value="motion_design"),
                 patch.object(plain_transcript, "whisper_timecoded_path", return_value=raw_whisper),
-                patch.object(plain_transcript, "update_analysed_infos"),
             ):
                 target = plain_transcript.convert_file(video, source, force=True)
 

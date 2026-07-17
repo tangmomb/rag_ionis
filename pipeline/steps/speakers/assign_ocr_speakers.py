@@ -1,16 +1,16 @@
-import argparse
 import json
 import re
-import sys
 import unicodedata
 from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import (
     existing_ocr_dir,
     existing_speakers_dir,
     existing_transcripts_dir,
+    output_is_current,
     relative_to_video_dir,
 )
 from pipeline.steps.transcripts.transcribe_with_whisper import (
@@ -22,13 +22,10 @@ from pipeline.steps.transcripts.transcribe_with_whisper import (
 )
 from pipeline.steps.speakers.correct_speaker_transcripts import (
     clean_name,
-    correct_speaker_transcripts,
     validated_speakers,
 )
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 OCR_TIMECODED_CORRECTED_NAME = "ocr_subtitles_timecoded_corrected.txt"
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 DIARIZATION_NAME = "speaker_diarization.json"
@@ -36,38 +33,8 @@ OCR_PROCESSED_NAMES = ("corrected_ocr_items.json", "01_processed_ocr_items.json"
 TIMECODED_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 DIARIZATION_LABEL = re.compile(r"^SPEAKER[_ -]?\d+\s*:\s*", re.IGNORECASE)
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = [
-        path
-        for path in sorted(video_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-    ]
-    if direct_videos:
-        yield from direct_videos
-        return
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
 def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def parse_timecode(value):
@@ -117,8 +84,11 @@ def is_spoken_introduction(text, name):
     )
 
 
-def transcript_path(video_path):
-    return existing_transcripts_dir(video_path) / OCR_TIMECODED_CORRECTED_NAME
+def transcript_path(video_path, *, transcripts_dir_name=None):
+    return (
+        existing_transcripts_dir(video_path, name=transcripts_dir_name)
+        / OCR_TIMECODED_CORRECTED_NAME
+    )
 
 
 def validated_path(video_path):
@@ -138,15 +108,11 @@ def processed_ocr_path(video_path):
     return ocr_dir / OCR_PROCESSED_NAMES[-1]
 
 
-def output_is_current(target, dependencies):
-    if not target.exists():
-        return False
-    target_mtime = target.stat().st_mtime
-    return all(not dependency.exists() or dependency.stat().st_mtime <= target_mtime for dependency in dependencies)
-
-
-def assignment_is_current(video_path):
-    source = transcript_path(video_path)
+def assignment_is_current(video_path, *, transcripts_dir_name=None):
+    source = transcript_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     validated_source = validated_path(video_path)
     ocr_source = processed_ocr_path(video_path)
     return (
@@ -410,8 +376,12 @@ def assign_ocr_speakers(
     keep_audio=False,
     min_speakers=None,
     max_speakers=None,
+    transcripts_dir_name=None,
 ):
-    source = transcript_path(video_path)
+    source = transcript_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     validated_source = validated_path(video_path)
     target = diarization_path(video_path)
     if not source.exists():
@@ -448,7 +418,7 @@ def assign_ocr_speakers(
             "speaker_mapping": [],
             "assignments": assignments,
         }
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_json(target, payload)
         print(f"[ok] {target} (aucun speaker valide)")
         return target
 
@@ -480,7 +450,7 @@ def assign_ocr_speakers(
             ],
             "assignments": assignments,
         }
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_json(target, payload)
         print(f"[ok] {target} ({speakers[0]} applique a toutes les lignes)")
         return target
 
@@ -490,7 +460,10 @@ def assign_ocr_speakers(
     requested_min = min_speakers if min_speakers is not None else len(speakers)
     requested_max = max_speakers if max_speakers is not None else len(speakers)
 
-    audio_dir = existing_transcripts_dir(video_path) / "audio"
+    audio_dir = (
+        existing_transcripts_dir(video_path, name=transcripts_dir_name)
+        / "audio"
+    )
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio_path = extract_audio(video_path, audio_dir)
     try:
@@ -543,72 +516,6 @@ def assign_ocr_speakers(
             speaker for speaker in diarization_speakers if speaker not in mapping
         ],
     }
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(target, payload)
     print(f"[ok] {target} ({len(diarization_speakers)} voix, {len(mapping)} nom(s) associe(s))")
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Corrige les noms puis attribue les sous-titres OCR aux speakers Pyannote."
-    )
-    parser.add_argument("--video-dir", help="Dossier contenant les videos.")
-    parser.add_argument("--download-dir", default=str(DEFAULT_DOWNLOAD_DIR))
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--keep-audio", action="store_true")
-    parser.add_argument("--min-speakers", type=int)
-    parser.add_argument("--max-speakers", type=int)
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    if args.min_speakers is not None and args.min_speakers < 1:
-        raise ValueError("--min-speakers doit etre positif.")
-    if args.max_speakers is not None and args.max_speakers < 1:
-        raise ValueError("--max-speakers doit etre positif.")
-    if (
-        args.min_speakers is not None
-        and args.max_speakers is not None
-        and args.min_speakers > args.max_speakers
-    ):
-        raise ValueError("--min-speakers ne peut pas depasser --max-speakers.")
-
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    print(f"Dossier videos: {video_dir}")
-    pipeline = None
-    pipeline_device = None
-    done = 0
-    failed = []
-    for video_path in videos:
-        try:
-            correct_speaker_transcripts(video_path, force=args.force, source_only=True)
-            speakers = validated_speakers(load_json(validated_path(video_path)))
-            needs_diarization = (
-                len(speakers) > 1
-                and (args.force or not assignment_is_current(video_path))
-            )
-            if needs_diarization and pipeline is None:
-                base_device = resolved_device(DEFAULT_TRANSCRIBE_DEVICE)
-                pipeline, pipeline_device = load_diarization_pipeline(base_device)
-            if assign_ocr_speakers(
-                video_path,
-                force=args.force,
-                diarization_pipeline=pipeline,
-                diarization_device=pipeline_device,
-                keep_audio=args.keep_audio,
-                min_speakers=args.min_speakers,
-                max_speakers=args.max_speakers,
-            ):
-                done += 1
-        except Exception as error:
-            print(f"[error] {video_path.name}: {error}")
-            failed.append(video_path.name)
-    print(f"{done} JSON de diarisation speaker generes.")
-    if failed:
-        print(f"{len(failed)} videos en erreur: {', '.join(failed)}")
-
-
-if __name__ == "__main__":
-    main()

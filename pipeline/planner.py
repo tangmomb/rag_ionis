@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from .catalog import TASKS
 from .context import PipelineContext
+from .contracts import PlannedTask
 
 
 INSPECTION_TASKS = (
@@ -43,26 +41,6 @@ WHISPER_TRANSCRIPT_TASKS = (
     "transcript.enrich",
     "transcript.create_plain",
 )
-
-
-@dataclass(frozen=True)
-class PlannedTask:
-    id: str
-    reason: str
-
-    def to_dict(
-        self,
-        context: PipelineContext | None = None,
-    ) -> dict[str, object]:
-        spec = TASKS[self.id]
-        return {
-            "id": self.id,
-            "phase": spec.phase,
-            "title": spec.title,
-            "reason": self.reason,
-            "handler": spec.entrypoint,
-        }
-
 
 def inspection_plan() -> list[PlannedTask]:
     return [PlannedTask(task_id, "inspection_required") for task_id in INSPECTION_TASKS]

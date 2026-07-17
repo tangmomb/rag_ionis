@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import math
@@ -9,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import chunks_dir, existing_chunks_dir
 
 
@@ -19,7 +19,6 @@ DEFAULT_SECTION_SENTENCES = 4
 DEFAULT_SECTION_MAX_CHARS = 1200
 DEFAULT_GLOBAL_SENTENCES = 6
 DEFAULT_GLOBAL_MAX_CHARS = 1800
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 CHUNK_LEVEL_ORDER = {"global": 0, "section": 1, "detail": 2}
 
 FRENCH_STOP_WORDS = {
@@ -112,23 +111,6 @@ FRENCH_STOP_WORDS = {
 }
 
 
-def video_files(video_dir: Path):
-    direct = [
-        path
-        for path in sorted(video_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-    ]
-    if direct:
-        yield from direct
-        return
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
 def chunks_path(video_path: Path) -> Path:
     return existing_chunks_dir(video_path) / CHUNKS_NAME
 
@@ -137,7 +119,7 @@ def load_chunks(video_path: Path) -> tuple[dict[str, Any], Path]:
     target = chunks_path(video_path)
     if not target.exists():
         raise FileNotFoundError(f"Chunks introuvables: {target}")
-    payload = json.loads(target.read_text(encoding="utf-8"))
+    payload = read_json(target)
     if not isinstance(payload, dict) or not isinstance(payload.get("chunks"), list):
         raise ValueError(f"Format de chunks invalide: {target}")
     return payload, target
@@ -145,8 +127,7 @@ def load_chunks(video_path: Path) -> tuple[dict[str, Any], Path]:
 
 def write_chunks(video_path: Path, payload: dict[str, Any]) -> Path:
     target = chunks_dir(video_path) / CHUNKS_NAME
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(target, payload)
     return target
 
 
@@ -402,41 +383,3 @@ def summarize_video(video_path: Path, *, force: bool = False) -> Path | None:
     written = write_chunks(video_path, payload)
     print(f"[ok] {video_path.name}: resume global -> {written}")
     return written
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Cree la hierarchie section/global des chunks d'une video longue."
-    )
-    parser.add_argument(
-        "--operation",
-        choices=("sections", "video"),
-        required=True,
-    )
-    parser.add_argument("--video-dir", required=True)
-    parser.add_argument("--details-per-section", type=int, default=DEFAULT_DETAILS_PER_SECTION)
-    parser.add_argument("--force", action="store_true")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    videos = list(video_files(Path(args.video_dir)))
-    if args.operation == "sections":
-        done = sum(
-            bool(
-                summarize_sections(
-                    video_path,
-                    force=args.force,
-                    details_per_section=args.details_per_section,
-                )
-            )
-            for video_path in videos
-        )
-    else:
-        done = sum(bool(summarize_video(video_path, force=args.force)) for video_path in videos)
-    print(f"{done} video(s) traitee(s) pour l'operation {args.operation}.")
-
-
-if __name__ == "__main__":
-    main()

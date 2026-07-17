@@ -1,14 +1,7 @@
-import argparse
-import json
-import sys
-from pathlib import Path
+from pipeline.support.analysis import analysed_infos_path
+from pipeline.support.json_io import read_json
+from pipeline.support.paths import existing_ocr_dir, transcripts_dir
 
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
-from pipeline.support.paths import existing_ocr_dir, relative_to_video_dir, transcripts_dir
-
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-OCR_DIR_NAME = "ocr"
-TRANSCRIPT_OCR_DIR_NAME = "transcripts"
 OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
 LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
@@ -16,34 +9,6 @@ OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
 OCR_SUBTITLE_TIMECODES_NAME = "ocr_subtitles_timecoded.txt"
 LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
 LEGACY_OCR_SUBTITLE_TIMECODES_SUFFIX = "_ocr_subtitle_timecodes.txt"
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
 def processed_ocr_path(video_path):
     ocr_dir = existing_ocr_dir(video_path)
     corrected = ocr_dir / OCR_PROCESSED_CORRECTED_NAME
@@ -55,8 +20,8 @@ def processed_ocr_path(video_path):
     return ocr_dir / OCR_PROCESSED_NAME
 
 
-def subtitle_path(video_path):
-    transcript_dir = transcripts_dir(video_path)
+def subtitle_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = transcripts_dir(video_path, name=transcripts_dir_name)
     preferred = transcript_dir / OCR_SUBTITLE_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
     if legacy.exists() and not preferred.exists():
@@ -64,8 +29,8 @@ def subtitle_path(video_path):
     return preferred
 
 
-def subtitle_timecodes_path(video_path):
-    transcript_dir = transcripts_dir(video_path)
+def subtitle_timecodes_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = transcripts_dir(video_path, name=transcripts_dir_name)
     preferred = transcript_dir / OCR_SUBTITLE_TIMECODES_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_TIMECODES_SUFFIX}"
     if legacy.exists() and not preferred.exists():
@@ -74,7 +39,7 @@ def subtitle_timecodes_path(video_path):
 
 
 def load_processed_items(path):
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     items = payload.get("items", [])
     return sorted(items, key=lambda item: (item.get("second", 0), item.get("image", ""), item.get("text", "")))
 
@@ -84,7 +49,7 @@ def analysed_has_subtitles(video_path):
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except Exception:
         return None
     value = payload.get("has_subtitles")
@@ -176,7 +141,12 @@ def render_subtitles_timecodes(items):
     return "\n".join(lines)
 
 
-def extract_for_video(video_path, *, force=False):
+def extract_for_video(
+    video_path,
+    *,
+    force=False,
+    transcripts_dir_name=None,
+):
     if analysed_has_subtitles(video_path) is not True:
         print(
             f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas true"
@@ -184,7 +154,10 @@ def extract_for_video(video_path, *, force=False):
         return None
 
     source = processed_ocr_path(video_path)
-    target_timecodes = subtitle_timecodes_path(video_path)
+    target_timecodes = subtitle_timecodes_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     if target_timecodes.exists() and not force:
         print(f"[skip] {target_timecodes.name} existe deja")
         return target_timecodes
@@ -203,80 +176,5 @@ def extract_for_video(video_path, *, force=False):
         timecoded_text + ("\n" if timecoded_text else ""),
         encoding="utf-8",
     )
-    update_analysed_infos(
-        video_path,
-        "ocr_subtitles",
-        {
-            "status": "done",
-            "source": relative_to_video_dir(source, video_path),
-            "subtitle_timecodes_file": relative_to_video_dir(
-                target_timecodes,
-                video_path,
-            ),
-            "subtitle_count": len(subtitles),
-        },
-    )
     print(f"[ok] {target_timecodes}")
     return target_timecodes
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Consolide les sous-titres OCR a partir du JSON OCR traite."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit-videos",
-        type=int,
-        help="Nombre maximum de videos a analyser.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere le fichier OCR subtitle meme s'il existe deja.",
-    )
-    parser.add_argument(
-        "--has-subtitles",
-        choices=("true", "false"),
-        default="true",
-        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: true.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if args.limit_videos is not None:
-        videos = videos[: args.limit_videos]
-
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        expected_has_subtitles = args.has_subtitles == "true"
-        if expected_has_subtitles is not True:
-            print(
-                f"[skip] {video_path.name}: extraction OCR reservee a has_subtitles=true"
-            )
-            continue
-        if extract_for_video(video_path, force=args.force):
-            done += 1
-
-    print(f"{done} subtitles OCR generes.")
-
-
-if __name__ == "__main__":
-    main()

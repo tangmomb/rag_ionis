@@ -1,16 +1,13 @@
-import argparse
-import json
 import shutil
-import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import existing_images_dir, existing_interview_dir, interview_dir, relative_to_video_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 SOURCE_DIR_NAMES = ("footage",)
 OUTPUT_DIR_NAME = "interview"
@@ -20,35 +17,16 @@ CLASSIFICATION_MANIFEST_NAME = "frame_classification_manifest.json"
 DEFAULT_MAX_INTERVIEW_SEQUENCES = 5
 
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
+@dataclass(frozen=True)
+class InterviewDetectionOptions:
+    source_dirs: tuple[str, ...] = SOURCE_DIR_NAMES
+    phash_similar_max: int = 6
+    phash_ambiguous_max: int = 14
+    ssim_min: float = 0.92
+    min_run_frames: int = 6
+    max_gap_pairs: int = 1
+    max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES
+    force: bool = False
 
 
 def seconds_from_image_name(name):
@@ -102,7 +80,7 @@ def classification_manifest_path(video_path):
 
 
 def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def load_classification_counts(video_path):
@@ -345,7 +323,7 @@ def write_outputs(video_path, image_paths, pair_results, sequences, args, classi
         "pairs": pair_results,
     }
     manifest_path = output_dir / MANIFEST_NAME
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(manifest_path, manifest)
     return manifest_path
 
 
@@ -382,102 +360,30 @@ def detect_for_video(video_path, args):
     return manifest_path
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Detecte les interviews via des frames consecutives visuellement similaires."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit-videos",
-        type=int,
-        help="Nombre maximum de videos a analyser.",
-    )
-    parser.add_argument(
-        "--source-dirs",
-        nargs="+",
-        default=list(SOURCE_DIR_NAMES),
-        help="Sous-dossiers images a analyser. Defaut: footage",
-    )
-    parser.add_argument(
-        "--phash-similar-max",
-        type=int,
-        default=6,
-        help="Distance pHash max pour declarer une paire similaire sans SSIM. Defaut: 6",
-    )
-    parser.add_argument(
-        "--phash-ambiguous-max",
-        type=int,
-        default=14,
-        help="Distance pHash a partir de laquelle une paire est consideree differente. Entre les deux, on calcule le SSIM. Defaut: 14",
-    )
-    parser.add_argument(
-        "--ssim-min",
-        type=float,
-        default=0.92,
-        help="Score SSIM minimal pour valider une paire ambigue. Defaut: 0.92",
-    )
-    parser.add_argument(
-        "--min-run-frames",
-        type=int,
-        default=6,
-        help="Nombre minimum de frames consecutives similaires pour retenir une sequence. Defaut: 6",
-    )
-    parser.add_argument(
-        "--max-gap-pairs",
-        type=int,
-        default=1,
-        help="Nombre max de paires non similaires isolees a ponter au milieu d'une sequence stable. Defaut: 1",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere le dossier outputs/interview meme si le manifeste existe deja.",
-    )
-    parser.add_argument(
-        "--max-interview-sequences",
-        type=int,
-        default=DEFAULT_MAX_INTERVIEW_SEQUENCES,
-        help="Nombre de sequences detectees en-dessous duquel la video est consideree comme interview. Defaut: 5",
-    )
-    args = parser.parse_args()
-    if args.phash_similar_max < 0:
-        raise ValueError("--phash-similar-max doit etre >= 0")
-    if args.phash_ambiguous_max < args.phash_similar_max:
-        raise ValueError("--phash-ambiguous-max doit etre >= --phash-similar-max")
-    if args.min_run_frames < 2:
-        raise ValueError("--min-run-frames doit etre >= 2")
-    if args.max_gap_pairs < 0:
-        raise ValueError("--max-gap-pairs doit etre >= 0")
-    if args.max_interview_sequences < 0:
-        raise ValueError("--max-interview-sequences doit etre >= 0")
-    return args
+def detect_video(
+    video_path,
+    *,
+    source_dirs=SOURCE_DIR_NAMES,
+    phash_similar_max: int = 6,
+    phash_ambiguous_max: int = 14,
+    ssim_min: float = 0.92,
+    min_run_frames: int = 6,
+    max_gap_pairs: int = 1,
+    max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES,
+    force: bool = False,
+):
+    """API Python nommee pour detecter les sequences d'interview."""
 
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if args.limit_videos is not None:
-        videos = videos[: args.limit_videos]
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        if detect_for_video(video_path, args):
-            done += 1
-    print(f"{done} detection(s) interview creee(s).")
-
-
-if __name__ == "__main__":
-    main()
+    return detect_for_video(
+        video_path,
+        InterviewDetectionOptions(
+            source_dirs=tuple(source_dirs),
+            phash_similar_max=phash_similar_max,
+            phash_ambiguous_max=phash_ambiguous_max,
+            ssim_min=ssim_min,
+            min_run_frames=min_run_frames,
+            max_gap_pairs=max_gap_pairs,
+            max_interview_sequences=max_interview_sequences,
+            force=force,
+        ),
+    )

@@ -1,18 +1,14 @@
-import argparse
-import json
 import shutil
-import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.ocr_filtering import filtered_ocr_path
-from pipeline.support.paddle_ocr import box_bounds, configure_stdio, image_files
+from pipeline.support.paddle_ocr import box_bounds, image_files
 from pipeline.support.paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 OUTPUT_DIRNAME = "other_text_review_candidates"
 LEGACY_OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes"
 MANIFEST_NAME = "review_candidates_manifest.json"
@@ -20,41 +16,6 @@ LEGACY_MANIFEST_NAME = "manifest.json"
 BOX_PADDING_PX = 10
 BOX_OUTLINE_COLOR = (255, 0, 0)
 BOX_OUTLINE_WIDTH = 4
-
-
-configure_stdio()
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
 
 
 def output_dir(video_path):
@@ -76,7 +37,7 @@ def manifest_path(video_path):
 
 
 def load_others_entries(path):
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     details = payload.get("kinds_details", {}).get("others", {})
     entries = []
     for entry_id, item in sorted(details.items()):
@@ -299,47 +260,6 @@ def extract_for_video(video_path, force=False):
         },
         "items": manifest_items,
     }
-    target_manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(target_manifest, payload)
     print(f"[ok] {target_dir} ({written} image(s) annotee(s))", flush=True)
     return target_manifest
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Exporte les images entieres des items kind=others avec une box rouge autour de la zone OCR."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les images annotees meme si elles existent deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        if extract_for_video(video_path, force=args.force):
-            done += 1
-    print(f"{done} export(s) d'images annotees genere(s).")
-
-
-if __name__ == "__main__":
-    main()

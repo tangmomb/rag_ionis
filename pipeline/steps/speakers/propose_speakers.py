@@ -1,11 +1,9 @@
-import argparse
 import json
 import re
-import sys
 import unicodedata
 from pathlib import Path
 
-from pipeline.support.analysis import update_analysed_infos
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import (
     existing_ocr_dir,
     existing_transcripts_dir,
@@ -15,8 +13,6 @@ from pipeline.support.paths import (
 )
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_NAME = "plain_transcript.txt"
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
@@ -63,38 +59,11 @@ NON_PERSON_NAME_KEYWORDS = {
     "www",
 }
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = [
-        path
-        for path in sorted(video_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-    ]
-    if direct_videos:
-        yield from direct_videos
-        return
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
-def transcript_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def transcript_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     preferred = transcript_dir / PLAIN_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_PLAIN_SUFFIX}"
     if legacy.exists() and not preferred.exists():
@@ -102,8 +71,11 @@ def transcript_path(video_path):
     return preferred
 
 
-def ocr_subtitle_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def ocr_subtitle_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     preferred = transcript_dir / OCR_SUBTITLE_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
     if legacy.exists() and not preferred.exists():
@@ -111,8 +83,11 @@ def ocr_subtitle_path(video_path):
     return preferred
 
 
-def source_text_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def source_text_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     whisper_timecoded = transcript_dir / WHISPER_TIMECODED_NAME
     if whisper_timecoded.exists():
         return whisper_timecoded
@@ -127,10 +102,16 @@ def source_text_path(video_path):
     )
     if legacy_ocr_timecoded_corrected:
         return legacy_ocr_timecoded_corrected[0]
-    transcript = transcript_path(video_path)
+    transcript = transcript_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     if transcript.exists():
         return transcript
-    ocr_subtitle = ocr_subtitle_path(video_path)
+    ocr_subtitle = ocr_subtitle_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     return ocr_subtitle if ocr_subtitle.exists() else None
 
 
@@ -153,7 +134,7 @@ def video_title(video_path):
     source = existing_youtube_api_infos_path(video_path)
     if source.exists():
         try:
-            payload = json.loads(source.read_text(encoding="utf-8"))
+            payload = read_json(source)
             title = payload.get("title") or payload.get("snippet", {}).get("title")
             if title:
                 return str(title).strip()
@@ -319,7 +300,7 @@ def load_ocr_speaker_candidates(video_path):
     if not path.exists():
         return [], None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except (OSError, json.JSONDecodeError) as exc:
         print(f"[warn] OCR processed illisible pour {video_path.stem}: {exc}")
         return [], path
@@ -353,8 +334,16 @@ def propose_speakers(text, ocr_names):
     }
 
 
-def propose_for_video(video_path, force=False):
-    source = source_text_path(video_path)
+def propose_for_video(
+    video_path,
+    force=False,
+    *,
+    transcripts_dir_name=None,
+):
+    source = source_text_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     target = candidates_path(video_path)
     if source is None:
         print(f"[skip] transcript introuvable pour: {video_path.stem}")
@@ -362,7 +351,7 @@ def propose_for_video(video_path, force=False):
     expected_source = relative_to_video_dir(source, video_path)
     if target.exists() and not force:
         try:
-            existing_payload = json.loads(target.read_text(encoding="utf-8"))
+            existing_payload = read_json(target)
         except (OSError, json.JSONDecodeError):
             existing_payload = {}
         if (
@@ -385,38 +374,6 @@ def propose_for_video(video_path, force=False):
             "ocr_source": relative_to_video_dir(ocr_source, video_path) if ocr_source and ocr_source.exists() else None,
         }
     )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "propose_speakers",
-        {
-            "status": "done",
-            "candidates_file": relative_to_video_dir(target, video_path),
-            "speaker_candidates": payload["speakers"],
-        },
-    )
+    write_json(target, payload)
     print(f"[ok] {target} ({len(payload['speakers'])} candidat(s))")
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Propose les speakers depuis le transcript brut avant sa correction."
-    )
-    parser.add_argument("--video-dir", help="Dossier contenant les videos.")
-    parser.add_argument("--download-dir", default=str(DEFAULT_DOWNLOAD_DIR))
-    parser.add_argument("--force", action="store_true")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    done = sum(bool(propose_for_video(video_path, force=args.force)) for video_path in videos)
-    print(f"{done} JSON de candidats speakers generes.")
-
-
-if __name__ == "__main__":
-    main()

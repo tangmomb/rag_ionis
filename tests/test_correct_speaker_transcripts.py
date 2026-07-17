@@ -137,12 +137,11 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(speaker_correction, "update_analysed_infos"):
-                speaker_correction.correct_speaker_transcripts(
-                    video,
-                    force=True,
-                    source_only=True,
-                )
+            speaker_correction.correct_speaker_transcripts(
+                video,
+                force=True,
+                source_only=True,
+            )
 
             self.assertIn("Loucif Ouyahia", source.read_text(encoding="utf-8"))
             self.assertIn("Lucie Ouyaya", enriched.read_text(encoding="utf-8"))
@@ -192,8 +191,7 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(speaker_correction, "update_analysed_infos"):
-                result = speaker_correction.correct_speaker_transcripts(video, force=True)
+            result = speaker_correction.correct_speaker_transcripts(video, force=True)
 
             self.assertEqual(result, speakers_dir / "speaker_transcript_corrections.json")
             self.assertIn("Loucif Ouyahia", plain.read_text(encoding="utf-8"))
@@ -217,7 +215,6 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             with (
                 patch.object(chunk_creation, "validated_speakers_path", return_value=validated),
                 patch.object(chunk_creation, "chunks_path", return_value=chunks),
-                patch.object(chunk_creation, "update_analysed_infos"),
             ):
                 chunks_path = chunk_creation.create_chunks(video, force=True)
 

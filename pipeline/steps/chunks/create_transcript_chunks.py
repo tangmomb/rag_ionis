@@ -1,20 +1,17 @@
-import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
-from pipeline.support.analysis import update_analysed_infos
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import (
     chunks_dir,
     existing_speakers_dir,
     existing_transcripts_dir,
+    output_is_current,
     relative_to_video_dir,
 )
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_NAME = "plain_transcript.txt"
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
@@ -26,38 +23,11 @@ DEFAULT_MAX_CHARS = 1000
 ALERT_WORD_THRESHOLD = 3000
 CHUNK_PROFILES = {"short", "long"}
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = [
-        path
-        for path in sorted(video_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-    ]
-    if direct_videos:
-        yield from direct_videos
-        return
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
-def transcript_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def transcript_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     preferred = transcript_dir / PLAIN_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_PLAIN_SUFFIX}"
     if legacy.exists() and not preferred.exists():
@@ -65,8 +35,11 @@ def transcript_path(video_path):
     return preferred
 
 
-def ocr_subtitle_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def ocr_subtitle_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     preferred = transcript_dir / OCR_SUBTITLE_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
     if legacy.exists() and not preferred.exists():
@@ -74,11 +47,17 @@ def ocr_subtitle_path(video_path):
     return preferred
 
 
-def source_text_path(video_path):
-    transcript = transcript_path(video_path)
+def source_text_path(video_path, *, transcripts_dir_name=None):
+    transcript = transcript_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     if transcript.exists():
         return transcript
-    ocr_subtitle = ocr_subtitle_path(video_path)
+    ocr_subtitle = ocr_subtitle_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     return ocr_subtitle if ocr_subtitle.exists() else None
 
 
@@ -95,7 +74,7 @@ def load_validated_speakers(video_path):
     if not source.exists():
         return None
     try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
+        payload = read_json(source)
     except (OSError, json.JSONDecodeError) as exc:
         print(f"[warn] JSON speakers invalide pour {video_path.stem}: {exc}")
         return None
@@ -163,16 +142,9 @@ def build_chunks_payload(text, speakers, profile="short"):
     }
 
 
-def output_is_current(target, dependencies):
-    if not target.exists():
-        return False
-    target_mtime = target.stat().st_mtime
-    return all(not dependency.exists() or dependency.stat().st_mtime <= target_mtime for dependency in dependencies)
-
-
 def output_matches_profile(target, profile):
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
+        payload = read_json(target)
     except (OSError, json.JSONDecodeError):
         return False
     chunking = payload.get("chunking") if isinstance(payload, dict) else None
@@ -182,11 +154,20 @@ def output_matches_profile(target, profile):
     return existing_profile == profile
 
 
-def create_chunks(video_path, force=False, profile="short"):
+def create_chunks(
+    video_path,
+    force=False,
+    profile="short",
+    *,
+    transcripts_dir_name=None,
+):
     if profile not in CHUNK_PROFILES:
         raise ValueError(f"Profil de chunks invalide: {profile!r}")
     target = chunks_path(video_path)
-    source = source_text_path(video_path)
+    source = source_text_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     speakers_source = validated_speakers_path(video_path)
     if source is None:
         print(f"[skip] transcript introuvable pour: {video_path.stem}")
@@ -212,51 +193,9 @@ def create_chunks(video_path, force=False, profile="short"):
     payload = build_chunks_payload(normalized, speakers, profile=profile)
     payload["source"] = relative_to_video_dir(source, video_path)
     payload["speakers_source"] = relative_to_video_dir(speakers_source, video_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(target, payload)
     obsolete = target.parent / OBSOLETE_VALIDATED_CHUNKS_NAME
     if force and obsolete.exists():
         obsolete.unlink()
-    update_analysed_infos(
-        video_path,
-        "create_chunks",
-        {
-            "status": "done",
-            "source": relative_to_video_dir(source, video_path),
-            "speakers_source": relative_to_video_dir(speakers_source, video_path),
-            "chunks_file": relative_to_video_dir(target, video_path),
-            "chunk_count": len(payload["chunks"]),
-            "speakers": speakers,
-        },
-    )
     print(f"[ok] {target} ({len(payload['chunks'])} chunks, {len(speakers)} speaker(s))")
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Cree les chunks avec les speakers deja valides.")
-    parser.add_argument("--video-dir", help="Dossier contenant les videos.")
-    parser.add_argument("--download-dir", default=str(DEFAULT_DOWNLOAD_DIR))
-    parser.add_argument(
-        "--profile",
-        choices=tuple(sorted(CHUNK_PROFILES)),
-        default="short",
-        help="Profil de chunking: short ou long. Le profil long est ensuite hierarchise.",
-    )
-    parser.add_argument("--force", action="store_true")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    done = sum(
-        bool(create_chunks(video_path, force=args.force, profile=args.profile))
-        for video_path in videos
-    )
-    print(f"{done} transcripts chunkes.")
-
-
-if __name__ == "__main__":
-    main()

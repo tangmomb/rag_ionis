@@ -1,58 +1,24 @@
-import argparse
-import json
 import re
-import sys
 import unicodedata
 from difflib import SequenceMatcher
 from itertools import product
 from pathlib import Path
 
-from pipeline.support.analysis import update_analysed_infos
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import (
     existing_speakers_dir,
     existing_transcripts_dir,
+    output_is_current,
     relative_to_video_dir,
     speakers_dir,
     video_base_dir,
 )
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 CORRECTIONS_NAME = "speaker_transcript_corrections.json"
 OBSOLETE_SPEAKER_CORRECTED_SUFFIX = "_speaker_corrected.txt"
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = [
-        path
-        for path in sorted(video_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-    ]
-    if direct_videos:
-        yield from direct_videos
-        return
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
 
 def normalize_name(name):
     normalized = unicodedata.normalize("NFKD", str(name).strip().casefold())
@@ -66,7 +32,7 @@ def clean_name(name):
 
 
 def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def validated_path(video_path):
@@ -225,13 +191,6 @@ def apply_mappings(text, mappings):
     return corrected, counts
 
 
-def output_is_current(target, dependencies):
-    if not target.exists():
-        return False
-    target_mtime = target.stat().st_mtime
-    return all(not dependency.exists() or dependency.stat().st_mtime <= target_mtime for dependency in dependencies)
-
-
 def correct_speaker_files(video_path, sources, force=False):
     validated_source = validated_path(video_path)
     target = corrections_path(video_path)
@@ -285,18 +244,7 @@ def correct_speaker_files(video_path, sources, force=False):
         "files": files,
         "replacement_count": total_replacements,
     }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "correct_speaker_transcripts",
-        {
-            "status": "done",
-            "corrections_file": relative_to_video_dir(target, video_path),
-            "replacement_count": total_replacements,
-            "corrected_transcripts": [item["path"] for item in files],
-        },
-    )
+    write_json(target, payload)
     print(f"[ok] {target} ({total_replacements} remplacement(s), {len(files)} transcript(s))")
     return target
 
@@ -319,39 +267,3 @@ def correct_speaker_transcripts(video_path, force=False, source_only=False):
     else:
         sources = source_transcript_paths(video_path, candidates_payload)
     return correct_speaker_files(video_path, sources, force=force)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Corrige les noms de speakers dans les transcripts selon la validation GPT."
-    )
-    parser.add_argument("--video-dir", help="Dossier contenant les videos.")
-    parser.add_argument("--download-dir", default=str(DEFAULT_DOWNLOAD_DIR))
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument(
-        "--source-only",
-        action="store_true",
-        help="Corrige uniquement le transcript source utilise pour proposer les speakers.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    done = sum(
-        bool(
-            correct_speaker_transcripts(
-                video_path,
-                force=args.force,
-                source_only=args.source_only,
-            )
-        )
-        for video_path in videos
-    )
-    print(f"{done} JSON de correction speaker generes.")
-
-
-if __name__ == "__main__":
-    main()

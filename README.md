@@ -23,10 +23,11 @@ uniques et le plan décide lesquels appeler.
 ```text
 pipeline/
   __main__.py       # point d'entrée de python -m pipeline
-  cli.py            # commandes inspect, plan et run
+  cli.py            # commandes inspect, plan, run et task
   discovery.py      # sélection all, nombre, ID ou chemin
   probe.py          # lecture durée, codecs, résolution, FPS et audio
-  context.py        # caractéristiques normalisées d'une vidéo
+  contracts.py      # RoutingFacts, PlannedTask, TaskResult et RunExecution
+  context.py        # état mutable d'une vidéo et validation des artefacts
   options.py        # options communes validées
   planner.py        # règles de sélection des tâches
   catalog.py        # registre déclaratif des handlers
@@ -34,7 +35,7 @@ pipeline/
   manifest.py       # génération et mise à jour du JSON
   executor.py       # exécution en mémoire et checkpoints
   orchestrator.py   # inspection, planification et traitement
-  support/          # chemins et helpers internes partagés
+  support/          # chemins, JSON atomique et helpers OpenAI Batch
   ingest/           # métadonnées YouTube et téléchargement
   publish/          # upload S3 et synchronisation PostgreSQL
   steps/
@@ -66,14 +67,20 @@ Le package `pipeline` contient l'ensemble du cycle de traitement vidéo. Il n'y 
 plus un orchestrateur d'un côté et des scripts indépendants de l'autre :
 
 - la racine de `pipeline/` prend les décisions et pilote les exécutions ;
-- `pipeline/steps/` contient les traitements métier exécutables ;
+- `pipeline/steps/` contient les traitements métier appelés par les handlers ;
 - `pipeline/support/` contient uniquement les fonctions internes partagées ;
 - `pipeline/ingest/` prépare les entrées ;
 - `pipeline/publish/` envoie les résultats vers S3 et PostgreSQL.
 
-Une étape métier peut toujours être lancée seule avec `python -m` pour le debug
-ou la maintenance. Son utilisation normale passe toutefois par un handler qui
-reçoit le `PipelineContext` courant, sans créer de sous-processus.
+Une étape du registre peut être lancée seule, sans CLI dupliquée dans son module :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline task frames.classify VIDEO_ID
+```
+
+Cette commande construit le même `PipelineContext` que l'orchestrateur, puis
+appelle le handler dans le processus courant. La commande `task` constitue
+l'unique interface de maintenance des étapes.
 
 L'ingestion et la publication encadrent le traitement local, mais ne font pas
 partie de `processing_plan()`. Elles restent des commandes explicites pour éviter
@@ -84,19 +91,20 @@ surprise.
 
 | Module | Responsabilité |
 |---|---|
-| `cli.py` | Parse la commande, les options et le sélecteur de vidéos. |
+| `cli.py` | Parse les commandes, les options et le sélecteur de vidéos ; exécute aussi une tâche isolée du registre. |
 | `discovery.py` | Trouve les vidéos et applique les sélecteurs `all`, nombre, ID ou chemin. |
 | `probe.py` | Lit directement le fichier vidéo avec FFmpeg : durée, codecs, résolution, FPS, audio et rotation. |
-| `context.py` | Définit le `PipelineContext` mutable : vidéo, options, analyses, plan, artefacts et état d'exécution. |
+| `contracts.py` | Définit les contrats typés `RoutingFacts`, `PlannedTask`, `TaskResult`, `TaskExecution` et `RunExecution`. |
+| `context.py` | Définit le `PipelineContext` mutable : vidéo, options, faits de routage, plan, artefacts et exécutions. |
 | `options.py` | Valide les options communes transmises aux étapes. |
-| `catalog.py` | Associe chaque identifiant métier à un handler Python appelable. |
-| `step_handlers.py` | Adapte le contexte aux fonctions métier existantes et réinjecte leurs résultats dans le contexte. |
+| `catalog.py` | Associe chaque identifiant métier à un handler, une version et une éventuelle postcondition. |
+| `step_handlers.py` | Adapte le contexte aux fonctions métier et retourne un `TaskResult` explicite. |
 | `planner.py` | Produit la liste ordonnée des tâches selon les caractéristiques de la vidéo. |
-| `manifest.py` | Sérialise le contexte et écrit atomiquement le checkpoint JSON. |
-| `executor.py` | Appelle les handlers dans le même processus, arrête le traitement en cas d'erreur et checkpoint le contexte. |
-| `orchestrator.py` | Coordonne les commandes `inspect`, `plan` et `run`. |
-| `steps/` | Contient les modules métier avec leur propre CLI. |
-| `support/` | Fournit les chemins, l'accès à `pipeline_analysis.json` et les helpers OCR. |
+| `manifest.py` | Valide, migre et sérialise le contexte dans le manifeste v4. |
+| `executor.py` | Reprend les tâches valides, appelle les autres handlers et checkpoint chaque transition. |
+| `orchestrator.py` | Coordonne les commandes publiques `inspect`, `plan` et `run` avec un seul contexte par vidéo. |
+| `steps/` | Contient uniquement les algorithmes et sorties métier. |
+| `support/` | Fournit les chemins, les écritures JSON atomiques et les primitives internes partagées. |
 
 Les modules de `support/` ne doivent pas être ajoutés au catalogue : ils ne sont
 pas des étapes autonomes.
@@ -109,10 +117,17 @@ La séparation interne suit trois règles :
 - une étape produit ses propres sorties, mais n'appelle jamais directement
   l'étape suivante.
 
-Cette organisation correspond au pattern **Pipeline Context** complété par un
-**Task Registry**. Un même objet mutable traverse toutes les étapes, ce qui évite
-de transporter une longue liste de paramètres entre les fonctions. Le manifeste
-est sa représentation persistée et sert de checkpoint lisible.
+Cette organisation combine **Pipeline Context**, **Pipeline Pattern**,
+**Task Registry**, **Orchestrator** et **Checkpointing**. Un même objet mutable
+traverse les étapes, tandis que quatre contrats rendent ses frontières
+explicites :
+
+- `RoutingFacts` valide les seuls faits persistants qui décident de la route ;
+- `PlannedTask` conserve un plan typé jusqu'à la sérialisation ;
+- `TaskResult` distingue `succeeded`, `cached`, `skipped`, `blocked` et `failed` ;
+- `RunExecution` lie une exécution à un `run_id` et au hash exact de son plan.
+
+Le manifeste v4 est la représentation persistée de ces contrats.
 
 ### Cycle de vie d'une vidéo
 
@@ -133,9 +148,14 @@ flowchart TD
     I -- Non --> J["Arrêt avec caractéristique manquante"]
     I -- Oui --> K["Construire processing_plan"]
     K --> L["Enregistrer le plan dans le contexte"]
-    L --> M["Appeler les handlers dans l'ordre"]
-    M --> N["Mettre à jour artefacts et execution"]
-    N --> O["Checkpoint final"]
+    L --> M{"Checkpoint réussi et artefacts présents ?"}
+    M -- Oui --> N["Marquer cached sans rappeler le handler"]
+    M -- Non --> O["Appeler le handler"]
+    O --> P{"TaskResult"}
+    P -- succeeded/cached --> Q["Continuer"]
+    P -- blocked/failed --> R["Arrêter les tâches aval"]
+    N --> Q
+    Q --> S["Checkpoint après chaque transition"]
 ```
 
 En pratique :
@@ -144,11 +164,13 @@ En pratique :
 2. `PipelineContext.inspect()` appelle `probe_video()` et lit les observations déjà
    présentes dans `metadata/pipeline_analysis.json`.
 3. L'inspection visuelle et OCR calcule `video_type` et `has_subtitles`.
-4. Chaque handler actualise le même contexte après avoir produit ses sorties.
+4. Chaque handler retourne un `TaskResult` avec son statut et ses artefacts.
 5. `processing_plan()` choisit la branche de transcript et le profil de chunks.
 6. `catalog.py` résout chaque identifiant en fonction Python.
-7. `executor.py` appelle ces fonctions séquentiellement dans le même processus.
-8. Le manifeste est checkpointé avant et après chaque tâche.
+7. `executor.py` valide le plan entier et reprend les tâches dont la postcondition
+   ou les artefacts sont encore valides.
+8. Les autres fonctions sont appelées séquentiellement dans le même processus.
+9. Le manifeste est checkpointé avant et après chaque tâche.
 
 ### Le `PipelineContext`
 
@@ -160,29 +182,36 @@ Il contient notamment :
 
 - `video_path`, les informations techniques sondées et les métadonnées YouTube ;
 - `options`, c'est-à-dire les réglages effectifs du lancement ;
-- `analysis`, chargé depuis `metadata/pipeline_analysis.json` ;
+- `routing_facts`, instance immuable de `RoutingFacts` chargée depuis
+  `metadata/pipeline_analysis.json` ;
 - les propriétés dérivées `duration_seconds`, `is_long_video`,
   `transcript_strategy`, `chunk_strategy` et `video_type` ;
-- `plan`, la liste ordonnée des tâches sélectionnées ;
+- `plan`, une liste ordonnée de `PlannedTask` ;
 - `artifacts`, les chemins produits par tâche ;
-- `execution`, avec l'état global et l'état horodaté de chaque tâche.
+- `execution`, un `RunExecution` associé au hash du plan courant ;
+- `execution_history`, qui conserve les exécutions des plans précédents.
 
 Une étape enregistrée dans le pipeline possède donc une signature simple :
 
 ```python
-def normalize_brand(context: PipelineContext):
+def normalize_brand(context: PipelineContext) -> TaskResult:
     result = process_video(
         context.video_path,
-        force=context.options.force,
+        force=context.force_rebuild,
     )
-    context.record_artifacts("transcript.normalize_brand", result)
-    return result
+    if result is None:
+        return TaskResult.blocked("Transcript source absent.")
+    return TaskResult.succeeded(
+        value=result,
+        artifacts=[result],
+    )
 ```
 
 Les algorithmes métier restent dans `pipeline/steps/`. Les fonctions de
 `step_handlers.py` sont de petits adaptateurs : elles extraient du contexte les
 quelques options attendues par l'algorithme, appellent sa fonction par vidéo,
-puis actualisent le contexte.
+puis décrivent le résultat. L'exécuteur, qui connaît déjà l'identifiant de la
+tâche, reste propriétaire de l'enregistrement des artefacts et du statut.
 
 ### Checkpoints
 
@@ -192,10 +221,16 @@ Le fichier `metadata/video_manifest.json` est réécrit atomiquement :
 2. juste avant chaque handler avec la tâche en `running` ;
 3. juste après chaque handler avec ses artefacts et son statut ;
 4. immédiatement en cas d'exception avec le message dans `error` ;
-5. à la fin du pipeline avec le statut global `completed`.
+5. lors d'un blocage, avec les tâches aval en `skipped` ;
+6. à la fin du pipeline avec le statut global `completed`.
 
 Le JSON reste donc exploitable même si le processus est interrompu au milieu
-d'une vidéo. Il décrit le dernier état cohérent connu du contexte.
+d'une vidéo. Il décrit le dernier état cohérent connu du contexte. À la relance,
+une tâche réussie n'est convertie en `cached` que si sa postcondition déclarée
+est encore vraie ; sans postcondition, tous ses artefacts doivent exister, les
+dossiers doivent être non vides et leur empreinte doit être inchangée. Une
+invalidation rejoue aussi les tâches aval. La taille et la date de modification
+de la vidéo participent au hash du plan. `--force` désactive toute reprise.
 
 ### Sources de vérité
 
@@ -204,13 +239,13 @@ Les informations sont volontairement réparties selon leur nature :
 | Fichier ou dossier | Contenu | Gestion |
 |---|---|---|
 | `VIDEO_ID.mp4` | Source technique pour la durée, les codecs et la résolution. | Entrée, jamais modifiée. |
-| `metadata/pipeline_analysis.json` | Observations produites par l'inspection, puis statuts et chemins utiles écrits par certaines étapes. | Mis à jour par les étapes d'inspection et de traitement. |
-| `metadata/video_manifest.json` | Instantané généré du contexte, des réponses, de la route, des options, du plan et de l'exécution. | Réécrit par l'orchestrateur ; ne pas modifier manuellement. |
+| `metadata/pipeline_analysis.json` | Uniquement les faits de routage : `video_type`, `has_subtitles` et ses détails. | Mis à jour par les étapes d'inspection concernées. |
+| `metadata/video_manifest.json` | Plan, exécution courante, historique, artefacts, options et vues dérivées de la route. | Réécrit atomiquement par l'orchestrateur ; ne pas modifier manuellement. |
 | `outputs/` | Frames, OCR, transcripts, speakers, chunks et embeddings. | Généré par les étapes métier. |
 
-`pipeline_analysis.json` décrit donc ce qui a été observé et produit pour la vidéo.
-`video_manifest.json` décrit ce que le pipeline a décidé d'en faire et où en est
-son exécution.
+`RoutingFacts` est la source typée du routage. Le manifeste est la source de
+vérité de l'exécution et des artefacts ; sa section `route` est calculée à partir
+des faits et de la durée.
 
 ## Règles de routage
 
@@ -356,47 +391,20 @@ Extrait simplifié :
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "video": {
     "id": "LJ-W6BjSJRo",
-    "url": "https://www.youtube.com/watch?v=LJ-W6BjSJRo",
-    "title": "Titre de la vidéo",
     "duration_seconds": 742.4,
-    "width": 1280,
-    "height": 720,
-    "fps": 25.0,
-    "video_codec": "h264",
-    "audio_codec": "aac",
     "has_audio": true
   },
-  "questions": {
-    "longer_than_10_minutes": {
-      "answer": true,
-      "threshold_seconds": 600
-    },
-    "has_embedded_subtitles": {
-      "answer": false
-    },
-    "is_motion_design": {
-      "answer": false
-    },
-    "is_interview": {
-      "answer": true
+  "routing_facts": {
+    "has_subtitles": false,
+    "video_type": "interview",
+    "has_subtitles_details": {
+      "score": 0.08
     }
   },
-  "features": {
-    "duration": {
-      "threshold_seconds": 600,
-      "longer_than_10_minutes": true
-    },
-    "has_subtitles": {
-      "value": false
-    },
-    "video_type": "interview",
-    "motion_design": false,
-    "interview": true
-  },
-  "routing": {
+  "route": {
     "status": "ready",
     "pipeline_id": "long.whisper.interview",
     "transcript_strategy": "whisper",
@@ -404,11 +412,6 @@ Extrait simplifié :
     "visual_strategy": "interview"
   },
   "artifacts": {
-    "directories": {
-      "metadata": "metadata",
-      "outputs": "outputs",
-      "transcripts": "outputs/transcripts_whisper"
-    },
     "by_task": {
       "transcript.whisper": [
         "outputs/transcripts_whisper/whisper_transcript_timecoded.txt"
@@ -416,24 +419,31 @@ Extrait simplifié :
     }
   },
   "plan": {
+    "hash": "PLAN_HASH",
+    "task_count": 1,
     "tasks": [
       {
         "id": "transcript.whisper",
         "reason": "has_subtitles=false",
-        "handler": "pipeline.step_handlers.transcribe_whisper"
+        "handler": "pipeline.step_handlers.transcribe_whisper",
+        "version": "1"
       }
     ]
   },
   "execution": {
-    "status": "running",
+    "run_id": "9f5bdba8df624b93a12296a809bc44d0",
+    "plan_hash": "PLAN_HASH",
+    "status": "completed",
     "tasks": {
       "transcript.whisper": {
         "status": "completed",
         "started_at": "2026-07-16T19:00:00+00:00",
-        "finished_at": "2026-07-16T19:08:00+00:00"
+        "finished_at": "2026-07-16T19:08:00+00:00",
+        "attempts": 1
       }
     }
-  }
+  },
+  "execution_history": []
 }
 ```
 
@@ -444,26 +454,26 @@ Les sections principales ont chacune un rôle précis :
 | Section | Description |
 |---|---|
 | `video` | Informations techniques retournées par `probe.py`. |
-| `questions` | Réponses lisibles aux questions métier de routage. |
-| `features` | Valeurs normalisées utilisées par le code. |
-| `routing` | Route calculée, stratégies choisies et caractéristiques manquantes. |
+| `routing_facts` | Source typée du routage : sous-titres, type de vidéo et détails de détection. |
+| `route` | Route dérivée, stratégies choisies et caractéristiques manquantes. |
 | `options` | Options effectives utilisées pour générer le plan. |
-| `artifacts` | Dossiers de travail et fichiers produits, regroupés par tâche. |
-| `plan.tasks` | Liste ordonnée des tâches avec leur raison et leur handler Python. |
-| `execution` | État global et état horodaté de chaque tâche exécutée. |
+| `artifacts` | Fichiers produits, regroupés par identifiant de tâche. |
+| `plan` | Hash reproductible et liste ordonnée des tâches avec raison, handler et version. |
+| `execution` | `run_id`, `plan_hash`, état global et état horodaté des tâches du plan courant. |
+| `execution_history` | Exécutions archivées lorsque le hash du plan change. |
 
 Avant la fin de l'inspection, une réponse peut valoir `null` et le routage peut
 ressembler à ceci :
 
 ```json
 {
-  "routing": {
+  "route": {
     "status": "needs_content_inspection",
     "pipeline_id": "short",
     "transcript_strategy": null,
     "chunk_strategy": "short",
     "visual_strategy": null,
-    "missing_features": [
+    "missing_facts": [
       "has_subtitles",
       "video_type"
     ]
@@ -478,19 +488,31 @@ Après chaque lancement réel, `execution.status` vaut l'un des états suivants 
 | `not_started` | Le plan a été généré mais n'a pas encore été exécuté. |
 | `running` | Une exécution est en cours. |
 | `completed` | Toutes les tâches du lancement sont terminées. |
+| `blocked` | Une tâche n'a pas satisfait son contrat ; les tâches aval ont été ignorées. |
 | `failed` | Une tâche a échoué et l'exécution s'est arrêtée. |
 
-Chaque entrée de `execution.tasks` peut contenir `started_at`, `finished_at` et
-`error`. Les dates sont enregistrées en UTC.
+Une tâche possède les états `not_started`, `running`, `completed`, `cached`,
+`skipped`, `blocked` ou `failed`. `completed` est la représentation JSON
+compatible du statut Python `TaskStatus.SUCCEEDED`. Chaque entrée peut contenir
+`started_at`, `finished_at`, `reason`, `error`, `attempts` et
+`artifact_fingerprint`. Les dates sont enregistrées en UTC.
 
-`plan` représente le plan actuellement proposé, tandis que `execution` conserve
-les tâches déjà exécutées. Après une commande `inspect`, il est donc normal que :
+`plan.hash` et `execution.plan_hash` doivent toujours être identiques. Quand
+l'inspection terminée est remplacée par le plan de traitement :
 
-- `plan.tasks` contienne déjà le futur plan de traitement ;
-- `execution.tasks` contienne les sept tâches d'inspection terminées.
+- l'exécution des sept tâches d'inspection est déplacée dans
+  `execution_history` ;
+- une nouvelle exécution, avec un nouveau `run_id`, est créée pour le plan de
+  traitement.
 
-Une commande `plan` conserve également l'historique d'exécution existant lorsqu'elle
-réécrit le manifeste.
+Si un plan déjà connu redevient courant, son `RunExecution` est restauré depuis
+`execution_history`. Ses checkpoints ne sont repris que si leurs empreintes
+d'artefacts correspondent encore ; un fichier écrasé entre-temps est donc
+reconstruit.
+
+Le lecteur accepte les manifestes v3 pour migration. Toute corruption JSON,
+version inconnue ou incohérence entre les hash du plan et de l'exécution produit
+une erreur explicite au lieu de remplacer silencieusement l'état.
 
 ## Installation
 
@@ -534,6 +556,8 @@ S3_SECRET_ACCESS_KEY=...
 | `plan --include-inspection` | Force l'écriture du plan d'inspection même si les caractéristiques sont déjà connues. |
 | `run` | Exécute l'inspection, recalcule la route, puis exécute le plan de traitement. |
 | `run --skip-inspection` | Réutilise `pipeline_analysis.json` si le routage est complet. Si une caractéristique manque, l'inspection est quand même exécutée. |
+| `task --list` | Affiche les identifiants, phases et titres du registre. |
+| `task TASK_ID [SELECTOR]` | Exécute une seule tâche enregistrée avec le contexte, les options et les checkpoints habituels. |
 
 Les commandes `plan` et `--dry-run` ne modifient pas les sorties métier.
 `plan` écrit néanmoins le manifeste, puisque celui-ci constitue le résultat de la
@@ -563,6 +587,16 @@ Exécuter l'inspection puis le pipeline sélectionné :
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
 ```
+
+Lister le registre ou exécuter une étape isolée :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline task --list
+.\.venv\Scripts\python.exe -m pipeline task frames.classify VIDEO_ID
+.\.venv\Scripts\python.exe -m pipeline task transcript.enrich VIDEO_ID --force
+```
+
+Un identifiant absent du registre est rejeté avant le démarrage de l'exécution.
 
 Sélecteurs acceptés :
 
@@ -606,7 +640,7 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 
 | Option | Effet |
 |---|---|
-| `--force` | Place `context.options.force=true` afin que les handlers régénèrent leurs sorties. |
+| `--force` | Désactive la reprise par checkpoint et demande aux handlers de régénérer leurs sorties. |
 | `--dry-run` | Affiche les handlers sélectionnés sans les exécuter. |
 | `--openai-mode normal|batch` | Choisit le mode global des appels OpenAI compatibles. |
 | `--review-scope duo|all` | En mode `duo`, limite la revue des textes visuels à une image par vidéo. |
@@ -629,24 +663,29 @@ caractéristiques n'ont pas réellement été calculées.
 
 ### Erreurs et reprise
 
-L'exécuteur appelle les handlers séquentiellement et s'arrête à la première
-exception :
+Avant de démarrer, l'exécuteur valide tous les identifiants et l'absence de
+doublons dans le plan. Il s'arrête ensuite à la première exception ou au premier
+`TaskResult.blocked` :
 
 1. le statut global passe à `failed` ;
 2. la tâche concernée passe à `failed` ;
 3. le message de l'exception est enregistré dans `execution.tasks.<id>.error` ;
 4. les tâches suivantes ne sont pas exécutées.
 
-Il n'existe pas encore de reprise automatique à partir de la tâche exacte en
-échec. En relançant la commande, le plan repart du début. Les utilitaires sont
-cependant conçus pour ignorer leurs sorties encore valides, ce qui rend une
-relance normale généralement peu coûteuse :
+Pour un blocage métier, le statut global et la tâche deviennent `blocked`, la
+raison est persistée et les tâches aval deviennent `skipped`.
+
+Lors d'une relance avec le même plan, les mêmes options et les mêmes faits de
+routage, le `plan_hash` reste stable. Les tâches déjà réussies dont les artefacts
+existent encore sont reprises en `cached`, puis l'exécution repart exactement à
+la première tâche incomplète ou invalide :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection
 ```
 
-Utiliser `--force` uniquement lorsqu'il faut réellement reconstruire les sorties :
+Si un fichier enregistré a disparu, sa tâche est réexécutée automatiquement.
+Utiliser `--force` uniquement lorsqu'il faut reconstruire toutes les sorties :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection --force
@@ -656,7 +695,8 @@ Utiliser `--force` uniquement lorsqu'il faut réellement reconstruire les sortie
 
 ### Ajouter une nouvelle étape métier
 
-Une étape doit rester autonome et pouvoir être lancée avec `python -m`.
+Une étape doit rester autonome au niveau Python et être exécutable par la commande
+générique `pipeline task`.
 
 1. Créer le module dans le domaine approprié :
 
@@ -668,36 +708,44 @@ Une étape doit rester autonome et pouvoir être lancée avec `python -m`.
    pipeline/steps/embeddings/
    ```
 
-2. Exposer d'abord une fonction Python par vidéo, par exemple
-   `clean_transcript(video_path, force=False)`. Une CLI `main()` avec `argparse`
-   peut rester disponible comme wrapper de debug et de maintenance.
+2. Exposer une fonction Python par vidéo, par exemple
+   `clean_transcript(video_path, force=False)`. Ne pas ajouter de nouveau
+   `argparse`, `main()`, sélecteur de vidéos ou recherche du dernier dossier dans
+   le module métier.
 
 3. Écrire les sorties sous `metadata/` ou `outputs/`, en utilisant
    `pipeline.support.paths` pour conserver une arborescence homogène.
 
 4. Ajouter dans `pipeline/step_handlers.py` un adaptateur qui reçoit uniquement
-   le contexte :
+   le contexte et retourne un contrat explicite :
 
    ```python
-   def clean_transcript(context: PipelineContext):
+   def clean_transcript(context: PipelineContext) -> TaskResult:
        result = clean_video(
            context.video_path,
-           force=context.options.force,
+           force=context.force_rebuild,
        )
-       context.record_artifacts("transcript.clean", result)
-       return result
+       if result is None:
+           return TaskResult.blocked("Transcript source absent.")
+       return TaskResult.succeeded(value=result, artifacts=[result])
    ```
 
-5. Déclarer l'étape dans `TASKS` dans `pipeline/catalog.py` :
+5. Ajouter la `TaskSpec` dans `_TASK_SPECS` dans `pipeline/catalog.py` ; le
+   dictionnaire `TASKS` est dérivé automatiquement :
 
    ```python
-   "transcript.clean": TaskSpec(
+   TaskSpec(
        "transcript.clean",
        "processing",
        "Nettoyer le transcript",
        step_handlers.clean_transcript,
+       version="1",
+       postcondition=lambda context: transcript_path(context.video_path).exists(),
    )
    ```
+
+   Incrémenter `version` lorsque le sens ou le format des sorties change : cette
+   valeur participe au `plan_hash` et invalide ainsi une reprise devenue obsolète.
 
 6. Ajouter l'identifiant dans la bonne séquence de `pipeline/planner.py`, ou
    l'insérer selon une nouvelle condition.
@@ -709,10 +757,10 @@ Une étape doit rester autonome et pouvoir être lancée avec `python -m`.
    - que le handler sérialisé dans le manifeste pointe vers la bonne fonction ;
    - que l'exécuteur transmet bien le même `PipelineContext`.
 
-8. Vérifier son point d'entrée :
+8. Vérifier son point d'entrée commun :
 
    ```powershell
-   .\.venv\Scripts\python.exe -m pipeline.steps.transcripts.clean_transcript --help
+   .\.venv\Scripts\python.exe -m pipeline task transcript.clean VIDEO_ID --dry-run
    ```
 
 Une étape ne doit pas appeler directement l'étape suivante. L'ordre appartient à
@@ -724,13 +772,13 @@ Pour ajouter une caractéristique qui influence le pipeline :
 
 1. produire ou lire sa valeur dans une étape d'inspection ;
 2. la stocker dans `metadata/pipeline_analysis.json` ;
-3. l'exposer dans `PipelineContext` ;
-4. l'ajouter aux sections `questions`, `features` ou `routing` du manifeste ;
+3. l'ajouter à `RoutingFacts` avec sa validation et sa sérialisation ;
+4. l'exposer comme propriété dérivée dans `PipelineContext` et dans `route` ;
 5. modifier `processing_plan()` pour sélectionner les tâches concernées ;
 6. ajouter les scénarios limites dans `tests/test_pipeline_routing.py`.
 
 Une valeur nécessaire au routage doit être signalée dans
-`routing.missing_features` lorsqu'elle est absente. Cela empêche le traitement de
+`route.missing_facts` lorsqu'elle est absente. Cela empêche le traitement de
 partir silencieusement dans une branche par défaut.
 
 ### Ajouter un helper partagé
@@ -740,10 +788,16 @@ Un helper sans CLI va dans `pipeline/support/`. Il peut être importé par plusi
 
 Exemples :
 
+- `support/json_io.py` pour les lectures contrôlées et écritures atomiques ;
+- `support/openai_batch.py` pour l'état, le polling et la lecture JSONL des batches ;
 - résolution des chemins de sorties ;
-- lecture et mise à jour de `pipeline_analysis.json` ;
+- lecture et mise à jour des seuls `RoutingFacts` ;
 - primitives PaddleOCR ;
 - filtrage géométrique ou textuel partagé.
+
+Un nouveau traitement OpenAI Batch doit réutiliser `support/openai_batch.py` au
+lieu de redéfinir ses statuts terminaux, sa boucle de polling ou son format
+d'état.
 
 ### Modifier une option globale
 

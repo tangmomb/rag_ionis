@@ -1,27 +1,31 @@
-import argparse
 import json
-import os
 import re
 import sys
-import time
 import unicodedata
 from pathlib import Path
 
-from dotenv import load_dotenv
-from pipeline.support.analysis import update_analysed_infos
+from pipeline.support.json_io import read_json, write_json, write_jsonl
+from pipeline.support.openai_batch import (
+    COMPLETED_BATCH_STATUS,
+    batch_request_fingerprint,
+    batch_state_matches,
+    download_batch_files,
+    is_terminal_batch_status,
+    load_batch_state,
+    parse_jsonl,
+    poll_batch_state,
+    records_by_custom_id,
+    save_batch_state,
+)
 from pipeline.support.paths import existing_speakers_dir, relative_to_video_dir, speakers_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 BATCH_STATE_NAME = "speaker_validation_batch_state.json"
 BATCH_INPUT_NAME = "speaker_validation_batch_input.jsonl"
 BATCH_OUTPUT_NAME = "speaker_validation_batch_output.jsonl"
 BATCH_ERROR_NAME = "speaker_validation_batch_error.jsonl"
-DEFAULT_WAIT_FOR_BATCH = True
-DEFAULT_MODEL = "gpt-5.4-nano"
 MAX_OUTPUT_TOKENS = 512
 MAX_LIVE_ATTEMPTS = 3
 SYSTEM_PROMPT = (
@@ -33,44 +37,6 @@ SYSTEM_PROMPT = (
     "dans le titre, le titre prevaut: utilise l'orthographe complete du titre. "
     "Reponds uniquement avec l'objet JSON demande."
 )
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
-def current_openai_mode():
-    normalized = str(os.getenv("PIPELINE_OPENAI_MODE", "normal")).strip().lower()
-    if normalized in {"batch", "normal"}:
-        return normalized
-    return "normal"
-
-
 def candidates_path(video_path):
     return existing_speakers_dir(video_path) / SPEAKER_CANDIDATES_NAME
 
@@ -96,7 +62,7 @@ def batch_error_path(video_path):
 
 
 def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    return read_json(path, encoding="utf-8-sig")
 
 
 def normalize_model_name(model):
@@ -326,50 +292,6 @@ def parse_valid_speakers(answer):
     return parsed
 
 
-def save_batch_state(path, state):
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def load_batch_state(video_path):
-    path = batch_state_path(video_path)
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def refresh_batch_state(video_path, client, state):
-    batch = client.batches.retrieve(state["batch_id"])
-    state.update(
-        {
-            "status": batch.status,
-            "input_file_id": getattr(batch, "input_file_id", state.get("input_file_id")),
-            "output_file_id": getattr(batch, "output_file_id", state.get("output_file_id")),
-            "error_file_id": getattr(batch, "error_file_id", state.get("error_file_id")),
-        }
-    )
-    request_counts = getattr(batch, "request_counts", None)
-    if request_counts is not None:
-        state["request_counts"] = request_counts.model_dump() if hasattr(request_counts, "model_dump") else dict(request_counts)
-    save_batch_state(batch_state_path(video_path), state)
-    return state
-
-
-def is_terminal_batch_status(status):
-    return status in {"completed", "failed", "expired", "cancelled"}
-
-
-def parse_batch_lines(path):
-    records = []
-    if not path.exists():
-        return records
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        records.append(json.loads(line))
-    return records
-
-
 def write_validation_output(
     model,
     video_path,
@@ -394,19 +316,7 @@ def write_validation_output(
             "request": request_log if speakers else None,
         },
     }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(validated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "validate_speakers",
-        {
-            "status": "done",
-            "validated_file": relative_to_video_dir(target, video_path),
-            "speakers": valid_speakers,
-            "reviewed": len(speakers),
-            "rejected": max(0, len(speakers) - len(valid_speakers)),
-        },
-    )
+    write_json(target, validated)
     print(
         f"[write] {target} ({len(valid_speakers)} speakers gardes, "
         f"{max(0, len(speakers) - len(valid_speakers))} rejetes)",
@@ -453,7 +363,39 @@ def validate_file_live(client, model, video_path, force=False):
     )
 
 
-def submit_batch_validation(video_path, model, speakers, video_title, candidates):
+def speaker_batch_fingerprint(
+    model,
+    source,
+    speakers,
+    video_title,
+    candidates,
+):
+    body, _request_log = build_response_request(
+        model,
+        speakers,
+        video_title,
+        candidates,
+    )
+    return batch_request_fingerprint(
+        model,
+        sources=(source,),
+        custom_ids=("speaker-validation",),
+        options={
+            "workflow": "speaker_validation",
+            "request_body": body,
+        },
+    )
+
+
+def submit_batch_validation(
+    video_path,
+    model,
+    speakers,
+    video_title,
+    candidates,
+    *,
+    request_fingerprint,
+):
     client = openai_client()
     video_speakers_dir = speakers_dir(video_path)
     video_speakers_dir.mkdir(parents=True, exist_ok=True)
@@ -461,14 +403,17 @@ def submit_batch_validation(video_path, model, speakers, video_title, candidates
     state_path = batch_state_path(video_path)
     body, _request_log = build_response_request(model, speakers, video_title, candidates)
 
-    with input_path.open("w", encoding="utf-8") as handle:
-        record = {
+    write_jsonl(
+        input_path,
+        [
+            {
             "custom_id": "speaker-validation",
             "method": "POST",
             "url": "/v1/responses",
             "body": body,
-        }
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            }
+        ],
+    )
 
     with input_path.open("rb") as batch_file:
         uploaded = client.files.create(file=batch_file, purpose="batch")
@@ -490,6 +435,7 @@ def submit_batch_validation(video_path, model, speakers, video_title, candidates
         "input_file_id": uploaded.id,
         "submitted_count": 1,
         "source": source_name_for_state(video_path),
+        "request_fingerprint": request_fingerprint,
     }
     save_batch_state(state_path, state)
     print(f"[batch] submitted id={batch.id} status={batch.status} requests=1", flush=True)
@@ -507,14 +453,13 @@ def finalize_batch_validation(video_path, model, source, target, speakers, state
     if not output_file_id:
         raise RuntimeError("Batch complete mais output_file_id absent.")
 
-    client.files.content(output_file_id).write_to_file(batch_output_path(video_path))
-
-    error_file_id = state.get("error_file_id")
-    if error_file_id:
-        client.files.content(error_file_id).write_to_file(batch_error_path(video_path))
-
-    records = parse_batch_lines(batch_output_path(video_path))
-    record_by_id = {record.get("custom_id"): record for record in records if record.get("custom_id")}
+    download_batch_files(
+        client,
+        state,
+        batch_output_path(video_path),
+        batch_error_path(video_path),
+    )
+    record_by_id = records_by_custom_id(parse_jsonl(batch_output_path(video_path)))
     record = record_by_id.get("speaker-validation")
     if not record:
         raise RuntimeError("Resultat batch introuvable pour speaker-validation")
@@ -593,7 +538,25 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
             if artifact_path.exists():
                 artifact_path.unlink()
 
-    state = load_batch_state(video_path)
+    state_path = batch_state_path(video_path)
+    request_fingerprint = speaker_batch_fingerprint(
+        model,
+        source,
+        speakers,
+        video_title,
+        candidates,
+    )
+    state = load_batch_state(state_path)
+    if state is not None and not batch_state_matches(
+        state,
+        request_fingerprint,
+    ):
+        print(
+            "[batch] etat existant incompatible; nouvelle soumission "
+            f"(ancien batch_id={state.get('batch_id', 'inconnu')})",
+            flush=True,
+        )
+        state = None
     if state is None:
         state_path = submit_batch_validation(
             video_path,
@@ -601,105 +564,32 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
             speakers,
             video_title,
             candidates,
+            request_fingerprint=request_fingerprint,
         )
         if not wait:
             return state_path
-        state = load_batch_state(video_path)
+        state = load_batch_state(state_path)
+        if state is None:
+            raise RuntimeError("Etat batch introuvable apres la soumission.")
 
     client = openai_client()
-    state = refresh_batch_state(video_path, client, state)
-    while wait and not is_terminal_batch_status(state["status"]):
-        print(f"[batch] status={state['status']} batch_id={state['batch_id']} attente {poll_interval_seconds}s", flush=True)
-        time.sleep(poll_interval_seconds)
-        state = refresh_batch_state(video_path, client, state)
+    state = poll_batch_state(
+        client,
+        state,
+        state_path,
+        wait=wait,
+        poll_interval_seconds=poll_interval_seconds,
+        on_wait=lambda current, seconds: print(
+            f"[batch] status={current['status']} batch_id={current['batch_id']} attente {seconds}s",
+            flush=True,
+        ),
+    )
 
     if not is_terminal_batch_status(state["status"]):
         print(f"[batch] status={state['status']} batch_id={state['batch_id']}", flush=True)
         return batch_state_path(video_path)
 
-    if state["status"] != "completed":
+    if state["status"] != COMPLETED_BATCH_STATUS:
         raise RuntimeError(f"Batch termine avec statut non supporte: {state['status']}")
 
     return finalize_batch_validation(video_path, model, source, target, speakers, state)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Valide les candidats speakers avec OpenAI avant la correction du transcript."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--model",
-        default=os.getenv("CHUNK_SPEAKER_VALIDATION_MODEL", DEFAULT_MODEL),
-        help=f"Modele OpenAI de validation. Defaut: {DEFAULT_MODEL}",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=("normal", "batch"),
-        default=current_openai_mode(),
-        help="Mode d'execution OpenAI. Defaut: valeur du pipeline global.",
-    )
-    parser.add_argument(
-        "--wait",
-        action="store_true",
-        default=DEFAULT_WAIT_FOR_BATCH,
-        help="En mode batch, attend la fin du job et telecharge les resultats. Defaut: actif.",
-    )
-    parser.add_argument(
-        "--poll-interval-seconds",
-        type=int,
-        default=30,
-        help="En mode batch avec --wait, intervalle entre deux polls. Defaut: 30.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere le JSON de speakers valides meme s'il existe deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    load_dotenv(override=True)
-    args = parse_args()
-    args.model = normalize_model_name(args.model)
-    openai_mode = current_openai_mode()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    print(f"Modele validation speakers: {args.model}", flush=True)
-    if args.mode != openai_mode:
-        print(f"[info] mode OpenAI global={openai_mode}, step 20B executee en mode {args.mode}.", flush=True)
-    client = openai_client() if args.mode == "normal" else None
-    done = 0
-    for video_path in videos:
-        if args.mode == "batch":
-            result = validate_file_batch(
-                args.model,
-                video_path,
-                force=args.force,
-                wait=args.wait,
-                poll_interval_seconds=args.poll_interval_seconds,
-            )
-        else:
-            result = validate_file_live(client, args.model, video_path, force=args.force)
-        if result:
-            done += 1
-
-    print(f"{done} JSON de speakers valides generes.")
-
-
-if __name__ == "__main__":
-    main()

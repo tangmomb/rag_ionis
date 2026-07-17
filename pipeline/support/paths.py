@@ -1,4 +1,3 @@
-import os
 import re
 import shutil
 from pathlib import Path
@@ -101,8 +100,9 @@ def ocr_raw_dir(video_path):
     return ocr_dir(video_path) / OCR_RAW_DIR_NAME
 
 
-def transcripts_dir(video_path):
-    return outputs_dir(video_path) / os.environ.get("PIPELINE_TRANSCRIPTS_DIR_NAME", TRANSCRIPTS_DIR_NAME)
+def transcripts_dir(video_path, name=None):
+    directory_name = name or TRANSCRIPTS_DIR_NAME
+    return outputs_dir(video_path) / directory_name
 
 
 def chunks_dir(video_path):
@@ -137,20 +137,52 @@ def existing_ocr_raw_dir(video_path):
     return video_ocr_dir
 
 
-def existing_transcripts_dir(video_path):
+def existing_transcripts_dir(video_path, name=None):
     base_dir = video_base_dir(video_path)
-    preferred = transcripts_dir(video_path)
-    outputs_root = outputs_dir(video_path)
-    output_candidates = (
-        outputs_root / "transcripts_whisper",
-        outputs_root / "transcripts_ocr",
+    preferred = transcripts_dir(video_path, name=name)
+    if preferred.exists():
+        return preferred
+
+    # Sans branche explicite, conserver la decouverte historique des deux
+    # repertoires de sortie. Avec ``name``, ne jamais basculer silencieusement
+    # d'OCR vers Whisper (ou inversement).
+    if name is None:
+        outputs_root = outputs_dir(video_path)
+        for candidate in (
+            outputs_root / "transcripts_whisper",
+            outputs_root / "transcripts_ocr",
+        ):
+            if candidate.exists():
+                return candidate
+
+    legacy_by_name = {
+        "transcripts_ocr": (
+            "transcript_ocr",
+            "transcripts_ocr",
+            "transcript",
+            "transcripts",
+        ),
+        "transcripts_whisper": (
+            "transcript_whisper",
+            "transcripts_whisper",
+            "transcript",
+            "transcripts",
+        ),
+    }
+    legacy_names = legacy_by_name.get(
+        name,
+        (
+            "transcript",
+            "transcript_whisper",
+            "transcript_ocr",
+            "transcripts",
+            "transcripts_whisper",
+            "transcripts_ocr",
+        ) if name is None else (str(name), "transcript", "transcripts"),
     )
-    for candidate in output_candidates:
-        if candidate.exists() and not preferred.exists():
-            return candidate
-    for legacy_name in ("transcript", "transcript_whisper", "transcript_ocr", "transcripts", "transcripts_whisper", "transcripts_ocr"):
+    for legacy_name in legacy_names:
         legacy = base_dir / legacy_name
-        if legacy.exists() and not preferred.exists():
+        if legacy.exists():
             return legacy
     return preferred
 
@@ -197,3 +229,15 @@ def existing_youtube_api_infos_path(video_path):
 
 def relative_to_video_dir(path, video_path):
     return Path(path).relative_to(video_base_dir(video_path)).as_posix()
+
+
+def output_is_current(target, dependencies):
+    target = Path(target)
+    if not target.exists():
+        return False
+    target_mtime = target.stat().st_mtime
+    return all(
+        not Path(dependency).exists()
+        or Path(dependency).stat().st_mtime <= target_mtime
+        for dependency in dependencies
+    )

@@ -1,9 +1,4 @@
-import argparse
-import json
-import sys
-from pathlib import Path
-
-from pipeline.support.analysis import update_analysed_infos
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.ocr_filtering import (
     build_filtered_payload,
     filter_overlay_items,
@@ -17,42 +12,8 @@ from pipeline.support.ocr_filtering import (
 from pipeline.support.paths import existing_ocr_dir, relative_to_video_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 OCR_FOOTAGE_NAME = "raw_ocr_footage_frames.json"
 LEGACY_OCR_FOOTAGE_NAME = "ocr_footage.json"
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
 
 
 def footage_ocr_path(video_path):
@@ -65,7 +26,7 @@ def footage_ocr_path(video_path):
 
 
 def load_footage_occurrences(path):
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     occurrences_by_text = {}
 
     for item in payload.get("items", []):
@@ -143,59 +104,6 @@ def filter_processed_ocr(video_path, force=False):
         grouped_kinds,
         grouped_kind_details,
     )
-    target.write_text(json.dumps(filtered_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "filter_ocr_processed",
-        {
-            "status": "done",
-            "source": relative_to_video_dir(source, video_path),
-            "filtered_file": relative_to_video_dir(target, video_path),
-            "filtered_item_count": len(filtered_items),
-            "kind_count": len(grouped_kinds),
-        },
-    )
+    write_json(target, filtered_payload)
     print(f"[ok] {target}")
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Filtre les overlays OCR et produit 02_filtered_ocr_overlays.json."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les fichiers filtres meme s'ils existent deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        if filter_processed_ocr(video_path, force=args.force):
-            done += 1
-
-    print(f"{done} fichiers OCR filtered generes.")
-
-
-if __name__ == "__main__":
-    main()

@@ -19,7 +19,8 @@ def plan_video(
     tasks = inspection_plan() if include_inspection else (
         processing_plan(context) if context.routing_ready else inspection_plan()
     )
-    write_manifest(context, tasks=tasks)
+    context.set_plan(tasks)
+    write_manifest(context)
     return context
 
 
@@ -32,7 +33,8 @@ def inspect_video(
 ) -> PipelineContext:
     context = PipelineContext.inspect(video_path, options)
     tasks = inspection_plan()
-    write_manifest(context, tasks=tasks)
+    context.set_plan(tasks)
+    write_manifest(context)
     print(f"[manifest] {context.manifest_path}", flush=True)
     if probe_only:
         return context
@@ -42,7 +44,8 @@ def inspect_video(
         return context
 
     downstream = processing_plan(context)
-    write_manifest(context, tasks=downstream)
+    context.set_plan(downstream)
+    write_manifest(context)
     print(
         f"[route] {context.routing()['pipeline_id']} -> "
         f"{len(downstream)} utilitaire(s)",
@@ -60,16 +63,16 @@ def run_video(
 ) -> PipelineContext:
     context = PipelineContext.inspect(video_path, options)
     if not skip_inspection or not context.routing_ready:
-        context = inspect_video(
-            video_path,
-            options,
-            probe_only=False,
-            dry_run=dry_run,
-        )
+        inspection_tasks = inspection_plan()
+        context.set_plan(inspection_tasks)
+        write_manifest(context)
+        print(f"[manifest] {context.manifest_path}", flush=True)
+        execute_tasks(context, dry_run=dry_run)
         if dry_run:
             return context
 
     tasks = processing_plan(context)
-    write_manifest(context, tasks=tasks)
+    context.set_plan(tasks)
+    write_manifest(context)
     execute_tasks(context, dry_run=dry_run)
     return context

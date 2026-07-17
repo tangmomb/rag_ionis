@@ -1,16 +1,10 @@
-import argparse
 import gc
-import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
-from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
-from pipeline.support.paths import relative_to_video_dir, transcripts_dir
 try:
     import torch
 except ImportError:  # pragma: no cover
@@ -18,38 +12,11 @@ except ImportError:  # pragma: no cover
 
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
-load_dotenv(ROOT_DIR / ".env", override=True)
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
-TRANSCRIPT_WHISPER_DIR_NAME = "transcripts"
 WHISPER_TRANSCRIPT_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
 LEGACY_TRANSCRIPT_TIMECODED_SUFFIX = "_transcript_timecodes.txt"
 OCR_SUBTITLES_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
 LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-DEFAULT_TRANSCRIBE_MODEL = os.getenv("WHISPERX_MODEL", "large-v3")
-DEFAULT_TRANSCRIBE_LANGUAGE = os.getenv("WHISPERX_LANGUAGE", "fr")
-REQUESTED_TRANSCRIBE_DEVICE = os.getenv("WHISPERX_DEVICE", "cuda")
-DEFAULT_TRANSCRIBE_DEVICE = REQUESTED_TRANSCRIBE_DEVICE
-DEFAULT_TRANSCRIBE_COMPUTE_TYPE = os.getenv(
-    "WHISPERX_COMPUTE_TYPE",
-    "float16" if DEFAULT_TRANSCRIBE_DEVICE == "cuda" else "int8",
-)
-DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
-STRICT_CUDA = os.getenv("WHISPERX_STRICT_CUDA", "1").lower() not in {"0", "false", "no"}
-DEFAULT_DIARIZATION_MODEL = os.getenv(
-    "WHISPERX_DIARIZATION_MODEL",
-    "pyannote/speaker-diarization-community-1",
-)
-REQUESTED_DIARIZATION_DEVICE = os.getenv("WHISPERX_DIARIZATION_DEVICE", "").strip()
-_diarization_cache_dir = Path(
-    os.getenv("WHISPERX_DIARIZATION_CACHE_DIR", "models/huggingface")
-)
-DEFAULT_DIARIZATION_CACHE_DIR = (
-    _diarization_cache_dir
-    if _diarization_cache_dir.is_absolute()
-    else ROOT_DIR / _diarization_cache_dir
-)
 
 
 def optional_positive_int_env(name):
@@ -62,13 +29,53 @@ def optional_positive_int_env(name):
     return parsed
 
 
-DEFAULT_MIN_SPEAKERS = optional_positive_int_env("WHISPERX_MIN_SPEAKERS")
-DEFAULT_MAX_SPEAKERS = optional_positive_int_env("WHISPERX_MAX_SPEAKERS")
+def refresh_environment_defaults():
+    global DEFAULT_TRANSCRIBE_MODEL
+    global DEFAULT_TRANSCRIBE_LANGUAGE
+    global REQUESTED_TRANSCRIBE_DEVICE
+    global DEFAULT_TRANSCRIBE_DEVICE
+    global DEFAULT_TRANSCRIBE_COMPUTE_TYPE
+    global DEFAULT_TRANSCRIBE_BATCH_SIZE
+    global STRICT_CUDA
+    global DEFAULT_DIARIZATION_MODEL
+    global REQUESTED_DIARIZATION_DEVICE
+    global DEFAULT_DIARIZATION_CACHE_DIR
+    global DEFAULT_MIN_SPEAKERS
+    global DEFAULT_MAX_SPEAKERS
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    DEFAULT_TRANSCRIBE_MODEL = os.getenv("WHISPERX_MODEL", "large-v3")
+    DEFAULT_TRANSCRIBE_LANGUAGE = os.getenv("WHISPERX_LANGUAGE", "fr")
+    REQUESTED_TRANSCRIBE_DEVICE = os.getenv("WHISPERX_DEVICE", "cuda")
+    DEFAULT_TRANSCRIBE_DEVICE = REQUESTED_TRANSCRIBE_DEVICE
+    DEFAULT_TRANSCRIBE_COMPUTE_TYPE = os.getenv(
+        "WHISPERX_COMPUTE_TYPE",
+        "float16" if DEFAULT_TRANSCRIBE_DEVICE == "cuda" else "int8",
+    )
+    DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
+    STRICT_CUDA = os.getenv("WHISPERX_STRICT_CUDA", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    DEFAULT_DIARIZATION_MODEL = os.getenv(
+        "WHISPERX_DIARIZATION_MODEL",
+        "pyannote/speaker-diarization-community-1",
+    )
+    REQUESTED_DIARIZATION_DEVICE = os.getenv(
+        "WHISPERX_DIARIZATION_DEVICE",
+        "",
+    ).strip()
+    cache_dir = Path(
+        os.getenv("WHISPERX_DIARIZATION_CACHE_DIR", "models/huggingface")
+    )
+    DEFAULT_DIARIZATION_CACHE_DIR = (
+        cache_dir if cache_dir.is_absolute() else ROOT_DIR / cache_dir
+    )
+    DEFAULT_MIN_SPEAKERS = optional_positive_int_env("WHISPERX_MIN_SPEAKERS")
+    DEFAULT_MAX_SPEAKERS = optional_positive_int_env("WHISPERX_MAX_SPEAKERS")
+
+
+refresh_environment_defaults()
 
 
 def ffmpeg_exe():
@@ -79,33 +86,6 @@ def ffmpeg_exe():
         shutil.copy2(source, target)
     os.environ["PATH"] = f"{target.parent}{os.pathsep}{os.environ.get('PATH', '')}"
     return target
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
 
 
 def transcript_path(transcript_dir, video_path):
@@ -122,18 +102,6 @@ def subtitle_timecodes_path(transcript_dir, video_path):
     if legacy.exists() and not preferred.exists():
         return legacy
     return preferred
-
-
-def analysed_has_subtitles(video_path):
-    path = analysed_infos_path(video_path)
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    value = payload.get("has_subtitles")
-    return value if isinstance(value, bool) else None
 
 
 def extract_audio(video_path, audio_dir):
@@ -355,162 +323,5 @@ def transcribe_video(
     )
     text = text.strip()
     output_path.write_text(text + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "whisper_transcription",
-        {
-            "status": "done",
-            "model": DEFAULT_TRANSCRIBE_MODEL,
-            "device": device,
-            "transcript_timecodes_file": relative_to_video_dir(output_path, video_path),
-            "char_count": len(text),
-            "diarization": {
-                "enabled": diarization_pipeline is not None,
-                "model": DEFAULT_DIARIZATION_MODEL if diarization_pipeline is not None else None,
-                "device": diarization_device,
-                "speaker_ids": speakers,
-                "speaker_count": len(speakers),
-                "min_speakers": min_speakers,
-                "max_speakers": max_speakers,
-            },
-        },
-    )
     print(f"[ok] {output_path}")
     return output_path
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Transcrit localement avec whisperx les videos d'un dossier vers outputs/transcripts."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        help="Nombre maximum de videos a transcrire.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenerer les transcriptions meme si les fichiers txt existent deja.",
-    )
-    parser.add_argument(
-        "--keep-audio",
-        action="store_true",
-        help="Conserve les fichiers audio extraits dans outputs/transcripts/audio.",
-    )
-    parser.add_argument(
-        "--no-diarize",
-        action="store_true",
-        help="Desactive exceptionnellement la separation des voix.",
-    )
-    parser.add_argument(
-        "--min-speakers",
-        type=int,
-        default=DEFAULT_MIN_SPEAKERS,
-        help="Nombre minimum de voix a detecter. Defaut: detection automatique.",
-    )
-    parser.add_argument(
-        "--max-speakers",
-        type=int,
-        default=DEFAULT_MAX_SPEAKERS,
-        help="Nombre maximum de voix a detecter. Defaut: detection automatique.",
-    )
-    parser.add_argument(
-        "--has-subtitles",
-        choices=("true", "false"),
-        default="false",
-        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: false.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    if args.min_speakers is not None and args.min_speakers < 1:
-        raise ValueError("--min-speakers doit etre positif.")
-    if args.max_speakers is not None and args.max_speakers < 1:
-        raise ValueError("--max-speakers doit etre positif.")
-    if (
-        args.min_speakers is not None
-        and args.max_speakers is not None
-        and args.min_speakers > args.max_speakers
-    ):
-        raise ValueError("--min-speakers ne peut pas depasser --max-speakers.")
-
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if args.limit is not None:
-        videos = videos[: args.limit]
-
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    runnable_videos = []
-    expected_has_subtitles = args.has_subtitles == "true"
-    for video_path in videos:
-        has_subtitles = analysed_has_subtitles(video_path)
-        if has_subtitles is not expected_has_subtitles:
-            print(
-                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
-            )
-            continue
-        runnable_videos.append(video_path)
-
-    if not runnable_videos:
-        print("Aucune video a transcrire avec WhisperX.")
-        return
-
-    whisperx, model, device = load_whisperx_model()
-    diarization_pipeline = None
-    diarization_device = None
-    if not args.no_diarize:
-        diarization_pipeline, diarization_device = load_diarization_pipeline(device)
-
-    done = 0
-    failed = []
-    for video_path in runnable_videos:
-        try:
-            transcript_dir = transcripts_dir(video_path)
-            audio_dir = transcript_dir / "audio"
-            transcript_dir.mkdir(parents=True, exist_ok=True)
-            audio_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Dossier transcriptions: {transcript_dir}")
-            if transcribe_video(
-                whisperx,
-                model,
-                video_path,
-                transcript_dir,
-                audio_dir,
-                device,
-                diarization_pipeline=diarization_pipeline,
-                diarization_device=diarization_device,
-                min_speakers=args.min_speakers,
-                max_speakers=args.max_speakers,
-                force=args.force,
-            ):
-                done += 1
-        except Exception as error:
-            print(f"[error] {video_path.name}: {error}")
-            failed.append(video_path.name)
-        finally:
-            if not args.keep_audio and "audio_dir" in locals():
-                shutil.rmtree(audio_dir, ignore_errors=True)
-
-    print(f"{done} videos transcrites.")
-    if failed:
-        print(f"{len(failed)} videos en erreur: {', '.join(failed)}")
-
-
-if __name__ == "__main__":
-    main()

@@ -5,13 +5,36 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .catalog import TASKS
+from .context import PipelineContext
+from .contracts import PlannedTask
 from .discovery import select_videos
+from .executor import execute_tasks
+from .manifest import write_manifest
 from .options import PipelineOptions
 from .orchestrator import inspect_video, plan_video, run_video
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VIDEO_ROOT = PROJECT_ROOT / "downloads" / "youtube" / "init"
+
+
+def task_identifier(value: str) -> str:
+    task_id = value.strip()
+    if task_id not in TASKS:
+        raise argparse.ArgumentTypeError(
+            f"tache inconnue: {value!r}; utilise `python -m pipeline task --list`."
+        )
+    return task_id
+
+
+def print_task_catalog() -> None:
+    width = max(len(task_id) for task_id in TASKS)
+    for task_id, spec in TASKS.items():
+        print(
+            f"{task_id:<{width}}  {spec.phase:<10}  {spec.title}",
+            flush=True,
+        )
 
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -49,7 +72,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--details-per-section", type=int, default=6)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m pipeline",
         description="Inspecte les videos, produit un manifeste JSON et execute le plan adapte.",
@@ -88,7 +111,36 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reutilise les caracteristiques deja presentes dans pipeline_analysis.json.",
     )
-    return parser.parse_args()
+
+    task_parser = commands.add_parser(
+        "task",
+        help="Execute une tache du catalogue sur les videos selectionnees.",
+    )
+    task_parser.add_argument(
+        "task_id",
+        nargs="?",
+        type=task_identifier,
+        metavar="TASK_ID",
+        help="Identifiant exact de la tache a executer.",
+    )
+    add_common_options(task_parser)
+    task_parser.add_argument(
+        "--list",
+        dest="list_tasks",
+        action="store_true",
+        help="Affiche les identifiants de taches disponibles puis quitte.",
+    )
+
+    args = parser.parse_args(argv)
+    if (
+        args.command == "task"
+        and not args.list_tasks
+        and args.task_id is None
+    ):
+        task_parser.error(
+            "TASK_ID est requis (ou utilise --list pour afficher le catalogue)."
+        )
+    return args
 
 
 def options_from_args(args: argparse.Namespace) -> PipelineOptions:
@@ -110,6 +162,10 @@ def options_from_args(args: argparse.Namespace) -> PipelineOptions:
 def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env", override=True)
     args = parse_args()
+    if args.command == "task" and args.list_tasks:
+        print_task_catalog()
+        return
+
     options = options_from_args(args)
     videos = select_videos(args.root, args.selector)
     if not videos:
@@ -131,6 +187,13 @@ def main() -> None:
                 options,
                 include_inspection=args.include_inspection,
             )
+        elif args.command == "task":
+            context = PipelineContext.inspect(video, options)
+            context.set_plan(
+                [PlannedTask(args.task_id, "manual_cli")]
+            )
+            write_manifest(context)
+            execute_tasks(context, dry_run=args.dry_run)
         else:
             context = run_video(
                 video,

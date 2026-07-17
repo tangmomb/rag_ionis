@@ -1,32 +1,24 @@
-import argparse
-import json
 import statistics
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
+from pipeline.support.analysis import analysed_infos_path, update_routing_facts
+from pipeline.support.json_io import read_json
 from pipeline.support.paddle_ocr import (
     MIN_SUBTITLE_CLUSTER_SECONDS,
     anchored_subtitle_match,
     box_bounds,
     box_geometry,
-    configure_stdio,
     image_size,
-    image_video_dirs,
     infer_subtitle_anchors,
-    latest_video_dir,
     seconds_from_image_name,
 )
 from pipeline.support.paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 LOCATION_NAME = "ocr_box_locations.json"
 LEGACY_LOCATION_NAME = "ocr_location.json"
 BOXES_DIRNAME = "ocr_boxes_images"
 LEGACY_BOXES_DIRNAME = "ocr_boxes"
-
-
-configure_stdio()
 
 
 def location_path(ocr_dir):
@@ -46,17 +38,14 @@ def location_path(ocr_dir):
 
 
 def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def write_has_subtitles(video_path, has_subtitles, details):
-    return update_analysed_infos(
+    return update_routing_facts(
         video_path,
-        "09_detect_ocr_subtitles",
-        {
-            "has_subtitles": bool(has_subtitles),
-            "has_subtitles_details": details,
-        },
+        has_subtitles=bool(has_subtitles),
+        has_subtitles_details=details,
     )
 
 
@@ -237,52 +226,3 @@ def detect_for_video(video_path, force=False):
     write_has_subtitles(video_path, has_subtitles, details)
     print(f"[ok] {video_path.name}: has_subtitles={str(has_subtitles).lower()}", flush=True)
     return True
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Detecte la presence probable de sous-titres OCR depuis ocr_box_locations.json."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant outputs/images/. Defaut: dernier sous-dossier de downloads/youtube avec images.",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--limit-videos",
-        type=int,
-        help="Nombre maximum de videos a analyser.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Recalcule has_subtitles meme si la valeur existe deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(image_video_dirs(video_dir))
-    if args.limit_videos is not None:
-        videos = videos[: args.limit_videos]
-
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        if detect_for_video(video_path, force=args.force):
-            done += 1
-    print(f"{done} detection(s) de sous-titres OCR ecrite(s).")
-
-
-if __name__ == "__main__":
-    main()

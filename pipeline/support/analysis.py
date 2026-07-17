@@ -1,6 +1,4 @@
-import json
-from pathlib import Path
-
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import ANALYSED_INFOS_NAME
 from pipeline.support.paths import analysed_infos_path as pipeline_analysed_infos_path
 from pipeline.support.paths import metadata_dir
@@ -21,11 +19,8 @@ def analysed_infos_path(video_path):
 
 
 def _load_allowed_data(target):
-    if not target.exists():
-        return {}
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except Exception:
+    payload = read_json(target, default={})
+    if not isinstance(payload, dict):
         return {}
     return {
         key: payload[key]
@@ -34,19 +29,25 @@ def _load_allowed_data(target):
     }
 
 
-def update_analysed_infos(video_path, stage, payload=None):
-    del stage
+def update_routing_facts(video_path, payload=None, **facts):
     target = metadata_dir(video_path) / ANALYSED_INFOS_NAME
-    target.parent.mkdir(parents=True, exist_ok=True)
     data = _load_allowed_data(target)
     if not data:
         data = _load_allowed_data(analysed_infos_path(video_path))
     if not data:
         legacy = video_base_dir(video_path) / f"{video_id(video_path)}{ANALYSED_INFOS_SUFFIX}"
         data = _load_allowed_data(legacy)
-    if payload:
-        for key in ALLOWED_KEYS:
-            if key in payload:
-                data[key] = payload[key]
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return target
+    updates = dict(payload or {})
+    updates.update(facts)
+    data.update(
+        (key, updates[key])
+        for key in ALLOWED_KEYS
+        if key in updates
+    )
+    return write_json(target, data)
+
+
+def update_analysed_infos(video_path, stage=None, payload=None):
+    """Compatibility alias for legacy steps; stage was never persisted."""
+    del stage
+    return update_routing_facts(video_path, payload)

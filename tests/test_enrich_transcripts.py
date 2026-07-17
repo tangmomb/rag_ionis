@@ -105,7 +105,6 @@ class EnrichTranscriptsTests(unittest.TestCase):
                 patch.object(enrichment, "timecodes_path", return_value=source),
                 patch.object(enrichment, "enriched_ocr_source_path", return_value=overlays),
                 patch.object(enrichment, "analysed_video_type", return_value="interview"),
-                patch.object(enrichment, "update_analysed_infos"),
             ):
                 target = enrichment.enrich_transcript(video, force=True)
 

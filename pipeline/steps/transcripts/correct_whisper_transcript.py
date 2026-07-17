@@ -1,18 +1,13 @@
-import argparse
-import json
 import re
-import sys
 import unicodedata
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
-from pipeline.support.paths import existing_ocr_dir, existing_transcripts_dir, relative_to_video_dir
+from pipeline.support.json_io import read_json
+from pipeline.support.paths import existing_ocr_dir, existing_transcripts_dir
 from pipeline.steps.speakers.correct_speaker_transcripts import correct_speaker_files
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 TIMECODED_SOURCE_NAMES = ("whisper_transcript_timecoded.txt", "ocr_subtitles_timecoded.txt")
 LEGACY_TIMECODED_SUFFIXES = ("_transcript_timecodes.txt", "_ocr_subtitle_timecodes.txt")
 CORRECTED_SUFFIX = "_corrected.txt"
@@ -44,49 +39,6 @@ CORRECTION_MODES = {
 }
 DEFAULT_CORRECTION_MODE = "balanced"
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def analysed_has_subtitles(video_path):
-    path = analysed_infos_path(video_path)
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    value = payload.get("has_subtitles")
-    return value if isinstance(value, bool) else None
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
 def processed_ocr_path(video_path):
     video_ocr_dir = existing_ocr_dir(video_path)
     corrected_candidates = (
@@ -108,8 +60,11 @@ def processed_ocr_path(video_path):
     return processed_candidates[0]
 
 
-def timecodes_source_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def timecodes_source_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     candidates = []
     for name in TIMECODED_SOURCE_NAMES:
         path = transcript_dir / name
@@ -171,7 +126,7 @@ def is_ocr_name_kind(kind):
 
 
 def load_ocr_lexicon(path, min_count=2):
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     counts = Counter()
     forms = defaultdict(Counter)
     name_phrases = defaultdict(Counter)
@@ -446,8 +401,17 @@ def correction_settings(mode):
     return CORRECTION_MODES[mode]
 
 
-def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
-    source = timecodes_source_path(video_path)
+def correct_file(
+    video_path,
+    force=False,
+    mode=DEFAULT_CORRECTION_MODE,
+    *,
+    transcripts_dir_name=None,
+):
+    source = timecodes_source_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     analyse = processed_ocr_path(video_path)
     target = corrected_path(source)
     words_target = corrected_words_path(source)
@@ -483,84 +447,7 @@ def correct_file(video_path, force=False, mode=DEFAULT_CORRECTION_MODE):
         for new_word in sorted(corrections[old_word])
     ]
     words_target.write_text(("\n".join(correction_lines).strip() + "\n") if correction_lines else "", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "correct_timecodes",
-        {
-            "status": "done",
-            "source": relative_to_video_dir(source, video_path),
-            "analysis_source": relative_to_video_dir(analyse, video_path),
-            "corrected_file": relative_to_video_dir(target, video_path),
-            "corrected_words_file": relative_to_video_dir(words_target, video_path),
-            "correction_count": len(correction_lines),
-            "mode": mode,
-        },
-    )
     print(f"[ok] {target}")
     print(f"[ok] {words_target}")
     correct_speaker_files(video_path, [target], force=force)
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Corrige le transcript Whisper avec l'OCR puis applique les noms de speakers valides par GPT."
-        )
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les fichiers corriges meme s'ils existent deja.",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=sorted(CORRECTION_MODES),
-        default=DEFAULT_CORRECTION_MODE,
-        help="Sensibilite des corrections: conservative evite les faux positifs, aggressive recupere plus de noms. Defaut: balanced.",
-    )
-    parser.add_argument(
-        "--has-subtitles",
-        choices=("true", "false"),
-        default="false",
-        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: false.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    print(f"Mode correction: {args.mode}")
-    done = 0
-    expected_has_subtitles = args.has_subtitles == "true"
-    for video_path in videos:
-        has_subtitles = analysed_has_subtitles(video_path)
-        if has_subtitles is not expected_has_subtitles:
-            print(
-                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
-            )
-            continue
-        if correct_file(video_path, force=args.force, mode=args.mode):
-            done += 1
-
-    print(f"{done} transcripts Whisper corriges avec OCR et speakers GPT.")
-
-
-if __name__ == "__main__":
-    main()

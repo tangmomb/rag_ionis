@@ -1,20 +1,16 @@
-import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
+from pipeline.support.analysis import analysed_infos_path
+from pipeline.support.json_io import read_json
 from pipeline.support.ocr_filtering import enriched_ocr_source_path, format_timecode
 from pipeline.support.paths import (
     existing_speakers_dir,
     existing_transcripts_dir,
-    relative_to_video_dir,
 )
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CORRECTED_SUFFIX = "_corrected.txt"
 ENRICHED_SUFFIX = "_enriched.txt"
 LEGACY_ENRICHED_SUFFIX = "_enrichi.txt"
@@ -23,12 +19,6 @@ SUBTITLE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 SPEAKER_LABEL_PATTERN = re.compile(r"\bSPEAKER_(\d+)\b")
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 ENRICHED_GROUP_ORDER = ("speaker", "animations", "intercalaire")
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
 
 def parse_timecode(value):
     parts = [int(part) for part in value.split(":")]
@@ -39,59 +29,23 @@ def parse_timecode(value):
     return hours * 3600 + minutes * 60 + seconds
 
 
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
-def analysed_has_subtitles(video_path):
-    path = analysed_infos_path(video_path)
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    value = payload.get("has_subtitles")
-    return value if isinstance(value, bool) else None
-
-
 def analysed_video_type(video_path):
     path = analysed_infos_path(video_path)
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except Exception:
         return None
     value = payload.get("video_type")
     return value if isinstance(value, str) else None
 
 
-def timecodes_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def timecodes_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     candidates = (
         transcript_dir / "whisper_transcript_timecoded_corrected.txt",
         transcript_dir / "ocr_subtitles_timecoded_corrected.txt",
@@ -105,8 +59,11 @@ def timecodes_path(video_path):
     raise FileNotFoundError(f"Aucun fichier timecodes corrige trouve pour {video_path.stem} dans {transcript_dir}")
 
 
-def whisper_timecoded_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def whisper_timecoded_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     return transcript_dir / "whisper_transcript_timecoded.txt"
 
 
@@ -125,7 +82,7 @@ def load_validated_speakers(video_path):
     if not path.exists():
         return [], path
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except (OSError, json.JSONDecodeError) as exc:
         print(f"[warn] speakers valides illisibles pour {Path(video_path).stem}: {exc}")
         return [], path
@@ -189,7 +146,7 @@ def parse_timecoded_source(path, speakers=None):
 
 
 def load_filtered_overlays(path):
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     kinds = payload.get("kinds", {})
     overlays = []
     for kind, values in kinds.items():
@@ -269,8 +226,16 @@ def is_empty_text_file(path):
         return False
 
 
-def enrich_transcript(video_path, force=False):
-    source = timecodes_path(video_path)
+def enrich_transcript(
+    video_path,
+    force=False,
+    *,
+    transcripts_dir_name=None,
+):
+    source = timecodes_path(
+        video_path,
+        transcripts_dir_name=transcripts_dir_name,
+    )
     analyse = enriched_ocr_source_path(video_path)
     target = enriched_path(source)
     speakers, speakers_source = load_validated_speakers(video_path)
@@ -294,7 +259,13 @@ def enrich_transcript(video_path, force=False):
 
     video_type = (analysed_video_type(video_path) or "").strip().lower()
     plain_motion_design_overlays = (
-        video_type == "motion_design" and is_empty_text_file(whisper_timecoded_path(video_path))
+        video_type == "motion_design"
+        and is_empty_text_file(
+            whisper_timecoded_path(
+                video_path,
+                transcripts_dir_name=transcripts_dir_name,
+            )
+        )
     )
     source_lines = parse_timecoded_source(source, speakers)
     speaker_label_replacement_count = sum(
@@ -342,77 +313,5 @@ def enrich_transcript(video_path, force=False):
 
     lines = grouped_lines(blocks)
     target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "enrich_transcripts",
-        {
-            "status": "done",
-            "source": relative_to_video_dir(source, video_path),
-            "analysis_source": relative_to_video_dir(analyse, video_path),
-            "enriched_file": relative_to_video_dir(target, video_path),
-            "overlay_count": len(overlays),
-            "speakers_source": (
-                relative_to_video_dir(speakers_source, video_path)
-                if speakers_source.exists()
-                else None
-            ),
-            "speaker_label_replacement_count": speaker_label_replacement_count,
-        },
-    )
     print(f"[ok] {target}")
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Ajoute les textes visibles a l'ecran dans les timecodes corriges."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les fichiers enrichis meme s'ils existent deja.",
-    )
-    parser.add_argument(
-        "--has-subtitles",
-        choices=("true", "false", "all"),
-        default="all",
-        help="Filtre optionnel sur pipeline_analysis.has_subtitles. Defaut: all.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    expected_has_subtitles = None if args.has_subtitles == "all" else args.has_subtitles == "true"
-    for video_path in videos:
-        has_subtitles = analysed_has_subtitles(video_path)
-        if expected_has_subtitles is not None and has_subtitles is not expected_has_subtitles:
-            print(
-                f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas {str(expected_has_subtitles).lower()}"
-            )
-            continue
-        if enrich_transcript(video_path, force=args.force):
-            done += 1
-
-    print(f"{done} fichiers enrichis.")
-
-
-if __name__ == "__main__":
-    main()

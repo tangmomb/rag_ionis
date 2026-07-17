@@ -1,19 +1,25 @@
-import argparse
 import base64
 import json
-import os
 import re
 import shutil
-import sys
-import time
 from pathlib import Path
 
-from dotenv import load_dotenv
+from pipeline.support.json_io import write_json, write_jsonl
+from pipeline.support.openai_batch import (
+    COMPLETED_BATCH_STATUS,
+    batch_request_fingerprint,
+    batch_state_matches,
+    download_batch_files,
+    is_terminal_batch_status,
+    load_batch_state,
+    parse_jsonl,
+    poll_batch_state,
+    records_by_custom_id,
+    save_batch_state,
+)
 from pipeline.support.paths import existing_ocr_dir, relative_to_video_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 SOURCE_DIRNAME = "other_text_review_candidates"
 LEGACY_SOURCE_DIRNAME = "ocr_processed_filtered_others_boxes"
 SOURCE_MANIFEST_NAME = "review_candidates_manifest.json"
@@ -22,10 +28,7 @@ OUTPUT_DIRNAME = "other_text_gpt_review"
 LEGACY_OUTPUT_DIRNAME = "ocr_processed_filtered_others_boxes_review"
 SUMMARY_NAME = "review_summary.json"
 LEGACY_SUMMARY_NAME = "summary.json"
-DEFAULT_MODEL = "gpt-5.6-luna"
 REVIEW_MAX_OUTPUT_TOKENS = 400
-DEFAULT_MODE = "batch"
-DEFAULT_WAIT_FOR_BATCH = True
 BATCH_STATE_NAME = "batch_state.json"
 BATCH_INPUT_NAME = "batch_input.jsonl"
 BATCH_OUTPUT_NAME = "batch_output.jsonl"
@@ -47,48 +50,6 @@ SYSTEM_PROMPT = (
     "Reponds uniquement en JSON avec les cles: has_ocr_error (boolean), corrected_text (string), is_added_in_edit (boolean), confidence (number entre 0 et 1), reason (string court de 20 mots maximum). "
     "Si le texte OCR semble deja correct, corrected_text doit reprendre le texte OCR tel quel."
 )
-
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
-
-def normalize_openai_mode(value):
-    normalized = str(value).strip().lower()
-    if normalized in {"normal", "live"}:
-        return "live"
-    if normalized == "batch":
-        return "batch"
-    return DEFAULT_MODE
 
 
 def source_dir(video_path):
@@ -371,31 +332,20 @@ def write_review_artifacts(target_dir, job, parsed, request_log, raw_answer, raw
 
     write_text(review_dir / "model_prompt.txt", request_log["messages"][1]["content"])
     write_text(review_dir / "model_response.txt", raw_answer)
-    (review_dir / "api_request.json").write_text(
-        json.dumps(request_log, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    (review_dir / "api_response.json").write_text(
-        json.dumps(raw_payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    (review_dir / "review_decision.json").write_text(
-        json.dumps(
-            {
-                "crop": job["crop_name"],
-                "previous_crop": job["previous_crop_name"],
-                "entry_id": job["item"].get("entry_id"),
-                "timecode": job["item"].get("timecode"),
-                "text": job["item"].get("text"),
-                "image": job["item"].get("image"),
-                "box": job["item"].get("box"),
-                **parsed,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    write_json(review_dir / "api_request.json", request_log)
+    write_json(review_dir / "api_response.json", raw_payload)
+    write_json(
+        review_dir / "review_decision.json",
+        {
+            "crop": job["crop_name"],
+            "previous_crop": job["previous_crop_name"],
+            "entry_id": job["item"].get("entry_id"),
+            "timecode": job["item"].get("timecode"),
+            "text": job["item"].get("text"),
+            "image": job["item"].get("image"),
+            "box": job["item"].get("box"),
+            **parsed,
+        },
     )
     return {
         "review_dir": job["review_name"],
@@ -422,7 +372,7 @@ def write_summary(video_path, model, source_manifest, decisions):
         "items": decisions,
     }
     path = summary_path(video_path)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(path, payload)
     print(f"[ok] {path}", flush=True)
     return path
 
@@ -458,32 +408,74 @@ def review_video_live(video_path, model, force=False, limit_images=None):
     return write_summary(video_path, model, source_manifest, decisions)
 
 
-def save_batch_state(path, state):
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def review_batch_fingerprint(
+    model,
+    source_manifest,
+    jobs,
+    *,
+    limit_images=None,
+):
+    sources = [Path(source_manifest)]
+    seen_sources = {Path(source_manifest).resolve()}
+    for job in jobs:
+        for candidate in (job["previous_image_path"], job["image_path"]):
+            if candidate is None:
+                continue
+            resolved = Path(candidate).resolve()
+            if resolved not in seen_sources:
+                seen_sources.add(resolved)
+                sources.append(Path(candidate))
+    return batch_request_fingerprint(
+        model,
+        sources=sources,
+        custom_ids=(job["custom_id"] for job in jobs),
+        options={
+            "workflow": "other_text_review",
+            "limit_images": limit_images,
+            "system_prompt": SYSTEM_PROMPT,
+            "max_output_tokens": REVIEW_MAX_OUTPUT_TOKENS,
+            "requests": [
+                {
+                    "custom_id": job["custom_id"],
+                    "prompt": build_user_prompt(job["item"]),
+                    "has_previous_image": job["previous_image_path"] is not None,
+                }
+                for job in jobs
+            ],
+        },
+    )
 
 
-def submit_batch_review(video_path, model, jobs):
+def submit_batch_review(
+    video_path,
+    model,
+    jobs,
+    *,
+    request_fingerprint,
+):
     client = openai_client()
     target_dir = output_dir(video_path)
     target_dir.mkdir(parents=True, exist_ok=True)
     input_path = batch_input_path(video_path)
     state_path = batch_state_path(video_path)
 
-    with input_path.open("w", encoding="utf-8") as handle:
-        for job in jobs:
-            body, _request_log = build_response_request(
-                model,
-                job["image_path"],
-                job["item"],
-                previous_image_path=job["previous_image_path"],
-            )
-            record = {
+    records = []
+    for job in jobs:
+        body, _request_log = build_response_request(
+            model,
+            job["image_path"],
+            job["item"],
+            previous_image_path=job["previous_image_path"],
+        )
+        records.append(
+            {
                 "custom_id": job["custom_id"],
                 "method": "POST",
                 "url": "/v1/responses",
                 "body": body,
             }
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        )
+    write_jsonl(input_path, records)
 
     with input_path.open("rb") as batch_file:
         uploaded = client.files.create(file=batch_file, purpose="batch")
@@ -505,50 +497,11 @@ def submit_batch_review(video_path, model, jobs):
         "input_file_id": uploaded.id,
         "submitted_count": len(jobs),
         "source_manifest": relative_to_video_dir(source_manifest_path(video_path), video_path),
+        "request_fingerprint": request_fingerprint,
     }
     save_batch_state(state_path, state)
     print(f"[batch] submitted id={batch.id} status={batch.status} requests={len(jobs)}", flush=True)
     return state_path
-
-
-def load_batch_state(video_path):
-    path = batch_state_path(video_path)
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def refresh_batch_state(video_path, client, state):
-    batch = client.batches.retrieve(state["batch_id"])
-    state.update(
-        {
-            "status": batch.status,
-            "input_file_id": getattr(batch, "input_file_id", state.get("input_file_id")),
-            "output_file_id": getattr(batch, "output_file_id", state.get("output_file_id")),
-            "error_file_id": getattr(batch, "error_file_id", state.get("error_file_id")),
-        }
-    )
-    request_counts = getattr(batch, "request_counts", None)
-    if request_counts is not None:
-        state["request_counts"] = request_counts.model_dump() if hasattr(request_counts, "model_dump") else dict(request_counts)
-    save_batch_state(batch_state_path(video_path), state)
-    return state
-
-
-def is_terminal_batch_status(status):
-    return status in {"completed", "failed", "expired", "cancelled"}
-
-
-def parse_batch_lines(path):
-    records = []
-    if not path.exists():
-        return records
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        records.append(json.loads(line))
-    return records
 
 
 def finalize_batch_review(video_path, model, jobs, state):
@@ -557,29 +510,36 @@ def finalize_batch_review(video_path, model, jobs, state):
     if not output_file_id:
         raise RuntimeError("Batch complete mais output_file_id absent.")
 
-    output_response = client.files.content(output_file_id)
-    output_response.write_to_file(batch_output_path(video_path))
-
-    error_file_id = state.get("error_file_id")
-    if error_file_id:
-        error_response = client.files.content(error_file_id)
-        error_response.write_to_file(batch_error_path(video_path))
-
-    records = parse_batch_lines(batch_output_path(video_path))
-    record_by_id = {record.get("custom_id"): record for record in records if record.get("custom_id")}
+    download_batch_files(
+        client,
+        state,
+        batch_output_path(video_path),
+        batch_error_path(video_path),
+    )
+    record_by_id = records_by_custom_id(parse_jsonl(batch_output_path(video_path)))
     target_dir = output_dir(video_path)
     source_manifest = source_manifest_path(video_path)
     decisions = []
 
+    missing_ids = [
+        job["custom_id"]
+        for job in jobs
+        if job["custom_id"] not in record_by_id
+    ]
+    if missing_ids:
+        raise RuntimeError(
+            "Resultats batch incomplets; custom_id manquant(s): "
+            + ", ".join(missing_ids)
+        )
+
     for job in jobs:
-        record = record_by_id.get(job["custom_id"])
-        if not record:
-            print(f"[skip] resultat batch introuvable pour {job['custom_id']}", flush=True)
-            continue
+        record = record_by_id[job["custom_id"]]
         response = record.get("response") or {}
         if response.get("status_code") != 200:
-            print(f"[skip] batch {job['custom_id']} status={response.get('status_code')}", flush=True)
-            continue
+            raise RuntimeError(
+                f"Batch {job['custom_id']} en echec avec "
+                f"status={response.get('status_code')}"
+            )
         raw_payload = response.get("body") or {}
         answer = response_text_from_payload(raw_payload)
         parsed = parse_json_answer(answer)
@@ -620,25 +580,58 @@ def review_video_batch(video_path, model, force=False, limit_images=None, wait=F
             if artifact_path.exists():
                 artifact_path.unlink()
 
-    state = load_batch_state(video_path)
+    if not jobs:
+        return write_summary(video_path, model, source_manifest, [])
+
+    state_path = batch_state_path(video_path)
+    request_fingerprint = review_batch_fingerprint(
+        model,
+        source_manifest,
+        jobs,
+        limit_images=limit_images,
+    )
+    state = load_batch_state(state_path)
+    if state is not None and not batch_state_matches(
+        state,
+        request_fingerprint,
+    ):
+        print(
+            "[batch] etat existant incompatible; nouvelle soumission "
+            f"(ancien batch_id={state.get('batch_id', 'inconnu')})",
+            flush=True,
+        )
+        state = None
     if state is None:
-        state_path = submit_batch_review(video_path, model, jobs)
+        state_path = submit_batch_review(
+            video_path,
+            model,
+            jobs,
+            request_fingerprint=request_fingerprint,
+        )
         if not wait:
             return state_path
-        state = load_batch_state(video_path)
+        state = load_batch_state(state_path)
+        if state is None:
+            raise RuntimeError("Etat batch introuvable apres la soumission.")
 
     client = openai_client()
-    state = refresh_batch_state(video_path, client, state)
-    while wait and not is_terminal_batch_status(state["status"]):
-        print(f"[batch] status={state['status']} batch_id={state['batch_id']} attente {poll_interval_seconds}s", flush=True)
-        time.sleep(poll_interval_seconds)
-        state = refresh_batch_state(video_path, client, state)
+    state = poll_batch_state(
+        client,
+        state,
+        state_path,
+        wait=wait,
+        poll_interval_seconds=poll_interval_seconds,
+        on_wait=lambda current, seconds: print(
+            f"[batch] status={current['status']} batch_id={current['batch_id']} attente {seconds}s",
+            flush=True,
+        ),
+    )
 
     if not is_terminal_batch_status(state["status"]):
         print(f"[batch] status={state['status']} batch_id={state['batch_id']}", flush=True)
         return batch_state_path(video_path)
 
-    if state["status"] != "completed":
+    if state["status"] != COMPLETED_BATCH_STATUS:
         raise RuntimeError(f"Batch termine avec statut non supporte: {state['status']}")
 
     return finalize_batch_review(video_path, model, jobs, state)
@@ -655,81 +648,3 @@ def review_video(video_path, model, mode="live", force=False, limit_images=None,
             poll_interval_seconds=poll_interval_seconds,
         )
     return review_video_live(video_path, model, force=force, limit_images=limit_images)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Demande a GPT si le texte dans la zone rouge des images 'others' ressemble a du texte ajoute au montage."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--model",
-        default=os.getenv("OCR_OTHERS_REVIEW_MODEL", DEFAULT_MODEL),
-        help=f"Modele OpenAI a utiliser. Defaut: {DEFAULT_MODEL}.",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=("live", "batch"),
-        default=normalize_openai_mode(os.getenv("PIPELINE_OPENAI_MODE", DEFAULT_MODE)),
-        help=f"Mode d'execution OpenAI. Defaut: {DEFAULT_MODE}.",
-    )
-    parser.add_argument(
-        "--wait",
-        action="store_true",
-        default=DEFAULT_WAIT_FOR_BATCH,
-        help="En mode batch, attend la fin du job et telecharge les resultats. Defaut: actif.",
-    )
-    parser.add_argument(
-        "--poll-interval-seconds",
-        type=int,
-        default=30,
-        help="En mode batch avec --wait, intervalle entre deux polls. Defaut: 30.",
-    )
-    parser.add_argument(
-        "--limit-images",
-        type=int,
-        help="Nombre maximum d'images annotees a soumettre par video.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les reviews meme si elles existent deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=True)
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    for video_path in videos:
-        if review_video(
-            video_path,
-            args.model,
-            mode=args.mode,
-            force=args.force,
-            limit_images=args.limit_images,
-            wait=args.wait,
-            poll_interval_seconds=args.poll_interval_seconds,
-        ):
-            done += 1
-    print(f"{done} review(s) GPT generee(s).")
-
-
-if __name__ == "__main__":
-    main()

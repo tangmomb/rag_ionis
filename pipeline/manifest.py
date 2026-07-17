@@ -2,19 +2,175 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Mapping
 
-from .context import (
-    LONG_VIDEO_THRESHOLD_SECONDS,
-    PipelineContext,
-    PipelineExecution,
-    utc_now,
-)
+from .context import PipelineContext
+from .contracts import RoutingFacts, RunExecution, utc_now
 from .options import PipelineOptions
-from .planner import PlannedTask
+from .support.json_io import read_json, write_json
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+SUPPORTED_SCHEMA_VERSIONS = {3, SCHEMA_VERSION}
+
+
+class ManifestValidationError(ValueError):
+    pass
+
+
+def validate_manifest(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ManifestValidationError(
+            "Le manifeste doit contenir un objet JSON."
+        )
+
+    version = payload.get("schema_version")
+    if not isinstance(version, int):
+        raise ManifestValidationError(
+            "Le manifeste exige un schema_version entier."
+        )
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        supported = ", ".join(
+            str(item) for item in sorted(SUPPORTED_SCHEMA_VERSIONS)
+        )
+        raise ManifestValidationError(
+            f"schema_version={version} non supporte; versions: {supported}."
+        )
+
+    plan = payload.get("plan")
+    if plan is not None:
+        if not isinstance(plan, Mapping):
+            raise ManifestValidationError("plan doit etre un objet JSON.")
+        tasks = plan.get("tasks", [])
+        if not isinstance(tasks, list):
+            raise ManifestValidationError("plan.tasks doit etre une liste.")
+        for index, task in enumerate(tasks):
+            if not isinstance(task, Mapping):
+                raise ManifestValidationError(
+                    f"plan.tasks[{index}] doit etre un objet."
+                )
+            if not str(task.get("id") or "").strip():
+                raise ManifestValidationError(
+                    f"plan.tasks[{index}].id est obligatoire."
+                )
+
+    facts = payload.get("routing_facts")
+    if facts is not None:
+        try:
+            RoutingFacts.from_dict(facts)
+        except ValueError as error:
+            raise ManifestValidationError(str(error)) from error
+
+    route = payload.get("route")
+    if route is not None:
+        if not isinstance(route, Mapping):
+            raise ManifestValidationError("route doit etre un objet JSON.")
+        missing_facts = route.get("missing_facts", [])
+        if not isinstance(missing_facts, list) or not all(
+            isinstance(item, str)
+            for item in missing_facts
+        ):
+            raise ManifestValidationError(
+                "route.missing_facts doit etre une liste de chaines."
+            )
+
+    artifacts = payload.get("artifacts")
+    if artifacts is not None:
+        if not isinstance(artifacts, Mapping):
+            raise ManifestValidationError("artifacts doit etre un objet JSON.")
+        by_task = artifacts.get("by_task", {})
+        if not isinstance(by_task, Mapping) or not all(
+            isinstance(paths, list)
+            and all(isinstance(path, str) for path in paths)
+            for paths in by_task.values()
+        ):
+            raise ManifestValidationError(
+                "artifacts.by_task doit associer chaque tache a une liste de chemins."
+            )
+
+    options = payload.get("options")
+    if options is not None:
+        if not isinstance(options, Mapping):
+            raise ManifestValidationError("options doit etre un objet JSON.")
+        if "force" in options and not isinstance(options["force"], bool):
+            raise ManifestValidationError(
+                "options.force doit etre un booleen."
+            )
+        try:
+            PipelineOptions.from_dict(options)
+        except (TypeError, ValueError) as error:
+            raise ManifestValidationError(
+                f"Options du manifeste invalides: {error}"
+            ) from error
+
+    execution = payload.get("execution")
+    if execution is not None:
+        if not isinstance(execution, Mapping):
+            raise ManifestValidationError("execution doit etre un objet JSON.")
+        execution_tasks = execution.get("tasks", {})
+        if not isinstance(execution_tasks, Mapping):
+            raise ManifestValidationError(
+                "execution.tasks doit etre un objet JSON."
+            )
+        try:
+            RunExecution.from_dict(execution)
+        except ValueError as error:
+            raise ManifestValidationError(
+                f"Execution du manifeste invalide: {error}"
+            ) from error
+
+    history = payload.get("execution_history")
+    if history is not None:
+        if not isinstance(history, list):
+            raise ManifestValidationError(
+                "execution_history doit etre une liste."
+            )
+        try:
+            for item in history:
+                RunExecution.from_dict(item)
+        except ValueError as error:
+            raise ManifestValidationError(
+                f"Historique d'execution invalide: {error}"
+            ) from error
+
+    if version == SCHEMA_VERSION:
+        if not isinstance(facts, Mapping):
+            raise ManifestValidationError(
+                "routing_facts est obligatoire dans un manifeste v4."
+            )
+        if not isinstance(route, Mapping):
+            raise ManifestValidationError(
+                "route est obligatoire dans un manifeste v4."
+            )
+        if not isinstance(artifacts, Mapping):
+            raise ManifestValidationError(
+                "artifacts est obligatoire dans un manifeste v4."
+            )
+        if not isinstance(plan, Mapping):
+            raise ManifestValidationError(
+                "plan est obligatoire dans un manifeste v4."
+            )
+        if not isinstance(execution, Mapping):
+            raise ManifestValidationError(
+                "execution est obligatoire dans un manifeste v4."
+            )
+        run_id = execution.get("run_id")
+        execution_plan_hash = execution.get("plan_hash")
+        plan_hash = plan.get("hash")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ManifestValidationError(
+                "execution.run_id est obligatoire dans un manifeste v4."
+            )
+        if not isinstance(plan_hash, str):
+            raise ManifestValidationError(
+                "plan.hash doit etre une chaine dans un manifeste v4."
+            )
+        if execution_plan_hash != plan_hash:
+            raise ManifestValidationError(
+                "execution.plan_hash doit correspondre a plan.hash."
+            )
+
+    return payload
 
 
 def read_manifest(path: str | Path) -> dict[str, Any]:
@@ -22,34 +178,29 @@ def read_manifest(path: str | Path) -> dict[str, Any]:
     if not target.exists():
         return {}
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        payload = read_json(target)
+    except OSError as error:
+        raise ManifestValidationError(
+            f"Manifeste illisible: {target}"
+        ) from error
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ManifestValidationError(
+            f"Manifeste JSON invalide: {target}: {error}"
+        ) from error
+    return validate_manifest(payload)
 
 
-def _plan_payload(
-    context: PipelineContext,
-    tasks: Iterable[PlannedTask] | None,
-) -> list[dict[str, Any]]:
-    if tasks is not None:
-        return [task.to_dict(context) for task in tasks]
-    return list(context.plan)
+def build_manifest(context: PipelineContext) -> dict[str, Any]:
+    """Construit le manifeste depuis l'unique état du contexte."""
 
-
-def build_manifest(
-    context: PipelineContext,
-    options: PipelineOptions | None = None,
-    tasks: Iterable[PlannedTask] | None = None,
-    *,
-    execution: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    selected_options = options or context.options
-    task_list = _plan_payload(context, tasks)
-    execution_payload = (
-        execution
-        if execution is not None
-        else context.execution.to_dict()
+    selected_options = context.options
+    planned_tasks = list(context.plan)
+    task_list = [task.to_dict() for task in planned_tasks]
+    plan_hash = context._plan_hash(
+        planned_tasks,
+        options_payload=selected_options.to_dict(),
+        routing_facts=context.routing_facts,
+        source_fingerprint=context.source_fingerprint,
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -60,87 +211,24 @@ def build_manifest(
             "title": context.title,
             **context.media,
         },
-        "questions": {
-            "longer_than_10_minutes": {
-                "answer": context.is_long_video,
-                "duration_seconds": context.duration_seconds,
-                "threshold_seconds": LONG_VIDEO_THRESHOLD_SECONDS,
-            },
-            "has_embedded_subtitles": {
-                "answer": context.has_subtitles,
-                "details": context.analysis.get("has_subtitles_details"),
-            },
-            "is_motion_design": {
-                "answer": (
-                    context.video_type == "motion_design"
-                    if context.video_type is not None
-                    else None
-                ),
-            },
-            "is_interview": {
-                "answer": (
-                    context.video_type == "interview"
-                    if context.video_type is not None
-                    else None
-                ),
-            },
-        },
-        "features": {
-            "duration": {
-                "seconds": context.duration_seconds,
-                "threshold_seconds": LONG_VIDEO_THRESHOLD_SECONDS,
-                "longer_than_10_minutes": context.is_long_video,
-            },
-            "has_subtitles": {
-                "value": context.has_subtitles,
-                "details": context.analysis.get("has_subtitles_details"),
-            },
-            "video_type": context.video_type,
-            "motion_design": (
-                context.video_type == "motion_design"
-                if context.video_type is not None
-                else None
-            ),
-            "interview": (
-                context.video_type == "interview"
-                if context.video_type is not None
-                else None
-            ),
-        },
-        "routing": context.routing(),
+        "routing_facts": context.routing_facts.to_dict(),
+        "route": context.routing(),
         "options": selected_options.to_dict(),
         "artifacts": context.artifacts.to_dict(),
         "plan": {
+            "hash": plan_hash,
             "task_count": len(task_list),
             "tasks": task_list,
         },
-        "execution": execution_payload,
+        "execution": context.execution.to_dict(),
+        "execution_history": [
+            item.to_dict()
+            for item in context.execution_history
+        ],
     }
 
 
-def write_manifest(
-    context: PipelineContext,
-    options: PipelineOptions | None = None,
-    tasks: Iterable[PlannedTask] | None = None,
-    *,
-    execution: dict[str, Any] | None = None,
-) -> Path:
-    if options is not None:
-        context.options = options
-    if tasks is not None:
-        context.set_plan([task.to_dict(context) for task in tasks])
-    if execution is not None:
-        context.execution = PipelineExecution.from_dict(execution)
-        context.execution.ensure_tasks(
-            [str(task["id"]) for task in context.plan if task.get("id")]
-        )
-
-    context.metadata_dir.mkdir(parents=True, exist_ok=True)
+def write_manifest(context: PipelineContext) -> Path:
     payload = build_manifest(context)
-    temporary_path = context.manifest_path.with_suffix(".json.tmp")
-    temporary_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(context.manifest_path)
-    return context.manifest_path
+    validate_manifest(payload)
+    return write_json(context.manifest_path, payload)

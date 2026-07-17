@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import os
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Mapping
 
+from .contracts import (
+    PlannedTask,
+    RoutingFacts,
+    RunExecution,
+    TaskExecution,
+    TaskResult,
+    TaskStatus,
+)
 from .options import PipelineOptions
 from .probe import probe_video
+from .support.json_io import read_json
 
 
 LONG_VIDEO_THRESHOLD_SECONDS = 600
@@ -19,18 +26,24 @@ MANIFEST_NAME = "video_manifest.json"
 YOUTUBE_METADATA_NAME = "youtube_video_metadata.json"
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
+def load_json(
+    path: Path,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
+    if not Path(path).exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = read_json(path) if strict else read_json(path, default={})
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        if strict:
+            raise ValueError(f"JSON invalide ou illisible: {path}") from error
         return {}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        if strict:
+            raise ValueError(f"Un objet JSON est attendu dans: {path}")
+        return {}
+    return payload
 
 
 def video_in_directory(directory: str | Path) -> Path:
@@ -51,121 +64,30 @@ def video_in_directory(directory: str | Path) -> Path:
 class PipelineArtifacts:
     """References legeres vers les sorties produites par les etapes."""
 
-    directories: dict[str, str] = field(default_factory=dict)
     by_task: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: Any) -> "PipelineArtifacts":
-        if not isinstance(payload, dict):
+        if not isinstance(payload, Mapping):
             return cls()
-        directories = payload.get("directories")
         by_task = payload.get("by_task")
         return cls(
-            directories={
-                str(key): str(value)
-                for key, value in (directories.items() if isinstance(directories, dict) else [])
-            },
             by_task={
                 str(key): [str(item) for item in value if str(item).strip()]
-                for key, value in (by_task.items() if isinstance(by_task, dict) else [])
+                for key, value in (
+                    by_task.items()
+                    if isinstance(by_task, Mapping)
+                    else []
+                )
                 if isinstance(value, list)
             },
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "directories": dict(self.directories),
             "by_task": {
                 task_id: list(paths)
                 for task_id, paths in self.by_task.items()
-            },
-        }
-
-
-@dataclass
-class TaskExecution:
-    status: str = "not_started"
-    started_at: str | None = None
-    finished_at: str | None = None
-    error: str | None = None
-
-    @classmethod
-    def from_dict(cls, payload: Any) -> "TaskExecution":
-        if not isinstance(payload, dict):
-            return cls()
-        return cls(
-            status=str(payload.get("status") or "not_started"),
-            started_at=payload.get("started_at"),
-            finished_at=payload.get("finished_at"),
-            error=payload.get("error"),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            key: value
-            for key, value in asdict(self).items()
-            if value is not None
-        }
-
-
-@dataclass
-class PipelineExecution:
-    status: str = "not_started"
-    tasks: dict[str, TaskExecution] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, payload: Any) -> "PipelineExecution":
-        if not isinstance(payload, dict):
-            return cls()
-        tasks = payload.get("tasks")
-        return cls(
-            status=str(payload.get("status") or "not_started"),
-            tasks={
-                str(task_id): TaskExecution.from_dict(task_payload)
-                for task_id, task_payload in (
-                    tasks.items() if isinstance(tasks, dict) else []
-                )
-            },
-        )
-
-    def ensure_tasks(self, task_ids: list[str]) -> None:
-        for task_id in task_ids:
-            self.tasks.setdefault(task_id, TaskExecution())
-
-    def start_pipeline(self) -> None:
-        self.status = "running"
-
-    def complete_pipeline(self) -> None:
-        self.status = "completed"
-
-    def fail_pipeline(self) -> None:
-        self.status = "failed"
-
-    def start_task(self, task_id: str) -> None:
-        task = self.tasks.setdefault(task_id, TaskExecution())
-        task.status = "running"
-        task.started_at = utc_now()
-        task.finished_at = None
-        task.error = None
-
-    def complete_task(self, task_id: str) -> None:
-        task = self.tasks.setdefault(task_id, TaskExecution())
-        task.status = "completed"
-        task.finished_at = utc_now()
-        task.error = None
-
-    def fail_task(self, task_id: str, error: Exception | str) -> None:
-        task = self.tasks.setdefault(task_id, TaskExecution())
-        task.status = "failed"
-        task.finished_at = utc_now()
-        task.error = str(error)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "tasks": {
-                task_id: task.to_dict()
-                for task_id, task in self.tasks.items()
             },
         }
 
@@ -178,10 +100,12 @@ class PipelineContext:
     options: PipelineOptions = field(default_factory=PipelineOptions)
     media: dict[str, Any] = field(default_factory=dict)
     source_metadata: dict[str, Any] = field(default_factory=dict)
-    analysis: dict[str, Any] = field(default_factory=dict)
+    routing_facts: RoutingFacts = field(default_factory=RoutingFacts)
     artifacts: PipelineArtifacts = field(default_factory=PipelineArtifacts)
-    execution: PipelineExecution = field(default_factory=PipelineExecution)
-    plan: list[dict[str, Any]] = field(default_factory=list)
+    execution: RunExecution = field(default_factory=RunExecution)
+    execution_history: list[RunExecution] = field(default_factory=list)
+    plan: list[PlannedTask] = field(default_factory=list)
+    _task_force: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def inspect(
@@ -192,18 +116,229 @@ class PipelineContext:
         candidate = Path(video_path)
         video = video_in_directory(candidate) if candidate.is_dir() else candidate
         metadata_dir = video.parent / "metadata"
-        previous_manifest = load_json(metadata_dir / MANIFEST_NAME)
+
+        # Import local: manifest importe PipelineContext pour la serialisation.
+        from .manifest import read_manifest
+
+        previous_manifest = read_manifest(metadata_dir / MANIFEST_NAME)
+        analysis_payload = load_json(
+            metadata_dir / ANALYSIS_NAME,
+            strict=True,
+        )
+        if not analysis_payload:
+            analysis_payload = cls._manifest_routing_facts(previous_manifest)
+
+        manifest_options = previous_manifest.get("options")
+        selected_options = (
+            options
+            if options is not None
+            else (
+                PipelineOptions.from_dict(manifest_options)
+                if isinstance(manifest_options, Mapping)
+                else PipelineOptions()
+            )
+        )
+        previous_plan = cls._coerce_plan(
+            cls._manifest_plan(previous_manifest),
+            validate=False,
+        )
+        previous_options = manifest_options
+        if not isinstance(previous_options, Mapping):
+            previous_options = selected_options.to_dict()
+        previous_facts = RoutingFacts.from_dict(analysis_payload)
+        fallback_plan_hash = cls._plan_hash(
+            previous_plan,
+            options_payload=dict(previous_options),
+            routing_facts=previous_facts,
+            source_fingerprint=cls._source_fingerprint(video),
+        )
+
+        history_payload = previous_manifest.get("execution_history")
         context = cls(
             video_path=video,
-            options=options or PipelineOptions(),
+            options=selected_options,
             media=probe_video(video),
-            source_metadata=load_json(metadata_dir / YOUTUBE_METADATA_NAME),
-            analysis=load_json(metadata_dir / ANALYSIS_NAME),
-            artifacts=PipelineArtifacts.from_dict(previous_manifest.get("artifacts")),
-            execution=PipelineExecution.from_dict(previous_manifest.get("execution")),
+            source_metadata=load_json(
+                metadata_dir / YOUTUBE_METADATA_NAME,
+                strict=False,
+            ),
+            routing_facts=previous_facts,
+            artifacts=PipelineArtifacts.from_dict(
+                previous_manifest.get("artifacts")
+            ),
+            execution=RunExecution.from_dict(
+                previous_manifest.get("execution"),
+                fallback_plan_hash=fallback_plan_hash,
+            ),
+            execution_history=[
+                RunExecution.from_dict(item)
+                for item in (
+                    history_payload
+                    if isinstance(history_payload, list)
+                    else []
+                )
+            ],
+            plan=previous_plan,
         )
-        context.refresh_artifact_directories()
+        context.execution.ensure_tasks(task.id for task in previous_plan)
         return context
+
+    @staticmethod
+    def _manifest_plan(payload: Mapping[str, Any]) -> list[Any]:
+        plan = payload.get("plan")
+        if not isinstance(plan, Mapping):
+            return []
+        tasks = plan.get("tasks")
+        return list(tasks) if isinstance(tasks, list) else []
+
+    @staticmethod
+    def _manifest_routing_facts(payload: Mapping[str, Any]) -> dict[str, Any]:
+        facts = payload.get("routing_facts")
+        if isinstance(facts, Mapping):
+            return dict(facts)
+
+        # Migration des manifestes v3, qui stockaient ces valeurs dans une
+        # vue ``features`` au lieu d'un contrat de faits dédié.
+        features = payload.get("features")
+        if not isinstance(features, Mapping):
+            return {}
+        subtitle_feature = features.get("has_subtitles")
+        if isinstance(subtitle_feature, Mapping):
+            has_subtitles = subtitle_feature.get("value")
+            details = subtitle_feature.get("details")
+        else:
+            has_subtitles = subtitle_feature
+            details = None
+        return {
+            "has_subtitles": has_subtitles,
+            "video_type": features.get("video_type"),
+            "has_subtitles_details": details,
+        }
+
+    @staticmethod
+    def _coerce_plan(
+        tasks: Iterable[PlannedTask | Mapping[str, Any]],
+        *,
+        validate: bool,
+    ) -> list[PlannedTask]:
+        normalized = [
+            task
+            if isinstance(task, PlannedTask)
+            else PlannedTask.from_dict(task)
+            for task in tasks
+        ]
+        if validate:
+            from .catalog import TASKS
+
+            unknown = [task.id for task in normalized if task.id not in TASKS]
+            if unknown:
+                identifiers = ", ".join(dict.fromkeys(unknown))
+                raise ValueError(
+                    f"Tache(s) inconnue(s) dans le plan: {identifiers}."
+                )
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for task in normalized:
+            if task.id in seen:
+                duplicates.append(task.id)
+            seen.add(task.id)
+        if duplicates:
+            identifiers = ", ".join(dict.fromkeys(duplicates))
+            raise ValueError(
+                f"Tache(s) dupliquee(s) dans le plan: {identifiers}."
+            )
+        return normalized
+
+    @staticmethod
+    def _plan_hash(
+        tasks: Iterable[PlannedTask],
+        *,
+        options_payload: Mapping[str, Any],
+        routing_facts: RoutingFacts,
+        source_fingerprint: Mapping[str, Any] | None = None,
+    ) -> str:
+        task_list = list(tasks)
+        if not task_list:
+            return ""
+
+        from .catalog import TASKS
+
+        task_payload = []
+        phases: set[str] = set()
+        for task in task_list:
+            spec = TASKS.get(task.id)
+            version = spec.version if spec is not None else "legacy"
+            phase = spec.phase if spec is not None else "unknown"
+            phases.add(phase)
+            task_payload.append(
+                {
+                    "id": task.id,
+                    "reason": task.reason,
+                    "version": version,
+                    "handler": spec.entrypoint if spec is not None else None,
+                }
+            )
+
+        plan_options = dict(options_payload)
+        # ``force`` pilote seulement cette invocation; il ne change pas le
+        # contenu attendu du plan ni l'identité de ses checkpoints.
+        plan_options.pop("force", None)
+        payload: dict[str, Any] = {
+            "tasks": task_payload,
+            "options": plan_options,
+            "source": dict(source_fingerprint or {}),
+        }
+        # Les faits evoluent pendant l'inspection; ils ne doivent donc pas
+        # invalider sa reprise. Ils font en revanche partie du contrat d'un
+        # plan de traitement.
+        if phases != {"inspection"}:
+            payload["routing_facts"] = {
+                "has_subtitles": routing_facts.has_subtitles,
+                "video_type": (
+                    routing_facts.video_type.value
+                    if routing_facts.video_type is not None
+                    else None
+                ),
+            }
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def compute_plan_hash(
+        self,
+        tasks: Iterable[PlannedTask] | None = None,
+    ) -> str:
+        return self._plan_hash(
+            self.plan if tasks is None else tasks,
+            options_payload=self.options.to_dict(),
+            routing_facts=self.routing_facts,
+            source_fingerprint=self.source_fingerprint,
+        )
+
+    @staticmethod
+    def _source_fingerprint(path: Path) -> dict[str, int]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return {}
+        return {
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+
+    @property
+    def source_fingerprint(self) -> dict[str, int]:
+        return self._source_fingerprint(self.video_path)
+
+    @property
+    def force_rebuild(self) -> bool:
+        """Vrai quand l'exécuteur exige une reconstruction réelle de la tâche."""
+
+        return self.options.force or self._task_force
 
     @property
     def video_dir(self) -> Path:
@@ -249,22 +384,12 @@ class PipelineContext:
 
     @property
     def has_subtitles(self) -> bool | None:
-        value = self.analysis.get("has_subtitles")
-        return value if isinstance(value, bool) else None
-
-    @property
-    def subtitle_available(self) -> bool:
-        return self.has_subtitles is True
+        return self.routing_facts.has_subtitles
 
     @property
     def video_type(self) -> str | None:
-        value = self.analysis.get("video_type")
-        normalized = str(value).strip() if value is not None else ""
-        return normalized or None
-
-    @property
-    def visual_strategy(self) -> str | None:
-        return self.video_type
+        value = self.routing_facts.video_type
+        return value.value if value is not None else None
 
     @property
     def transcript_strategy(self) -> str | None:
@@ -288,64 +413,218 @@ class PipelineContext:
 
     @property
     def routing_ready(self) -> bool:
-        return self.transcript_strategy is not None and self.visual_strategy is not None
+        return (
+            self.transcript_strategy is not None
+            and self.video_type is not None
+        )
 
     def routing(self) -> dict[str, Any]:
         missing = []
         if self.has_subtitles is None:
             missing.append("has_subtitles")
-        if self.visual_strategy is None:
+        if self.video_type is None:
             missing.append("video_type")
         parts = [
             self.chunk_strategy,
             self.transcript_strategy,
-            self.visual_strategy,
+            self.video_type,
         ]
         return {
             "status": "ready" if not missing else "needs_content_inspection",
             "pipeline_id": ".".join(part for part in parts if part),
             "transcript_strategy": self.transcript_strategy,
             "chunk_strategy": self.chunk_strategy,
-            "visual_strategy": self.visual_strategy,
-            "missing_features": missing,
+            "visual_strategy": self.video_type,
+            "missing_facts": missing,
         }
 
-    def set_plan(self, tasks: list[dict[str, Any]]) -> None:
-        self.plan = list(tasks)
-        self.execution.ensure_tasks(
-            [str(task["id"]) for task in self.plan if task.get("id")]
+    def set_plan(
+        self,
+        tasks: Iterable[PlannedTask | Mapping[str, Any]],
+    ) -> None:
+        # La validation contre le registre a lieu juste avant execution.
+        # Cela permet aussi aux tests/extensions d'injecter temporairement une
+        # TaskSpec dans TASKS apres avoir construit leur contexte.
+        normalized = self._coerce_plan(tasks, validate=False)
+        plan_hash = self.compute_plan_hash(normalized)
+        task_ids = [task.id for task in normalized]
+
+        if self.execution.plan_hash != plan_hash:
+            if self.execution.has_activity and all(
+                item.run_id != self.execution.run_id
+                for item in self.execution_history
+            ):
+                self.execution_history.append(self.execution)
+            matching_index = next(
+                (
+                    index
+                    for index in range(len(self.execution_history) - 1, -1, -1)
+                    if self.execution_history[index].plan_hash == plan_hash
+                ),
+                None,
+            )
+            if matching_index is None:
+                self.execution = RunExecution.for_plan(plan_hash, task_ids)
+            else:
+                self.execution = self.execution_history.pop(matching_index)
+                self.execution.ensure_tasks(task_ids)
+        else:
+            self.execution.ensure_tasks(task_ids)
+        self.plan = normalized
+
+    def refresh_routing_facts(self) -> None:
+        analysis_path = self.metadata_dir / ANALYSIS_NAME
+        if analysis_path.exists():
+            self.routing_facts = RoutingFacts.from_dict(
+                load_json(
+                    analysis_path,
+                    strict=True,
+                )
+            )
+
+    def _artifact_path(self, value: str | Path) -> Path:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = self.video_dir / candidate
+        return candidate
+
+    def artifact_paths(self, task_id: str) -> list[Path]:
+        return [
+            self._artifact_path(value)
+            for value in self.artifacts.by_task.get(task_id, [])
+        ]
+
+    def artifacts_valid(self, task_id: str) -> bool:
+        paths = self.artifact_paths(task_id)
+
+        def is_valid(path: Path) -> bool:
+            try:
+                if path.is_file():
+                    return True
+                if path.is_dir():
+                    return any(
+                        candidate.is_file()
+                        for candidate in path.rglob("*")
+                    )
+                return False
+            except OSError:
+                return False
+
+        return bool(paths) and all(is_valid(path) for path in paths)
+
+    def artifact_fingerprint(self, task_id: str) -> str | None:
+        """Empreinte les sorties afin de détecter un checkpoint écrasé."""
+
+        try:
+            return self._compute_artifact_fingerprint(task_id)
+        except OSError:
+            return None
+
+    def _compute_artifact_fingerprint(self, task_id: str) -> str | None:
+        paths = self.artifact_paths(task_id)
+        if not paths or not self.artifacts_valid(task_id):
+            return None
+
+        media_suffixes = {
+            *VIDEO_EXTENSIONS,
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".webp",
+            ".wav",
+            ".mp3",
+            ".m4a",
+        }
+        entries: list[dict[str, Any]] = []
+        for path in sorted(paths, key=lambda item: item.as_posix()):
+            resolved = path.resolve()
+            if resolved.is_file():
+                digest = hashlib.sha256()
+                with resolved.open("rb") as handle:
+                    for chunk in iter(
+                        lambda: handle.read(1024 * 1024),
+                        b"",
+                    ):
+                        digest.update(chunk)
+                stat = resolved.stat()
+                entries.append(
+                    {
+                        "path": resolved.as_posix(),
+                        "size": stat.st_size,
+                        "sha256": digest.hexdigest(),
+                    }
+                )
+                continue
+
+            children = sorted(
+                (
+                    candidate
+                    for candidate in resolved.rglob("*")
+                    if candidate.is_file()
+                ),
+                key=lambda item: item.relative_to(resolved).as_posix(),
+            )
+            media_children = [
+                child
+                for child in children
+                if child.suffix.lower() in media_suffixes
+            ]
+            for child in media_children or children:
+                stat = child.stat()
+                entries.append(
+                    {
+                        "path": (
+                            resolved.as_posix()
+                            + "/"
+                            + child.relative_to(resolved).as_posix()
+                        ),
+                        "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                )
+
+        canonical = json.dumps(
+            entries,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def refresh_analysis(self) -> None:
-        self.analysis = load_json(self.metadata_dir / ANALYSIS_NAME)
-        self.refresh_artifact_directories()
-
-    def refresh_artifact_directories(self) -> None:
-        self.artifacts.directories = {
-            "video": ".",
-            "metadata": "metadata",
-            "outputs": "outputs",
-            "images": "outputs/images",
-            "ocr": "outputs/ocr",
-            "transcripts": f"outputs/{self.transcripts_dir_name}",
-            "speakers": "outputs/speakers",
-            "chunks": "outputs/chunks",
-        }
-
-    def record_artifacts(self, task_id: str, result: Any) -> None:
+    def record_artifacts(
+        self,
+        task_id: str,
+        result: Any,
+        *,
+        replace: bool = False,
+    ) -> list[str]:
         paths: list[str] = []
 
         def collect(value: Any) -> None:
+            if isinstance(value, TaskResult):
+                collect(value.artifacts)
+                if not value.artifacts:
+                    collect(value.value)
+                return
             if isinstance(value, Path):
-                if not value.exists():
+                candidate = value
+            elif isinstance(value, str):
+                candidate = self._artifact_path(value)
+            else:
+                candidate = None
+
+            if candidate is not None:
+                if not candidate.exists():
                     return
                 try:
-                    relative = value.resolve().relative_to(self.video_dir.resolve())
+                    relative = candidate.resolve().relative_to(
+                        self.video_dir.resolve()
+                    )
                     paths.append(relative.as_posix())
                 except ValueError:
-                    paths.append(value.resolve().as_posix())
+                    paths.append(candidate.resolve().as_posix())
                 return
-            if isinstance(value, dict):
+            if isinstance(value, Mapping):
                 for item in value.values():
                     collect(item)
                 return
@@ -354,26 +633,23 @@ class PipelineContext:
                     collect(item)
 
         collect(result)
-        if paths:
-            self.artifacts.by_task[task_id] = list(dict.fromkeys(paths))
-        self.refresh_analysis()
+        normalized = list(dict.fromkeys(paths))
+        if normalized:
+            self.artifacts.by_task[task_id] = normalized
+        elif replace:
+            self.artifacts.by_task.pop(task_id, None)
+        return normalized
 
-    @contextmanager
-    def runtime_environment(self) -> Iterator[None]:
-        """Compatibilite temporaire pour les utilitaires qui lisent encore os.environ."""
-
-        updates = {
-            "PIPELINE_OPENAI_MODE": self.options.openai_mode,
-            "PIPELINE_TRANSCRIPTS_DIR_NAME": self.transcripts_dir_name,
-            "PYTHONUTF8": "1",
-        }
-        previous = {key: os.environ.get(key) for key in updates}
-        os.environ.update(updates)
-        try:
-            yield
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+    def apply_task_result(self, task_id: str, result: TaskResult) -> None:
+        explicit_source: Any = result.artifacts or result.value
+        if explicit_source is not None:
+            recorded = self.record_artifacts(
+                task_id,
+                explicit_source,
+                replace=bool(result.artifacts),
+            )
+            if result.artifacts and not recorded:
+                self.artifacts.by_task.pop(task_id, None)
+        if result.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
+            if not self.artifacts_valid(task_id):
+                self.artifacts.by_task.pop(task_id, None)

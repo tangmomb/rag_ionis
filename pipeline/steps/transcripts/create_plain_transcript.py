@@ -1,18 +1,14 @@
-import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path, update_analysed_infos
+from pipeline.support.analysis import analysed_infos_path
+from pipeline.support.json_io import read_json
 from pipeline.support.paths import (
     existing_speakers_dir,
     existing_transcripts_dir,
-    relative_to_video_dir,
 )
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CORRECTED_TIMECODED_NAMES = (
     "whisper_transcript_timecoded_corrected.txt",
     "ocr_subtitles_timecoded_corrected.txt",
@@ -31,41 +27,6 @@ SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 ENRICHED_SUFFIX = "_enriched.txt"
 LEGACY_ENRICHED_SUFFIX = "_enrichi.txt"
 MOTION_DESIGN_OCR_PREFIX = "Textes présents sur la vidéo :"
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(
-        path
-        for path in parent_dir.iterdir()
-        if path.is_dir() and any(video_files(path))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
 
 def strip_timecodes(text, speaker_names=None):
     cleaned_lines = []
@@ -93,7 +54,7 @@ def load_validated_speakers(video_path):
     if not path.exists():
         return []
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except (OSError, json.JSONDecodeError):
         return []
     return [
@@ -108,15 +69,18 @@ def analysed_video_type(video_path):
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except Exception:
         return None
     value = payload.get("video_type")
     return value if isinstance(value, str) else None
 
 
-def whisper_timecoded_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path)
+def whisper_timecoded_path(video_path, *, transcripts_dir_name=None):
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=transcripts_dir_name,
+    )
     return transcript_dir / "whisper_transcript_timecoded.txt"
 
 
@@ -165,12 +129,24 @@ def timecoded_inputs(transcript_dir):
     return legacy_inputs
 
 
-def convert_file(video_path, input_path, force=False):
+def convert_file(
+    video_path,
+    input_path,
+    force=False,
+    *,
+    transcripts_dir_name=None,
+):
     target = output_path(input_path)
 
     video_type = (analysed_video_type(video_path) or "").strip().lower()
     plain_motion_design_overlays = (
-        video_type == "motion_design" and is_empty_text_file(whisper_timecoded_path(video_path))
+        video_type == "motion_design"
+        and is_empty_text_file(
+            whisper_timecoded_path(
+                video_path,
+                transcripts_dir_name=transcripts_dir_name,
+            )
+        )
     )
     source_path = input_path
     if plain_motion_design_overlays:
@@ -188,58 +164,5 @@ def convert_file(video_path, input_path, force=False):
     if plain_motion_design_overlays and source_path != input_path:
         cleaned = f"{MOTION_DESIGN_OCR_PREFIX}\n{cleaned}" if cleaned else MOTION_DESIGN_OCR_PREFIX
     target.write_text(cleaned + "\n", encoding="utf-8")
-    update_analysed_infos(
-        video_path,
-        "strip_timecodes",
-        {
-            "status": "done",
-            "source": relative_to_video_dir(source_path, video_path),
-            "plain_transcript_file": relative_to_video_dir(target, video_path),
-            "char_count": len(cleaned),
-        },
-    )
     print(f"[ok] {target}")
     return target
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Cree des transcriptions sans timecodes depuis les fichiers timecoded corrected."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les fichiers sans timecodes meme s'ils existent deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    print(f"Dossier videos: {video_dir}")
-    done = 0
-    videos = list(video_files(video_dir))
-    for video_path in videos:
-        for input_path in timecoded_inputs(existing_transcripts_dir(video_path)):
-            convert_file(video_path, input_path, force=args.force)
-            done += 1
-
-    if not done:
-        print(f"Aucun fichier timecoded corrected trouve dans {video_dir}")
-        return
-
-    print(f"{done} fichiers traites.")
-
-
-if __name__ == "__main__":
-    main()

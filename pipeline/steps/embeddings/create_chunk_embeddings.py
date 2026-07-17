@@ -1,17 +1,10 @@
-import argparse
 import json
-import os
-import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import chunks_dir, existing_chunks_dir, relative_to_video_dir
 
 
-DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 CHUNKS_NAME = "transcript_chunks.json"
 LEGACY_CHUNKS_SUFFIX = "_chunks.json"
 EMBEDDING_SUFFIX = "_embedding.json"
@@ -19,37 +12,6 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_EMBEDDING_DIMENSIONS = 2000
 DEFAULT_CHUNK_LEVEL = "detail"
 CHUNK_LEVELS = {"global", "section", "detail"}
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-
-def video_files(video_dir):
-    direct_videos = []
-    for path in sorted(video_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-            direct_videos.append(path)
-
-    if direct_videos:
-        yield from direct_videos
-        return
-
-    for child in sorted(video_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        for path in sorted(child.iterdir()):
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
-                yield path
-
-
-def latest_video_dir(parent_dir):
-    candidates = sorted(path for path in parent_dir.iterdir() if path.is_dir() and any(video_files(path)))
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier de videos trouve dans {parent_dir}")
-    return candidates[-1]
-
 
 def chunks_path(video_path):
     video_chunks_dir = existing_chunks_dir(video_path)
@@ -75,13 +37,13 @@ def embedding_path(video_path, chunk_index, chunk_level=DEFAULT_CHUNK_LEVEL):
 
 
 def load_chunks(path):
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     return payload.get("meta_data", {}), payload.get("chunks", [])
 
 
 def existing_embedding_matches(path, model, dimensions, expected_text=None):
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json(path)
     except (OSError, json.JSONDecodeError):
         return False
     embedding = payload.get("embedding") if isinstance(payload, dict) else None
@@ -143,7 +105,7 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
             "content": text,
             "embedding": embedding,
         }
-        target.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_json(target, payload, indent=None)
         written += 1
         print(f"[embed] {video_path.name} chunk {chunk_index}/{len(chunks)} -> {target.name}", flush=True)
 
@@ -153,60 +115,3 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
 
     print(f"[ok] {video_path.name} ({written} fichiers embeddings)")
     return True
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Cree des embeddings a partir des chunks de transcript."
-    )
-    parser.add_argument(
-        "--video-dir",
-        help="Dossier contenant les videos. Defaut: dernier sous-dossier de downloads/youtube",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent utilise si --video-dir est absent. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_EMBEDDING_MODEL,
-        help="Modele d'embedding. Defaut: text-embedding-3-large",
-    )
-    parser.add_argument(
-        "--dimensions",
-        type=int,
-        default=DEFAULT_EMBEDDING_DIMENSIONS,
-        help="Dimensions des embeddings. Defaut: 2000",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenere les embeddings meme s'ils existent deja.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    load_dotenv(override=True)
-    args = parse_args()
-    client = OpenAI()
-    video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
-    videos = list(video_files(video_dir))
-    if not videos:
-        print(f"Aucune video trouvee dans {video_dir}")
-        return
-
-    print(f"Dossier videos: {video_dir}")
-    print(f"Modele: {args.model}", flush=True)
-    print(f"Dimensions: {args.dimensions}", flush=True)
-    done = 0
-    for video_path in videos:
-        if create_embeddings(client, args.model, args.dimensions, video_path, force=args.force):
-            done += 1
-
-    print(f"{done} videos traitees pour les embeddings.")
-
-
-if __name__ == "__main__":
-    main()

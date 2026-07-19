@@ -21,6 +21,7 @@ OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
 LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
 SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
+SPEAKER_PROPOSAL_VERSION = 2
 OCR_LOWER_THIRD_MIN_TOP = 320
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
 SPEAKER_JE_SUIS_PATTERN = re.compile(r"je suis\s+", re.IGNORECASE)
@@ -35,6 +36,7 @@ NON_PERSON_NAME_KEYWORDS = {
     "business",
     "ceo",
     "chief",
+    "charge",
     "conseil",
     "crm",
     "diagnostic",
@@ -50,7 +52,17 @@ NON_PERSON_NAME_KEYWORDS = {
     "fondatrice",
     "management",
     "managemen",
+    "manager",
+    "managers",
+    "autour",
+    "par",
     "promo",
+    "projet",
+    "projets",
+    "responsable",
+    "responsables",
+    "reunissent",
+    "se",
     "sciences",
     "societe",
     "www",
@@ -221,7 +233,8 @@ def has_lower_third_companion(item, items):
     width = max(right - left, 1)
     image = item.get("image")
     for other in items:
-        if other is item or str(other.get("kind", "")).strip().lower() != "lower_third":
+        other_kind = str(other.get("kind", "")).strip().lower()
+        if other is item or other_kind not in {"lower_third", "others"}:
             continue
         if image and other.get("image") != image:
             continue
@@ -248,6 +261,8 @@ def is_standalone_person_name_candidate(text):
     words = speaker_words(text)
     if len(words) < 2 or len(words) > 4:
         return False
+    if sum(word.lower() not in LOWERCASE_CONNECTORS for word in words) < 2:
+        return False
     return all(word.lower() in LOWERCASE_CONNECTORS or is_capitalized_word(word) for word in words)
 
 
@@ -263,7 +278,8 @@ def load_ocr_speaker_candidates(video_path):
     items = payload.get("items", [])
     names = []
     for item in items:
-        if str(item.get("kind", "")).strip().lower() != "name":
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind not in {"name", "others"}:
             continue
         if not is_lower_third_ocr_item(item) or not has_lower_third_companion(item, items):
             continue
@@ -325,22 +341,31 @@ def propose_for_video(
         print(f"[skip] transcript introuvable pour: {video_path.stem}")
         return None
     expected_source = relative_to_video_dir(source, video_path)
+    ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)
+    dependencies = [source]
+    if ocr_source is not None and ocr_source.exists():
+        dependencies.append(ocr_source)
     if target.exists() and not force:
         try:
             existing_payload = read_json(target)
         except (OSError, json.JSONDecodeError):
             existing_payload = {}
         if (
-            existing_payload.get("source") == expected_source
-            and target.stat().st_mtime >= source.stat().st_mtime
+            existing_payload.get("proposal_version") == SPEAKER_PROPOSAL_VERSION
+            and existing_payload.get("source") == expected_source
+            and target.stat().st_mtime
+            >= max(dependency.stat().st_mtime for dependency in dependencies)
         ):
             print(f"[skip] {target.name} existe deja")
             return target
-        print(f"[regen] {target.name}: source Whisper corrigee plus recente ou differente")
+        print(
+            f"[regen] {target.name}: source Whisper ou OCR plus recente "
+            f"ou differente"
+        )
     text = source.read_text(encoding="utf-8")
     if not text.strip():
-        ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)
         payload = {
+            "proposal_version": SPEAKER_PROPOSAL_VERSION,
             "status": "no_speech",
             "speakers": [],
             "candidates": [],
@@ -356,10 +381,10 @@ def propose_for_video(
         write_json(target, payload)
         print(f"[skip] transcript vide: {source}; aucun speaker a proposer")
         return target
-    ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)
     payload = propose_speakers(text, ocr_names)
     payload.update(
         {
+            "proposal_version": SPEAKER_PROPOSAL_VERSION,
             "video_title": video_title(video_path),
             "source": expected_source,
             "ocr_source": relative_to_video_dir(ocr_source, video_path) if ocr_source and ocr_source.exists() else None,

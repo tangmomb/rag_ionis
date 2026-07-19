@@ -3,11 +3,27 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
 
 _MISSING = object()
+_REPLACE_ATTEMPTS = 6
+_REPLACE_INITIAL_DELAY_SECONDS = 0.05
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    delay = _REPLACE_INITIAL_DELAY_SECONDS
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
 def read_json(
@@ -60,7 +76,7 @@ def write_json(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, target)
+        _replace_with_retry(temporary_path, target)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
@@ -95,7 +111,7 @@ def write_jsonl(
                 handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, target)
+        _replace_with_retry(temporary_path, target)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

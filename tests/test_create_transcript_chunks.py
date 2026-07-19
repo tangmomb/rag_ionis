@@ -100,6 +100,52 @@ class CreateTranscriptChunksTests(unittest.TestCase):
 
         self.assertEqual(speakers, ["Alice Martin"])
 
+    def test_visual_lower_third_name_is_detected_from_current_ocr_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            ocr_dir = video_dir / "outputs" / "ocr"
+            ocr_dir.mkdir(parents=True)
+            video = video_dir / "video123.mp4"
+            video.touch()
+            (ocr_dir / "01_processed_ocr_items.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "image": "footage/00_19.jpg",
+                                "text": "Hugo Géradin",
+                                "kind": "others",
+                                "second": 19,
+                                "box": [
+                                    [30, 455],
+                                    [248, 455],
+                                    [248, 489],
+                                    [30, 489],
+                                ],
+                            },
+                            {
+                                "image": "footage/00_19.jpg",
+                                "text": "Responsable d'Affaires",
+                                "kind": "others",
+                                "second": 19,
+                                "box": [
+                                    [29, 499],
+                                    [238, 499],
+                                    [238, 521],
+                                    [29, 521],
+                                ],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            names, source = speaker_proposal.load_ocr_speaker_candidates(video)
+
+            self.assertEqual(names, ["Hugo Géradin"])
+            self.assertEqual(source, ocr_dir / "01_processed_ocr_items.json")
+
     def test_chunks_do_not_require_or_store_validated_speakers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

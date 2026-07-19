@@ -109,7 +109,6 @@ def ensure_schema(cursor):
             thumbnail_medium_url TEXT,
             has_subtitles BOOLEAN,
             video_type TEXT,
-            speakers TEXT[],
             s3_uri TEXT,
             published_at TIMESTAMPTZ,
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -127,13 +126,13 @@ def ensure_schema(cursor):
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_medium_url TEXT")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS has_subtitles BOOLEAN")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_type TEXT")
-    cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS speakers TEXT[]")
     cursor.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS s3_uri TEXT")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS updated_at")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS s3_bucket")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS s3_prefix")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS video_summary")
     cursor.execute("ALTER TABLE videos DROP COLUMN IF EXISTS raw_json")
+    ensure_speakers_schema(cursor)
 
     cursor.execute(
         """
@@ -188,6 +187,41 @@ def table_exists(cursor, table_name):
     return cursor.fetchone()[0]
 
 
+def ensure_speakers_schema(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS speakers (
+            id BIGSERIAL PRIMARY KEY,
+            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            title TEXT,
+            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (video_id, name)
+        )
+        """
+    )
+    video_columns = table_columns(cursor, "videos")
+    if "speakers" in video_columns:
+        cursor.execute(
+            """
+            INSERT INTO speakers (video_id, name, title)
+            SELECT DISTINCT
+                video.id,
+                btrim(speaker_name),
+                NULL
+            FROM videos video
+            CROSS JOIN LATERAL unnest(coalesce(video.speakers, ARRAY[]::text[]))
+                AS speaker_name
+            WHERE speaker_name IS NOT NULL
+              AND btrim(speaker_name) <> ''
+            ON CONFLICT (video_id, name) DO NOTHING
+            """
+        )
+        cursor.execute("ALTER TABLE videos DROP COLUMN speakers")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_speakers_video_id ON speakers(video_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_speakers_name ON speakers(name)")
+
+
 def reset_data_schema(cursor):
     cursor.execute(
         """
@@ -196,6 +230,7 @@ def reset_data_schema(cursor):
             public.chunks,
             public.transcripts,
             public.video_transcripts,
+            public.speakers,
             public.stats,
             public.video_stats,
             public.video_daily_stats,
@@ -668,20 +703,57 @@ def load_video_routing_facts(video_path):
     return load_routing_facts(video_path)
 
 
-def load_video_speakers(video_path):
+def load_video_speaker_details(video_path):
     candidate = existing_speakers_dir(video_path) / "speakers_validated.json"
     payload = load_json(candidate)
-    if not isinstance(payload, dict) or not isinstance(payload.get("speakers"), list):
-        return None
-    speakers = []
+    if not isinstance(payload, dict):
+        return []
+
+    raw_details = payload.get("speaker_details")
+    if not isinstance(raw_details, list):
+        raw_details = [
+            {"speaker": name, "title": ""}
+            for name in payload.get("speakers", [])
+        ]
+
+    details = []
     seen = set()
-    for name in payload["speakers"]:
-        normalized = " ".join(str(name).split()).strip()
-        if not normalized or normalized.casefold() in seen:
+    for item in raw_details:
+        if not isinstance(item, dict):
             continue
-        seen.add(normalized.casefold())
-        speakers.append(normalized)
-    return speakers or None
+        name = " ".join(str(item.get("speaker") or item.get("name") or "").split()).strip()
+        title = " ".join(str(item.get("title") or "").split()).strip()
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        details.append({"name": name, "title": title or None})
+    return details
+
+
+def load_video_speakers(video_path):
+    return [detail["name"] for detail in load_video_speaker_details(video_path)] or None
+
+
+def replace_video_speakers(cursor, video_id, speaker_details):
+    cursor.execute("DELETE FROM speakers WHERE video_id = %s", (video_id,))
+    for detail in speaker_details:
+        cursor.execute(
+            """
+            INSERT INTO speakers (
+                video_id,
+                name,
+                title,
+                data_collected_date
+            )
+            VALUES (%s, %s, %s, now())
+            ON CONFLICT (video_id, name) DO UPDATE SET
+                title = EXCLUDED.title,
+                data_collected_date = now()
+            """,
+            (video_id, detail["name"], detail.get("title")),
+        )
+    return len(speaker_details)
 
 
 def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
@@ -880,7 +952,7 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
         if isinstance(routing_facts.get("video_type"), str)
         else None
     )
-    speakers = load_video_speakers(video_path)
+    speaker_details = load_video_speaker_details(video_path)
     s3_prefix = video_storage_prefix(video_path, root_dir, prefix)
     s3_uri = f"s3://{bucket}/{s3_prefix}" if bucket and s3_prefix else s3_prefix or None
 
@@ -896,10 +968,9 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
             thumbnail_medium_url,
             has_subtitles,
             video_type,
-            speakers,
             s3_uri
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (youtube_video_id) DO UPDATE SET
             title = EXCLUDED.title,
             description = EXCLUDED.description,
@@ -909,7 +980,6 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
             thumbnail_medium_url = EXCLUDED.thumbnail_medium_url,
             has_subtitles = EXCLUDED.has_subtitles,
             video_type = EXCLUDED.video_type,
-            speakers = EXCLUDED.speakers,
             s3_uri = EXCLUDED.s3_uri
         RETURNING id
         """,
@@ -923,11 +993,12 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
             thumbnail_medium_url,
             has_subtitles,
             video_type,
-            speakers,
             s3_uri,
         ),
     )
-    return youtube_video_id, cursor.fetchone()[0], payload
+    video_id = cursor.fetchone()[0]
+    replace_video_speakers(cursor, video_id, speaker_details)
+    return youtube_video_id, video_id, payload
 
 
 def upsert_video_stats(cursor, video_id, payload, snapshot_date=None):

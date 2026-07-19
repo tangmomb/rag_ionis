@@ -26,6 +26,15 @@ from interface.backend.utilities import (
     resolve_cohere_rerank_model,
 )
 
+VIDEO_SPEAKER_NAMES_SQL = """
+ARRAY(
+    SELECT speaker_row.name
+    FROM speakers speaker_row
+    WHERE speaker_row.video_id = v.id
+    ORDER BY speaker_row.id
+)
+"""
+
 
 def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
     formatted_sql = format_sql_pretty(trace.get("sql"))
@@ -48,8 +57,9 @@ def append_speaker_filter_clauses(clauses: list[str], params: list[Any], speaker
             """
             EXISTS (
                 SELECT 1
-                FROM unnest(coalesce(v.speakers, ARRAY[]::text[])) AS speaker_name
-                WHERE unaccent(lower(speaker_name)) LIKE unaccent(lower(%s))
+                FROM speakers speaker_row
+                WHERE speaker_row.video_id = v.id
+                  AND unaccent(lower(speaker_row.name)) LIKE unaccent(lower(%s))
             )
             """
         )
@@ -150,7 +160,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 v.title,
                 v.url,
                 v.thumbnail_medium_url,
-                coalesce(v.speakers, ARRAY[]::text[]),
+                {VIDEO_SPEAKER_NAMES_SQL},
                 v.published_at,
                 v.video_type
             FROM videos v
@@ -311,7 +321,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             v.url,
             v.thumbnail_medium_url,
             {document_expr} AS document_text,
-            coalesce(v.speakers, ARRAY[]::text[]),
+            {VIDEO_SPEAKER_NAMES_SQL},
             ts_rank_cd(
                 to_tsvector('french', coalesce(v.title, '') || ' ' || coalesce({document_expr}, '')),
                 websearch_to_tsquery('french', %s)
@@ -368,7 +378,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             c.chunk_level,
             c.chunk_parent_id,
             c.content,
-            v.speakers,
+            {VIDEO_SPEAKER_NAMES_SQL},
             ts_rank_cd(
                 to_tsvector('french', coalesce(c.content, '')),
                 websearch_to_tsquery('french', %s)
@@ -430,7 +440,7 @@ def fetch_vector_chunks(
             c.chunk_level,
             c.chunk_parent_id,
             c.content,
-            v.speakers,
+            {VIDEO_SPEAKER_NAMES_SQL},
             1 - (c.embedding <=> %s::vector(2000)) AS score
         FROM chunks c
         JOIN videos v ON v.id = c.video_id

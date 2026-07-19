@@ -110,15 +110,67 @@ class IngestionPublicationTests(unittest.TestCase):
                             "Alice Martin",
                             " Alice   Martin ",
                             "Bob Durand",
-                        ]
+                        ],
+                        "speaker_details": [
+                            {
+                                "speaker": "Alice Martin",
+                                "title": "Directrice générale",
+                            },
+                            {
+                                "speaker": " Alice   Martin ",
+                                "title": "Doublon",
+                            },
+                            {
+                                "speaker": "Bob Durand",
+                                "title": "",
+                            },
+                        ],
                     }
                 ),
                 encoding="utf-8",
             )
 
             speakers = update_sql.load_video_speakers(video_dir)
+            details = update_sql.load_video_speaker_details(video_dir)
 
         self.assertEqual(speakers, ["Alice Martin", "Bob Durand"])
+        self.assertEqual(
+            details,
+            [
+                {"name": "Alice Martin", "title": "Directrice générale"},
+                {"name": "Bob Durand", "title": None},
+            ],
+        )
+
+    def test_video_speakers_are_replaced_in_the_relational_table(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def execute(self, sql, params=None) -> None:
+                self.calls.append((sql, params))
+
+        cursor = RecordingCursor()
+
+        count = update_sql.replace_video_speakers(
+            cursor,
+            42,
+            [
+                {"name": "Alice Martin", "title": "Directrice générale"},
+                {"name": "Bob Durand", "title": None},
+            ],
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            cursor.calls[0],
+            ("DELETE FROM speakers WHERE video_id = %s", (42,)),
+        )
+        self.assertIn("INSERT INTO speakers", cursor.calls[1][0])
+        self.assertEqual(
+            cursor.calls[1][1],
+            (42, "Alice Martin", "Directrice générale"),
+        )
 
     def test_chunk_upsert_rejects_unknown_level(self) -> None:
         with self.assertRaises(ValueError):
@@ -339,6 +391,10 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertEqual(statements[2], "CREATE SCHEMA data")
         self.assertIn("SET search_path TO data, public", statements[-1])
         self.assertIn("CREATE TABLE IF NOT EXISTS videos", statements[-1])
+        self.assertIn("CREATE TABLE IF NOT EXISTS speakers", statements[-1])
+        self.assertIn("video_id BIGINT NOT NULL REFERENCES videos(id)", statements[-1])
+        self.assertIn("name TEXT NOT NULL", statements[-1])
+        self.assertIn("title TEXT", statements[-1])
         self.assertIn("is_long_video BOOLEAN GENERATED ALWAYS", statements[-1])
         self.assertNotIn("video_summary", statements[-1])
         self.assertNotIn("DROP SCHEMA IF EXISTS chat", "\n".join(statements))

@@ -82,6 +82,15 @@ class CreateTranscriptChunksTests(unittest.TestCase):
             ["Sophie Vanderpol", "Hugo Jarguin", "Clara Dalmada"],
         )
 
+    def test_transcript_speaker_count_uses_distinct_diarization_labels(self) -> None:
+        transcript = (
+            "[00:00-00:05] SPEAKER_00: Bonjour.\n"
+            "[00:05-00:10] SPEAKER_01: Bienvenue.\n"
+            "[00:10-00:15] SPEAKER_00: Suite.\n"
+        )
+
+        self.assertEqual(speaker_proposal.transcript_speaker_count(transcript), 2)
+
     def test_je_suis_detects_a_speaker(self) -> None:
         transcript = (
             "Je suis Sophie Vanderpol Je suis la Fondatrice d'Olidi. "
@@ -145,6 +154,80 @@ class CreateTranscriptChunksTests(unittest.TestCase):
 
             self.assertEqual(names, ["Hugo Géradin"])
             self.assertEqual(source, ocr_dir / "01_processed_ocr_items.json")
+
+    def test_raw_ocr_texts_are_collected_and_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            raw_dir = video_dir / "outputs" / "ocr" / "raw"
+            raw_dir.mkdir(parents=True)
+            video = video_dir / "video123.mp4"
+            video.touch()
+            (raw_dir / "raw_ocr_footage_frames.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "raw": [
+                                    {
+                                        "rec_texts": [
+                                            "123456",
+                                            "123 567",
+                                            "1234 678",
+                                            " Alice Martin ",
+                                            "IONIS",
+                                            "Alice   Martin",
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (raw_dir / "raw_ocr_graphic_frames.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"raw": [{"rec_texts": ["ionis", "Bob Dupont"]}]}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            texts, sources = speaker_proposal.load_raw_ocr_texts(video)
+
+            self.assertEqual(
+                texts,
+                ["123 567", "1234 678", "Alice Martin", "Bob Dupont"],
+            )
+            self.assertEqual(
+                [source.name for source in sources],
+                [
+                    "raw_ocr_footage_frames.json",
+                    "raw_ocr_graphic_frames.json",
+                ],
+            )
+
+    def test_close_raw_ocr_variants_keep_only_the_longest_text(self) -> None:
+        texts = speaker_proposal.collapse_close_ocr_texts(
+            [
+                "Country Manager France-Benelux-Switzerland-Desigual",
+                "Country Manager France-Benelux-Switzerland - Desigual",
+                "Country Manager France-Benelux-Switzerland",
+                "Country Manager France-Benelux-Switzeriand - Desigual",
+                "Cyril Morcrette",
+            ]
+        )
+
+        self.assertEqual(
+            texts,
+            [
+                "Country Manager France-Benelux-Switzerland - Desigual",
+                "Cyril Morcrette",
+            ],
+        )
 
     def test_chunks_do_not_require_or_store_validated_speakers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -171,8 +171,9 @@ l'éventuelle référence OCR de correction, l'identification des speakers,
 l'ajout des seuls intercalaires dans `transcript_enriched`, les chunks et les
 embeddings.
 
-Les speakers validés restent un attribut de la vidéo et du transcript avec
-speakers. Ils ne sont plus copiés dans les chunks JSON ni dans la table SQL
+Les speakers validés sont reliés à leur vidéo dans la table SQL `speakers`,
+avec leur nom et leur fonction. Ils restent présents dans le transcript avec
+speakers, mais ne sont pas copiés dans les chunks JSON ni dans la table SQL
 `chunks`.
 
 Le planner décide des étapes dans `pipeline/planner.py`, l'executor les exécute dans `pipeline/executor.py`, et `pipeline/catalog.py` relie chaque identifiant à sa fonction Python. Par exemple :

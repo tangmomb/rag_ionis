@@ -1,11 +1,13 @@
 import json
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import (
     existing_ocr_dir,
+    existing_ocr_raw_dir,
     existing_transcripts_dir,
     existing_youtube_api_infos_path,
     relative_to_video_dir,
@@ -21,8 +23,10 @@ OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
 LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
 SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
-SPEAKER_PROPOSAL_VERSION = 2
+SPEAKER_PROPOSAL_VERSION = 7
+MIN_RAW_OCR_TEXT_LENGTH = 7
 OCR_LOWER_THIRD_MIN_TOP = 320
+TRANSCRIPT_SPEAKER_PATTERN = re.compile(r"\bSPEAKER_\d+\b", re.IGNORECASE)
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
 SPEAKER_JE_SUIS_PATTERN = re.compile(r"je suis\s+", re.IGNORECASE)
 SPEAKER_MOI_CEST_PATTERN = re.compile(r"moi\s+c['’]est\s+", re.IGNORECASE)
@@ -289,6 +293,95 @@ def load_ocr_speaker_candidates(video_path):
     return names, path
 
 
+def iter_rec_texts(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in {"rec_text", "rec_texts"}:
+                texts = nested if isinstance(nested, list) else [nested]
+                for text in texts:
+                    if text is not None:
+                        yield str(text)
+            else:
+                yield from iter_rec_texts(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from iter_rec_texts(nested)
+
+
+def are_close_ocr_text_variants(shorter, longer):
+    shorter_key = normalize_match_text(shorter)
+    longer_key = normalize_match_text(longer)
+    if not shorter_key or not longer_key:
+        return False
+    if shorter_key == longer_key:
+        return True
+    if len(shorter_key) < 24 and len(shorter_key.split()) < 4:
+        return False
+    if len(shorter_key) / len(longer_key) < 0.72:
+        return False
+    return (
+        f" {shorter_key} " in f" {longer_key} "
+        or SequenceMatcher(None, shorter_key, longer_key).ratio() >= 0.92
+    )
+
+
+def collapse_close_ocr_texts(texts):
+    ranked = sorted(
+        enumerate(texts),
+        key=lambda item: (
+            -len(normalize_match_text(item[1])),
+            -len(item[1]),
+            item[0],
+        ),
+    )
+    kept = []
+    for index, text in ranked:
+        if any(
+            are_close_ocr_text_variants(text, kept_text)
+            for _kept_index, kept_text in kept
+        ):
+            continue
+        kept.append((index, text))
+    return [text for _index, text in sorted(kept)]
+
+
+def load_raw_ocr_texts(video_path):
+    raw_dir = existing_ocr_raw_dir(video_path)
+    if not raw_dir.is_dir():
+        return [], []
+
+    texts = []
+    seen = set()
+    sources = []
+    for path in sorted(raw_dir.rglob("*.json")):
+        try:
+            payload = read_json(path)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                f"[warn] OCR brut illisible pour {video_path.stem}: "
+                f"{path.name}: {exc}"
+            )
+            continue
+        sources.append(path)
+        for raw_text in iter_rec_texts(payload):
+            text = re.sub(r"\s+", " ", raw_text).strip()
+            key = text.casefold()
+            if len(text) < MIN_RAW_OCR_TEXT_LENGTH or key in seen:
+                continue
+            seen.add(key)
+            texts.append(text)
+    return collapse_close_ocr_texts(texts), sources
+
+
+def transcript_speaker_count(text):
+    return len(
+        {
+            match.group(0).upper()
+            for match in TRANSCRIPT_SPEAKER_PATTERN.finditer(str(text))
+        }
+    )
+
+
 def propose_speakers(text, ocr_names):
     candidates = {}
     transcript_detections = []
@@ -342,9 +435,11 @@ def propose_for_video(
         return None
     expected_source = relative_to_video_dir(source, video_path)
     ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)
+    raw_ocr_texts, raw_ocr_sources = load_raw_ocr_texts(video_path)
     dependencies = [source]
     if ocr_source is not None and ocr_source.exists():
         dependencies.append(ocr_source)
+    dependencies.extend(raw_ocr_sources)
     if target.exists() and not force:
         try:
             existing_payload = read_json(target)
@@ -363,6 +458,7 @@ def propose_for_video(
             f"ou differente"
         )
     text = source.read_text(encoding="utf-8")
+    expected_speaker_count = transcript_speaker_count(text)
     if not text.strip():
         payload = {
             "proposal_version": SPEAKER_PROPOSAL_VERSION,
@@ -370,7 +466,13 @@ def propose_for_video(
             "speakers": [],
             "candidates": [],
             "video_title": video_title(video_path),
+            "expected_speaker_count": expected_speaker_count,
             "source": expected_source,
+            "raw_ocr_texts": raw_ocr_texts,
+            "raw_ocr_sources": [
+                relative_to_video_dir(raw_source, video_path)
+                for raw_source in raw_ocr_sources
+            ],
             "ocr_source": (
                 relative_to_video_dir(ocr_source, video_path)
                 if ocr_source and ocr_source.exists()
@@ -386,7 +488,13 @@ def propose_for_video(
         {
             "proposal_version": SPEAKER_PROPOSAL_VERSION,
             "video_title": video_title(video_path),
+            "expected_speaker_count": expected_speaker_count,
             "source": expected_source,
+            "raw_ocr_texts": raw_ocr_texts,
+            "raw_ocr_sources": [
+                relative_to_video_dir(raw_source, video_path)
+                for raw_source in raw_ocr_sources
+            ],
             "ocr_source": relative_to_video_dir(ocr_source, video_path) if ocr_source and ocr_source.exists() else None,
         }
     )

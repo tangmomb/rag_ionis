@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from pipeline.steps.speakers import validate_speakers as speaker_validation
+from pipeline.options import PipelineOptions
 
 
 class FakeResponses:
@@ -30,6 +32,13 @@ class FakeResponses:
 
 
 class ValidateChunkSpeakersTests(unittest.TestCase):
+    def test_speaker_validation_uses_luna_by_default(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                PipelineOptions().speaker_validation_model,
+                "gpt-5.6-luna",
+            )
+
     def test_request_uses_strict_schema_without_reasoning_override(self) -> None:
         speakers = ["Lou-Anne Corveddu", "Ionis-STM"]
         candidates = [
@@ -38,24 +47,44 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         ]
 
         body, request_log = speaker_validation.build_response_request(
-            "gpt-5.4-nano",
+            "gpt-5.6-luna",
             speakers,
             "Lou-Anne Corvedu présente son métier",
             candidates,
+            ["Lou-Anne Corveddu", "Responsable marketing"],
+            2,
         )
 
         schema = body["text"]["format"]["schema"]
         self.assertNotIn("reasoning", body)
         self.assertNotIn("reasoning", request_log)
         self.assertTrue(body["text"]["format"]["strict"])
-        self.assertEqual(schema["properties"]["valid_speakers"]["items"]["type"], "string")
+        speaker_item = schema["properties"]["speakers"]["items"]
+        self.assertEqual(speaker_item["type"], "object")
+        self.assertEqual(speaker_item["required"], ["speaker", "title"])
+        self.assertFalse(speaker_item["additionalProperties"])
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(request_log["text"], body["text"])
         prompt = body["input"][1]["content"]
         self.assertIn("video_title", prompt)
         self.assertIn("Lou-Anne Corvedu présente son métier", prompt)
-        self.assertIn("ocr_lower_third", prompt)
+        self.assertNotIn('"methods"', prompt)
+        self.assertNotIn("ocr_lower_third", prompt)
+        self.assertIn("ocr_detected_texts", prompt)
+        self.assertIn('"expected_speaker_count": 2', prompt)
+        self.assertIn("contient 2 speaker(s) distinct(s)", prompt)
+        self.assertIn("Lou-Anne Corveddu", prompt)
+        self.assertIn("ajoute-les", prompt)
+        self.assertIn("title est souvent tres proche du nom", prompt)
         self.assertIn("sans jamais retirer", prompt)
+        self.assertLess(
+            prompt.index('"ocr_detected_texts"'),
+            prompt.index('"candidates"'),
+        )
+        self.assertLess(
+            prompt.index('"candidates"'),
+            prompt.index('"video_title"'),
+        )
 
     def test_short_title_name_corrects_first_name_without_dropping_surname(self) -> None:
         valid = speaker_validation.preserve_candidate_name_parts(
@@ -111,6 +140,24 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
 
         self.assertEqual(structured, ["Lou-Anne Corveddu"])
         self.assertEqual(legacy, ["Lou-Anne Corveddu"])
+
+    def test_parser_keeps_speaker_titles(self) -> None:
+        details = speaker_validation.parse_speaker_details(
+            '{"speakers":[{"speaker":"Cyril Morcrette",'
+            '"title":"Country Manager France-Benelux-Switzerland - Desigual"}]}'
+        )
+
+        self.assertEqual(
+            details,
+            [
+                {
+                    "speaker": "Cyril Morcrette",
+                    "title": (
+                        "Country Manager France-Benelux-Switzerland - Desigual"
+                    ),
+                }
+            ],
+        )
 
     def test_model_output_is_kept_without_matching_the_original_candidate(self) -> None:
         valid = speaker_validation.parse_valid_speakers(

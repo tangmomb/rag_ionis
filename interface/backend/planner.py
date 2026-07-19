@@ -300,7 +300,7 @@ def resolve_speaker_filters(
     question: str,
     planner_plan: PlannerPlan,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Ne conserve que les noms réellement présents dans videos.speakers."""
+    """Ne conserve que les noms réellement présents dans la table speakers."""
     candidates = [str(value).strip() for value in planner_plan.speakers if str(value).strip()]
 
     # Pour les questions d'identité, le nom peut être dans query_text_bm25
@@ -326,11 +326,10 @@ def resolve_speaker_filters(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT DISTINCT speaker_name
-                FROM videos v
-                CROSS JOIN LATERAL unnest(coalesce(v.speakers, ARRAY[]::text[])) AS speaker_name
-                WHERE speaker_name IS NOT NULL AND btrim(speaker_name) <> ''
-                ORDER BY speaker_name
+                SELECT DISTINCT name
+                FROM speakers
+                WHERE name IS NOT NULL AND btrim(name) <> ''
+                ORDER BY name
                 """
             )
             database_speakers = [str(row[0]).strip() for row in cursor.fetchall()]

@@ -452,8 +452,9 @@ global
 Les relations logiques entre ces niveaux sont ensuite converties en
 `chunk_parent_id` pendant la synchronisation PostgreSQL.
 Les chunks ne stockent aucune liste de speakers, ni dans leur JSON ni dans la
-table PostgreSQL `chunks`. La liste globale de la vidéo reste lue depuis
-`outputs/speakers/speakers_validated.json` et publiée dans `videos.speakers`.
+table PostgreSQL `chunks`. Les intervenants restent lus depuis
+`outputs/speakers/speakers_validated.json` et sont publiés dans la table
+`speakers` avec leur `video_id`, leur nom et leur fonction.
 
 ### Matrice synthétique
 

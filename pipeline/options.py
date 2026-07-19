@@ -24,7 +24,7 @@ class PipelineOptions:
     speaker_validation_model: str = field(
         default_factory=lambda: os.getenv(
             "CHUNK_SPEAKER_VALIDATION_MODEL",
-            "gpt-5.4-nano",
+            "gpt-5.6-luna",
         )
     )
     chunk_summary_model: str = field(

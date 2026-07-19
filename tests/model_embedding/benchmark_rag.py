@@ -121,7 +121,12 @@ def fetch_database_chunks(connection: Any) -> dict[str, dict[str, Any]]:
             c.content,
             v.title,
             v.url,
-            v.speakers
+            ARRAY(
+                SELECT speaker.name
+                FROM data.speakers speaker
+                WHERE speaker.video_id = v.id
+                ORDER BY speaker.id
+            )
         FROM data.chunks c
         JOIN data.videos v ON v.id = c.video_id
         ORDER BY c.id
@@ -151,7 +156,12 @@ def fetch_lexical_results(connection: Any, question: str, limit: int) -> tuple[l
             c.content,
             v.title,
             v.url,
-            v.speakers,
+            ARRAY(
+                SELECT speaker.name
+                FROM data.speakers speaker
+                WHERE speaker.video_id = v.id
+                ORDER BY speaker.id
+            ),
             ts_rank_cd(
                 to_tsvector('french', coalesce(c.content, '')),
                 websearch_to_tsquery('french', %s)

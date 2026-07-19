@@ -1013,6 +1013,67 @@ class OrchestratorPublicApiTests(unittest.TestCase):
         self.assertEqual(executions[0][0], "frames.extract")
         self.assertIn("transcript.whisper", executions[1])
 
+    def test_force_run_deletes_outputs_before_inspection(self) -> None:
+        from pipeline.orchestrator import run_video
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.make_context(
+                Path(temporary_directory),
+                ready=True,
+            )
+            obsolete = context.outputs_dir / "legacy" / "obsolete.txt"
+            obsolete.parent.mkdir(parents=True)
+            obsolete.write_text("obsolete", encoding="utf-8")
+
+            def inspect(video_path, options):
+                self.assertFalse(context.outputs_dir.exists())
+                return context
+
+            with (
+                patch(
+                    "pipeline.orchestrator.PipelineContext.inspect",
+                    side_effect=inspect,
+                ),
+                patch("pipeline.orchestrator.execute_tasks"),
+                patch("pipeline.orchestrator.write_manifest"),
+            ):
+                run_video(
+                    context.video_path,
+                    PipelineOptions(force=True),
+                    skip_inspection=True,
+                )
+
+            self.assertFalse(obsolete.exists())
+
+    def test_force_dry_run_does_not_delete_outputs(self) -> None:
+        from pipeline.orchestrator import run_video
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.make_context(
+                Path(temporary_directory),
+                ready=True,
+            )
+            preserved = context.outputs_dir / "custom.txt"
+            preserved.parent.mkdir(parents=True)
+            preserved.write_text("keep", encoding="utf-8")
+
+            with (
+                patch(
+                    "pipeline.orchestrator.PipelineContext.inspect",
+                    return_value=context,
+                ),
+                patch("pipeline.orchestrator.execute_tasks"),
+                patch("pipeline.orchestrator.write_manifest"),
+            ):
+                run_video(
+                    context.video_path,
+                    PipelineOptions(force=True),
+                    skip_inspection=True,
+                    dry_run=True,
+                )
+
+            self.assertEqual(preserved.read_text(encoding="utf-8"), "keep")
+
 
 class PipelineCliTests(unittest.TestCase):
     def test_task_command_parses_task_id_and_selector(self) -> None:

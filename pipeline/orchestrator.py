@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from .context import PipelineContext
@@ -7,6 +8,26 @@ from .executor import execute_tasks
 from .manifest import write_manifest
 from .options import PipelineOptions
 from .planner import inspection_plan, processing_plan
+from .support.paths import OUTPUTS_DIR_NAME, outputs_dir
+
+
+def clean_outputs_for_force_run(video_path: str | Path) -> Path:
+    video_path = Path(video_path)
+    video_directory = (
+        video_path.resolve()
+        if video_path.is_dir()
+        else video_path.parent.resolve()
+    )
+    target = outputs_dir(video_path).resolve()
+    expected = video_directory / OUTPUTS_DIR_NAME
+    if target != expected or target.name != OUTPUTS_DIR_NAME:
+        raise RuntimeError(
+            f"Refus de supprimer un dossier outputs inattendu: {target}"
+        )
+    if target.exists():
+        shutil.rmtree(target)
+        print(f"[clean] {target}", flush=True)
+    return target
 
 
 def plan_video(
@@ -61,6 +82,8 @@ def run_video(
     skip_inspection: bool = False,
     dry_run: bool = False,
 ) -> PipelineContext:
+    if options.force and not dry_run:
+        clean_outputs_for_force_run(video_path)
     context = PipelineContext.inspect(video_path, options)
     if not skip_inspection or not context.routing_ready:
         inspection_tasks = inspection_plan()

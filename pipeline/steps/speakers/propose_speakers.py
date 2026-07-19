@@ -275,16 +275,32 @@ def load_ocr_speaker_candidates(video_path):
 
 def propose_speakers(text, ocr_names):
     candidates = {}
+    transcript_detections = []
     for match in SPEAKER_INTRO_PATTERN.finditer(text):
-        add_candidate(candidates, extract_speaker_name(text, match.end()), "transcript_je_m_appelle")
+        transcript_detections.append(
+            (
+                match.start(),
+                extract_speaker_name(text, match.end()),
+                "transcript_je_m_appelle",
+            )
+        )
     for match in SPEAKER_JE_SUIS_PATTERN.finditer(text):
         name = extract_speaker_name(text, match.end())
         if has_multiple_speaker_words(name):
-            add_candidate(candidates, name, "transcript_je_suis")
+            transcript_detections.append(
+                (match.start(), name, "transcript_je_suis")
+            )
     for match in SPEAKER_MOI_CEST_PATTERN.finditer(text):
         name = extract_speaker_name(text, match.end())
         if has_multiple_speaker_words(name):
-            add_candidate(candidates, name, "transcript_moi_c_est")
+            transcript_detections.append(
+                (match.start(), name, "transcript_moi_c_est")
+            )
+    for _position, name, method in sorted(
+        transcript_detections,
+        key=lambda detection: detection[0],
+    ):
+        add_candidate(candidates, name, method)
     for name in ocr_names:
         add_candidate(candidates, name, "ocr_lower_third")
     values = list(candidates.values())

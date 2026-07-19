@@ -12,6 +12,7 @@ from pipeline.support.paths import (
     CANONICAL_TRANSCRIPTS_DIR_NAME,
     consolidate_init_dir,
     existing_chunks_dir,
+    existing_speakers_dir,
     existing_transcripts_dir,
     existing_youtube_api_infos_path,
 )
@@ -264,7 +265,6 @@ def ensure_chunks_schema(cursor):
                 CHECK (chunk_level IN ('global', 'section', 'detail')),
             chunk_parent_id BIGINT,
             content TEXT NOT NULL,
-            speakers TEXT[],
             embedding_model TEXT,
             embedding_dimensions INTEGER,
             embedding vector(2000),
@@ -339,7 +339,6 @@ def ensure_chunks_schema(cursor):
             UNIQUE (video_id, chunk_level, chunk_index)
             """
         )
-    cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers TEXT[]")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_dimensions INTEGER")
     cursor.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(2000)")
@@ -368,6 +367,7 @@ def ensure_chunks_schema(cursor):
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS alert")
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS alert_reason")
     cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS source_file")
+    cursor.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS speakers")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_index ON chunks(chunk_index)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_video_level ON chunks(video_id, chunk_level)")
@@ -669,33 +669,19 @@ def load_video_routing_facts(video_path):
 
 
 def load_video_speakers(video_path):
-    chunks_dir = video_path / "outputs" / "chunks"
-    candidates = (
-        chunks_dir / "transcript_chunks.json",
-    )
-    for candidate in candidates:
-        payload = load_json(candidate)
-        if not isinstance(payload, dict):
+    candidate = existing_speakers_dir(video_path) / "speakers_validated.json"
+    payload = load_json(candidate)
+    if not isinstance(payload, dict) or not isinstance(payload.get("speakers"), list):
+        return None
+    speakers = []
+    seen = set()
+    for name in payload["speakers"]:
+        normalized = " ".join(str(name).split()).strip()
+        if not normalized or normalized.casefold() in seen:
             continue
-        chunks = payload.get("chunks")
-        if not isinstance(chunks, list):
-            continue
-        speakers = []
-        seen = set()
-        for chunk in chunks:
-            meta_data = chunk.get("meta_data", {}) if isinstance(chunk, dict) else {}
-            names = meta_data.get("speakers", []) if isinstance(meta_data, dict) else []
-            if not isinstance(names, list):
-                continue
-            for name in names:
-                normalized = " ".join(str(name).split()).strip()
-                if not normalized or normalized.casefold() in seen:
-                    continue
-                seen.add(normalized.casefold())
-                speakers.append(normalized)
-        if speakers:
-            return speakers
-    return None
+        seen.add(normalized.casefold())
+        speakers.append(normalized)
+    return speakers or None
 
 
 def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
@@ -711,9 +697,6 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
             f"{', '.join(sorted(CHUNK_LEVELS))}."
         )
 
-    meta_data = chunk_payload.get("meta_data", {}) if isinstance(chunk_payload.get("meta_data"), dict) else {}
-    raw_speakers = meta_data.get("speakers", [])
-    speakers = [str(name).strip() for name in raw_speakers if str(name).strip()] if isinstance(raw_speakers, list) else None
     embedding_model = embedding_payload.get("model") if isinstance(embedding_payload, dict) else None
     embedding_values = embedding_payload.get("embedding") if isinstance(embedding_payload, dict) else None
     embedding_literal = embedding_vector_literal(embedding_values)
@@ -732,17 +715,15 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 chunk_level,
                 chunk_parent_id,
                 content,
-                speakers,
                 embedding_model,
                 embedding_dimensions,
                 embedding,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, now())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector, now())
             ON CONFLICT (video_id, chunk_level, chunk_index) DO UPDATE SET
                 chunk_parent_id = EXCLUDED.chunk_parent_id,
                 content = EXCLUDED.content,
-                speakers = EXCLUDED.speakers,
                 embedding_model = EXCLUDED.embedding_model,
                 embedding_dimensions = EXCLUDED.embedding_dimensions,
                 embedding = EXCLUDED.embedding,
@@ -755,7 +736,6 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 chunk_level,
                 chunk_parent_id,
                 content,
-                speakers,
                 embedding_model,
                 embedding_dimensions,
                 embedding_literal,
@@ -770,15 +750,13 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 chunk_level,
                 chunk_parent_id,
                 content,
-                speakers,
                 embedding_model,
                 data_collected_date
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+            VALUES (%s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (video_id, chunk_level, chunk_index) DO UPDATE SET
                 chunk_parent_id = EXCLUDED.chunk_parent_id,
                 content = EXCLUDED.content,
-                speakers = EXCLUDED.speakers,
                 embedding_model = EXCLUDED.embedding_model,
                 data_collected_date = now()
             RETURNING id
@@ -789,7 +767,6 @@ def upsert_chunk(cursor, video_id, chunk_payload, embedding_payload=None):
                 chunk_level,
                 chunk_parent_id,
                 content,
-                speakers,
                 embedding_model,
             ),
         )

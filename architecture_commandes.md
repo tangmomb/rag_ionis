@@ -129,16 +129,18 @@ référence OCR de correction est construite :
 ocr.build_processed → ocr.filter_overlays → ocr.extract_review_candidates
 → ocr.review_other_text → ocr.apply_review
 → transcript.whisper
-→ transcript.extract_ocr → transcript.correct_ocr_spacing
-→ transcript.normalize_brand → transcript.create_plain_ocr
-→ speakers.propose → speakers.validate → transcript.reconcile_ocr
+→ transcript.extract_ocr → transcript.normalize_brand
+→ transcript.create_plain_ocr → transcript.reconcile_ocr
+→ speakers.propose → speakers.validate → transcript.apply_speakers
 → transcript.enrich → transcript.create_plain
 → chunks.create → embeddings.create
 ```
 
 On obtient alors le WhisperX brut, l'unique
 `transcripts_ocr/plain_transcript.txt` réservé aux corrections et le WhisperX
-corrigé après rapprochement. Les intermédiaires OCR timecodés restent dans
+corrigé par `gpt-5.6-luna` après rapprochement. Luna renvoie uniquement le texte
+corrigé de chaque segment ; Python préserve les timecodes, les labels de speaker,
+l'ordre et le nombre de segments. Les intermédiaires OCR timecodés restent dans
 `outputs/ocr/`. Pour une vidéo sans sous-titres,
 `transcript.correct_whisper` remplace `transcript.reconcile_ocr` et les tâches
 OCR de correction de sous-titres ne sont pas ajoutées.
@@ -168,6 +170,10 @@ Elle enchaîne l'inspection, le nettoyage OCR, le transcript WhisperX canonique,
 l'éventuelle référence OCR de correction, l'identification des speakers,
 l'ajout des seuls intercalaires dans `transcript_enriched`, les chunks et les
 embeddings.
+
+Les speakers validés restent un attribut de la vidéo et du transcript avec
+speakers. Ils ne sont plus copiés dans les chunks JSON ni dans la table SQL
+`chunks`.
 
 Le planner décide des étapes dans `pipeline/planner.py`, l'executor les exécute dans `pipeline/executor.py`, et `pipeline/catalog.py` relie chaque identifiant à sa fonction Python. Par exemple :
 
@@ -210,6 +216,11 @@ Tout reconstruire :
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --force
 ```
+
+Cette variante supprime entièrement le dossier `outputs/` de chaque vidéo
+sélectionnée avant de relancer l'inspection et le traitement. Les vidéos et le
+dossier `metadata/` sont conservés. `pipeline task ... --force` reste ciblé et
+ne supprime pas `outputs/`.
 
 Simuler sans exécuter :
 

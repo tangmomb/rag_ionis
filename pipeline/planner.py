@@ -35,7 +35,6 @@ CANONICAL_FINALIZATION_TASKS = (
 
 OCR_TRANSCRIPT_PREPARATION_TASKS = (
     "transcript.extract_ocr",
-    "transcript.correct_ocr_spacing",
     "transcript.normalize_brand",
     "transcript.create_plain_ocr",
 )

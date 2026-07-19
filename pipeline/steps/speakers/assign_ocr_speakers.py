@@ -26,7 +26,7 @@ from pipeline.steps.speakers.correct_speaker_transcripts import (
 )
 
 
-OCR_TIMECODED_CORRECTED_NAME = "ocr_subtitles_timecoded_corrected.txt"
+OCR_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 DIARIZATION_NAME = "speaker_diarization.json"
 OCR_PROCESSED_NAMES = ("corrected_ocr_items.json", "01_processed_ocr_items.json")
@@ -87,7 +87,7 @@ def is_spoken_introduction(text, name):
 def transcript_path(video_path, *, transcripts_dir_name=None):
     return (
         existing_transcripts_dir(video_path, name=transcripts_dir_name)
-        / OCR_TIMECODED_CORRECTED_NAME
+        / OCR_TIMECODED_NAME
     )
 
 

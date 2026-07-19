@@ -182,6 +182,25 @@ def discover_chunk_sources(video_dir: Path) -> list[tuple[Path, Path]]:
     return [(video_base, value[1]) for video_base, value in sorted(selected.items(), key=lambda item: str(item[0]))]
 
 
+def load_video_speakers(video_base: Path) -> tuple[str, ...]:
+    candidates = (
+        video_base / "outputs" / "speakers" / "speakers_validated.json",
+        video_base / "speakers" / "speakers_validated.json",
+    )
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_speakers = payload.get("speakers", []) if isinstance(payload, dict) else []
+        if isinstance(raw_speakers, list):
+            return tuple(
+                str(value).strip()
+                for value in raw_speakers
+                if str(value).strip()
+            )
+    return ()
+
+
 def discover_chunks(video_dir: Path) -> list[Chunk]:
     if not video_dir.is_dir():
         raise NotADirectoryError(f"Dossier de videos introuvable: {video_dir}")
@@ -194,6 +213,7 @@ def discover_chunks(video_dir: Path) -> list[Chunk]:
         if not isinstance(raw_chunks, list):
             continue
         video_key = video_base.name
+        speakers = load_video_speakers(video_base)
         for item in raw_chunks:
             if not isinstance(item, dict):
                 continue
@@ -205,13 +225,6 @@ def discover_chunks(video_dir: Path) -> list[Chunk]:
             if key in seen_keys:
                 raise ValueError(f"Cle de chunk dupliquee {key}: {seen_keys[key]} et {source}")
             seen_keys[key] = str(source)
-            meta_data = item.get("meta_data") if isinstance(item.get("meta_data"), dict) else {}
-            raw_speakers = meta_data.get("speakers") or item.get("speakers") or []
-            speakers = tuple(
-                str(value).strip()
-                for value in raw_speakers
-                if str(value).strip()
-            ) if isinstance(raw_speakers, list) else ()
             chunks.append(
                 Chunk(
                     key=key,

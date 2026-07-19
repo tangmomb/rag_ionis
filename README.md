@@ -236,7 +236,9 @@ une tâche réussie n'est convertie en `cached` que si sa postcondition déclar�
 est encore vraie ; sans postcondition, tous ses artefacts doivent exister, les
 dossiers doivent être non vides et leur empreinte doit être inchangée. Une
 invalidation rejoue aussi les tâches aval. La taille et la date de modification
-de la vidéo participent au hash du plan. `--force` désactive toute reprise.
+de la vidéo participent au hash du plan. `pipeline run --force` supprime d'abord
+entièrement `outputs/`, puis reconstruit la chaîne sans reprise. En revanche,
+`pipeline task ... --force` ne force que la tâche demandée.
 
 ### Sources de vérité
 
@@ -364,12 +366,12 @@ Avec des sous-titres détectés, l'OCR est d'abord extrait et nettoyé, puis une
 ```text
 transcript.whisper
 transcript.extract_ocr
-transcript.correct_ocr_spacing
 transcript.normalize_brand
 transcript.create_plain_ocr
+transcript.reconcile_ocr
 speakers.propose
 speakers.validate
-transcript.reconcile_ocr
+transcript.apply_speakers
 transcript.enrich
 transcript.create_plain
 ```
@@ -382,10 +384,13 @@ Cette route conserve trois artefacts distincts :
 | `outputs/transcripts_ocr/plain_transcript.txt` | Unique transcript OCR public, utilisé seulement comme référence de correction. |
 | `outputs/transcripts_whisper/transcript_2_corrected.txt` | Transcript canonique corrigé après rapprochement WhisperX/OCR. |
 
-Le rapprochement cherche dans le plain transcript OCR les graphies proches des
-mots produits par WhisperX. Il privilégie les formes distinctives — noms
-composés, tirets et acronymes — par exemple `ionis stm` devient `Ionis-STM`.
-Les remplacements sont consignés dans `transcript_2_corrections.tsv`.
+Le rapprochement est confié à `gpt-5.6-luna`. Luna reçoit tous les segments
+WhisperX et le plain transcript OCR, puis renvoie le texte corrigé de chaque
+segment. Elle peut ainsi corriger les noms, marques, mots mal entendus, mots
+manquants, accords et pluriels sans dépendre d'un simple seuil de similarité.
+Le code Python conserve lui-même les timecodes, les identifiants de speaker,
+l'ordre et le nombre de segments. Les remplacements sont consignés dans
+`transcript_2_corrections.tsv`.
 
 Les cinq artefacts canoniques sont :
 
@@ -412,14 +417,14 @@ Lorsque `has_subtitles=true`, le plan construit une référence OCR minimale :
 
 ```text
 transcript.extract_ocr
-transcript.correct_ocr_spacing
 transcript.normalize_brand
 transcript.create_plain_ocr
 transcript.reconcile_ocr
 ```
 
-Les fichiers timecodés et les états batch restent des intermédiaires internes
-dans `outputs/ocr/`. `outputs/transcripts_ocr/` contient exclusivement
+Le fichier OCR timecodé reste un intermédiaire interne dans `outputs/ocr/`.
+Il n'est plus envoyé à GPT pour corriger ses espaces.
+`outputs/transcripts_ocr/` contient exclusivement
 `plain_transcript.txt`; toute ancienne variante présente dans ce dossier est
 supprimée lors de sa régénération. Il n'existe plus de transcript OCR enrichi ni
 de transcript OCR avec speakers. Ce fichier n'est consommé ni par le RAG ni par
@@ -446,6 +451,9 @@ global
 
 Les relations logiques entre ces niveaux sont ensuite converties en
 `chunk_parent_id` pendant la synchronisation PostgreSQL.
+Les chunks ne stockent aucune liste de speakers, ni dans leur JSON ni dans la
+table PostgreSQL `chunks`. La liste globale de la vidéo reste lue depuis
+`outputs/speakers/speakers_validated.json` et publiée dans `videos.speakers`.
 
 ### Matrice synthétique
 
@@ -712,13 +720,13 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 
 | Option | Effet |
 |---|---|
-| `--force` | Désactive la reprise par checkpoint et demande aux handlers de régénérer leurs sorties. |
+| `--force` | Avec `run`, supprime entièrement `outputs/` avant de tout reconstruire. Avec `task`, force uniquement la tâche demandée. |
 | `--dry-run` | Affiche les handlers sélectionnés sans les exécuter. |
 | `--openai-mode normal|batch` | Choisit le mode global des appels OpenAI compatibles. |
 | `--review-scope duo|all` | En mode `duo`, limite la revue des textes visuels à une image par vidéo. |
 | `--image-review-model` | Remplace le modèle de revue des textes visuels. |
-| `--speaker-validation-model` | Remplace le modèle utilisé pour valider les speakers et corriger les espaces OCR. |
-| `--correction-mode` | Règle le niveau de correction Whisper : `conservative`, `balanced` ou `aggressive`. |
+| `--speaker-validation-model` | Remplace le modèle utilisé pour valider les speakers. |
+| `--correction-mode` | Règle la correction Whisper par OCR visuel des vidéos sans sous-titres. La route avec sous-titres utilise Luna. |
 | `--frame-interval` | Intervalle en secondes entre les frames extraites. |
 | `--details-per-section` | Nombre de chunks détail regroupés dans une section pour les vidéos longues. |
 
@@ -757,7 +765,8 @@ la première tâche incomplète ou invalide :
 ```
 
 Si un fichier enregistré a disparu, sa tâche est réexécutée automatiquement.
-Utiliser `--force` uniquement lorsqu'il faut reconstruire toutes les sorties :
+Utiliser `run --force` uniquement lorsqu'il faut supprimer puis reconstruire
+toutes les sorties. Associé à `--dry-run`, il ne supprime rien :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection --force
@@ -918,6 +927,7 @@ Synchroniser les métadonnées, transcripts et chunks dans PostgreSQL :
 ```
 
 Les chunks longs sont stockés avec les niveaux `detail`, `section` et `global`.
+Ils ne dupliquent pas les speakers de la vidéo.
 Les embeddings utilisent `text-embedding-3-large` en 2000 dimensions.
 
 ## Base de données

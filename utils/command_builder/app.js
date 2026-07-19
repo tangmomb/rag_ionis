@@ -12,7 +12,6 @@ const TASKS = [
   ["ocr.review_other_text", "Vérifier les autres textes"],
   ["ocr.apply_review", "Appliquer la vérification OCR"],
   ["transcript.extract_ocr", "Construire le transcript OCR"],
-  ["transcript.correct_ocr_spacing", "Corriger les espaces du transcript OCR"],
   ["transcript.normalize_brand", "Normaliser Ionis-STM"],
   ["transcript.whisper", "Transcrire l’audio avec WhisperX"],
   ["speakers.propose", "Proposer les speakers"],
@@ -53,7 +52,7 @@ const commonPipelineFields = [
     help: "Ajouté seulement si tu modifies le dossier par défaut.",
     full: true,
   },
-  { id: "force", label: "Forcer la régénération", flag: "--force", type: "boolean", help: "Ignore les checkpoints existants." },
+  { id: "force", label: "Forcer la régénération", flag: "--force", type: "boolean", help: "Avec run, supprime outputs/ avant reconstruction. Avec task, force seulement la tâche." },
   { id: "dryRun", label: "Simulation", flag: "--dry-run", type: "boolean", help: "Affiche ce qui serait exécuté." },
   {
     id: "openaiMode",

@@ -218,21 +218,18 @@ def chunks_at_level(payload: dict[str, Any], level: str) -> list[dict[str, Any]]
     ]
 
 
-def _speakers_for_chunks(chunks: Iterable[dict[str, Any]]) -> list[str]:
-    speakers: list[str] = []
-    seen: set[str] = set()
-    for chunk in chunks:
-        meta_data = chunk.get("meta_data")
-        raw_speakers = meta_data.get("speakers", []) if isinstance(meta_data, dict) else []
-        if not isinstance(raw_speakers, list):
-            continue
-        for speaker in raw_speakers:
-            normalized = " ".join(str(speaker).split()).strip()
-            key = normalized.casefold()
-            if normalized and key not in seen:
-                seen.add(key)
-                speakers.append(normalized)
-    return speakers
+def _without_speaker_metadata(chunk: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(chunk)
+    cleaned.pop("speakers", None)
+    meta_data = cleaned.get("meta_data")
+    if isinstance(meta_data, dict):
+        cleaned_meta_data = dict(meta_data)
+        cleaned_meta_data.pop("speakers", None)
+        if cleaned_meta_data:
+            cleaned["meta_data"] = cleaned_meta_data
+        else:
+            cleaned.pop("meta_data", None)
+    return cleaned
 
 
 def _section_groups(
@@ -288,7 +285,6 @@ def summarize_sections(
             max_chars=DEFAULT_SECTION_MAX_CHARS,
             model=model,
         )
-        speakers = _speakers_for_chunks(group)
         sections.append(
             {
                 "chunk_index": section_index,
@@ -296,7 +292,6 @@ def summarize_sections(
                 "chunk_parent_id": None,
                 "chunk_parent": None,
                 "meta_data": {
-                    "speakers": speakers,
                     "summary_strategy": SUMMARY_STRATEGY,
                     "detail_chunk_indexes": [chunk.get("chunk_index") for chunk in group],
                 },
@@ -305,7 +300,7 @@ def summarize_sections(
             }
         )
         for detail in group:
-            updated = dict(detail)
+            updated = _without_speaker_metadata(detail)
             updated["chunk_parent_id"] = None
             updated["chunk_parent"] = {
                 "chunk_level": "section",
@@ -364,7 +359,6 @@ def summarize_video(
         "chunk_parent_id": None,
         "chunk_parent": None,
         "meta_data": {
-            "speakers": _speakers_for_chunks(sections),
             "summary_strategy": SUMMARY_STRATEGY,
             "section_chunk_indexes": [chunk.get("chunk_index") for chunk in sections],
         },
@@ -374,7 +368,7 @@ def summarize_video(
 
     updated_sections: list[dict[str, Any]] = []
     for section in sections:
-        updated = dict(section)
+        updated = _without_speaker_metadata(section)
         updated["chunk_parent_id"] = None
         updated["chunk_parent"] = {
             "chunk_level": "global",
@@ -382,7 +376,10 @@ def summarize_video(
         }
         updated_sections.append(updated)
 
-    details = chunks_at_level(payload, "detail")
+    details = [
+        _without_speaker_metadata(detail)
+        for detail in chunks_at_level(payload, "detail")
+    ]
     payload["chunks"] = [global_chunk, *updated_sections, *details]
     payload["hierarchy"] = {
         **hierarchy,

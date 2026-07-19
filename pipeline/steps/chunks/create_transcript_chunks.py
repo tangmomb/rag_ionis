@@ -1,11 +1,9 @@
-import json
 import re
 from pathlib import Path
 
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import (
     chunks_dir,
-    existing_speakers_dir,
     existing_transcripts_dir,
     output_is_current,
     relative_to_video_dir,
@@ -20,7 +18,6 @@ PLAIN_NAME = TRANSCRIPT_PLAIN_NAME
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
 LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 CHUNKS_NAME = "transcript_chunks.json"
 OBSOLETE_VALIDATED_CHUNKS_NAME = "transcript_chunks_speaker_validated.json"
 DEFAULT_MAX_CHARS = 1000
@@ -69,27 +66,8 @@ def source_text_path(video_path, *, transcripts_dir_name=None):
     return ocr_subtitle if ocr_subtitle.exists() else None
 
 
-def validated_speakers_path(video_path):
-    return existing_speakers_dir(video_path) / SPEAKERS_VALIDATED_NAME
-
-
 def chunks_path(video_path):
     return chunks_dir(video_path) / CHUNKS_NAME
-
-
-def load_validated_speakers(video_path):
-    source = validated_speakers_path(video_path)
-    if not source.exists():
-        return None
-    try:
-        payload = read_json(source)
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"[warn] JSON speakers invalide pour {video_path.stem}: {exc}")
-        return None
-    speakers = payload.get("speakers")
-    if not isinstance(speakers, list):
-        return None
-    return [" ".join(str(name).split()).strip() for name in speakers if str(name).strip()]
 
 
 def word_count(text):
@@ -124,7 +102,7 @@ def split_into_chunks(text, max_chars=DEFAULT_MAX_CHARS):
     return chunks
 
 
-def build_chunks_payload(text, speakers, profile="short"):
+def build_chunks_payload(text, profile="short"):
     if profile not in CHUNK_PROFILES:
         raise ValueError(f"Profil de chunks invalide: {profile!r}")
     chunks = split_into_chunks(text)
@@ -139,7 +117,6 @@ def build_chunks_payload(text, speakers, profile="short"):
                 "chunk_index": index + 1,
                 "chunk_level": "detail",
                 "chunk_parent_id": None,
-                "meta_data": {"speakers": speakers},
                 "content": chunk,
                 "alert": word_count(chunk) > ALERT_WORD_THRESHOLD,
                 "alert_reason": "over_3000_words" if word_count(chunk) > ALERT_WORD_THRESHOLD else None,
@@ -176,34 +153,28 @@ def create_chunks(
         video_path,
         transcripts_dir_name=transcripts_dir_name,
     )
-    speakers_source = validated_speakers_path(video_path)
     if source is None:
         print(f"[skip] transcript introuvable pour: {video_path.stem}")
-        return None
-    speakers = load_validated_speakers(video_path)
-    if speakers is None:
-        print(f"[skip] speakers valides introuvables ou invalides: {speakers_source}")
         return None
     if (
         target.exists()
         and not force
-        and output_is_current(target, (source, speakers_source))
+        and output_is_current(target, (source,))
         and output_matches_profile(target, profile)
     ):
         print(f"[skip] {target.name} existe deja")
         return target
     if target.exists() and not force:
-        print(f"[regen] {target.name}: profil, transcript ou speakers plus recents")
+        print(f"[regen] {target.name}: profil ou transcript plus recent")
     normalized = normalize_text(source.read_text(encoding="utf-8"))
     if not normalized:
         print(f"[skip] transcript vide: {source}")
         return None
-    payload = build_chunks_payload(normalized, speakers, profile=profile)
+    payload = build_chunks_payload(normalized, profile=profile)
     payload["source"] = relative_to_video_dir(source, video_path)
-    payload["speakers_source"] = relative_to_video_dir(speakers_source, video_path)
     write_json(target, payload)
     obsolete = target.parent / OBSOLETE_VALIDATED_CHUNKS_NAME
     if force and obsolete.exists():
         obsolete.unlink()
-    print(f"[ok] {target} ({len(payload['chunks'])} chunks, {len(speakers)} speaker(s))")
+    print(f"[ok] {target} ({len(payload['chunks'])} chunks)")
     return target

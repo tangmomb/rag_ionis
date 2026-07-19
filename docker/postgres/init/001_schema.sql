@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS chunks (
         CHECK (chunk_level IN ('global', 'section', 'detail')),
     chunk_parent_id BIGINT,
     content TEXT NOT NULL,
-    speakers TEXT[],
     embedding_model TEXT,
     embedding_dimensions INTEGER,
     embedding vector(2000),

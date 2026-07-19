@@ -68,6 +68,20 @@ class CreateTranscriptChunksTests(unittest.TestCase):
 
         self.assertEqual(speakers, ["Hugo Géradain", "Clara De Almeida"])
 
+    def test_speaker_proposals_follow_transcript_order_across_detection_types(self) -> None:
+        transcript = (
+            "Je suis Sophie Vanderpol, Fondatrice. "
+            "Je m'appelle Hugo Jarguin, Responsable. "
+            "Moi c'est Clara Dalmada."
+        )
+
+        speakers = speaker_proposal.propose_speakers(transcript, [])["speakers"]
+
+        self.assertEqual(
+            speakers,
+            ["Sophie Vanderpol", "Hugo Jarguin", "Clara Dalmada"],
+        )
+
     def test_je_suis_detects_a_speaker(self) -> None:
         transcript = (
             "Je suis Sophie Vanderpol Je suis la Fondatrice d'Olidi. "
@@ -85,6 +99,26 @@ class CreateTranscriptChunksTests(unittest.TestCase):
         speakers = speaker_proposal.propose_speakers(transcript, [])['speakers']
 
         self.assertEqual(speakers, ["Alice Martin"])
+
+    def test_chunks_do_not_require_or_store_validated_speakers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            video = root / "video123.mp4"
+            transcript = root / "plain_transcript.txt"
+            target = root / "transcript_chunks.json"
+            video.touch()
+            transcript.write_text("Contenu canonique WhisperX.", encoding="utf-8")
+
+            with (
+                patch.object(chunk_creation, "source_text_path", return_value=transcript),
+                patch.object(chunk_creation, "chunks_path", return_value=target),
+            ):
+                result = chunk_creation.create_chunks(video, force=True)
+
+            payload = json.loads(result.read_text(encoding="utf-8"))
+            self.assertNotIn("speakers_source", payload)
+            self.assertNotIn("speakers", payload["chunks"][0])
+            self.assertNotIn("meta_data", payload["chunks"][0])
 
     def test_each_speaker_stage_writes_its_own_json_before_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -123,7 +157,6 @@ class CreateTranscriptChunksTests(unittest.TestCase):
 
             with (
                 patch.object(chunk_creation, "source_text_path", return_value=transcript),
-                patch.object(chunk_creation, "validated_speakers_path", return_value=validated),
                 patch.object(chunk_creation, "chunks_path", return_value=chunks),
             ):
                 chunk_creation.create_chunks(video, force=True)
@@ -131,10 +164,9 @@ class CreateTranscriptChunksTests(unittest.TestCase):
             validated_payload = json.loads(validated.read_text(encoding="utf-8"))
             chunks_payload = json.loads(chunks.read_text(encoding="utf-8"))
             self.assertEqual(validated_payload["speakers"], ["Sophie Vanderpol"])
-            self.assertEqual(
-                chunks_payload["chunks"][0]["meta_data"]["speakers"],
-                ["Sophie Vanderpol"],
-            )
+            self.assertNotIn("speakers_source", chunks_payload)
+            self.assertNotIn("speakers", chunks_payload["chunks"][0])
+            self.assertNotIn("meta_data", chunks_payload["chunks"][0])
             self.assertEqual(chunks_payload["chunks"][0]["chunk_level"], "detail")
             self.assertIsNone(chunks_payload["chunks"][0]["chunk_parent_id"])
 

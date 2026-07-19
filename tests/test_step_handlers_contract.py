@@ -31,7 +31,7 @@ class StepHandlerContractTests(unittest.TestCase):
         )
 
     def test_every_catalog_handler_explicitly_returns_task_result(self) -> None:
-        self.assertEqual(len(TASKS), 28)
+        self.assertEqual(len(TASKS), 27)
         for task_id, spec in TASKS.items():
             with self.subTest(task_id=task_id):
                 self.assertIs(

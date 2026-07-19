@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from pipeline.steps.transcripts import create_plain_transcript as plain_transcript
+from pipeline.steps.transcripts import normalize_ionis_stm as brand_normalization
 
 
 class CreatePlainTranscriptTests(unittest.TestCase):
@@ -40,6 +41,41 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             target = plain_transcript.convert_file(video, source, force=True)
 
             self.assertEqual(target.read_text(encoding="utf-8"), "Bonjour.\n")
+
+    def test_empty_whisper_uses_graphic_and_others_from_filtered_ocr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            transcript_dir = video_dir / "outputs" / "transcripts_whisper"
+            ocr_dir = video_dir / "outputs" / "ocr"
+            transcript_dir.mkdir(parents=True)
+            ocr_dir.mkdir(parents=True)
+            source = transcript_dir / plain_transcript.TRANSCRIPT_3_WITH_SPEAKERS_NAME
+            source.write_text("\n", encoding="utf-8")
+            (ocr_dir / "02_filtered_ocr_overlays.json").write_text(
+                """
+                {
+                  "kinds": {
+                    "graphic": {"00:05": "Titre graphique"},
+                    "others": {
+                      "00:03": "Premier texte",
+                      "00:08": "Dernier texte"
+                    },
+                    "subtitle": {"00:01": "Sous-titre exclu"}
+                  }
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            target = plain_transcript.convert_file(video_dir, source, force=True)
+
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                (
+                    "texte présent dans la vidéo : Premier texte "
+                    "Titre graphique Dernier texte\n"
+                ),
+            )
 
     def test_validated_person_name_prefix_is_removed_from_plain_transcript(self) -> None:
         text = (
@@ -96,7 +132,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             public_ocr = video_dir / "outputs" / "transcripts_ocr"
             internal_ocr.mkdir(parents=True)
             public_ocr.mkdir(parents=True)
-            source = internal_ocr / "ocr_subtitles_timecoded_corrected.txt"
+            source = internal_ocr / "ocr_subtitles_timecoded.txt"
             source.write_text(
                 "[00:01] Bonjour Ionis-STM.\n[00:03] Suite.\n",
                 encoding="utf-8",
@@ -110,7 +146,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            target = plain_transcript.convert_ocr_correction_file(
+            target = plain_transcript.convert_ocr_file(
                 video,
                 source,
                 force=True,
@@ -124,6 +160,28 @@ class CreatePlainTranscriptTests(unittest.TestCase):
                 target.read_text(encoding="utf-8"),
                 "Bonjour Ionis-STM. Suite.\n",
             )
+
+    def test_brand_normalization_uses_raw_ocr_and_removes_spacing_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            video_dir.mkdir()
+            video = video_dir / "video123.mp4"
+            video.touch()
+            ocr_dir = video_dir / "outputs" / "ocr"
+            ocr_dir.mkdir(parents=True)
+            raw = ocr_dir / "ocr_subtitles_timecoded.txt"
+            obsolete = ocr_dir / "ocr_subtitles_timecoded_corrected.txt"
+            raw.write_text("[00:01] Bonjour Ionis STM.\n", encoding="utf-8")
+            obsolete.write_text("ancien résultat GPT", encoding="utf-8")
+
+            result = brand_normalization.process_video(video, force=True)
+
+            self.assertTrue(result)
+            self.assertEqual(
+                raw.read_text(encoding="utf-8"),
+                "[00:01] Bonjour Ionis-STM.\n",
+            )
+            self.assertFalse(obsolete.exists())
 
 
 if __name__ == "__main__":

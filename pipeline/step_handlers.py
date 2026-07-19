@@ -457,49 +457,6 @@ def extract_ocr_transcript(context: PipelineContext) -> TaskResult:
     )
 
 
-def correct_ocr_spacing(context: PipelineContext) -> TaskResult:
-    from pipeline.steps.transcripts.correct_ocr_subtitle_spacing import (
-        openai_client,
-        process_video_batch,
-        process_video_live,
-        subtitle_target_path,
-    )
-    from pipeline.support.paths import OCR_DIR_NAME
-
-    target = subtitle_target_path(
-        context.video_path,
-        transcripts_dir_name=OCR_DIR_NAME,
-    )
-    before = _snapshot((target,))
-    if context.options.openai_mode == "batch":
-        result = process_video_batch(
-            context.options.speaker_validation_model,
-            context.video_path,
-            force=context.force_rebuild,
-            wait=True,
-            transcripts_dir_name=OCR_DIR_NAME,
-        )
-    else:
-        result = process_video_live(
-            openai_client(),
-            context.options.speaker_validation_model,
-            context.video_path,
-            force=context.force_rebuild,
-            transcripts_dir_name=OCR_DIR_NAME,
-        )
-    return _artifact_result(
-        context,
-        result,
-        artifacts=(*_paths_from(result), target),
-        state_paths=(target,),
-        before=before,
-        success_reason="Espacement du transcript OCR corrige.",
-        cached_reason="Espacement du transcript OCR deja corrige.",
-        missing_reason="Correction impossible; transcript OCR timecode absent.",
-        missing_is_skip=True,
-    )
-
-
 def normalize_brand(context: PipelineContext) -> TaskResult:
     from pipeline.steps.transcripts.normalize_ionis_stm import (
         process_video,
@@ -520,7 +477,7 @@ def normalize_brand(context: PipelineContext) -> TaskResult:
         before=before,
         success_reason="Marque Ionis-STM normalisee.",
         cached_reason="Normalisation Ionis-STM deja satisfaite.",
-        missing_reason="Normalisation impossible; transcript OCR corrige absent.",
+        missing_reason="Normalisation impossible; transcript OCR timecode absent.",
         missing_is_skip=True,
     )
 
@@ -704,7 +661,6 @@ def reconcile_whisper_with_ocr(context: PipelineContext) -> TaskResult:
     result = reconcile_file(
         context.video_path,
         force=context.force_rebuild,
-        mode=context.options.correction_mode,
     )
     return _artifact_result(
         context,
@@ -826,7 +782,7 @@ def create_plain_transcript(context: PipelineContext) -> TaskResult:
 
 def create_plain_ocr(context: PipelineContext) -> TaskResult:
     from pipeline.steps.transcripts.create_plain_transcript import (
-        convert_ocr_correction_file,
+        convert_ocr_file,
         ocr_plain_output_path,
     )
     from pipeline.steps.transcripts.normalize_ionis_stm import transcript_path
@@ -834,11 +790,11 @@ def create_plain_ocr(context: PipelineContext) -> TaskResult:
     source = transcript_path(context.video_path)
     if not source.exists():
         return TaskResult.skipped(
-            "Aucun transcript OCR interne corrige n'est disponible."
+            "Aucun transcript OCR interne timecode n'est disponible."
         )
     target = ocr_plain_output_path(context.video_path)
     before = _snapshot((target,))
-    result = convert_ocr_correction_file(
+    result = convert_ocr_file(
         context.video_path,
         source,
         force=context.force_rebuild,
@@ -878,7 +834,7 @@ def create_chunks(context: PipelineContext) -> TaskResult:
         before=before,
         success_reason=f"Chunks {context.chunk_strategy} crees.",
         cached_reason=f"Chunks {context.chunk_strategy} deja a jour.",
-        missing_reason="Chunks non produits; transcript ou speakers valides absents.",
+        missing_reason="Chunks non produits; transcript absent.",
     )
 
 

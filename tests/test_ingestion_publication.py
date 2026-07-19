@@ -95,7 +95,30 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertTrue(inserted)
         sql, params = cursor.calls[0]
         self.assertIn("ON CONFLICT (video_id, chunk_level, chunk_index)", sql)
+        self.assertNotIn("speakers", sql)
         self.assertEqual(params[:4], (12, 3, "detail", None))
+
+    def test_video_speakers_are_loaded_from_validation_not_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            video_dir = Path(temporary_dir) / "video123"
+            speakers_dir = video_dir / "outputs" / "speakers"
+            speakers_dir.mkdir(parents=True)
+            (speakers_dir / "speakers_validated.json").write_text(
+                json.dumps(
+                    {
+                        "speakers": [
+                            "Alice Martin",
+                            " Alice   Martin ",
+                            "Bob Durand",
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            speakers = update_sql.load_video_speakers(video_dir)
+
+        self.assertEqual(speakers, ["Alice Martin", "Bob Durand"])
 
     def test_chunk_upsert_rejects_unknown_level(self) -> None:
         with self.assertRaises(ValueError):

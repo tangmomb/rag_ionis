@@ -84,7 +84,13 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
             video.write_bytes(b"")
             response = SimpleNamespace(data=[SimpleNamespace(embedding=[0.0] * 2000)])
             client = SimpleNamespace(embeddings=SimpleNamespace(create=Mock(return_value=response)))
-            chunks = [{"chunk_index": 1, "content": "Texte du chunk", "meta_data": {}}]
+            chunks = [
+                {
+                    "chunk_index": 1,
+                    "content": "Texte du chunk",
+                    "meta_data": {"speakers": ["Alice Martin"]},
+                }
+            ]
 
             with (
                 patch.object(chunk_embeddings, "chunks_path", return_value=source),
@@ -110,6 +116,51 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
             self.assertEqual(len(payload["embedding"]), 2000)
             self.assertEqual(payload["chunk_level"], "detail")
             self.assertIsNone(payload["chunk_parent_id"])
+            self.assertNotIn("speakers", payload)
+            self.assertNotIn("speakers", payload.get("meta_data", {}))
+
+    def test_cached_embedding_speaker_metadata_is_removed_without_api_call(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "chunks.json"
+            source.write_text("{}", encoding="utf-8")
+            target = root / "chunk_01_embedding.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "model": DEFAULT_EMBEDDING_MODEL,
+                        "content": "Texte du chunk",
+                        "meta_data": {
+                            "speakers": ["Alice Martin"],
+                            "summary_strategy": "luna",
+                        },
+                        "embedding": [0.0] * DEFAULT_EMBEDDING_DIMENSIONS,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            video = root / "video.mp4"
+            video.touch()
+            client = SimpleNamespace(embeddings=SimpleNamespace(create=Mock()))
+            chunks = [{"chunk_index": 1, "content": "Texte du chunk"}]
+
+            with (
+                patch.object(chunk_embeddings, "chunks_path", return_value=source),
+                patch.object(chunk_embeddings, "load_chunks", return_value=({}, chunks)),
+                patch.object(chunk_embeddings, "chunks_dir", return_value=root),
+                patch.object(chunk_embeddings, "embedding_path", return_value=target),
+            ):
+                result = chunk_embeddings.create_embeddings(
+                    client,
+                    DEFAULT_EMBEDDING_MODEL,
+                    DEFAULT_EMBEDDING_DIMENSIONS,
+                    video,
+                )
+
+            client.embeddings.create.assert_not_called()
+            self.assertIsNone(result)
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(payload["meta_data"], {"summary_strategy": "luna"})
 
 
 if __name__ == "__main__":

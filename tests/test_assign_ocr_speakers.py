@@ -26,7 +26,7 @@ class AssignOcrSpeakersTests(unittest.TestCase):
         transcript_dir.mkdir(parents=True)
         speakers_dir.mkdir(parents=True)
         ocr_dir.mkdir(parents=True)
-        (transcript_dir / "ocr_subtitles_timecoded_corrected.txt").write_text(
+        (transcript_dir / "ocr_subtitles_timecoded.txt").write_text(
             transcript,
             encoding="utf-8",
         )
@@ -54,7 +54,7 @@ class AssignOcrSpeakersTests(unittest.TestCase):
                 video.parent
                 / "outputs"
                 / "transcripts_ocr"
-                / "ocr_subtitles_timecoded_corrected.txt"
+                / "ocr_subtitles_timecoded.txt"
             ).read_text(encoding="utf-8")
             self.assertEqual(
                 transcript,
@@ -111,7 +111,7 @@ class AssignOcrSpeakersTests(unittest.TestCase):
                 video.parent
                 / "outputs"
                 / "transcripts_ocr"
-                / "ocr_subtitles_timecoded_corrected.txt"
+                / "ocr_subtitles_timecoded.txt"
             ).read_text(encoding="utf-8")
             self.assertIn("[00:01] Alice Martin:", transcript)
             self.assertIn("[00:11] Bob Durand:", transcript)

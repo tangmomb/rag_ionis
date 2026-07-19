@@ -5,8 +5,15 @@ from pipeline.support.paths import (
 )
 
 
-SOURCE_NAME = "ocr_subtitles_timecoded_corrected.txt"
-LEGACY_SOURCE_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
+SOURCE_NAME = "ocr_subtitles_timecoded.txt"
+LEGACY_SOURCE_SUFFIX = "_ocr_subtitle_timecodes.txt"
+OBSOLETE_SPACING_ARTIFACTS = (
+    "ocr_subtitles_timecoded_corrected.txt",
+    "ocr_spacing_batch_state.json",
+    "ocr_spacing_batch_input.jsonl",
+    "ocr_spacing_batch_output.jsonl",
+    "ocr_spacing_batch_error.jsonl",
+)
 IONIS_STM_PATTERNS = (
     re.compile(r"(?i)\bl['’]?\s*ionis\s*-\s*stm\b"),
     re.compile(r"(?i)\bl['’]?\s*ionis\s+stm\b"),
@@ -46,8 +53,12 @@ def normalize_ionis_stm(text):
 
 def process_video(video_path, force=False):
     target = transcript_path(video_path)
+    for name in OBSOLETE_SPACING_ARTIFACTS:
+        obsolete = existing_ocr_dir(video_path) / name
+        if obsolete.exists():
+            obsolete.unlink()
     if not target.exists():
-        print(f"[skip] transcript OCR corrige introuvable: {target}")
+        print(f"[skip] transcript OCR timecode introuvable: {target}")
         return False
 
     original = target.read_text(encoding="utf-8")

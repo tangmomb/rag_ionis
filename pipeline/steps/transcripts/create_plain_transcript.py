@@ -3,6 +3,7 @@ import re
 import shutil
 
 from pipeline.support.json_io import read_json
+from pipeline.support.ocr_filtering import filtered_ocr_path
 from pipeline.support.paths import (
     CANONICAL_TRANSCRIPTS_DIR_NAME,
     OCR_CORRECTION_TRANSCRIPTS_DIR_NAME,
@@ -21,11 +22,9 @@ from pipeline.steps.transcripts.artifacts import (
 
 CORRECTED_TIMECODED_NAMES = (
     "whisper_transcript_timecoded_corrected.txt",
-    "ocr_subtitles_timecoded_corrected.txt",
 )
 LEGACY_CORRECTED_TIMECODED_SUFFIXES = (
     "_transcript_timecodes_corrected.txt",
-    "_ocr_subtitle_timecodes_corrected.txt",
 )
 PLAIN_NAME = "plain_transcript.txt"
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
@@ -35,6 +34,7 @@ TIMECODE_PREFIX = re.compile(
 SYSTEM_SPEAKER_PREFIX = re.compile(r"^SPEAKER[_ -]?\d+\s*:\s*", re.IGNORECASE)
 INTERCALAIRE_PREFIX = re.compile(r"^INTERCALAIRE\s*:", re.IGNORECASE)
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
+OCR_ONLY_PREFIX = "texte présent dans la vidéo :"
 
 def strip_timecodes(text, speaker_names=None):
     cleaned_lines = []
@@ -70,6 +70,53 @@ def load_validated_speakers(video_path):
         for name in payload.get("speakers", []) or []
         if str(name).strip()
     ]
+
+
+def _timecode_sort_key(value):
+    try:
+        parts = [int(part) for part in str(value).split(":")]
+    except ValueError:
+        return float("inf")
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    return float("inf")
+
+
+def load_visual_text(video_path):
+    path = filtered_ocr_path(video_path)
+    if not path.exists():
+        return "", None
+    try:
+        payload = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return "", path
+
+    items = []
+    kinds = payload.get("kinds", {})
+    if not isinstance(kinds, dict):
+        return "", path
+    for kind_position, kind in enumerate(("graphic", "others")):
+        entries = kinds.get(kind, {})
+        if not isinstance(entries, dict):
+            continue
+        for entry_position, (timecode, text) in enumerate(entries.items()):
+            cleaned = " ".join(str(text).split())
+            if cleaned:
+                items.append(
+                    (
+                        _timecode_sort_key(timecode),
+                        kind_position,
+                        entry_position,
+                        cleaned,
+                    )
+                )
+
+    visual_text = " ".join(item[3] for item in sorted(items))
+    if not visual_text:
+        return "", path
+    return f"{OCR_ONLY_PREFIX} {visual_text}", path
 
 
 def output_path(input_path):
@@ -120,7 +167,7 @@ def remove_obsolete_ocr_transcripts(target):
             child.unlink()
 
 
-def convert_ocr_correction_file(
+def convert_ocr_file(
     video_path,
     input_path,
     force=False,
@@ -183,14 +230,25 @@ def convert_file(
     target = output_path(input_path)
 
     source_path = input_path
-    if target.exists() and not force and target.stat().st_mtime >= source_path.stat().st_mtime:
+    text = source_path.read_text(encoding="utf-8")
+    cleaned = strip_timecodes(text, load_validated_speakers(video_path))
+    dependencies = [source_path]
+    if not cleaned:
+        cleaned, visual_text_path = load_visual_text(video_path)
+        if visual_text_path is not None and visual_text_path.exists():
+            dependencies.append(visual_text_path)
+
+    if (
+        target.exists()
+        and not force
+        and target.stat().st_mtime
+        >= max(dependency.stat().st_mtime for dependency in dependencies)
+    ):
         print(f"[skip] {target.name} existe deja")
         return target
     if target.exists() and not force:
-        print(f"[regen] {target.name}: transcript timecode plus recent")
+        print(f"[regen] {target.name}: transcript ou OCR plus recent")
 
-    text = source_path.read_text(encoding="utf-8")
-    cleaned = strip_timecodes(text, load_validated_speakers(video_path))
     target.write_text(cleaned + "\n", encoding="utf-8")
     print(f"[ok] {target}")
     return target

@@ -206,15 +206,57 @@ def apply_speaker_labels(text, speakers):
     if not speakers:
         return corrected, counts
 
+    labels = {
+        match.group(0)
+        for match in SPEAKER_LABEL_PATTERN.finditer(corrected)
+    }
+    label_speakers = {}
+    if len(speakers) > 1:
+        normalized_speakers = {
+            speaker: normalize_name(speaker)
+            for speaker in speakers
+        }
+        for line in corrected.splitlines():
+            label_match = SPEAKER_LABEL_PATTERN.search(line)
+            if label_match is None:
+                continue
+            normalized_line = normalize_name(line)
+            introduced = [
+                speaker
+                for speaker, normalized_speaker in normalized_speakers.items()
+                if normalized_speaker
+                and any(
+                    phrase in normalized_line
+                    for phrase in (
+                        f"je m appelle {normalized_speaker}",
+                        f"moi c est {normalized_speaker}",
+                        f"mon nom est {normalized_speaker}",
+                        f"je suis {normalized_speaker}",
+                    )
+                )
+            ]
+            if len(introduced) == 1:
+                label_speakers.setdefault(label_match.group(0), introduced[0])
+
+        remaining_labels = sorted(
+            labels - set(label_speakers),
+            key=lambda label: int(SPEAKER_LABEL_PATTERN.fullmatch(label).group(1)),
+        )
+        remaining_speakers = [
+            speaker
+            for speaker in speakers
+            if speaker not in label_speakers.values()
+        ]
+        label_speakers.update(zip(remaining_labels, remaining_speakers))
+
     def replacement(match):
         label = match.group(0)
-        index = int(match.group(1))
         if len(speakers) == 1:
             speaker = speakers[0]
-        elif index < len(speakers):
-            speaker = speakers[index]
         else:
-            return label
+            speaker = label_speakers.get(label)
+            if speaker is None:
+                return label
         counts[label] = counts.get(label, 0) + 1
         return speaker
 

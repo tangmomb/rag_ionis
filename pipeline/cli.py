@@ -49,7 +49,14 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         default=str(DEFAULT_VIDEO_ROOT),
         help="Dossier racine contenant un sous-dossier par video.",
     )
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Avec `run`, supprime outputs/ avant reconstruction. "
+            "Avec `task`, force uniquement la tache demandee."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--openai-mode",

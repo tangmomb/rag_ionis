@@ -118,6 +118,26 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             {"SPEAKER_00": 1, "SPEAKER_01": 1},
         )
 
+    def test_multiple_speakers_are_mapped_from_their_introductions(self) -> None:
+        corrected, counts = speaker_correction.apply_speaker_labels(
+            (
+                "[00:00-00:01] SPEAKER_00: Introduction.\n"
+                "[00:01-00:07] SPEAKER_01: Je suis Sophie Vanderpol, Fondatrice.\n"
+                "[00:16-00:21] SPEAKER_00: Je m'appelle Hugo Jarguin.\n"
+                "[00:33-00:40] SPEAKER_02: Je m'appelle Clara Dalmada.\n"
+            ),
+            ["Sophie Vanderpol", "Hugo Jarguin", "Clara Dalmada"],
+        )
+
+        self.assertIn("Hugo Jarguin: Introduction.", corrected)
+        self.assertIn("Sophie Vanderpol: Je suis Sophie Vanderpol", corrected)
+        self.assertIn("Hugo Jarguin: Je m'appelle Hugo Jarguin", corrected)
+        self.assertIn("Clara Dalmada: Je m'appelle Clara Dalmada", corrected)
+        self.assertEqual(
+            counts,
+            {"SPEAKER_00": 2, "SPEAKER_01": 1, "SPEAKER_02": 1},
+        )
+
     def test_speaker_mapping_also_replaces_a_partially_ocr_corrected_name(self) -> None:
         mappings = [
             {
@@ -145,14 +165,14 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             speakers_dir = video_dir / "outputs" / "speakers"
             transcript_dir.mkdir(parents=True)
             speakers_dir.mkdir(parents=True)
-            source = transcript_dir / "ocr_subtitles_timecoded_corrected.txt"
+            source = transcript_dir / "ocr_subtitles_timecoded.txt"
             source.write_text("[00:01] Lucie Ouyaya\n", encoding="utf-8")
-            enriched = transcript_dir / "ocr_subtitles_timecoded_corrected_enriched.txt"
+            enriched = transcript_dir / "ocr_subtitles_timecoded_enriched.txt"
             enriched.write_text("[00:01] Lucie Ouyaya\n", encoding="utf-8")
             (speakers_dir / "speaker_candidates.json").write_text(
                 json.dumps(
                     {
-                        "source": "outputs/transcripts_ocr/ocr_subtitles_timecoded_corrected.txt",
+                        "source": "outputs/transcripts_ocr/ocr_subtitles_timecoded.txt",
                         "speakers": ["Lucie Ouyaya"],
                         "candidates": [
                             {
@@ -240,10 +260,7 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             )
 
             chunks = video_dir / "outputs" / "chunks" / "transcript_chunks.json"
-            with (
-                patch.object(chunk_creation, "validated_speakers_path", return_value=validated),
-                patch.object(chunk_creation, "chunks_path", return_value=chunks),
-            ):
+            with patch.object(chunk_creation, "chunks_path", return_value=chunks):
                 chunks_path = chunk_creation.create_chunks(video, force=True)
 
             chunks_payload = json.loads(chunks_path.read_text(encoding="utf-8"))
@@ -253,25 +270,22 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             )
             self.assertIn("Loucif Ouyahia", chunks_payload["chunks"][0]["content"])
 
-    def test_chunks_are_obsolete_when_the_corrected_transcript_is_newer(self) -> None:
+    def test_chunks_are_obsolete_only_when_the_plain_transcript_is_newer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             transcript = root / "plain_transcript.txt"
-            validated = root / "speakers_validated.json"
             chunks = root / "transcript_chunks.json"
             transcript.write_text("Nouveau transcript", encoding="utf-8")
-            validated.write_text('{"speakers":["Speaker Test"]}', encoding="utf-8")
             chunks.write_text("{}", encoding="utf-8")
             os.utime(chunks, (100, 100))
-            os.utime(validated, (200, 200))
             os.utime(transcript, (300, 300))
 
             self.assertFalse(
-                chunk_creation.output_is_current(chunks, (transcript, validated))
+                chunk_creation.output_is_current(chunks, (transcript,))
             )
             os.utime(chunks, (400, 400))
             self.assertTrue(
-                chunk_creation.output_is_current(chunks, (transcript, validated))
+                chunk_creation.output_is_current(chunks, (transcript,))
             )
 
 

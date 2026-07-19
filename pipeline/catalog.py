@@ -131,12 +131,6 @@ _TASK_SPECS = (
         step_handlers.extract_ocr_transcript,
     ),
     TaskSpec(
-        "transcript.correct_ocr_spacing",
-        "processing",
-        "Corriger les espaces du transcript OCR",
-        step_handlers.correct_ocr_spacing,
-    ),
-    TaskSpec(
         "transcript.normalize_brand",
         "processing",
         "Normaliser Ionis-STM",

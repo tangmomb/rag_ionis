@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -24,70 +26,20 @@ OCR_SOURCE_NAMES = (
 )
 TARGET_NAME = TRANSCRIPT_2_CORRECTED_NAME
 REPORT_NAME = TRANSCRIPT_2_CORRECTIONS_NAME
+DEFAULT_CORRECTION_MODEL = os.getenv(
+    "TRANSCRIPT_CORRECTION_MODEL",
+    "gpt-5.6-luna",
+)
 WHISPER_LINE = re.compile(
     r"^(?P<prefix>\[(?P<start>(?:\d{2}:)?\d{2}:\d{2})"
     r"(?:-(?P<end>(?:\d{2}:)?\d{2}:\d{2}))?\]\s*)"
     r"(?P<speaker>SPEAKER_\d+\s*:\s*)?"
     r"(?P<body>.*)$"
 )
-OCR_LINE = re.compile(
-    r"^\[(?P<time>(?:\d{2}:)?\d{2}:\d{2})\]\s*(?P<body>.*)$"
-)
 WORD_TOKEN = re.compile(
     r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+"
     r"(?:[-'’][0-9A-Za-zÀ-ÖØ-öø-ÿ]+)*"
 )
-MODE_CUTOFFS = {
-    "conservative": 0.93,
-    "balanced": 0.87,
-    "aggressive": 0.82,
-}
-COMMON_WORDS = {
-    "alors",
-    "avec",
-    "bonjour",
-    "car",
-    "ce",
-    "ces",
-    "dans",
-    "de",
-    "des",
-    "du",
-    "elle",
-    "elles",
-    "en",
-    "est",
-    "et",
-    "il",
-    "ils",
-    "je",
-    "la",
-    "le",
-    "les",
-    "mais",
-    "nous",
-    "on",
-    "ou",
-    "par",
-    "pas",
-    "pour",
-    "que",
-    "qui",
-    "sommes",
-    "sur",
-    "un",
-    "une",
-    "vous",
-}
-
-
-def parse_timecode(value: str) -> int:
-    parts = [int(part) for part in value.split(":")]
-    if len(parts) == 2:
-        minutes, seconds = parts
-        return minutes * 60 + seconds
-    hours, minutes, seconds = parts
-    return hours * 3600 + minutes * 60 + seconds
 
 
 def compact_normalize(value: str) -> str:
@@ -98,42 +50,6 @@ def compact_normalize(value: str) -> str:
         if not unicodedata.combining(character)
     )
     return re.sub(r"[^0-9a-z]+", "", without_marks)
-
-
-def token_normalize(value: str) -> str:
-    return compact_normalize(value)
-
-
-def lexical_word_count(value: str) -> int:
-    return len(lexical_components(value))
-
-
-def lexical_components(value: str) -> list[str]:
-    return [
-        compact_normalize(component)
-        for component in re.findall(
-            r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+",
-            str(value),
-        )
-        if compact_normalize(component)
-    ]
-
-
-def components_are_close(
-    source: str,
-    candidate: str,
-    cutoff: float,
-) -> bool:
-    source_components = lexical_components(source)
-    candidate_components = lexical_components(candidate)
-    if len(source_components) != len(candidate_components):
-        return False
-    component_cutoff = max(0.75, cutoff - 0.10)
-    return all(
-        left == right
-        or SequenceMatcher(None, left, right).ratio() >= component_cutoff
-        for left, right in zip(source_components, candidate_components)
-    )
 
 
 def whisper_source_path(video_path: Path) -> Path:
@@ -175,263 +91,185 @@ def corrections_path(video_path: Path) -> Path:
     return corrected_path(video_path).with_name(REPORT_NAME)
 
 
-def parse_ocr_entries(text: str) -> list[dict[str, object]]:
-    entries = []
-    for line in str(text).splitlines():
-        match = OCR_LINE.match(line.strip())
-        if not match:
-            continue
-        body = match.group("body").strip()
-        if body:
-            entries.append(
-                {
-                    "second": parse_timecode(match.group("time")),
-                    "text": body,
-                }
-            )
-    return entries
+def _response_text(response: object) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return str(output_text).strip()
+    pieces = []
+    for output in getattr(response, "output", []) or []:
+        for content in getattr(output, "content", []) or []:
+            text = getattr(content, "text", None)
+            if text:
+                pieces.append(str(text))
+    return "\n".join(pieces).strip()
 
 
-def style_score(text: str, tokens: list[re.Match[str]]) -> int:
-    token_values = [match.group(0) for match in tokens]
-    special = 4 if any(character in text for character in "-'’") else 0
-    acronym = 3 if any(
-        token.isupper() and len(token_normalize(token)) >= 2
-        for token in token_values
-    ) else 0
-    titled = sum(
-        1
-        for token in token_values
-        if token[:1].isupper() and not token.isupper()
-    )
-    multiple_names = 2 if titled >= 2 else 0
-    mixed_alphanumeric = 2 if (
-        any(character.isalpha() for character in text)
-        and any(character.isdigit() for character in text)
-    ) else 0
-    return special + acronym + multiple_names + mixed_alphanumeric
-
-
-def canonical_terms(text: str, *, max_words: int = 4) -> list[dict[str, object]]:
-    matches = list(WORD_TOKEN.finditer(str(text)))
-    candidates = []
-    seen = set()
-    for start_index in range(len(matches)):
-        for size in range(1, min(max_words, len(matches) - start_index) + 1):
-            selected = matches[start_index : start_index + size]
-            start = selected[0].start()
-            end = selected[-1].end()
-            display = str(text)[start:end]
-            normalized = compact_normalize(display)
-            if len(normalized) < 4:
-                continue
-            normalized_tokens = {
-                token_normalize(match.group(0))
-                for match in selected
-            }
-            if normalized_tokens and normalized_tokens <= COMMON_WORDS:
-                continue
-            score = style_score(display, selected)
-            if (
-                score <= 0
-                and size == 1
-                and start_index > 0
-                and display[:1].isupper()
-            ):
-                # Un mot capitalise au milieu d'un sous-titre est un candidat
-                # raisonnable pour un nom propre, contrairement au premier mot
-                # d'une phrase qui est capitalise par convention.
-                score = 1
-            if score <= 0:
-                continue
-            key = (normalized, display)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                {
-                    "display": display,
-                    "normalized": normalized,
-                    "style_score": score,
-                    "word_count": lexical_word_count(display),
-                }
-            )
-    return candidates
-
-
-def whisper_spans(text: str, *, max_words: int = 4) -> list[dict[str, object]]:
-    matches = list(WORD_TOKEN.finditer(str(text)))
-    spans = []
-    for start_index in range(len(matches)):
-        for size in range(1, min(max_words, len(matches) - start_index) + 1):
-            selected = matches[start_index : start_index + size]
-            start = selected[0].start()
-            end = selected[-1].end()
-            display = str(text)[start:end]
-            normalized = compact_normalize(display)
-            if len(normalized) < 4:
-                continue
-            spans.append(
-                {
-                    "start": start,
-                    "end": end,
-                    "display": display,
-                    "normalized": normalized,
-                    "word_count": lexical_word_count(display),
-                }
-            )
-    return spans
-
-
-def plausible_match(source: str, candidate: str, cutoff: float) -> float | None:
-    if source == candidate:
-        return 1.0
-    length_delta = abs(len(source) - len(candidate))
-    if length_delta > max(2, round(max(len(source), len(candidate)) * 0.30)):
-        return None
-    ratio = SequenceMatcher(None, source, candidate).ratio()
-    return ratio if ratio >= cutoff else None
-
-
-def correction_proposals(
-    whisper_text: str,
-    ocr_texts: list[str],
-    *,
-    mode: str = "balanced",
-) -> list[dict[str, object]]:
-    cutoff = MODE_CUTOFFS[mode]
-    spans = whisper_spans(whisper_text)
-    proposals = []
-    for ocr_text in ocr_texts:
-        for term in canonical_terms(ocr_text):
-            for span in spans:
-                if span["normalized"] != term["normalized"]:
-                    if span["word_count"] != term["word_count"]:
-                        continue
-                    if not components_are_close(
-                        str(span["display"]),
-                        str(term["display"]),
-                        cutoff,
-                    ):
-                        continue
-                ratio = plausible_match(
-                    str(span["normalized"]),
-                    str(term["normalized"]),
-                    cutoff,
-                )
-                if ratio is None or str(span["display"]) == str(term["display"]):
-                    continue
-                density = float(term["style_score"]) / int(term["word_count"])
-                proposals.append(
-                    {
-                        **span,
-                        "replacement": term["display"],
-                        "similarity": ratio,
-                        "exact_normalized": ratio == 1.0,
-                        "style_density": density,
-                    }
-                )
-    return proposals
-
-
-def apply_proposals(
-    text: str,
-    proposals: list[dict[str, object]],
-) -> tuple[str, list[tuple[str, str]]]:
-    selected = []
-    occupied: list[tuple[int, int]] = []
-    ranked = sorted(
-        proposals,
-        key=lambda proposal: (
-            bool(proposal["exact_normalized"]),
-            float(proposal["style_density"]),
-            float(proposal["similarity"]),
-            -int(proposal["word_count"]),
+def luna_request(
+    model: str,
+    whisper_segments: list[dict[str, object]],
+    ocr_text: str,
+) -> dict[str, object]:
+    return {
+        "model": model or DEFAULT_CORRECTION_MODEL,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Tu corriges une transcription WhisperX en francais a partir "
+                    "des sous-titres OCR de la meme video. Le transcript WhisperX "
+                    "reste la structure canonique et l'OCR sert de reference de "
+                    "correction. Corrige les noms propres, marques, mots mal "
+                    "entendus, mots manquants, accords et pluriels lorsque l'OCR "
+                    "permet de les etablir. Ne paraphrase pas, ne resume pas et "
+                    "n'ajoute aucun texte OCR qui ne correspond pas a une parole. "
+                    "Conserve tous les segments, leurs index et leur ordre. "
+                    "Retourne uniquement l'objet JSON demande."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "SEGMENTS WHISPERX:\n"
+                    + json.dumps(whisper_segments, ensure_ascii=False)
+                    + "\n\nTRANSCRIPT OCR:\n"
+                    + str(ocr_text).strip()
+                ),
+            },
+        ],
+        "max_output_tokens": min(
+            32768,
+            max(2048, sum(len(str(item["text"])) for item in whisper_segments) // 2),
         ),
-        reverse=True,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "corrected_whisper_segments",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "segments": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "index": {"type": "integer"},
+                                    "text": {"type": "string"},
+                                },
+                                "required": ["index", "text"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["segments"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+    }
+
+
+def word_level_corrections(
+    source: str,
+    corrected: str,
+) -> list[tuple[str, str]]:
+    source_words = [match.group(0) for match in WORD_TOKEN.finditer(str(source))]
+    corrected_words = [match.group(0) for match in WORD_TOKEN.finditer(str(corrected))]
+    matcher = SequenceMatcher(
+        None,
+        [compact_normalize(word) for word in source_words],
+        [compact_normalize(word) for word in corrected_words],
     )
-    for proposal in ranked:
-        start = int(proposal["start"])
-        end = int(proposal["end"])
-        if any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied):
-            continue
-        occupied.append((start, end))
-        selected.append(proposal)
-
-    corrected = str(text)
     changes = []
-    for proposal in sorted(selected, key=lambda item: int(item["start"]), reverse=True):
-        start = int(proposal["start"])
-        end = int(proposal["end"])
-        original = corrected[start:end]
-        replacement = str(proposal["replacement"])
-        corrected = corrected[:start] + replacement + corrected[end:]
-        changes.append((original, replacement))
-    changes.reverse()
-    return corrected, changes
+    for operation, source_start, source_end, target_start, target_end in matcher.get_opcodes():
+        if operation == "equal":
+            continue
+        source_text = " ".join(source_words[source_start:source_end]) or "∅"
+        target_text = " ".join(corrected_words[target_start:target_end]) or "∅"
+        changes.append((source_text, target_text))
+    return changes
 
 
-def reconcile_text(
-    whisper_text: str,
-    ocr_texts: list[str],
-    *,
-    mode: str = "balanced",
-) -> tuple[str, list[tuple[str, str]]]:
-    proposals = correction_proposals(whisper_text, ocr_texts, mode=mode)
-    return apply_proposals(whisper_text, proposals)
-
-
-def reconcile_transcripts(
+def reconcile_transcripts_with_luna(
+    client: object,
+    model: str,
     whisper_text: str,
     ocr_text: str,
-    *,
-    mode: str = "balanced",
-    tolerance_seconds: int = 2,
 ) -> tuple[str, list[tuple[str, str]]]:
-    if mode not in MODE_CUTOFFS:
-        raise ValueError(f"Mode de correction invalide: {mode!r}")
-    ocr_entries = parse_ocr_entries(ocr_text)
-    plain_ocr_texts = [str(ocr_text).strip()] if not ocr_entries and str(ocr_text).strip() else []
-    rendered = []
-    corrections = []
-    for raw_line in str(whisper_text).splitlines():
+    rendered_lines = str(whisper_text).splitlines()
+    parsed_lines: list[tuple[int, re.Match[str]]] = []
+    whisper_segments = []
+    for line_index, raw_line in enumerate(rendered_lines):
         match = WHISPER_LINE.match(raw_line)
         if not match:
-            rendered.append(raw_line)
             continue
-        start = parse_timecode(match.group("start"))
-        end = parse_timecode(match.group("end") or match.group("start"))
-        nearby_texts = (
-            [
-                str(entry["text"])
-                for entry in ocr_entries
-                if start - tolerance_seconds
-                <= int(entry["second"])
-                <= end + tolerance_seconds
-            ]
-            if ocr_entries
-            else plain_ocr_texts
+        segment_index = len(whisper_segments)
+        parsed_lines.append((line_index, match))
+        whisper_segments.append(
+            {
+                "index": segment_index,
+                "text": match.group("body"),
+            }
         )
-        corrected_body, line_corrections = reconcile_text(
-            match.group("body"),
-            nearby_texts,
-            mode=mode,
+    if not whisper_segments:
+        return whisper_text, []
+
+    response = client.responses.create(
+        **luna_request(model, whisper_segments, ocr_text)
+    )
+    raw_response = _response_text(response)
+    if not raw_response:
+        raise RuntimeError("Luna n'a renvoye aucune correction de transcript.")
+    try:
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Reponse Luna non JSON: {raw_response[:300]!r}"
+        ) from error
+    returned_segments = payload.get("segments") if isinstance(payload, dict) else None
+    if not isinstance(returned_segments, list):
+        raise RuntimeError("Reponse Luna invalide: liste segments absente.")
+
+    corrected_by_index = {}
+    for item in returned_segments:
+        if not isinstance(item, dict) or not isinstance(item.get("index"), int):
+            raise RuntimeError("Reponse Luna invalide: index de segment absent.")
+        index = item["index"]
+        text = item.get("text")
+        if not 0 <= index < len(whisper_segments):
+            raise RuntimeError("Reponse Luna invalide: index de segment inconnu.")
+        if (
+            index in corrected_by_index
+            or not isinstance(text, str)
+            or (str(whisper_segments[index]["text"]).strip() and not text.strip())
+        ):
+            raise RuntimeError("Reponse Luna invalide: segment incomplet ou duplique.")
+        corrected_by_index[index] = text.strip()
+    expected_indexes = set(range(len(whisper_segments)))
+    if set(corrected_by_index) != expected_indexes:
+        raise RuntimeError("Reponse Luna invalide: des segments WhisperX manquent.")
+
+    corrections = []
+    for segment_index, (line_index, match) in enumerate(parsed_lines):
+        corrected_body = corrected_by_index[segment_index]
+        corrections.extend(
+            word_level_corrections(match.group("body"), corrected_body)
         )
-        rendered.append(
+        rendered_lines[line_index] = (
             match.group("prefix")
             + (match.group("speaker") or "")
             + corrected_body
         )
-        corrections.extend(line_corrections)
-    suffix = "\n" if str(whisper_text).endswith("\n") or rendered else ""
-    return "\n".join(rendered) + suffix, corrections
+    suffix = "\n" if str(whisper_text).endswith("\n") or rendered_lines else ""
+    return "\n".join(rendered_lines) + suffix, corrections
 
 
 def reconcile_file(
     video_path: Path,
     *,
     force: bool = False,
-    mode: str = "balanced",
+    client: object | None = None,
+    model: str = DEFAULT_CORRECTION_MODEL,
 ) -> Path | None:
     whisper_source = whisper_source_path(video_path)
     ocr_source = ocr_source_path(video_path)
@@ -460,10 +298,15 @@ def reconcile_file(
         corrections: list[tuple[str, str]] = []
         print("[warn] transcript OCR absent; WhisperX est conserve sans rapprochement")
     else:
-        corrected_text, corrections = reconcile_transcripts(
+        if client is None:
+            from openai import OpenAI
+
+            client = OpenAI()
+        corrected_text, corrections = reconcile_transcripts_with_luna(
+            client,
+            model,
             whisper_text,
             ocr_source.read_text(encoding="utf-8"),
-            mode=mode,
         )
 
     target.parent.mkdir(parents=True, exist_ok=True)

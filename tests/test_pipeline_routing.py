@@ -96,6 +96,7 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertIn("transcript.extract_ocr", task_ids)
         self.assertIn("transcript.create_plain_ocr", task_ids)
         self.assertIn("transcript.reconcile_ocr", task_ids)
+        self.assertNotIn("transcript.correct_ocr_spacing", task_ids)
         self.assertNotIn("transcript.enrich_ocr_comparison", task_ids)
         self.assertNotIn("speakers.assign_ocr", task_ids)
         self.assertIn("chunks.summarize_sections", task_ids)
@@ -214,6 +215,7 @@ class PipelineRoutingTests(unittest.TestCase):
 
         self.assertIn("transcript.extract_ocr", ocr_ids)
         self.assertIn("transcript.whisper", ocr_ids)
+        self.assertNotIn("transcript.correct_ocr_spacing", ocr_ids)
         self.assertLess(
             ocr_ids.index("transcript.whisper"),
             ocr_ids.index("transcript.extract_ocr"),

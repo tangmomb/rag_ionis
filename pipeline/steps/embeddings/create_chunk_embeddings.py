@@ -55,6 +55,38 @@ def existing_embedding_matches(path, model, dimensions, expected_text=None):
     )
 
 
+def remove_speakers_from_embedding(path):
+    try:
+        payload = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    changed = "speakers" in payload
+    payload.pop("speakers", None)
+    meta_data = payload.get("meta_data")
+    if isinstance(meta_data, dict) and "speakers" in meta_data:
+        meta_data = dict(meta_data)
+        meta_data.pop("speakers", None)
+        if meta_data:
+            payload["meta_data"] = meta_data
+        else:
+            payload.pop("meta_data", None)
+        changed = True
+    if changed:
+        write_json(path, payload, indent=None)
+    return changed
+
+
+def embedding_meta_data(source_meta_data, chunk):
+    combined = {
+        **(source_meta_data if isinstance(source_meta_data, dict) else {}),
+        **(chunk.get("meta_data", {}) if isinstance(chunk.get("meta_data"), dict) else {}),
+    }
+    combined.pop("speakers", None)
+    return combined
+
+
 def create_embeddings(client, model, dimensions, video_path, force=False):
     source = chunks_path(video_path)
     if not source.exists():
@@ -82,6 +114,8 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
             dimensions,
             expected_text=text,
         ):
+            if remove_speakers_from_embedding(target):
+                print(f"[clean] speakers retires de {target.name}")
             print(f"[skip] {target.name} existe deja")
             continue
         if target.exists() and not force:
@@ -98,13 +132,12 @@ def create_embeddings(client, model, dimensions, video_path, force=False):
             "chunk_parent_id": chunk.get("chunk_parent_id"),
             "chunk_parent": chunk.get("chunk_parent"),
             "char_count": chunk.get("char_count"),
-            "meta_data": {
-                **source_meta_data,
-                **chunk.get("meta_data", {}),
-            },
             "content": text,
             "embedding": embedding,
         }
+        meta_data = embedding_meta_data(source_meta_data, chunk)
+        if meta_data:
+            payload["meta_data"] = meta_data
         write_json(target, payload, indent=None)
         written += 1
         print(f"[embed] {video_path.name} chunk {chunk_index}/{len(chunks)} -> {target.name}", flush=True)

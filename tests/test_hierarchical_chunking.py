@@ -29,7 +29,6 @@ class HierarchicalChunkingTests(unittest.TestCase):
                     "chunk_index": index,
                     "chunk_level": "detail",
                     "chunk_parent_id": None,
-                    "meta_data": {"speakers": ["Alice"]},
                     "content": (
                         f"La section {index} presente un sujet important. "
                         f"Elle donne un exemple concret numero {index}. "
@@ -71,6 +70,13 @@ class HierarchicalChunkingTests(unittest.TestCase):
         self.assertEqual(
             updated_details[0]["chunk_parent"],
             {"chunk_level": "section", "chunk_index": 1},
+        )
+        self.assertTrue(
+            all(
+                "speakers" not in chunk
+                and "speakers" not in chunk.get("meta_data", {})
+                for chunk in chunks
+            )
         )
         self.assertEqual(payload["hierarchy"]["strategy"], "luna")
 

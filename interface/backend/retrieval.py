@@ -368,7 +368,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             c.chunk_level,
             c.chunk_parent_id,
             c.content,
-            c.speakers,
+            v.speakers,
             ts_rank_cd(
                 to_tsvector('french', coalesce(c.content, '')),
                 websearch_to_tsquery('french', %s)
@@ -430,7 +430,7 @@ def fetch_vector_chunks(
             c.chunk_level,
             c.chunk_parent_id,
             c.content,
-            c.speakers,
+            v.speakers,
             1 - (c.embedding <=> %s::vector(2000)) AS score
         FROM chunks c
         JOIN videos v ON v.id = c.video_id

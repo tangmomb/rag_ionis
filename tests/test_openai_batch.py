@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from pipeline.steps.ocr import review_other_text_candidates as review
 from pipeline.steps.speakers import validate_speakers as speakers
-from pipeline.steps.transcripts import correct_ocr_subtitle_spacing as spacing
 from pipeline.support.json_io import write_json
 from pipeline.support.openai_batch import (
     batch_request_fingerprint,
@@ -57,43 +56,6 @@ class BatchFingerprintTests(unittest.TestCase):
                     custom_ids=("one", "two"),
                     options={"temperature": 0, "profile": "strict"},
                 ),
-            )
-
-    def test_spacing_reinitializes_an_incompatible_state(self):
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            video_path = Path(temporary_dir) / "video.mp4"
-            transcript_dir = Path(temporary_dir) / "outputs" / "ocr"
-            transcript_dir.mkdir(parents=True)
-            (transcript_dir / spacing.SOURCE_NAME).write_text(
-                "[00:01] Bonjour",
-                encoding="utf-8",
-            )
-            state_path = spacing.batch_state_path(video_path)
-            save_batch_state(
-                state_path,
-                {
-                    "batch_id": "old-spacing",
-                    "status": "in_progress",
-                    "request_fingerprint": "stale",
-                },
-            )
-
-            with patch.object(
-                spacing,
-                "submit_batch_spacing",
-                return_value=state_path,
-            ) as submit:
-                result = spacing.process_video_batch(
-                    "model-new",
-                    video_path,
-                    wait=False,
-                )
-
-            self.assertEqual(result, state_path)
-            submit.assert_called_once()
-            self.assertNotEqual(
-                submit.call_args.kwargs["request_fingerprint"],
-                "stale",
             )
 
     def test_speaker_validation_reinitializes_an_incompatible_state(self):

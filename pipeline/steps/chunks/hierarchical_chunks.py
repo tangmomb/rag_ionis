@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
-import re
-from collections import Counter
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -13,7 +11,8 @@ from pipeline.support.paths import chunks_dir, existing_chunks_dir
 
 
 CHUNKS_NAME = "transcript_chunks.json"
-SUMMARY_STRATEGY = "extractive_frequency_v1"
+SUMMARY_STRATEGY = "luna"
+DEFAULT_SUMMARY_MODEL = os.getenv("CHUNK_SUMMARY_MODEL", "gpt-5.6-luna")
 DEFAULT_DETAILS_PER_SECTION = 6
 DEFAULT_SECTION_SENTENCES = 4
 DEFAULT_SECTION_MAX_CHARS = 1200
@@ -131,66 +130,67 @@ def write_chunks(video_path: Path, payload: dict[str, Any]) -> Path:
     return target
 
 
-def split_sentences(text: str) -> list[str]:
-    normalized = re.sub(r"\s+", " ", str(text)).strip()
-    if not normalized:
-        return []
-    return [
-        sentence.strip()
-        for sentence in re.split(r"(?<=[.!?])\s+", normalized)
-        if sentence.strip()
-    ]
+def _response_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return str(output_text).strip()
+    pieces = []
+    for output in getattr(response, "output", []) or []:
+        for content in getattr(output, "content", []) or []:
+            text = getattr(content, "text", None)
+            if text:
+                pieces.append(str(text))
+    return "\n".join(pieces).strip()
 
 
-def sentence_words(sentence: str) -> list[str]:
-    return [
-        word
-        for word in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'-]+", sentence.casefold())
-        if len(word) >= 3 and word not in FRENCH_STOP_WORDS
-    ]
+def luna_summary(text: str, *, max_sentences: int, max_chars: int, model: str) -> str:
+    from openai import OpenAI
 
-
-def _truncate_summary(sentences: Iterable[str], max_chars: int) -> str:
-    selected: list[str] = []
-    current_length = 0
-    for sentence in sentences:
-        projected = current_length + len(sentence) + (1 if selected else 0)
-        if selected and projected > max_chars:
-            break
-        if not selected and len(sentence) > max_chars:
-            return sentence[: max_chars - 1].rstrip() + "…"
-        selected.append(sentence)
-        current_length = projected
-    return " ".join(selected).strip()
-
-
-def extractive_summary(text: str, *, max_sentences: int, max_chars: int) -> str:
-    sentences = split_sentences(text)
-    if not sentences:
+    if not str(text).strip():
         return ""
-    if len(sentences) <= max_sentences:
-        return _truncate_summary(sentences, max_chars)
-
-    frequencies = Counter(
-        word
-        for sentence in sentences
-        for word in sentence_words(sentence)
+    client = OpenAI()
+    response = client.responses.create(
+        model=model or DEFAULT_SUMMARY_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "Tu resumes un transcript en francais. Produis un resume fidel, "
+                    "clair et autonome. N'invente aucune information. Retourne uniquement "
+                    "un objet JSON avec la cle summary."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Resume le texte en {max_sentences} phrases maximum et "
+                    f"{max_chars} caracteres maximum.\n\nTEXTE:\n{text}"
+                ),
+            },
+        ],
+        max_output_tokens=max(256, max_chars // 2),
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "chunk_summary",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+            }
+        },
     )
-    if not frequencies:
-        return _truncate_summary(sentences[:max_sentences], max_chars)
-
-    scored: list[tuple[float, int, str]] = []
-    for index, sentence in enumerate(sentences):
-        words = sentence_words(sentence)
-        if not words:
-            score = 0.0
-        else:
-            score = sum(frequencies[word] for word in words) / math.sqrt(len(words))
-        scored.append((score, index, sentence))
-
-    top = sorted(scored, key=lambda item: (-item[0], item[1]))[:max_sentences]
-    chronological = [sentence for _score, _index, sentence in sorted(top, key=lambda item: item[1])]
-    return _truncate_summary(chronological, max_chars)
+    raw = _response_text(response)
+    if not raw:
+        raise RuntimeError("Luna n'a renvoye aucun resume.")
+    try:
+        summary = json.loads(raw).get("summary", "")
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Reponse Luna non JSON: {raw[:300]!r}") from error
+    return str(summary).strip()
 
 
 def chunks_hash(chunks: Iterable[dict[str, Any]]) -> str:
@@ -250,6 +250,7 @@ def summarize_sections(
     *,
     force: bool = False,
     details_per_section: int = DEFAULT_DETAILS_PER_SECTION,
+    model: str = DEFAULT_SUMMARY_MODEL,
 ) -> Path | None:
     payload, target = load_chunks(video_path)
     profile = str(payload.get("chunking", {}).get("profile") or "short").strip().lower()
@@ -268,6 +269,7 @@ def summarize_sections(
     if (
         existing_sections
         and not force
+        and hierarchy.get("strategy") == SUMMARY_STRATEGY
         and hierarchy.get("sections_source_hash") == detail_hash
     ):
         print(f"[skip] {video_path.name}: resumes de sections a jour")
@@ -280,10 +282,11 @@ def summarize_sections(
         start=1,
     ):
         combined = "\n\n".join(str(chunk.get("content") or "").strip() for chunk in group)
-        summary = extractive_summary(
+        summary = luna_summary(
             combined,
             max_sentences=DEFAULT_SECTION_SENTENCES,
             max_chars=DEFAULT_SECTION_MAX_CHARS,
+            model=model,
         )
         speakers = _speakers_for_chunks(group)
         sections.append(
@@ -324,7 +327,12 @@ def summarize_sections(
     return written
 
 
-def summarize_video(video_path: Path, *, force: bool = False) -> Path | None:
+def summarize_video(
+    video_path: Path,
+    *,
+    force: bool = False,
+    model: str = DEFAULT_SUMMARY_MODEL,
+) -> Path | None:
     payload, target = load_chunks(video_path)
     sections = chunks_at_level(payload, "section")
     if not sections:
@@ -337,16 +345,18 @@ def summarize_video(video_path: Path, *, force: bool = False) -> Path | None:
     if (
         existing_global
         and not force
+        and hierarchy.get("strategy") == SUMMARY_STRATEGY
         and hierarchy.get("global_source_hash") == section_hash
     ):
         print(f"[skip] {video_path.name}: resume global a jour")
         return target
 
     combined = "\n\n".join(str(chunk.get("content") or "").strip() for chunk in sections)
-    summary = extractive_summary(
+    summary = luna_summary(
         combined,
         max_sentences=DEFAULT_GLOBAL_SENTENCES,
         max_chars=DEFAULT_GLOBAL_MAX_CHARS,
+        model=model,
     )
     global_chunk = {
         "chunk_index": 1,

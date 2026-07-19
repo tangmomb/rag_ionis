@@ -27,6 +27,12 @@ class PipelineOptions:
             "gpt-5.4-nano",
         )
     )
+    chunk_summary_model: str = field(
+        default_factory=lambda: os.getenv(
+            "CHUNK_SUMMARY_MODEL",
+            "gpt-5.6-luna",
+        )
+    )
     correction_mode: CorrectionMode = "balanced"
     frame_interval_seconds: float = 0.5
     details_per_section: int = 6

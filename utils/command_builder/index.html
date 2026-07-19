@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Générateur de commandes pour le projet RAG IONIS">
+    <title>RAG IONIS — Générateur de commandes</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Accueil du générateur">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span>
+            <strong>RAG IONIS</strong>
+            <small>Command builder</small>
+          </span>
+        </a>
+        <div class="root-hint">
+          <span class="status-dot"></span>
+          À lancer depuis la racine du projet
+        </div>
+      </header>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">UTILITAIRE LOCAL</p>
+          <h1>La bonne commande.<br><em>Sans la rechercher.</em></h1>
+          <p class="hero-copy">
+            Choisis une action, règle ses options et copie une commande prête pour PowerShell.
+          </p>
+        </div>
+        <div class="hero-stats" aria-label="Résumé">
+          <div><strong id="action-count">0</strong><span>actions</span></div>
+          <div><strong>26</strong><span>tâches ciblées</span></div>
+          <div><strong>0</strong><span>dépendance</span></div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="action-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="step-number">01</span>
+              <h2>Choisir l’action</h2>
+            </div>
+            <button id="reset-button" class="text-button" type="button">Réinitialiser</button>
+          </div>
+
+          <label class="search-box">
+            <span aria-hidden="true">⌕</span>
+            <input id="action-search" type="search" placeholder="Rechercher une action…" autocomplete="off">
+          </label>
+
+          <nav id="category-tabs" class="category-tabs" aria-label="Catégories"></nav>
+          <div id="action-list" class="action-list"></div>
+        </aside>
+
+        <section class="config-panel">
+          <div class="panel-heading config-heading">
+            <div>
+              <span class="step-number">02</span>
+              <h2>Configurer</h2>
+            </div>
+            <span id="action-badge" class="action-badge"></span>
+          </div>
+
+          <div class="selected-action">
+            <span id="selected-icon" class="selected-icon" aria-hidden="true"></span>
+            <div>
+              <h3 id="selected-title"></h3>
+              <p id="selected-description"></p>
+            </div>
+          </div>
+
+          <div class="launcher-row">
+            <label for="launcher">Exécutable Python</label>
+            <select id="launcher">
+              <option value="venv">Environnement du projet — .\.venv\Scripts\python.exe</option>
+              <option value="python">Python du PATH — python</option>
+              <option value="py">Launcher Windows — py</option>
+            </select>
+          </div>
+
+          <form id="options-form" novalidate></form>
+          <div id="warning-box" class="warning-box" hidden></div>
+        </section>
+      </section>
+
+      <section class="command-section">
+        <div class="command-heading">
+          <div>
+            <span class="step-number step-dark">03</span>
+            <h2>Copier la commande</h2>
+          </div>
+          <div class="command-actions">
+            <button id="wrap-button" class="secondary-button" type="button" aria-pressed="false">
+              Retour à la ligne
+            </button>
+            <button id="copy-button" class="copy-button" type="button">
+              <span aria-hidden="true">▣</span>
+              Copier
+            </button>
+          </div>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span></span><span></span><span></span>
+            <p>PowerShell · rag_ionis</p>
+          </div>
+          <div class="terminal-body">
+            <span class="prompt">PS <b>rag_ionis</b>&gt;</span>
+            <code id="command-output"></code>
+          </div>
+        </div>
+        <div class="command-meta">
+          <span id="option-summary">Commande minimale</span>
+          <span>Entrée pour exécuter après collage</span>
+        </div>
+      </section>
+
+      <footer>
+        <p>Construit à partir des parseurs du projet. Les valeurs par défaut inutiles ne sont pas ajoutées.</p>
+        <p><kbd>Ctrl</kbd> + <kbd>C</kbd> après sélection fonctionne aussi.</p>
+      </footer>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite">Commande copiée</div>
+    <script src="app.js"></script>
+  </body>
+</html>

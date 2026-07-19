@@ -28,6 +28,7 @@ SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
 OCR_LOWER_THIRD_MIN_TOP = 320
 SPEAKER_INTRO_PATTERN = re.compile(r"je m'appelle\s+", re.IGNORECASE)
 SPEAKER_JE_SUIS_PATTERN = re.compile(r"je suis\s+", re.IGNORECASE)
+SPEAKER_MOI_CEST_PATTERN = re.compile(r"moi\s+c['’]est\s+", re.IGNORECASE)
 SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’\-]+")
 LOWERCASE_CONNECTORS = {"d", "d'", "d’", "de", "du", "des", "la", "le"}
 SPEAKER_NAME_STOP_WORDS = {"je", "j'ai", "j’ai", "j", "moi"}
@@ -325,6 +326,10 @@ def propose_speakers(text, ocr_names):
         name = extract_speaker_name(text, match.end())
         if has_multiple_speaker_words(name):
             add_candidate(candidates, name, "transcript_je_suis")
+    for match in SPEAKER_MOI_CEST_PATTERN.finditer(text):
+        name = extract_speaker_name(text, match.end())
+        if has_multiple_speaker_words(name):
+            add_candidate(candidates, name, "transcript_moi_c_est")
     for name in ocr_names:
         add_candidate(candidates, name, "ocr_lower_third")
     values = list(candidates.values())
@@ -363,8 +368,23 @@ def propose_for_video(
         print(f"[regen] {target.name}: source Whisper brute plus recente ou differente")
     text = source.read_text(encoding="utf-8")
     if not text.strip():
-        print(f"[skip] transcript vide: {source}")
-        return None
+        ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)
+        payload = {
+            "status": "no_speech",
+            "speakers": [],
+            "candidates": [],
+            "video_title": video_title(video_path),
+            "source": expected_source,
+            "ocr_source": (
+                relative_to_video_dir(ocr_source, video_path)
+                if ocr_source and ocr_source.exists()
+                else None
+            ),
+            "reason": "transcript_empty",
+        }
+        write_json(target, payload)
+        print(f"[skip] transcript vide: {source}; aucun speaker a proposer")
+        return target
     ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)
     payload = propose_speakers(text, ocr_names)
     payload.update(

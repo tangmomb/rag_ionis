@@ -75,6 +75,13 @@ class CreateTranscriptChunksTests(unittest.TestCase):
         self.assertIn("Sophie Vanderpol", speakers)
         self.assertNotIn("la Fondatrice d'Olidi", speakers)
 
+    def test_moi_c_est_detects_a_speaker(self) -> None:
+        transcript = "Bonjour, moi c'est Alice Martin."
+
+        speakers = speaker_proposal.propose_speakers(transcript, [])['speakers']
+
+        self.assertEqual(speakers, ["Alice Martin"])
+
     def test_each_speaker_stage_writes_its_own_json_before_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"

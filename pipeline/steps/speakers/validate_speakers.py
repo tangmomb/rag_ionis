@@ -204,7 +204,9 @@ def build_response_request(model, speakers, video_title="", candidates=None):
         "Place uniquement les noms valides dans valid_speakers, sans commentaire. "
         "Tu as aussi le titre de la video pour voir si un speaker s'y trouve. "
         "Si un candidat ressemble beaucoup a un nom dans le titre, renvoie l'orthographe "
-        "du titre, qui prevaut.\n\n"
+        "du titre, qui prevaut. Si la liste des candidats est vide, extrais du titre "
+        "un nom uniquement s'il identifie clairement une personne physique ; ignore "
+        "les roles, entreprises, ecoles et autres organisations.\n\n"
         + json.dumps(
             {
                 "video_title": video_title,
@@ -313,7 +315,7 @@ def write_validation_output(
             "reviewed": len(speakers),
             "kept": len(valid_speakers),
             "rejected": max(0, len(speakers) - len(valid_speakers)),
-            "request": request_log if speakers else None,
+            "request": request_log if (speakers or video_title) else None,
         },
     }
     write_json(target, validated)
@@ -340,7 +342,12 @@ def validate_file_live(client, model, video_path, force=False):
     payload = load_json(source)
     speakers = unique_speakers(payload)
     video_title, candidates = validation_context(payload)
-    if speakers:
+    no_speech = payload.get("status") == "no_speech"
+    if no_speech:
+        answer = "[]"
+        valid_speakers = []
+        request_log = None
+    elif speakers or video_title:
         answer, request_log = ask_gpt(client, model, speakers, video_title, candidates)
         answer = answer.strip()
         valid_speakers = parse_valid_speakers(answer)
@@ -513,7 +520,8 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
     payload = load_json(source)
     speakers = unique_speakers(payload)
     video_title, candidates = validation_context(payload)
-    if not speakers:
+    no_speech = payload.get("status") == "no_speech"
+    if no_speech or (not speakers and not video_title):
         _body, request_log = build_response_request(model, speakers, video_title, candidates)
         return write_validation_output(
             model,

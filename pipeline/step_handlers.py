@@ -822,6 +822,7 @@ def summarize_sections(context: PipelineContext) -> TaskResult:
         context.video_path,
         force=context.force_rebuild,
         details_per_section=context.options.details_per_section,
+        model=context.options.chunk_summary_model,
     )
     payload, target = load_chunks(context.video_path)
     artifacts = (target,) if chunks_at_level(payload, "section") else ()
@@ -854,6 +855,7 @@ def summarize_video(context: PipelineContext) -> TaskResult:
     result = summarize(
         context.video_path,
         force=context.force_rebuild,
+        model=context.options.chunk_summary_model,
     )
     payload, target = load_chunks(context.video_path)
     artifacts = (target,) if chunks_at_level(payload, "global") else ()

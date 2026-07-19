@@ -1,0 +1,680 @@
+const TASKS = [
+  ["frames.extract", "Extraire les frames"],
+  ["frames.classify", "Classifier les frames"],
+  ["video.detect_interview", "Détecter les interviews"],
+  ["video.infer_type", "Inférer le type de vidéo"],
+  ["ocr.extract_raw", "Extraire l’OCR brut"],
+  ["ocr.extract_boxes", "Extraire les positions OCR"],
+  ["video.detect_subtitles", "Détecter les sous-titres incrustés"],
+  ["ocr.build_processed", "Construire l’OCR traité"],
+  ["ocr.filter_overlays", "Filtrer les overlays OCR"],
+  ["ocr.extract_review_candidates", "Extraire les textes à vérifier"],
+  ["ocr.review_other_text", "Vérifier les autres textes"],
+  ["ocr.apply_review", "Appliquer la vérification OCR"],
+  ["transcript.extract_ocr", "Construire le transcript OCR"],
+  ["transcript.correct_ocr_spacing", "Corriger les espaces du transcript OCR"],
+  ["transcript.normalize_brand", "Normaliser Ionis-STM"],
+  ["transcript.whisper", "Transcrire l’audio avec WhisperX"],
+  ["speakers.propose", "Proposer les speakers"],
+  ["speakers.validate", "Valider les speakers"],
+  ["speakers.assign_ocr", "Attribuer les speakers au transcript OCR"],
+  ["transcript.correct_whisper", "Corriger le transcript Whisper"],
+  ["transcript.enrich", "Enrichir le transcript"],
+  ["transcript.create_plain", "Créer le transcript sans timecodes"],
+  ["chunks.create", "Créer les chunks détail"],
+  ["chunks.summarize_sections", "Créer les résumés de sections"],
+  ["chunks.summarize_video", "Créer le résumé global"],
+  ["embeddings.create", "Créer les embeddings"],
+];
+
+const selectorField = {
+  id: "selector",
+  label: "Vidéo(s) à traiter",
+  type: "text",
+  value: "all",
+  placeholder: "all, 5, ID YouTube ou chemin",
+  help: "« all », un nombre, un ID YouTube, un fichier vidéo ou un dossier.",
+  positional: true,
+  required: true,
+  full: true,
+};
+
+const commonPipelineFields = [
+  selectorField,
+  {
+    id: "root",
+    label: "Racine des vidéos",
+    flag: "--root",
+    type: "text",
+    value: "downloads/youtube/init",
+    defaultValue: "downloads/youtube/init",
+    help: "Ajouté seulement si tu modifies le dossier par défaut.",
+    full: true,
+  },
+  { id: "force", label: "Forcer la régénération", flag: "--force", type: "boolean", help: "Ignore les checkpoints existants." },
+  { id: "dryRun", label: "Simulation", flag: "--dry-run", type: "boolean", help: "Affiche ce qui serait exécuté." },
+  {
+    id: "openaiMode",
+    label: "Mode OpenAI",
+    flag: "--openai-mode",
+    type: "select",
+    value: "normal",
+    defaultValue: "normal",
+    options: [["normal", "Normal (défaut)"], ["batch", "Batch"]],
+  },
+  {
+    id: "reviewScope",
+    label: "Portée de revue",
+    flag: "--review-scope",
+    type: "select",
+    value: "duo",
+    defaultValue: "duo",
+    options: [["duo", "Duo (défaut)"], ["all", "Toutes les images"]],
+  },
+  {
+    id: "correctionMode",
+    label: "Correction Whisper",
+    flag: "--correction-mode",
+    type: "select",
+    value: "balanced",
+    defaultValue: "balanced",
+    options: [["conservative", "Conservative"], ["balanced", "Balanced (défaut)"], ["aggressive", "Aggressive"]],
+  },
+  { id: "frameInterval", label: "Intervalle des frames", flag: "--frame-interval", type: "number", value: "0.5", defaultValue: "0.5", min: "0.01", step: "0.1", suffix: "secondes" },
+  { id: "detailsPerSection", label: "Détails par section", flag: "--details-per-section", type: "number", value: "6", defaultValue: "6", min: "1", step: "1", suffix: "chunks" },
+  { id: "imageReviewModel", label: "Modèle de revue d’image", flag: "--image-review-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
+  { id: "speakerModel", label: "Modèle de validation speakers", flag: "--speaker-validation-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
+  { id: "chunkModel", label: "Modèle de résumé des chunks", flag: "--chunk-summary-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
+];
+
+const actions = [
+  {
+    id: "fetch",
+    category: "YouTube",
+    title: "Récupérer les infos YouTube",
+    short: "Métadonnées d’une vidéo ou de la chaîne",
+    description: "Interroge l’API YouTube et prépare le cache local de métadonnées.",
+    icon: "↯",
+    accent: "#dff0e5",
+    module: "pipeline.ingest.fetch_youtube_metadata",
+    sections: [
+      {
+        title: "Sélection",
+        fields: [
+          { id: "videoUrl", label: "URL d’une vidéo", flag: "--video-url", type: "url", placeholder: "https://www.youtube.com/watch?v=…", help: "Laisse vide pour traiter la chaîne IONIS-STM.", full: true, exclusive: "youtubeSelection" },
+          { id: "limit", label: "Limiter le nombre de vidéos", flag: "--limit", type: "number", min: "1", step: "1", placeholder: "Toutes", exclusive: "youtubeSelection" },
+        ],
+      },
+      {
+        title: "Stockage",
+        fields: [
+          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube", full: true },
+          { id: "skipTranscripts", label: "Compatibilité : ignorer les transcripts", flag: "--skip-transcripts", type: "boolean", help: "Option conservée par le script, sans effet actuel." },
+        ],
+      },
+    ],
+  },
+  {
+    id: "download",
+    category: "YouTube",
+    title: "Télécharger les vidéos",
+    short: "yt-dlp, 720p MP4 et cache local",
+    description: "Télécharge une vidéo précise ou celles présentes dans le cache de métadonnées.",
+    icon: "↓",
+    accent: "#e8efc7",
+    module: "pipeline.ingest.download_videos",
+    sections: [
+      {
+        title: "Sélection",
+        fields: [
+          { id: "videoUrl", label: "URL d’une vidéo", flag: "--video-url", type: "url", placeholder: "https://www.youtube.com/watch?v=…", help: "Laisse vide pour utiliser le cache de métadonnées.", full: true, exclusive: "youtubeSelection" },
+          { id: "limit", label: "Limiter le nombre", flag: "--limit", type: "number", min: "1", step: "1", placeholder: "Toutes", exclusive: "youtubeSelection" },
+          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube", full: true },
+        ],
+      },
+      {
+        title: "Téléchargement",
+        fields: [
+          { id: "cookies", label: "Cookies du navigateur", flag: "--cookies-from-browser", type: "select", value: "", options: [["", "Aucun"], ["brave", "Brave"], ["chrome", "Chrome"], ["chromium", "Chromium"], ["edge", "Edge"], ["firefox", "Firefox"], ["opera", "Opera"], ["vivaldi", "Vivaldi"]] },
+          { id: "force", label: "Retélécharger", flag: "--force", type: "boolean", help: "Remplace les fichiers déjà présents." },
+          { id: "minDelay", label: "Délai minimum", flag: "--min-delay", type: "number", value: "15", defaultValue: "15", min: "0", step: "1", suffix: "secondes" },
+          { id: "maxDelay", label: "Délai maximum", flag: "--max-delay", type: "number", value: "45", defaultValue: "45", min: "0", step: "1", suffix: "secondes" },
+          { id: "dryRun", label: "Simulation", flag: "--dry-run", type: "boolean", help: "Liste les vidéos sans les télécharger." },
+        ],
+      },
+    ],
+  },
+  {
+    id: "inspect",
+    category: "Pipeline",
+    title: "Inspecter une vidéo",
+    short: "Probe, détection visuelle et OCR",
+    description: "Sonde la vidéo et exécute les détecteurs nécessaires au routage.",
+    icon: "⌕",
+    accent: "#dbeee9",
+    pipelineCommand: "inspect",
+    extraFields: [{ id: "probeOnly", label: "Probe technique seulement", flag: "--probe-only", type: "boolean", help: "N’exécute aucun traitement visuel ou OCR." }],
+  },
+  {
+    id: "plan",
+    category: "Pipeline",
+    title: "Afficher le plan",
+    short: "Prévisualiser les étapes sans les exécuter",
+    description: "Recalcule le plan adapté à la vidéo, sans produire de sorties métier.",
+    icon: "≋",
+    accent: "#f3e7c1",
+    pipelineCommand: "plan",
+    extraFields: [{ id: "includeInspection", label: "Inclure l’inspection", flag: "--include-inspection", type: "boolean", help: "Affiche aussi le plan d’inspection." }],
+  },
+  {
+    id: "run",
+    category: "Pipeline",
+    title: "Lancer le pipeline",
+    short: "Traitement complet d’une ou plusieurs vidéos",
+    description: "Inspecte, route et exécute automatiquement toutes les étapes adaptées.",
+    icon: "▶",
+    accent: "#d9f36d",
+    pipelineCommand: "run",
+    extraFields: [{ id: "skipInspection", label: "Réutiliser l’inspection", flag: "--skip-inspection", type: "boolean", help: "Réutilise les faits déjà présents dans le manifeste." }],
+  },
+  {
+    id: "task",
+    category: "Pipeline",
+    title: "Exécuter une tâche précise",
+    short: "Une étape exacte du catalogue",
+    description: "Exécute une seule tâche du registre sur la sélection de vidéos.",
+    icon: "◆",
+    accent: "#eddff0",
+    pipelineCommand: "task",
+    task: true,
+  },
+  {
+    id: "task-list",
+    category: "Pipeline",
+    title: "Lister les tâches",
+    short: "Afficher le catalogue disponible",
+    description: "Affiche les identifiants, phases et titres de toutes les tâches.",
+    icon: "☷",
+    accent: "#e3e8ef",
+    fixedArgs: ["-m", "pipeline", "task", "--list"],
+    sections: [],
+  },
+  {
+    id: "upload-s3",
+    category: "Publication",
+    title: "Uploader vers S3",
+    short: "Publier les sorties en conservant l’arborescence",
+    description: "Envoie un dossier de vidéos et ses sorties vers le bucket configuré.",
+    icon: "↑",
+    accent: "#dce8f5",
+    module: "pipeline.publish.upload_outputs_to_s3",
+    sections: [
+      {
+        title: "Source et destination",
+        fields: [
+          { id: "videoDir", label: "Dossier à uploader", flag: "--video-dir", type: "text", placeholder: "Défaut : dernier dossier", full: true },
+          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube" },
+          { id: "bucket", label: "Bucket S3", flag: "--bucket", type: "text", placeholder: "Défaut : S3_BUCKET_NAME" },
+          { id: "region", label: "Région AWS", flag: "--region", type: "text", placeholder: "Défaut : S3_REGION" },
+          { id: "prefix", label: "Préfixe S3", flag: "--prefix", type: "text", placeholder: "youtube/…", exclusive: "prefixMode" },
+          { id: "noPrefix", label: "Uploader à la racine", flag: "--no-prefix", type: "boolean", help: "Incompatible avec un préfixe explicite.", exclusive: "prefixMode" },
+          { id: "videoIds", label: "Limiter à des IDs vidéo", flag: "--video-id", type: "textarea", placeholder: "Un ID par ligne", help: "L’option --video-id sera répétée.", repeatable: true, full: true },
+        ],
+      },
+      {
+        title: "Comportement",
+        fields: [
+          { id: "force", label: "Écraser les objets existants", flag: "--force", type: "boolean" },
+          { id: "dryRun", label: "Simulation", flag: "--dry-run", type: "boolean" },
+          { id: "cleanInit", label: "Nettoyer les anciens préfixes", flag: "--clean-init-prefix", type: "boolean", help: "Supprime les anciens préfixes avant upload." },
+        ],
+      },
+    ],
+    warning: "Avec « Nettoyer les anciens préfixes » sans simulation, des objets S3 peuvent être supprimés.",
+  },
+  {
+    id: "sync-db",
+    category: "Publication",
+    title: "Synchroniser la base SQL",
+    short: "Vidéos, stats, transcripts et chunks",
+    description: "Met à jour PostgreSQL à partir des fichiers locaux et des références S3.",
+    icon: "⇄",
+    accent: "#e7e1f4",
+    module: "pipeline.publish.sync_database",
+    sections: [
+      {
+        title: "Source",
+        fields: [
+          { id: "videoDir", label: "Dossier traité", flag: "--video-dir", type: "text", placeholder: "Défaut : dernier dossier", full: true },
+          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube" },
+          { id: "videoIds", label: "Limiter à des IDs vidéo", flag: "--video-id", type: "textarea", placeholder: "Un ID par ligne", repeatable: true, full: true },
+        ],
+      },
+      {
+        title: "S3 et base",
+        fields: [
+          { id: "bucket", label: "Bucket S3", flag: "--bucket", type: "text", placeholder: "Défaut : .env" },
+          { id: "prefix", label: "Préfixe S3", flag: "--prefix", type: "text", placeholder: "youtube/…", exclusive: "prefixMode" },
+          { id: "noPrefix", label: "Fichiers à la racine du bucket", flag: "--no-prefix", type: "boolean", exclusive: "prefixMode" },
+          { id: "skipTranscripts", label: "Ignorer transcripts et chunks", flag: "--skip-transcripts", type: "boolean" },
+          { id: "dryRun", label: "Simulation", flag: "--dry-run", type: "boolean" },
+          { id: "resetDatabase", label: "Recréer le schéma data", flag: "--reset-database", type: "boolean", help: "Supprime et recrée les données avant la synchronisation." },
+          { id: "cleanInit", label: "Option legacy clean-init-assets", flag: "--clean-init-assets", type: "boolean", help: "Conservée pour compatibilité, sans effet." },
+        ],
+      },
+    ],
+    warning: "« Recréer le schéma data » supprime les données du schéma avant de les réimporter.",
+  },
+  {
+    id: "api",
+    category: "Services",
+    title: "Démarrer l’API RAG",
+    short: "FastAPI avec rechargement automatique",
+    description: "Lance l’interface backend locale avec Uvicorn.",
+    icon: "◉",
+    accent: "#dcefe3",
+    module: "uvicorn",
+    moduleTarget: "interface.app:app",
+    sections: [
+      {
+        title: "Serveur",
+        fields: [
+          { id: "host", label: "Hôte", flag: "--host", type: "text", value: "127.0.0.1", required: true },
+          { id: "port", label: "Port", flag: "--port", type: "number", value: "8006", required: true, min: "1", max: "65535" },
+          { id: "reload", label: "Rechargement automatique", flag: "--reload", type: "boolean", checked: true },
+          { id: "reloadDir", label: "Dossier surveillé", flag: "--reload-dir", type: "text", value: "interface" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "db-browser",
+    category: "Services",
+    title: "Démarrer le navigateur SQL",
+    short: "Interface locale de consultation de la base",
+    description: "Lance l’utilitaire Database Browser avec Uvicorn.",
+    icon: "▦",
+    accent: "#f0e6d7",
+    module: "uvicorn",
+    moduleTarget: "utils.database_browser.app:app",
+    sections: [
+      {
+        title: "Serveur",
+        fields: [
+          { id: "host", label: "Hôte", flag: "--host", type: "text", value: "127.0.0.1", required: true },
+          { id: "port", label: "Port", flag: "--port", type: "number", value: "8001", required: true, min: "1", max: "65535" },
+          { id: "reload", label: "Rechargement automatique", flag: "--reload", type: "boolean", checked: true },
+          { id: "reloadDir", label: "Dossier surveillé", flag: "--reload-dir", type: "text", value: "utils/database_browser" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "tests",
+    category: "Maintenance",
+    title: "Lancer les tests",
+    short: "Suite complète ou fichier pytest précis",
+    description: "Exécute pytest sur tout le projet ou sur une cible donnée.",
+    icon: "✓",
+    accent: "#e1eddc",
+    module: "pytest",
+    sections: [
+      {
+        title: "Cible",
+        fields: [
+          { id: "testTarget", label: "Fichier, dossier ou test", type: "text", value: "tests", positional: true, required: true, full: true, placeholder: "tests/test_pipeline_execution.py::test_…" },
+          { id: "quiet", label: "Sortie concise", flag: "-q", type: "boolean", checked: true },
+          { id: "stopFirst", label: "Arrêter au premier échec", flag: "-x", type: "boolean" },
+          { id: "keyword", label: "Filtre par mot-clé", flag: "-k", type: "text", placeholder: "pipeline_execution" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "clear-db",
+    category: "Maintenance",
+    title: "Vider les tables SQL",
+    short: "TRUNCATE avec remise à zéro des identifiants",
+    description: "Vide les tables applicatives sans supprimer leur structure.",
+    icon: "⌫",
+    accent: "#f5ddd5",
+    fixedArgs: ["utils/clear_database.py"],
+    sections: [],
+    warning: "Cette commande vide les données SQL. Elle ne propose pas de mode simulation.",
+  },
+  {
+    id: "reset-db",
+    category: "Maintenance",
+    title: "Recréer la base SQL",
+    short: "Réinitialiser le schéma depuis le projet",
+    description: "Supprime puis recrée la structure de données attendue.",
+    icon: "↻",
+    accent: "#f4d8d1",
+    fixedArgs: ["utils/reset_database.py"],
+    sections: [],
+    warning: "Cette commande recrée la base et peut supprimer les données existantes.",
+  },
+  {
+    id: "migrate-embeddings",
+    category: "Maintenance",
+    title: "Migrer les embeddings",
+    short: "Passer les vecteurs de 3072 à 2000 dimensions",
+    description: "Migre les embeddings SQL par lots et reconstruit l’index vectoriel.",
+    icon: "◇",
+    accent: "#e5e0f0",
+    fixedArgs: ["utils/migrate_embeddings_2000.py"],
+    sections: [
+      {
+        title: "Migration",
+        fields: [
+          { id: "batchSize", label: "Taille des lots", flag: "--batch-size", type: "number", value: "32", defaultValue: "32", min: "1", step: "1" },
+          { id: "dryRun", label: "Inspecter sans modifier", flag: "--dry-run", type: "boolean" },
+        ],
+      },
+    ],
+  },
+];
+
+const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance"];
+const launchers = {
+  venv: String.raw`.\.venv\Scripts\python.exe`,
+  python: "python",
+  py: "py",
+};
+
+const state = {
+  actionId: "run",
+  category: "Toutes",
+  search: "",
+  wrapped: false,
+};
+
+const elements = {
+  actionList: document.querySelector("#action-list"),
+  categoryTabs: document.querySelector("#category-tabs"),
+  search: document.querySelector("#action-search"),
+  form: document.querySelector("#options-form"),
+  launcher: document.querySelector("#launcher"),
+  title: document.querySelector("#selected-title"),
+  description: document.querySelector("#selected-description"),
+  icon: document.querySelector("#selected-icon"),
+  badge: document.querySelector("#action-badge"),
+  output: document.querySelector("#command-output"),
+  summary: document.querySelector("#option-summary"),
+  warning: document.querySelector("#warning-box"),
+  copy: document.querySelector("#copy-button"),
+  wrap: document.querySelector("#wrap-button"),
+  reset: document.querySelector("#reset-button"),
+  toast: document.querySelector("#toast"),
+};
+
+function currentAction() {
+  return actions.find((action) => action.id === state.actionId);
+}
+
+function pipelineSections(action) {
+  const primaryFields = [];
+  if (action.task) {
+    primaryFields.push({
+      id: "taskId",
+      label: "Tâche",
+      type: "select",
+      positional: true,
+      required: true,
+      value: TASKS[0][0],
+      options: TASKS.map(([id, title]) => [id, `${id} — ${title}`]),
+      full: true,
+    });
+  }
+  primaryFields.push(...commonPipelineFields.slice(0, 2));
+  if (action.extraFields) primaryFields.push(...action.extraFields);
+
+  return [
+    { title: action.task ? "Tâche et sélection" : "Sélection", fields: primaryFields },
+    { title: "Exécution", fields: commonPipelineFields.slice(2, 9) },
+    { title: "Modèles avancés", fields: commonPipelineFields.slice(9) },
+  ];
+}
+
+function actionSections(action) {
+  return action.pipelineCommand ? pipelineSections(action) : (action.sections || []);
+}
+
+function renderCategories() {
+  elements.categoryTabs.innerHTML = categories.map((category) => (
+    `<button class="category-tab${state.category === category ? " active" : ""}" type="button" data-category="${category}">${category}</button>`
+  )).join("");
+}
+
+function renderActions() {
+  const query = state.search.trim().toLocaleLowerCase("fr");
+  const filtered = actions.filter((action) => {
+    const inCategory = state.category === "Toutes" || action.category === state.category;
+    const haystack = `${action.title} ${action.short} ${action.category}`.toLocaleLowerCase("fr");
+    return inCategory && (!query || haystack.includes(query));
+  });
+
+  elements.actionList.innerHTML = filtered.length
+    ? filtered.map((action) => `
+      <button class="action-item${action.id === state.actionId ? " active" : ""}" type="button" data-action="${action.id}" style="--accent:${action.accent}">
+        <span class="action-icon" aria-hidden="true">${action.icon}</span>
+        <span><strong>${action.title}</strong><small>${action.short}</small></span>
+        <span class="action-arrow" aria-hidden="true">›</span>
+      </button>
+    `).join("")
+    : `<div class="empty-state">Aucune action ne correspond à cette recherche.</div>`;
+}
+
+function renderField(field) {
+  if (field.type === "boolean") {
+    return `
+      <div class="toggle-field${field.full ? " full" : ""}">
+        <div>
+          <strong>${field.label}</strong>
+          ${field.help ? `<small>${field.help}</small>` : ""}
+        </div>
+        <label class="switch">
+          <input id="${field.id}" name="${field.id}" type="checkbox" ${field.checked ? "checked" : ""} data-flag="${field.flag || ""}" data-exclusive="${field.exclusive || ""}">
+          <span aria-hidden="true"></span>
+        </label>
+      </div>`;
+  }
+
+  const hint = field.required
+    ? `<span class="required-mark">requis</span>`
+    : field.suffix
+      ? `<span>${field.suffix}</span>`
+      : field.defaultValue !== undefined
+        ? `<span>défaut : ${field.defaultValue}</span>`
+        : "";
+  let control;
+  if (field.type === "select") {
+    control = `<select id="${field.id}" name="${field.id}" data-flag="${field.flag || ""}" data-positional="${Boolean(field.positional)}" data-default="${field.defaultValue ?? ""}" data-exclusive="${field.exclusive || ""}">
+      ${field.options.map(([value, label]) => `<option value="${value}" ${String(field.value ?? "") === String(value) ? "selected" : ""}>${label}</option>`).join("")}
+    </select>`;
+  } else if (field.type === "textarea") {
+    control = `<textarea id="${field.id}" name="${field.id}" placeholder="${field.placeholder || ""}" data-flag="${field.flag || ""}" data-repeatable="${Boolean(field.repeatable)}" data-exclusive="${field.exclusive || ""}">${field.value || ""}</textarea>`;
+  } else {
+    const inputType = ["url", "number"].includes(field.type) ? field.type : "text";
+    control = `<input id="${field.id}" name="${field.id}" type="${inputType}" value="${field.value ?? ""}" placeholder="${field.placeholder || ""}" ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step !== undefined ? `step="${field.step}"` : ""} ${field.required ? "required" : ""} data-flag="${field.flag || ""}" data-positional="${Boolean(field.positional)}" data-default="${field.defaultValue ?? ""}" data-exclusive="${field.exclusive || ""}">`;
+  }
+
+  return `
+    <div class="field${field.full ? " full" : ""}">
+      <label for="${field.id}">${field.label}${hint}</label>
+      ${control}
+      ${field.help ? `<p class="field-help">${field.help}</p>` : ""}
+    </div>`;
+}
+
+function renderForm() {
+  const action = currentAction();
+  const sections = actionSections(action);
+  elements.title.textContent = action.title;
+  elements.description.textContent = action.description;
+  elements.icon.textContent = action.icon;
+  elements.icon.style.background = action.accent;
+  elements.badge.textContent = action.category;
+  elements.form.innerHTML = sections.map((section) => `
+    <section class="form-section">
+      <h4 class="form-section-title">${section.title}</h4>
+      <div class="field-grid">${section.fields.map(renderField).join("")}</div>
+    </section>
+  `).join("");
+  elements.warning.hidden = !action.warning;
+  elements.warning.textContent = action.warning ? `Attention — ${action.warning}` : "";
+  updateCommand();
+}
+
+function quotePowerShell(value) {
+  const stringValue = String(value);
+  if (/^[a-zA-Z0-9_./:\\=@?&%+-]+$/.test(stringValue)) return stringValue;
+  return `'${stringValue.replaceAll("'", "''")}'`;
+}
+
+function collectArgs() {
+  const args = [];
+  const positionals = [];
+  let activeOptions = 0;
+  const controls = [...elements.form.querySelectorAll("input, select, textarea")];
+
+  for (const control of controls) {
+    const flag = control.dataset.flag;
+    if (control.type === "checkbox") {
+      if (control.checked && flag) {
+        args.push(flag);
+        activeOptions += 1;
+      }
+      continue;
+    }
+
+    const value = control.value.trim();
+    if (!value) continue;
+    const isPositional = control.dataset.positional === "true";
+    const defaultValue = control.dataset.default;
+    if (!isPositional && defaultValue !== undefined && value === defaultValue) continue;
+
+    if (control.dataset.repeatable === "true") {
+      const values = value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+      values.forEach((item) => args.push(flag, quotePowerShell(item)));
+      activeOptions += values.length;
+    } else if (isPositional) {
+      positionals.push(value);
+    } else if (flag) {
+      args.push(flag, quotePowerShell(value));
+      activeOptions += 1;
+    }
+  }
+  if (positionals.some((value) => value.startsWith("-"))) {
+    args.push("--");
+  }
+  args.push(...positionals.map(quotePowerShell));
+  return { args, activeOptions };
+}
+
+function baseArgs(action) {
+  if (action.fixedArgs) return [...action.fixedArgs];
+  if (action.pipelineCommand) return ["-m", "pipeline", action.pipelineCommand];
+  if (action.module === "pytest") return ["-m", "pytest"];
+  const args = ["-m", action.module];
+  if (action.moduleTarget) args.push(action.moduleTarget);
+  return args;
+}
+
+function updateCommand() {
+  const action = currentAction();
+  const { args, activeOptions } = collectArgs();
+  const command = [launchers[elements.launcher.value], ...baseArgs(action), ...args].join(" ");
+  elements.output.textContent = command;
+  elements.summary.textContent = activeOptions
+    ? `${activeOptions} option${activeOptions > 1 ? "s" : ""} personnalisée${activeOptions > 1 ? "s" : ""}`
+    : "Commande minimale";
+}
+
+function enforceExclusive(changedControl) {
+  const group = changedControl.dataset.exclusive;
+  if (!group) return;
+  const hasValue = changedControl.type === "checkbox" ? changedControl.checked : Boolean(changedControl.value.trim());
+  if (!hasValue) return;
+
+  elements.form.querySelectorAll(`[data-exclusive="${group}"]`).forEach((control) => {
+    if (control === changedControl) return;
+    if (control.type === "checkbox") control.checked = false;
+    else control.value = "";
+  });
+}
+
+function selectAction(actionId) {
+  state.actionId = actionId;
+  renderActions();
+  renderForm();
+  if (window.innerWidth < 901) {
+    document.querySelector(".config-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+async function copyCommand() {
+  const command = elements.output.textContent;
+  try {
+    await navigator.clipboard.writeText(command);
+  } catch {
+    const range = document.createRange();
+    range.selectNodeContents(elements.output);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand("copy");
+    selection.removeAllRanges();
+  }
+  elements.copy.innerHTML = `<span aria-hidden="true">✓</span> Copiée`;
+  elements.toast.classList.add("visible");
+  window.setTimeout(() => {
+    elements.copy.innerHTML = `<span aria-hidden="true">▣</span> Copier`;
+    elements.toast.classList.remove("visible");
+  }, 1500);
+}
+
+elements.categoryTabs.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-category]");
+  if (!button) return;
+  state.category = button.dataset.category;
+  renderCategories();
+  renderActions();
+});
+
+elements.actionList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-action]");
+  if (button) selectAction(button.dataset.action);
+});
+
+elements.search.addEventListener("input", () => {
+  state.search = elements.search.value;
+  renderActions();
+});
+
+elements.form.addEventListener("input", (event) => {
+  enforceExclusive(event.target);
+  updateCommand();
+});
+elements.form.addEventListener("change", (event) => {
+  enforceExclusive(event.target);
+  updateCommand();
+});
+elements.launcher.addEventListener("change", updateCommand);
+elements.copy.addEventListener("click", copyCommand);
+
+elements.wrap.addEventListener("click", () => {
+  state.wrapped = !state.wrapped;
+  elements.output.classList.toggle("wrapped", state.wrapped);
+  elements.wrap.setAttribute("aria-pressed", String(state.wrapped));
+});
+
+elements.reset.addEventListener("click", () => {
+  elements.launcher.value = "venv";
+  renderForm();
+});
+
+document.querySelector("#action-count").textContent = String(actions.length);
+renderCategories();
+renderActions();
+renderForm();

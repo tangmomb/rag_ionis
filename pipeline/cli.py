@@ -63,6 +63,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--image-review-model", default=None)
     parser.add_argument("--speaker-validation-model", default=None)
+    parser.add_argument("--chunk-summary-model", default=None)
     parser.add_argument(
         "--correction-mode",
         choices=("conservative", "balanced", "aggressive"),
@@ -153,6 +154,7 @@ def options_from_args(args: argparse.Namespace) -> PipelineOptions:
         speaker_validation_model=(
             args.speaker_validation_model or defaults.speaker_validation_model
         ),
+        chunk_summary_model=args.chunk_summary_model or defaults.chunk_summary_model,
         correction_mode=args.correction_mode,
         frame_interval_seconds=args.frame_interval,
         details_per_section=args.details_per_section,

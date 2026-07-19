@@ -23,6 +23,7 @@ start "" "http://127.0.0.1:8006/"
 
 start "Database browser" cmd /k "%API_PYTHON% -m uvicorn utils.database_browser.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir utils/database_browser"
 start "" "http://127.0.0.1:8001/videos"
+start "" "%~dp0utils\command_builder\index.html"
 start "" "http://127.0.0.1:6006/"
 start "" "https://www.youtube.com/@IONIS-STM/videos"
 

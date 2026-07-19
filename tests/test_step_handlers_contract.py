@@ -17,6 +17,8 @@ from pipeline.steps.inspection import (
     detect_subtitles,
     infer_video_type,
 )
+from pipeline.steps.ocr import build_processed_ocr
+from pipeline.steps.transcripts import extract_ocr_subtitles
 
 
 class StepHandlerContractTests(unittest.TestCase):
@@ -29,7 +31,7 @@ class StepHandlerContractTests(unittest.TestCase):
         )
 
     def test_every_catalog_handler_explicitly_returns_task_result(self) -> None:
-        self.assertEqual(len(TASKS), 26)
+        self.assertEqual(len(TASKS), 28)
         for task_id, spec in TASKS.items():
             with self.subTest(task_id=task_id):
                 self.assertIs(
@@ -175,6 +177,30 @@ class StepHandlerContractTests(unittest.TestCase):
             self.assertFalse(
                 (context.metadata_dir / "pipeline_analysis.json").exists()
             )
+
+    def test_processed_ocr_keeps_subtitles_for_correction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            with patch.object(
+                build_processed_ocr,
+                "process_video",
+                return_value=None,
+            ) as process:
+                step_handlers.build_processed_ocr(context)
+
+        self.assertFalse(process.call_args.kwargs["strip_subtitles"])
+
+    def test_missing_ocr_correction_reference_is_informational(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            with patch.object(
+                extract_ocr_subtitles,
+                "extract_for_video",
+                return_value=None,
+            ):
+                result = step_handlers.extract_ocr_transcript(context)
+
+        self.assertIs(result.status, TaskStatus.SKIPPED)
 
 
 if __name__ == "__main__":

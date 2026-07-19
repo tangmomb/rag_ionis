@@ -11,16 +11,12 @@ from pipeline.support.paths import (
     relative_to_video_dir,
     speakers_dir,
 )
+from pipeline.steps.transcripts.artifacts import (
+    LEGACY_TRANSCRIPT_2_NAMES,
+    TRANSCRIPT_2_CORRECTED_NAME,
+)
 
 
-PLAIN_NAME = "plain_transcript.txt"
-LEGACY_PLAIN_SUFFIX = "_transcript.txt"
-OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
-LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-WHISPER_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
-LEGACY_WHISPER_TIMECODED_SUFFIX = "_transcript_timecodes.txt"
-OCR_TIMECODED_CORRECTED_NAME = "ocr_subtitles_timecoded_corrected.txt"
-LEGACY_OCR_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
 OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
 LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
@@ -60,60 +56,19 @@ NON_PERSON_NAME_KEYWORDS = {
     "www",
 }
 
-def transcript_path(video_path, *, transcripts_dir_name=None):
-    transcript_dir = existing_transcripts_dir(
-        video_path,
-        name=transcripts_dir_name,
-    )
-    preferred = transcript_dir / PLAIN_NAME
-    legacy = transcript_dir / f"{video_path.stem}{LEGACY_PLAIN_SUFFIX}"
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
-
-
-def ocr_subtitle_path(video_path, *, transcripts_dir_name=None):
-    transcript_dir = existing_transcripts_dir(
-        video_path,
-        name=transcripts_dir_name,
-    )
-    preferred = transcript_dir / OCR_SUBTITLE_NAME
-    legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
-
-
 def source_text_path(video_path, *, transcripts_dir_name=None):
     transcript_dir = existing_transcripts_dir(
         video_path,
         name=transcripts_dir_name,
     )
-    whisper_timecoded = transcript_dir / WHISPER_TIMECODED_NAME
-    if whisper_timecoded.exists():
-        return whisper_timecoded
-    legacy_whisper_timecoded = sorted(transcript_dir.glob(f"*{LEGACY_WHISPER_TIMECODED_SUFFIX}"))
-    if legacy_whisper_timecoded:
-        return legacy_whisper_timecoded[0]
-    ocr_timecoded_corrected = transcript_dir / OCR_TIMECODED_CORRECTED_NAME
-    if ocr_timecoded_corrected.exists():
-        return ocr_timecoded_corrected
-    legacy_ocr_timecoded_corrected = sorted(
-        transcript_dir.glob(f"*{LEGACY_OCR_TIMECODED_CORRECTED_SUFFIX}")
-    )
-    if legacy_ocr_timecoded_corrected:
-        return legacy_ocr_timecoded_corrected[0]
-    transcript = transcript_path(
-        video_path,
-        transcripts_dir_name=transcripts_dir_name,
-    )
-    if transcript.exists():
-        return transcript
-    ocr_subtitle = ocr_subtitle_path(
-        video_path,
-        transcripts_dir_name=transcripts_dir_name,
-    )
-    return ocr_subtitle if ocr_subtitle.exists() else None
+    corrected = transcript_dir / TRANSCRIPT_2_CORRECTED_NAME
+    if corrected.exists():
+        return corrected
+    for name in LEGACY_TRANSCRIPT_2_NAMES:
+        legacy_corrected = transcript_dir / name
+        if legacy_corrected.exists():
+            return legacy_corrected
+    return None
 
 
 def ocr_processed_path(video_path):
@@ -365,7 +320,7 @@ def propose_for_video(
         ):
             print(f"[skip] {target.name} existe deja")
             return target
-        print(f"[regen] {target.name}: source Whisper brute plus recente ou differente")
+        print(f"[regen] {target.name}: source Whisper corrigee plus recente ou differente")
     text = source.read_text(encoding="utf-8")
     if not text.strip():
         ocr_names, ocr_source = load_ocr_speaker_candidates(video_path)

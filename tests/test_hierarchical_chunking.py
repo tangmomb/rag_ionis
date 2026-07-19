@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -48,8 +49,12 @@ class HierarchicalChunkingTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            summarize_sections(video, force=True, details_per_section=3)
-            summarize_video(video, force=True)
+            with patch(
+                "pipeline.steps.chunks.hierarchical_chunks.luna_summary",
+                side_effect=lambda text, **_kwargs: text.splitlines()[0],
+            ):
+                summarize_sections(video, force=True, details_per_section=3)
+                summarize_video(video, force=True)
             payload = json.loads(target.read_text(encoding="utf-8"))
 
         chunks = payload["chunks"]
@@ -67,7 +72,7 @@ class HierarchicalChunkingTests(unittest.TestCase):
             updated_details[0]["chunk_parent"],
             {"chunk_level": "section", "chunk_index": 1},
         )
-        self.assertEqual(payload["hierarchy"]["strategy"], "extractive_frequency_v1")
+        self.assertEqual(payload["hierarchy"]["strategy"], "luna")
 
 
 if __name__ == "__main__":

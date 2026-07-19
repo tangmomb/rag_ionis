@@ -161,21 +161,27 @@ _TASK_SPECS = (
         step_handlers.validate_speakers,
     ),
     TaskSpec(
-        "speakers.assign_ocr",
-        "processing",
-        "Attribuer les speakers au transcript OCR",
-        step_handlers.assign_ocr_speakers,
-    ),
-    TaskSpec(
         "transcript.correct_whisper",
         "processing",
         "Corriger le transcript Whisper",
         step_handlers.correct_whisper_transcript,
     ),
     TaskSpec(
+        "transcript.reconcile_ocr",
+        "processing",
+        "Corriger WhisperX par rapprochement avec le transcript OCR",
+        step_handlers.reconcile_whisper_with_ocr,
+    ),
+    TaskSpec(
+        "transcript.apply_speakers",
+        "processing",
+        "Creer le transcript avec les speakers valides",
+        step_handlers.apply_transcript_speakers,
+    ),
+    TaskSpec(
         "transcript.enrich",
         "processing",
-        "Enrichir le transcript avec les textes visuels",
+        "Ajouter les intercalaires au transcript avec speakers",
         step_handlers.enrich_transcript,
     ),
     TaskSpec(
@@ -183,6 +189,13 @@ _TASK_SPECS = (
         "processing",
         "Creer le transcript sans timecodes",
         step_handlers.create_plain_transcript,
+        version="2",
+    ),
+    TaskSpec(
+        "transcript.create_plain_ocr",
+        "processing",
+        "Creer le plain transcript OCR de correction",
+        step_handlers.create_plain_ocr,
     ),
     TaskSpec(
         "chunks.create",

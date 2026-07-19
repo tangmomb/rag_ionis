@@ -4,12 +4,11 @@ from difflib import SequenceMatcher
 from itertools import product
 from pathlib import Path
 
-from pipeline.support.json_io import read_json, write_json
+from pipeline.support.json_io import read_json
 from pipeline.support.paths import (
+    CANONICAL_TRANSCRIPTS_DIR_NAME,
     existing_speakers_dir,
     existing_transcripts_dir,
-    output_is_current,
-    relative_to_video_dir,
     speakers_dir,
     video_base_dir,
 )
@@ -17,8 +16,9 @@ from pipeline.support.paths import (
 
 SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
-CORRECTIONS_NAME = "speaker_transcript_corrections.json"
+OBSOLETE_CORRECTIONS_NAME = "speaker_transcript_corrections.json"
 OBSOLETE_SPEAKER_CORRECTED_SUFFIX = "_speaker_corrected.txt"
+SPEAKER_LABEL_PATTERN = re.compile(r"\bSPEAKER_(\d+)\b")
 
 def normalize_name(name):
     normalized = unicodedata.normalize("NFKD", str(name).strip().casefold())
@@ -48,8 +48,14 @@ def candidates_path(video_path, validated_payload=None):
     return existing_speakers_dir(video_path) / SPEAKER_CANDIDATES_NAME
 
 
-def corrections_path(video_path):
-    return speakers_dir(video_path) / CORRECTIONS_NAME
+def remove_obsolete_corrections(video_path):
+    paths = {
+        existing_speakers_dir(video_path) / OBSOLETE_CORRECTIONS_NAME,
+        speakers_dir(video_path) / OBSOLETE_CORRECTIONS_NAME,
+    }
+    for path in paths:
+        if path.exists():
+            path.unlink()
 
 
 def candidate_entries(payload):
@@ -120,7 +126,10 @@ def build_speaker_mappings(candidates, speakers):
 
 
 def source_transcript_paths(video_path, candidates_payload):
-    transcript_dir = existing_transcripts_dir(video_path)
+    transcript_dir = existing_transcripts_dir(
+        video_path,
+        name=CANONICAL_TRANSCRIPTS_DIR_NAME,
+    )
     sources = []
     relative_source = str(candidates_payload.get("source") or "").strip()
     if relative_source:
@@ -191,9 +200,36 @@ def apply_mappings(text, mappings):
     return corrected, counts
 
 
-def correct_speaker_files(video_path, sources, force=False):
+def apply_speaker_labels(text, speakers):
+    corrected = str(text)
+    counts = {}
+    if not speakers:
+        return corrected, counts
+
+    def replacement(match):
+        label = match.group(0)
+        index = int(match.group(1))
+        if len(speakers) == 1:
+            speaker = speakers[0]
+        elif index < len(speakers):
+            speaker = speakers[index]
+        else:
+            return label
+        counts[label] = counts.get(label, 0) + 1
+        return speaker
+
+    return SPEAKER_LABEL_PATTERN.sub(replacement, corrected), counts
+
+
+def correct_speaker_files(
+    video_path,
+    sources,
+    force=False,
+    *,
+    replace_speaker_labels=False,
+):
+    remove_obsolete_corrections(video_path)
     validated_source = validated_path(video_path)
-    target = corrections_path(video_path)
     if not validated_source.exists():
         print(f"[skip] speakers valides introuvables: {validated_source}")
         return None
@@ -212,41 +248,27 @@ def correct_speaker_files(video_path, sources, force=False):
     if not sources:
         print(f"[skip] aucun transcript source trouve pour: {video_path.stem}")
         return None
-    if target.exists() and not force and output_is_current(
-        target,
-        [validated_source, candidate_source, *sources],
-    ):
-        print(f"[skip] {target.name} existe deja")
-        return target
 
-    files = []
     total_replacements = 0
     for source in sources:
         original = source.read_text(encoding="utf-8")
         corrected, counts = apply_mappings(original, mappings)
+        label_counts = {}
+        if replace_speaker_labels:
+            corrected, label_counts = apply_speaker_labels(
+                corrected,
+                speakers,
+            )
         if corrected != original:
             source.write_text(corrected, encoding="utf-8")
-        replacement_count = sum(counts.values())
+        replacement_count = sum(counts.values()) + sum(label_counts.values())
         total_replacements += replacement_count
-        files.append(
-            {
-                "path": relative_to_video_dir(source, video_path),
-                "replacement_count": replacement_count,
-                "replacements": counts,
-            }
-        )
 
-    payload = {
-        "validated_speakers_source": relative_to_video_dir(validated_source, video_path),
-        "speaker_candidates_source": relative_to_video_dir(candidate_source, video_path),
-        "speakers": speakers,
-        "mappings": mappings,
-        "files": files,
-        "replacement_count": total_replacements,
-    }
-    write_json(target, payload)
-    print(f"[ok] {target} ({total_replacements} remplacement(s), {len(files)} transcript(s))")
-    return target
+    print(
+        f"[ok] speakers appliques "
+        f"({total_replacements} remplacement(s), {len(sources)} transcript(s))"
+    )
+    return total_replacements
 
 
 def correct_speaker_transcripts(video_path, force=False, source_only=False):

@@ -12,4 +12,5 @@ Il génère des commandes PowerShell à exécuter depuis la racine du projet pou
 - les tests et quelques opérations de maintenance.
 
 Les définitions sont alignées sur les parseurs `argparse` présents dans
-`pipeline/` au moment de la création de l’outil.
+`pipeline/`. La suite de tests est lancée avec `unittest`, sans dépendance
+`pytest`.

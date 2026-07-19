@@ -17,10 +17,12 @@ const TASKS = [
   ["transcript.whisper", "Transcrire l’audio avec WhisperX"],
   ["speakers.propose", "Proposer les speakers"],
   ["speakers.validate", "Valider les speakers"],
-  ["speakers.assign_ocr", "Attribuer les speakers au transcript OCR"],
-  ["transcript.correct_whisper", "Corriger le transcript Whisper"],
-  ["transcript.enrich", "Enrichir le transcript"],
+  ["transcript.correct_whisper", "Corriger WhisperX avec l’OCR visuel"],
+  ["transcript.reconcile_ocr", "Corriger WhisperX via les sous-titres OCR"],
+  ["transcript.apply_speakers", "Créer le transcript avec speakers"],
+  ["transcript.enrich", "Ajouter les intercalaires au transcript"],
   ["transcript.create_plain", "Créer le transcript sans timecodes"],
+  ["transcript.create_plain_ocr", "Créer l’OCR plain utilisé pour les corrections"],
   ["chunks.create", "Créer les chunks détail"],
   ["chunks.summarize_sections", "Créer les résumés de sections"],
   ["chunks.summarize_video", "Créer le résumé global"],
@@ -92,8 +94,8 @@ const actions = [
     id: "fetch",
     category: "YouTube",
     title: "Récupérer les infos YouTube",
-    short: "Métadonnées d’une vidéo ou de la chaîne",
-    description: "Interroge l’API YouTube et prépare le cache local de métadonnées.",
+    short: "Rafraîchir le cache et les JSON des vidéos locales",
+    description: "Interroge l’API YouTube, recrée le cache puis écrase le JSON de métadonnées de chaque vidéo locale correspondante, sans retélécharger les vidéos.",
     icon: "↯",
     accent: "#dff0e5",
     module: "pipeline.ingest.fetch_youtube_metadata",
@@ -170,8 +172,8 @@ const actions = [
     id: "run",
     category: "Pipeline",
     title: "Lancer le pipeline",
-    short: "Traitement complet d’une ou plusieurs vidéos",
-    description: "Inspecte, route et exécute automatiquement toutes les étapes adaptées.",
+    short: "WhisperX canonique pour toutes les vidéos",
+    description: "Inspecte puis exécute la chaîne WhisperX canonique. Le plain transcript OCR sert uniquement à corriger les graphies proches.",
     icon: "▶",
     accent: "#d9f36d",
     pipelineCommand: "run",
@@ -236,8 +238,8 @@ const actions = [
     id: "sync-db",
     category: "Publication",
     title: "Synchroniser la base SQL",
-    short: "Vidéos, stats, transcripts et chunks",
-    description: "Met à jour PostgreSQL à partir des fichiers locaux et des références S3.",
+    short: "Vidéos, stats, transcripts WhisperX et chunks",
+    description: "Met à jour PostgreSQL à partir des fichiers locaux et publie uniquement la chaîne de transcript WhisperX canonique.",
     icon: "⇄",
     accent: "#e7e1f4",
     module: "pipeline.publish.sync_database",
@@ -313,19 +315,21 @@ const actions = [
     id: "tests",
     category: "Maintenance",
     title: "Lancer les tests",
-    short: "Suite complète ou fichier pytest précis",
-    description: "Exécute pytest sur tout le projet ou sur une cible donnée.",
+    short: "Découverte de la suite unittest",
+    description: "Exécute les tests standards du projet sans dépendance pytest.",
     icon: "✓",
     accent: "#e1eddc",
-    module: "pytest",
+    fixedArgs: ["-m", "unittest", "discover"],
     sections: [
       {
-        title: "Cible",
+        title: "Découverte",
         fields: [
-          { id: "testTarget", label: "Fichier, dossier ou test", type: "text", value: "tests", positional: true, required: true, full: true, placeholder: "tests/test_pipeline_execution.py::test_…" },
-          { id: "quiet", label: "Sortie concise", flag: "-q", type: "boolean", checked: true },
-          { id: "stopFirst", label: "Arrêter au premier échec", flag: "-x", type: "boolean" },
-          { id: "keyword", label: "Filtre par mot-clé", flag: "-k", type: "text", placeholder: "pipeline_execution" },
+          { id: "startDirectory", label: "Dossier de tests", flag: "-s", type: "text", value: "tests", full: true },
+          { id: "pattern", label: "Motif de fichiers", flag: "-p", type: "text", value: "test_*.py", placeholder: "test_*.py" },
+          { id: "topDirectory", label: "Racine d’import", flag: "-t", type: "text", placeholder: "Défaut : dossier de tests" },
+          { id: "verbose", label: "Sortie détaillée", flag: "-v", type: "boolean" },
+          { id: "failFast", label: "Arrêter au premier échec", flag: "-f", type: "boolean" },
+          { id: "keyword", label: "Filtre par nom", flag: "-k", type: "text", placeholder: "pipeline_execution" },
         ],
       },
     ],
@@ -575,7 +579,6 @@ function collectArgs() {
 function baseArgs(action) {
   if (action.fixedArgs) return [...action.fixedArgs];
   if (action.pipelineCommand) return ["-m", "pipeline", action.pipelineCommand];
-  if (action.module === "pytest") return ["-m", "pytest"];
   const args = ["-m", action.module];
   if (action.moduleTarget) args.push(action.moduleTarget);
   return args;
@@ -675,6 +678,7 @@ elements.reset.addEventListener("click", () => {
 });
 
 document.querySelector("#action-count").textContent = String(actions.length);
+document.querySelector("#task-count").textContent = String(TASKS.length);
 renderCategories();
 renderActions();
 renderForm();

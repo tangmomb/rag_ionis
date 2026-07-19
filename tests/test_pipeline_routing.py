@@ -73,7 +73,7 @@ class PipelineRoutingTests(unittest.TestCase):
             correction_mode="balanced",
         )
 
-    def test_more_than_ten_minutes_selects_long_ocr_pipeline(self) -> None:
+    def test_more_than_ten_minutes_keeps_whisper_canonical_and_adds_ocr_correction_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video = self.make_video(
                 Path(temporary_directory),
@@ -84,9 +84,20 @@ class PipelineRoutingTests(unittest.TestCase):
             tasks = processing_plan(context)
 
         self.assertTrue(context.is_long_video)
-        self.assertEqual(context.routing()["pipeline_id"], "long.ocr.video_recording")
+        self.assertEqual(context.routing()["pipeline_id"], "long.whisper.video_recording")
+        self.assertEqual(
+            context.routing()["ocr_correction_reference"],
+            "enabled",
+        )
+        self.assertEqual(context.transcripts_dir_name, "transcripts_whisper")
+        self.assertEqual(context.ocr_transcripts_dir_name, "transcripts_ocr")
         task_ids = [task.id for task in tasks]
+        self.assertIn("transcript.whisper", task_ids)
         self.assertIn("transcript.extract_ocr", task_ids)
+        self.assertIn("transcript.create_plain_ocr", task_ids)
+        self.assertIn("transcript.reconcile_ocr", task_ids)
+        self.assertNotIn("transcript.enrich_ocr_comparison", task_ids)
+        self.assertNotIn("speakers.assign_ocr", task_ids)
         self.assertIn("chunks.summarize_sections", task_ids)
         self.assertIn("chunks.summarize_video", task_ids)
 
@@ -102,7 +113,14 @@ class PipelineRoutingTests(unittest.TestCase):
 
         self.assertFalse(context.is_long_video)
         self.assertEqual(context.routing()["pipeline_id"], "short.whisper.video_recording")
+        self.assertEqual(
+            context.routing()["ocr_correction_reference"],
+            "not_applicable",
+        )
         self.assertIn("transcript.whisper", task_ids)
+        self.assertNotIn("transcript.extract_ocr", task_ids)
+        self.assertIn("transcript.correct_whisper", task_ids)
+        self.assertNotIn("transcript.reconcile_ocr", task_ids)
         self.assertNotIn("chunks.summarize_sections", task_ids)
 
     def test_motion_design_is_a_routing_dimension(self) -> None:
@@ -123,7 +141,11 @@ class PipelineRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             manifest["route"]["pipeline_id"],
-            "short.ocr.motion_design",
+            "short.whisper.motion_design",
+        )
+        self.assertEqual(
+            manifest["route"]["ocr_correction_reference"],
+            "enabled",
         )
         self.assertNotIn("questions", manifest)
         self.assertNotIn("features", manifest)
@@ -168,7 +190,7 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertNotIn("command", tasks["transcript.whisper"])
         self.assertEqual(tasks["transcript.whisper"]["version"], "1")
 
-    def test_ocr_and_whisper_branches_are_exclusive_and_ordered(self) -> None:
+    def test_whisper_is_always_canonical_and_ocr_correction_is_conditional(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ocr_video = self.make_video(
@@ -191,13 +213,45 @@ class PipelineRoutingTests(unittest.TestCase):
             ]
 
         self.assertIn("transcript.extract_ocr", ocr_ids)
-        self.assertNotIn("transcript.whisper", ocr_ids)
+        self.assertIn("transcript.whisper", ocr_ids)
+        self.assertLess(
+            ocr_ids.index("transcript.whisper"),
+            ocr_ids.index("transcript.extract_ocr"),
+        )
         self.assertLess(
             ocr_ids.index("transcript.extract_ocr"),
+            ocr_ids.index("transcript.create_plain_ocr"),
+        )
+        self.assertLess(
+            ocr_ids.index("transcript.create_plain_ocr"),
+            ocr_ids.index("transcript.reconcile_ocr"),
+        )
+        self.assertLess(
+            ocr_ids.index("transcript.reconcile_ocr"),
+            ocr_ids.index("speakers.propose"),
+        )
+        self.assertLess(
+            ocr_ids.index("speakers.propose"),
+            ocr_ids.index("speakers.validate"),
+        )
+        self.assertLess(
+            ocr_ids.index("speakers.validate"),
+            ocr_ids.index("transcript.apply_speakers"),
+        )
+        self.assertLess(
+            ocr_ids.index("transcript.apply_speakers"),
             ocr_ids.index("chunks.create"),
         )
+        self.assertNotIn("speakers.assign_ocr", ocr_ids)
+        self.assertNotIn("transcript.enrich_ocr_comparison", ocr_ids)
         self.assertIn("transcript.whisper", whisper_ids)
         self.assertNotIn("transcript.extract_ocr", whisper_ids)
+        self.assertIn("transcript.correct_whisper", whisper_ids)
+        self.assertNotIn("transcript.reconcile_ocr", whisper_ids)
+        self.assertLess(
+            whisper_ids.index("transcript.correct_whisper"),
+            whisper_ids.index("speakers.propose"),
+        )
         self.assertLess(
             whisper_ids.index("transcript.whisper"),
             whisper_ids.index("chunks.create"),

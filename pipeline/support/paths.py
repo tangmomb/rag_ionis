@@ -12,6 +12,8 @@ INTERVIEW_DIR_NAME = "interview"
 OCR_DIR_NAME = "ocr"
 OCR_RAW_DIR_NAME = "raw"
 TRANSCRIPTS_DIR_NAME = "transcripts"
+CANONICAL_TRANSCRIPTS_DIR_NAME = "transcripts_whisper"
+OCR_CORRECTION_TRANSCRIPTS_DIR_NAME = "transcripts_ocr"
 CHUNKS_DIR_NAME = "chunks"
 SPEAKERS_DIR_NAME = "speakers"
 ANALYSED_INFOS_NAME = "pipeline_analysis.json"
@@ -149,20 +151,20 @@ def existing_transcripts_dir(video_path, name=None):
     if name is None:
         outputs_root = outputs_dir(video_path)
         for candidate in (
-            outputs_root / "transcripts_whisper",
-            outputs_root / "transcripts_ocr",
+            outputs_root / CANONICAL_TRANSCRIPTS_DIR_NAME,
+            outputs_root / OCR_CORRECTION_TRANSCRIPTS_DIR_NAME,
         ):
             if candidate.exists():
                 return candidate
 
     legacy_by_name = {
-        "transcripts_ocr": (
+        OCR_CORRECTION_TRANSCRIPTS_DIR_NAME: (
             "transcript_ocr",
             "transcripts_ocr",
             "transcript",
             "transcripts",
         ),
-        "transcripts_whisper": (
+        CANONICAL_TRANSCRIPTS_DIR_NAME: (
             "transcript_whisper",
             "transcripts_whisper",
             "transcript",
@@ -176,8 +178,8 @@ def existing_transcripts_dir(video_path, name=None):
             "transcript_whisper",
             "transcript_ocr",
             "transcripts",
-            "transcripts_whisper",
-            "transcripts_ocr",
+            CANONICAL_TRANSCRIPTS_DIR_NAME,
+            OCR_CORRECTION_TRANSCRIPTS_DIR_NAME,
         ) if name is None else (str(name), "transcript", "transcripts"),
     )
     for legacy_name in legacy_names:

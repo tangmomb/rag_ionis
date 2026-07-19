@@ -1,6 +1,8 @@
 import re
 
-from pipeline.support.paths import existing_transcripts_dir
+from pipeline.support.paths import (
+    existing_ocr_dir,
+)
 
 
 SOURCE_NAME = "ocr_subtitles_timecoded_corrected.txt"
@@ -25,7 +27,7 @@ TARGET_TEXT = "Ionis-STM"
 
 
 def transcript_path(video_path):
-    transcript_dir = existing_transcripts_dir(video_path, name="transcripts_ocr")
+    transcript_dir = existing_ocr_dir(video_path)
     preferred = transcript_dir / SOURCE_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_SOURCE_SUFFIX}"
     if legacy.exists() and not preferred.exists():

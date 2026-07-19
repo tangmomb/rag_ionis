@@ -6,9 +6,18 @@ from pathlib import Path
 
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import existing_ocr_dir, existing_transcripts_dir
-from pipeline.steps.speakers.correct_speaker_transcripts import correct_speaker_files
+from pipeline.steps.transcripts.artifacts import (
+    LEGACY_TRANSCRIPT_1_NAMES,
+    TRANSCRIPT_1_BRUT_NAME,
+    TRANSCRIPT_2_CORRECTED_NAME,
+    TRANSCRIPT_2_CORRECTIONS_NAME,
+)
 
-TIMECODED_SOURCE_NAMES = ("whisper_transcript_timecoded.txt", "ocr_subtitles_timecoded.txt")
+TIMECODED_SOURCE_NAMES = (
+    TRANSCRIPT_1_BRUT_NAME,
+    *LEGACY_TRANSCRIPT_1_NAMES,
+    "ocr_subtitles_timecoded.txt",
+)
 LEGACY_TIMECODED_SUFFIXES = ("_transcript_timecodes.txt", "_ocr_subtitle_timecodes.txt")
 CORRECTED_SUFFIX = "_corrected.txt"
 CORRECTIONS_SUFFIX = "_corrections.tsv"
@@ -90,6 +99,11 @@ def timecodes_source_path(video_path, *, transcripts_dir_name=None):
 
 
 def corrected_path(source_path):
+    if source_path.name in {
+        TRANSCRIPT_1_BRUT_NAME,
+        *LEGACY_TRANSCRIPT_1_NAMES,
+    }:
+        return source_path.with_name(TRANSCRIPT_2_CORRECTED_NAME)
     if source_path.name in TIMECODED_SOURCE_NAMES:
         return source_path.with_name(source_path.name[: -len(".txt")] + CORRECTED_SUFFIX)
     for suffix in LEGACY_TIMECODED_SUFFIXES:
@@ -99,6 +113,11 @@ def corrected_path(source_path):
 
 
 def corrected_words_path(source_path):
+    if source_path.name in {
+        TRANSCRIPT_1_BRUT_NAME,
+        *LEGACY_TRANSCRIPT_1_NAMES,
+    }:
+        return source_path.with_name(TRANSCRIPT_2_CORRECTIONS_NAME)
     if source_path.name in TIMECODED_SOURCE_NAMES:
         return source_path.with_name(source_path.name[: -len(".txt")] + CORRECTIONS_SUFFIX)
     for suffix in LEGACY_TIMECODED_SUFFIXES:
@@ -428,7 +447,6 @@ def correct_file(
         and target.stat().st_mtime >= max(source.stat().st_mtime, analyse.stat().st_mtime)
     ):
         print(f"[skip] {target.name} existe deja")
-        correct_speaker_files(video_path, [target], force=False)
         return target
     if target.exists() and not force:
         print(f"[regen] {target.name}: Whisper brut ou OCR plus recent")
@@ -449,5 +467,4 @@ def correct_file(
     words_target.write_text(("\n".join(correction_lines).strip() + "\n") if correction_lines else "", encoding="utf-8")
     print(f"[ok] {target}")
     print(f"[ok] {words_target}")
-    correct_speaker_files(video_path, [target], force=force)
     return target

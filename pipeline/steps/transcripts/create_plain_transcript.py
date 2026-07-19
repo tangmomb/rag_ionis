@@ -1,12 +1,22 @@
 import json
 import re
-from pathlib import Path
+import shutil
 
-from pipeline.support.analysis import routing_fact
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import (
+    CANONICAL_TRANSCRIPTS_DIR_NAME,
+    OCR_CORRECTION_TRANSCRIPTS_DIR_NAME,
     existing_speakers_dir,
     existing_transcripts_dir,
+    transcripts_dir,
+)
+from pipeline.steps.transcripts.artifacts import (
+    LEGACY_TRANSCRIPT_2_NAMES,
+    LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+    TRANSCRIPT_2_CORRECTED_NAME,
+    TRANSCRIPT_3_WITH_SPEAKERS_NAME,
+    TRANSCRIPT_ENRICHED_NAME,
+    TRANSCRIPT_PLAIN_NAME,
 )
 
 CORRECTED_TIMECODED_NAMES = (
@@ -23,10 +33,8 @@ TIMECODE_PREFIX = re.compile(
     r"^\[(?:(?:\d{2}:)?\d{2}:\d{2}-(?:\d{2}:)?\d{2}:\d{2}|(?:\d{2}:)?\d{2}:\d{2})\]\s*"
 )
 SYSTEM_SPEAKER_PREFIX = re.compile(r"^SPEAKER[_ -]?\d+\s*:\s*", re.IGNORECASE)
+INTERCALAIRE_PREFIX = re.compile(r"^INTERCALAIRE\s*:", re.IGNORECASE)
 SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
-ENRICHED_SUFFIX = "_enriched.txt"
-LEGACY_ENRICHED_SUFFIX = "_enrichi.txt"
-MOTION_DESIGN_OCR_PREFIX = "Textes présents sur la vidéo :"
 
 def strip_timecodes(text, speaker_names=None):
     cleaned_lines = []
@@ -44,7 +52,7 @@ def strip_timecodes(text, speaker_names=None):
             if count:
                 cleaned = cleaned.strip()
                 break
-        if cleaned:
+        if cleaned and not INTERCALAIRE_PREFIX.match(cleaned):
             cleaned_lines.append(cleaned)
     return " ".join(cleaned_lines)
 
@@ -64,29 +72,19 @@ def load_validated_speakers(video_path):
     ]
 
 
-def analysed_video_type(video_path):
-    value = routing_fact(video_path, "video_type")
-    return value if isinstance(value, str) else None
-
-
-def whisper_timecoded_path(video_path, *, transcripts_dir_name=None):
-    transcript_dir = existing_transcripts_dir(
-        video_path,
-        name=transcripts_dir_name,
-    )
-    return transcript_dir / "whisper_transcript_timecoded.txt"
-
-
-def is_empty_text_file(path):
-    if not path.exists():
-        return False
-    try:
-        return not path.read_text(encoding="utf-8").strip()
-    except Exception:
-        return False
-
-
 def output_path(input_path):
+    if (
+        input_path.parent.name == CANONICAL_TRANSCRIPTS_DIR_NAME
+        or input_path.name
+        in {
+            TRANSCRIPT_ENRICHED_NAME,
+            TRANSCRIPT_3_WITH_SPEAKERS_NAME,
+            TRANSCRIPT_2_CORRECTED_NAME,
+            *LEGACY_TRANSCRIPT_2_NAMES,
+            *LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+        }
+    ):
+        return input_path.with_name(TRANSCRIPT_PLAIN_NAME)
     if input_path.name in CORRECTED_TIMECODED_NAMES:
         return input_path.with_name(PLAIN_NAME)
     name = input_path.name
@@ -99,20 +97,73 @@ def output_path(input_path):
     return input_path.with_name(name)
 
 
-def enriched_input_path(input_path):
-    if input_path.name.endswith(".txt"):
-        candidate = input_path.with_name(input_path.name[: -len(".txt")] + ENRICHED_SUFFIX)
-        if candidate.exists():
-            return candidate
+def ocr_plain_output_path(video_path):
+    return (
+        transcripts_dir(
+            video_path,
+            name=OCR_CORRECTION_TRANSCRIPTS_DIR_NAME,
+        )
+        / PLAIN_NAME
+    )
 
-    candidate = input_path.with_name(f"{input_path.stem}{LEGACY_ENRICHED_SUFFIX}")
-    if candidate.exists():
-        return candidate
-    return None
+
+def remove_obsolete_ocr_transcripts(target):
+    directory = target.parent
+    if not directory.exists():
+        return
+    for child in directory.iterdir():
+        if child == target:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def convert_ocr_correction_file(
+    video_path,
+    input_path,
+    force=False,
+):
+    target = ocr_plain_output_path(video_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    remove_obsolete_ocr_transcripts(target)
+
+    if (
+        target.exists()
+        and not force
+        and target.stat().st_mtime >= input_path.stat().st_mtime
+    ):
+        print(f"[skip] {target.name} existe deja")
+        return target
+    if target.exists() and not force:
+        print(f"[regen] {target.name}: OCR interne plus recent")
+
+    cleaned = strip_timecodes(input_path.read_text(encoding="utf-8"))
+    target.write_text(cleaned + "\n", encoding="utf-8")
+    print(f"[ok] {target}")
+    return target
 
 
 def timecoded_inputs(transcript_dir):
-    inputs = [transcript_dir / name for name in CORRECTED_TIMECODED_NAMES if (transcript_dir / name).exists()]
+    if transcript_dir.name == CANONICAL_TRANSCRIPTS_DIR_NAME:
+        canonical_names = (
+            TRANSCRIPT_3_WITH_SPEAKERS_NAME,
+            TRANSCRIPT_2_CORRECTED_NAME,
+            *LEGACY_TRANSCRIPT_2_NAMES,
+            TRANSCRIPT_ENRICHED_NAME,
+            *LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+        )
+        for name in canonical_names:
+            candidate = transcript_dir / name
+            if candidate.exists():
+                return [candidate]
+
+    inputs = [
+        transcript_dir / name
+        for name in CORRECTED_TIMECODED_NAMES
+        if (transcript_dir / name).exists()
+    ]
     if inputs:
         return inputs
 
@@ -131,21 +182,7 @@ def convert_file(
 ):
     target = output_path(input_path)
 
-    video_type = (analysed_video_type(video_path) or "").strip().lower()
-    plain_motion_design_overlays = (
-        video_type == "motion_design"
-        and is_empty_text_file(
-            whisper_timecoded_path(
-                video_path,
-                transcripts_dir_name=transcripts_dir_name,
-            )
-        )
-    )
     source_path = input_path
-    if plain_motion_design_overlays:
-        enriched_path = enriched_input_path(input_path)
-        if enriched_path is not None:
-            source_path = enriched_path
     if target.exists() and not force and target.stat().st_mtime >= source_path.stat().st_mtime:
         print(f"[skip] {target.name} existe deja")
         return target
@@ -154,8 +191,6 @@ def convert_file(
 
     text = source_path.read_text(encoding="utf-8")
     cleaned = strip_timecodes(text, load_validated_speakers(video_path))
-    if plain_motion_design_overlays and source_path != input_path:
-        cleaned = f"{MOTION_DESIGN_OCR_PREFIX}\n{cleaned}" if cleaned else MOTION_DESIGN_OCR_PREFIX
     target.write_text(cleaned + "\n", encoding="utf-8")
     print(f"[ok] {target}")
     return target

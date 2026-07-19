@@ -309,7 +309,9 @@ def build_processed_ocr(context: PipelineContext) -> TaskResult:
     result = process_video(
         context.video_path,
         force=context.force_rebuild,
-        strip_subtitles=context.transcript_strategy == "whisper",
+        # Les sous-titres restent dans l'OCR traite pour produire la reference
+        # plain de correction. Les consommateurs canoniques les ignorent.
+        strip_subtitles=False,
     )
     return _artifact_result(
         context,
@@ -430,16 +432,17 @@ def extract_ocr_transcript(context: PipelineContext) -> TaskResult:
         extract_for_video,
         subtitle_timecodes_path,
     )
+    from pipeline.support.paths import OCR_DIR_NAME
 
     target = subtitle_timecodes_path(
         context.video_path,
-        transcripts_dir_name=context.transcripts_dir_name,
+        transcripts_dir_name=OCR_DIR_NAME,
     )
     before = _snapshot((target,))
     result = extract_for_video(
         context.video_path,
         force=context.force_rebuild,
-        transcripts_dir_name=context.transcripts_dir_name,
+        transcripts_dir_name=OCR_DIR_NAME,
     )
     return _artifact_result(
         context,
@@ -450,6 +453,7 @@ def extract_ocr_transcript(context: PipelineContext) -> TaskResult:
         success_reason="Transcript OCR extrait.",
         cached_reason="Transcript OCR deja a jour.",
         missing_reason="Transcript OCR non produit; sous-titres OCR absents.",
+        missing_is_skip=True,
     )
 
 
@@ -460,10 +464,11 @@ def correct_ocr_spacing(context: PipelineContext) -> TaskResult:
         process_video_live,
         subtitle_target_path,
     )
+    from pipeline.support.paths import OCR_DIR_NAME
 
     target = subtitle_target_path(
         context.video_path,
-        transcripts_dir_name=context.transcripts_dir_name,
+        transcripts_dir_name=OCR_DIR_NAME,
     )
     before = _snapshot((target,))
     if context.options.openai_mode == "batch":
@@ -472,7 +477,7 @@ def correct_ocr_spacing(context: PipelineContext) -> TaskResult:
             context.video_path,
             force=context.force_rebuild,
             wait=True,
-            transcripts_dir_name=context.transcripts_dir_name,
+            transcripts_dir_name=OCR_DIR_NAME,
         )
     else:
         result = process_video_live(
@@ -480,7 +485,7 @@ def correct_ocr_spacing(context: PipelineContext) -> TaskResult:
             context.options.speaker_validation_model,
             context.video_path,
             force=context.force_rebuild,
-            transcripts_dir_name=context.transcripts_dir_name,
+            transcripts_dir_name=OCR_DIR_NAME,
         )
     return _artifact_result(
         context,
@@ -491,6 +496,7 @@ def correct_ocr_spacing(context: PipelineContext) -> TaskResult:
         success_reason="Espacement du transcript OCR corrige.",
         cached_reason="Espacement du transcript OCR deja corrige.",
         missing_reason="Correction impossible; transcript OCR timecode absent.",
+        missing_is_skip=True,
     )
 
 
@@ -515,6 +521,7 @@ def normalize_brand(context: PipelineContext) -> TaskResult:
         success_reason="Marque Ionis-STM normalisee.",
         cached_reason="Normalisation Ionis-STM deja satisfaite.",
         missing_reason="Normalisation impossible; transcript OCR corrige absent.",
+        missing_is_skip=True,
     )
 
 
@@ -638,31 +645,6 @@ def validate_speakers(context: PipelineContext) -> TaskResult:
     )
 
 
-def assign_ocr_speakers(context: PipelineContext) -> TaskResult:
-    from pipeline.steps.speakers.assign_ocr_speakers import (
-        assign_ocr_speakers as assign,
-        diarization_path,
-    )
-
-    target = diarization_path(context.video_path)
-    before = _snapshot((target,))
-    result = assign(
-        context.video_path,
-        force=context.force_rebuild,
-        transcripts_dir_name=context.transcripts_dir_name,
-    )
-    return _artifact_result(
-        context,
-        result,
-        artifacts=(*_paths_from(result), target),
-        state_paths=(target,),
-        before=before,
-        success_reason="Speakers attribues au transcript OCR.",
-        cached_reason="Attribution des speakers OCR deja a jour.",
-        missing_reason="Attribution impossible; transcript ou speakers valides absents.",
-    )
-
-
 def correct_whisper_transcript(context: PipelineContext) -> TaskResult:
     from pipeline.steps.transcripts.correct_whisper_transcript import (
         correct_file,
@@ -702,6 +684,70 @@ def correct_whisper_transcript(context: PipelineContext) -> TaskResult:
     )
 
 
+def reconcile_whisper_with_ocr(context: PipelineContext) -> TaskResult:
+    from pipeline.steps.transcripts.reconcile_whisper_with_ocr import (
+        corrected_path,
+        corrections_path,
+        reconcile_file,
+        whisper_source_path,
+    )
+
+    source = whisper_source_path(context.video_path)
+    if not source.exists():
+        return TaskResult.blocked(
+            "Rapprochement OCR impossible; transcript WhisperX brut absent."
+        )
+    target = corrected_path(context.video_path)
+    report = corrections_path(context.video_path)
+    state_paths = (target, report)
+    before = _snapshot(state_paths)
+    result = reconcile_file(
+        context.video_path,
+        force=context.force_rebuild,
+        mode=context.options.correction_mode,
+    )
+    return _artifact_result(
+        context,
+        result,
+        artifacts=(*_paths_from(result), target, report),
+        state_paths=state_paths,
+        before=before,
+        success_reason="Transcript WhisperX rapproche du transcript OCR.",
+        cached_reason="Rapprochement WhisperX/OCR deja a jour.",
+        missing_reason="Rapprochement impossible; transcript WhisperX absent.",
+    )
+
+
+def apply_transcript_speakers(context: PipelineContext) -> TaskResult:
+    from pipeline.steps.transcripts.apply_speakers import (
+        apply_speakers,
+        corrected_source_path,
+        with_speakers_path,
+    )
+
+    source = corrected_source_path(context.video_path)
+    if not source.exists():
+        return TaskResult.blocked(
+            "Application des speakers impossible; transcript corrige absent."
+        )
+    target = with_speakers_path(context.video_path)
+    before = _snapshot((target,))
+    result = apply_speakers(
+        context.video_path,
+        force=context.force_rebuild,
+    )
+    return _artifact_result(
+        context,
+        result,
+        artifacts=(*_paths_from(result), target),
+        state_paths=(target,),
+        before=before,
+        success_reason="Transcript avec speakers cree.",
+        cached_reason="Transcript avec speakers deja a jour.",
+        missing_reason="Transcript avec speakers non produit.",
+    )
+
+
 def enrich_transcript(context: PipelineContext) -> TaskResult:
     from pipeline.steps.transcripts.enrich_transcripts import (
         enrich_transcript as enrich,
@@ -716,7 +762,7 @@ def enrich_transcript(context: PipelineContext) -> TaskResult:
         )
     except FileNotFoundError:
         return TaskResult.blocked(
-            "Enrichissement impossible; transcript corrige absent."
+            "Enrichissement impossible; transcript avec speakers absent."
         )
     target = enriched_path(source)
     before = _snapshot((target,))
@@ -731,9 +777,9 @@ def enrich_transcript(context: PipelineContext) -> TaskResult:
         artifacts=(*_paths_from(result), target),
         state_paths=(target,),
         before=before,
-        success_reason="Transcript enrichi avec les textes visuels.",
+        success_reason="Intercalaires ajoutes au transcript avec speakers.",
         cached_reason="Transcript enrichi deja a jour.",
-        missing_reason="Enrichissement impossible; OCR filtre absent.",
+        missing_reason="Transcript enrichi non produit.",
     )
 
 
@@ -775,6 +821,38 @@ def create_plain_transcript(context: PipelineContext) -> TaskResult:
         success_reason="Transcript sans timecodes cree.",
         cached_reason="Transcript sans timecodes deja a jour.",
         missing_reason="Conversion sans timecodes n'a produit aucun fichier.",
+    )
+
+
+def create_plain_ocr(context: PipelineContext) -> TaskResult:
+    from pipeline.steps.transcripts.create_plain_transcript import (
+        convert_ocr_correction_file,
+        ocr_plain_output_path,
+    )
+    from pipeline.steps.transcripts.normalize_ionis_stm import transcript_path
+
+    source = transcript_path(context.video_path)
+    if not source.exists():
+        return TaskResult.skipped(
+            "Aucun transcript OCR interne corrige n'est disponible."
+        )
+    target = ocr_plain_output_path(context.video_path)
+    before = _snapshot((target,))
+    result = convert_ocr_correction_file(
+        context.video_path,
+        source,
+        force=context.force_rebuild,
+    )
+    return _artifact_result(
+        context,
+        result,
+        artifacts=(*_paths_from(result), target),
+        state_paths=(target,),
+        before=before,
+        success_reason="Plain transcript OCR de correction cree.",
+        cached_reason="Plain transcript OCR de correction deja a jour.",
+        missing_reason="Conversion du plain transcript OCR impossible.",
+        missing_is_skip=True,
     )
 
 

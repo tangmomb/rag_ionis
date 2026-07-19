@@ -12,6 +12,8 @@ import yt_dlp
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 
+from pipeline.support.paths import init_dir, youtube_api_infos_path
+
 
 API = "https://www.googleapis.com/youtube/v3"
 CHANNEL = "https://www.youtube.com/@IONIS-STM/videos"
@@ -188,6 +190,21 @@ def write_video_info(video, info_dir):
     return path
 
 
+def sync_existing_video_info(video, cache_path, download_dir):
+    video_dir = init_dir(download_dir) / video["id"]
+    has_local_video = video_dir.is_dir() and any(
+        path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+        for path in video_dir.iterdir()
+    )
+    if not has_local_video:
+        return None
+
+    target = youtube_api_infos_path(video_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cache_path, target)
+    return target
+
+
 def ffmpeg_exe():
     source = Path(get_ffmpeg_exe())
     BIN_DIR.mkdir(parents=True, exist_ok=True)
@@ -350,10 +367,16 @@ def main():
     info_dir = Path(args.download_dir) / "info_videos"
     if info_dir.exists():
         shutil.rmtree(info_dir)
+    synced_count = 0
     for video in videos:
-        write_video_info(video, info_dir)
+        cache_path = write_video_info(video, info_dir)
+        if sync_existing_video_info(video, cache_path, args.download_dir) is not None:
+            synced_count += 1
 
-    print(f"{len(videos)} videos preparees en cache metadata")
+    print(
+        f"{len(videos)} videos preparees en cache metadata; "
+        f"{synced_count} dossiers video synchronises"
+    )
 
 
 if __name__ == "__main__":

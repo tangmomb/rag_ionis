@@ -4,7 +4,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -15,7 +14,7 @@ from pipeline.steps.transcripts import create_plain_transcript as plain_transcri
 
 
 class CreatePlainTranscriptTests(unittest.TestCase):
-    def test_empty_motion_design_whisper_prefixes_ocr_plain_transcript(self) -> None:
+    def test_empty_whisper_stays_empty_even_when_an_enriched_ocr_file_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory)
             video = video_dir / "video.mp4"
@@ -27,19 +26,9 @@ class CreatePlainTranscriptTests(unittest.TestCase):
                 "[00:01] Premier texte\n[00:05] Deuxième texte\n",
                 encoding="utf-8",
             )
-            raw_whisper = video_dir / "whisper_transcript_timecoded.txt"
-            raw_whisper.write_text("", encoding="utf-8")
+            target = plain_transcript.convert_file(video, source, force=True)
 
-            with (
-                patch.object(plain_transcript, "analysed_video_type", return_value="motion_design"),
-                patch.object(plain_transcript, "whisper_timecoded_path", return_value=raw_whisper),
-            ):
-                target = plain_transcript.convert_file(video, source, force=True)
-
-            self.assertEqual(
-                target.read_text(encoding="utf-8"),
-                "Textes présents sur la vidéo :\nPremier texte Deuxième texte\n",
-            )
+            self.assertEqual(target.read_text(encoding="utf-8"), "\n")
 
     def test_regular_whisper_plain_transcript_has_no_ocr_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -48,14 +37,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             video.touch()
             source = video_dir / "whisper_transcript_timecoded_corrected.txt"
             source.write_text("[00:00-00:05] SPEAKER_00: Bonjour.\n", encoding="utf-8")
-            raw_whisper = video_dir / "whisper_transcript_timecoded.txt"
-            raw_whisper.write_text("[00:00-00:05] SPEAKER_00: Bonjour.\n", encoding="utf-8")
-
-            with (
-                patch.object(plain_transcript, "analysed_video_type", return_value="motion_design"),
-                patch.object(plain_transcript, "whisper_timecoded_path", return_value=raw_whisper),
-            ):
-                target = plain_transcript.convert_file(video, source, force=True)
+            target = plain_transcript.convert_file(video, source, force=True)
 
             self.assertEqual(target.read_text(encoding="utf-8"), "Bonjour.\n")
 
@@ -69,6 +51,79 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             plain_transcript.strip_timecodes(text, ["Alice Martin"]),
             "Bonjour. Voici mon parcours.",
         )
+
+    def test_plain_transcript_excludes_intercalaires(self) -> None:
+        text = (
+            "[00:01] Alice Martin: Bonjour.\n"
+            "[00:03] INTERCALAIRE: COMMENT TU T'APPELLES ?\n"
+            "[00:05] Alice Martin: Voici mon parcours.\n"
+        )
+
+        self.assertEqual(
+            plain_transcript.strip_timecodes(text, ["Alice Martin"]),
+            "Bonjour. Voici mon parcours.",
+        )
+
+    def test_canonical_plain_prefers_transcript_with_speakers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            transcript_dir = (
+                Path(temporary_directory)
+                / "outputs"
+                / plain_transcript.CANONICAL_TRANSCRIPTS_DIR_NAME
+            )
+            transcript_dir.mkdir(parents=True)
+            with_speakers = transcript_dir / plain_transcript.TRANSCRIPT_3_WITH_SPEAKERS_NAME
+            enriched = transcript_dir / plain_transcript.TRANSCRIPT_ENRICHED_NAME
+            with_speakers.write_text("[00:01] Alice Martin: Bonjour.\n", encoding="utf-8")
+            enriched.write_text(
+                "[00:01] Alice Martin: Bonjour.\n"
+                "[00:03] INTERCALAIRE: COMMENT TU T'APPELLES ?\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                plain_transcript.timecoded_inputs(transcript_dir),
+                [with_speakers],
+            )
+
+    def test_ocr_directory_contains_only_plain_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            video_dir.mkdir()
+            video = video_dir / "video123.mp4"
+            video.touch()
+            internal_ocr = video_dir / "outputs" / "ocr"
+            public_ocr = video_dir / "outputs" / "transcripts_ocr"
+            internal_ocr.mkdir(parents=True)
+            public_ocr.mkdir(parents=True)
+            source = internal_ocr / "ocr_subtitles_timecoded_corrected.txt"
+            source.write_text(
+                "[00:01] Bonjour Ionis-STM.\n[00:03] Suite.\n",
+                encoding="utf-8",
+            )
+            (public_ocr / "ocr_subtitles_timecoded.txt").write_text(
+                "obsolete",
+                encoding="utf-8",
+            )
+            (public_ocr / "ocr_subtitles_timecoded_corrected.txt").write_text(
+                "obsolete",
+                encoding="utf-8",
+            )
+
+            target = plain_transcript.convert_ocr_correction_file(
+                video,
+                source,
+                force=True,
+            )
+
+            self.assertEqual(
+                [path.name for path in public_ocr.iterdir()],
+                ["plain_transcript.txt"],
+            )
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "Bonjour Ionis-STM. Suite.\n",
+            )
 
 
 if __name__ == "__main__":

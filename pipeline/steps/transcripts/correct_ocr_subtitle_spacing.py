@@ -15,7 +15,11 @@ from pipeline.support.openai_batch import (
     records_by_custom_id,
     save_batch_state,
 )
-from pipeline.support.paths import existing_transcripts_dir, relative_to_video_dir
+from pipeline.support.paths import (
+    OCR_DIR_NAME,
+    existing_transcripts_dir,
+    relative_to_video_dir,
+)
 
 
 MAX_OUTPUT_TOKENS = 256
@@ -39,7 +43,7 @@ SYSTEM_PROMPT = (
 def ocr_transcripts_dir(
     video_path,
     *,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     return existing_transcripts_dir(video_path, name=transcripts_dir_name)
 
@@ -47,7 +51,7 @@ def ocr_transcripts_dir(
 def subtitle_source_path(
     video_path,
     *,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     transcript_dir = ocr_transcripts_dir(
         video_path,
@@ -63,7 +67,7 @@ def subtitle_source_path(
 def subtitle_target_path(
     video_path,
     *,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     transcript_dir = ocr_transcripts_dir(
         video_path,
@@ -76,7 +80,7 @@ def subtitle_target_path(
     return preferred
 
 
-def batch_state_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
+def batch_state_path(video_path, *, transcripts_dir_name=OCR_DIR_NAME):
     return (
         ocr_transcripts_dir(
             video_path,
@@ -85,7 +89,7 @@ def batch_state_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
         / BATCH_STATE_NAME
     )
 
-def batch_input_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
+def batch_input_path(video_path, *, transcripts_dir_name=OCR_DIR_NAME):
     return (
         ocr_transcripts_dir(
             video_path,
@@ -95,7 +99,7 @@ def batch_input_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
     )
 
 
-def batch_output_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
+def batch_output_path(video_path, *, transcripts_dir_name=OCR_DIR_NAME):
     return (
         ocr_transcripts_dir(
             video_path,
@@ -105,7 +109,7 @@ def batch_output_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
     )
 
 
-def batch_error_path(video_path, *, transcripts_dir_name="transcripts_ocr"):
+def batch_error_path(video_path, *, transcripts_dir_name=OCR_DIR_NAME):
     return (
         ocr_transcripts_dir(
             video_path,
@@ -245,7 +249,7 @@ def process_video_live(
     video_path,
     force=False,
     *,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     source = subtitle_source_path(
         video_path,
@@ -299,7 +303,7 @@ def submit_batch_spacing(
     jobs,
     *,
     request_fingerprint,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     client = openai_client()
     transcript_dir = ocr_transcripts_dir(
@@ -371,7 +375,7 @@ def finalize_batch_spacing(
     output_lines,
     state,
     *,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     client = openai_client()
     output_file_id = state.get("output_file_id")
@@ -427,7 +431,7 @@ def process_video_batch(
     wait=False,
     poll_interval_seconds=30,
     *,
-    transcripts_dir_name="transcripts_ocr",
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     source = subtitle_source_path(
         video_path,

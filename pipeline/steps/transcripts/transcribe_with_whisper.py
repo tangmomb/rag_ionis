@@ -4,6 +4,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pipeline.steps.transcripts.artifacts import TRANSCRIPT_1_BRUT_NAME
+
 from imageio_ffmpeg import get_ffmpeg_exe
 try:
     import torch
@@ -13,7 +15,7 @@ except ImportError:  # pragma: no cover
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 BIN_DIR = Path("downloads/bin")
-WHISPER_TRANSCRIPT_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
+WHISPER_TRANSCRIPT_TIMECODED_NAME = TRANSCRIPT_1_BRUT_NAME
 LEGACY_TRANSCRIPT_TIMECODED_SUFFIX = "_transcript_timecodes.txt"
 OCR_SUBTITLES_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
 LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
@@ -89,11 +91,7 @@ def ffmpeg_exe():
 
 
 def transcript_path(transcript_dir, video_path):
-    preferred = transcript_dir / WHISPER_TRANSCRIPT_TIMECODED_NAME
-    legacy = transcript_dir / f"{video_path.stem}{LEGACY_TRANSCRIPT_TIMECODED_SUFFIX}"
-    if legacy.exists() and not preferred.exists():
-        return legacy
-    return preferred
+    return transcript_dir / WHISPER_TRANSCRIPT_TIMECODED_NAME
 
 
 def subtitle_timecodes_path(transcript_dir, video_path):

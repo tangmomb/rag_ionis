@@ -87,46 +87,57 @@ def first_existing(paths: list[Path]) -> Path | None:
 
 
 TRANSCRIPT_VARIANTS = (
-    ("plain", "Plain transcript", ("plain_transcript.txt",)),
+    (
+        "plain",
+        "Transcript plain",
+        "transcripts_whisper",
+        ("transcript_plain.txt", "plain_transcript.txt"),
+    ),
     (
         "raw_timecoded",
-        "Timecodé brut",
-        ("whisper_transcript_timecoded.txt", "ocr_subtitles_timecoded.txt"),
+        "1 — Transcript brut",
+        "transcripts_whisper",
+        ("transcript_1_brut.txt", "whisper_transcript_timecoded.txt"),
     ),
     (
         "corrected_timecoded",
-        "Timecodé corrigé",
+        "2 — Transcript corrigé",
+        "transcripts_whisper",
         (
+            "transcript_2_corrected.txt",
             "whisper_transcript_timecoded_corrected.txt",
-            "ocr_subtitles_timecoded_corrected.txt",
         ),
     ),
     (
+        "with_speakers",
+        "3 — Transcript avec speakers",
+        "transcripts_whisper",
+        ("transcript_3_with_speakers.txt",),
+    ),
+    (
         "enriched",
-        "Enrichi",
+        "Transcript enrichi — intercalaires",
+        "transcripts_whisper",
         (
+            "transcript_enriched.txt",
             "whisper_transcript_timecoded_corrected_enriched.txt",
-            "ocr_subtitles_timecoded_corrected_enriched.txt",
         ),
     ),
-    ("ocr_plain", "Sous-titres OCR", ("ocr_subtitles.txt",)),
+    (
+        "ocr_plain",
+        "OCR plain utilisé pour les corrections",
+        "transcripts_ocr",
+        ("plain_transcript.txt",),
+    ),
 )
 
 
-def transcript_directories(video_dir: Path) -> list[Path]:
-    return sorted(path for path in (video_dir / "outputs").glob("transcripts*") if path.is_dir())
-
-
 def transcript_variant_paths(video_dir: Path) -> list[dict[str, Any]]:
-    directories = transcript_directories(video_dir)
     variants = []
     seen_paths = set()
-    for key, label, names in TRANSCRIPT_VARIANTS:
-        candidates = [
-            directory / name
-            for name in names
-            for directory in directories
-        ]
+    for key, label, directory_name, names in TRANSCRIPT_VARIANTS:
+        directory = video_dir / "outputs" / directory_name
+        candidates = [directory / name for name in names]
         path = first_existing(candidates)
         if path is None or path.resolve() in seen_paths:
             continue

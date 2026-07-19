@@ -57,7 +57,8 @@ downloads/youtube/init/
       interview/
       ocr/
       speakers/
-      transcripts_ocr/ ou transcripts_whisper/
+      transcripts_whisper/ # transcript canonique WhisperX
+      transcripts_ocr/     # contient seulement plain_transcript.txt
       chunks/
 ```
 
@@ -167,7 +168,9 @@ En pratique :
    présents dans `metadata/video_manifest.json`.
 3. L'inspection visuelle et OCR calcule `video_type` et `has_subtitles`.
 4. Chaque handler retourne un `TaskResult` avec son statut et ses artefacts.
-5. `processing_plan()` choisit la branche de transcript et le profil de chunks.
+5. `processing_plan()` ajoute toujours la chaîne WhisperX canonique, ajoute la
+   référence OCR de correction si des sous-titres sont détectés, puis choisit
+   le profil de chunks.
 6. `catalog.py` résout chaque identifiant en fonction Python.
 7. `executor.py` valide le plan entier et reprend les tâches dont la postcondition
    ou les artefacts sont encore valides.
@@ -243,6 +246,10 @@ Les informations sont volontairement réparties selon leur nature :
 |---|---|---|
 | `VIDEO_ID.mp4` | Source technique pour les codecs, le FPS, l'audio et la résolution. | Entrée, jamais modifiée. |
 | `metadata/youtube_video_metadata.json` | Métadonnées de l'API YouTube, notamment la durée de référence `duration_seconds`. | Produit par l'ingestion ; obligatoire pour inspecter et router la vidéo. |
+
+`pipeline.ingest.fetch_youtube_metadata` recrée le cache central et écrase
+également ce fichier dans chaque dossier vidéo local correspondant. Cette
+commande ne retélécharge pas les vidéos.
 | `metadata/video_manifest.json` | Faits de routage, plan, exécution courante, historique, artefacts, options et route dérivée. | Source de vérité unique, réécrite atomiquement par l'orchestrateur ; ne pas modifier manuellement. |
 | `outputs/` | Frames, OCR, transcripts, speakers, chunks et embeddings. | Généré par les étapes métier. |
 
@@ -260,16 +267,16 @@ utilisé uniquement pour les autres caractéristiques du fichier.
 |---|---|
 | durée `> 600` secondes | chunks longs + résumés de sections + résumé global |
 | durée `<= 600` secondes | chunks courts |
-| sous-titres incrustés détectés | transcript OCR |
-| pas de sous-titres incrustés | transcript WhisperX |
+| toutes les vidéos | transcript canonique WhisperX |
+| sous-titres incrustés détectés | plain transcript OCR de correction |
+| pas de sous-titres incrustés | aucune référence OCR de sous-titres |
 | interview, motion design ou captation | variante visuelle enregistrée dans la route |
 
 Exemples de routes :
 
 ```text
-short.ocr.motion_design
 short.whisper.interview
-long.ocr.video_recording
+short.whisper.motion_design
 long.whisper.video_recording
 ```
 
@@ -282,15 +289,17 @@ La route possède trois dimensions :
 ```
 
 - `chunk_strategy` vaut `short` ou `long` ;
-- `transcript_strategy` vaut `ocr` ou `whisper` ;
+- `transcript_strategy` vaut toujours `whisper` : il désigne la source
+  canonique, pas la présence éventuelle d'une référence OCR de correction ;
 - `visual_strategy` vaut actuellement `interview`, `motion_design` ou
   `video_recording`.
 
 Le type visuel est conservé dans la route et peut être consommé par les étapes
 métier. Il ne crée pas encore à lui seul une liste de tâches entièrement
-différente dans `planner.py`. Par exemple, le cas `motion_design` est utilisé par
-les utilitaires de transcript pour retomber sur les textes visibles lorsque la
-transcription audio est vide.
+différente dans `planner.py`. Le transcript canonique sans timecodes reste
+cependant strictement issu de WhisperX, y compris lorsque l'audio d'un
+`motion_design` ne contient aucune parole. Les textes visibles restent dans les
+artefacts OCR internes, sans servir de transcript de secours.
 
 ## Plans d'exécution
 
@@ -327,46 +336,100 @@ ocr.review_other_text
 ocr.apply_review
 ```
 
-Cette partie reste commune car l'OCR est utilisé aussi bien pour extraire des
-sous-titres que pour enrichir ou corriger une transcription Whisper.
+Cette partie reste commune car l'OCR sert à corriger WhisperX et à détecter les
+intercalaires. Quand des sous-titres sont détectés, il produit aussi l'unique
+plain transcript utilisé comme référence de correction.
 
-### Branche avec sous-titres OCR
+### Transcript canonique WhisperX
 
-Lorsque `has_subtitles=true`, le plan ajoute :
-
-```text
-transcript.extract_ocr
-transcript.correct_ocr_spacing
-transcript.normalize_brand
-speakers.propose
-speakers.validate
-speakers.assign_ocr
-transcript.create_plain
-transcript.enrich
-```
-
-Le transcript principal est construit depuis les sous-titres incrustés. WhisperX
-n'est pas lancé.
-
-### Branche sans sous-titres
-
-Lorsque `has_subtitles=false`, le plan ajoute :
+Toutes les vidéos commencent par WhisperX puis identifient les speakers :
 
 ```text
 transcript.whisper
 speakers.propose
 speakers.validate
+```
+
+Sans sous-titres détectés, la correction visuelle historique reste utilisée :
+
+```text
 transcript.correct_whisper
 transcript.enrich
 transcript.create_plain
 ```
 
-WhisperX produit le transcript audio et la diarisation. Les résultats OCR restent
-utilisés pour corriger les noms propres et ajouter les textes visibles.
+Avec des sous-titres détectés, l'OCR est d'abord extrait et nettoyé, puis une
+étape dédiée rapproche les deux transcripts :
+
+```text
+transcript.whisper
+transcript.extract_ocr
+transcript.correct_ocr_spacing
+transcript.normalize_brand
+transcript.create_plain_ocr
+speakers.propose
+speakers.validate
+transcript.reconcile_ocr
+transcript.enrich
+transcript.create_plain
+```
+
+Cette route conserve trois artefacts distincts :
+
+| Artefact | Rôle |
+|---|---|
+| `outputs/transcripts_whisper/transcript_1_brut.txt` | Transcript WhisperX brut, jamais écrasé par l'OCR. |
+| `outputs/transcripts_ocr/plain_transcript.txt` | Unique transcript OCR public, utilisé seulement comme référence de correction. |
+| `outputs/transcripts_whisper/transcript_2_corrected.txt` | Transcript canonique corrigé après rapprochement WhisperX/OCR. |
+
+Le rapprochement cherche dans le plain transcript OCR les graphies proches des
+mots produits par WhisperX. Il privilégie les formes distinctives — noms
+composés, tirets et acronymes — par exemple `ionis stm` devient `Ionis-STM`.
+Les remplacements sont consignés dans `transcript_2_corrections.tsv`.
+
+Les cinq artefacts canoniques sont :
+
+| Artefact | Contenu |
+|---|---|
+| `transcript_1_brut.txt` | Sortie WhisperX brute. |
+| `transcript_2_corrected.txt` | WhisperX corrigé par rapprochement OCR. |
+| `transcript_3_with_speakers.txt` | Transcript corrigé avec les speakers validés. |
+| `transcript_enriched.txt` | Copie du transcript avec speakers, augmentée uniquement des intercalaires OCR (`graphic`). |
+| `transcript_plain.txt` | Version sans timecodes destinée aux usages textuels. |
+
+`transcript_enriched.txt` n'ajoute ni sous-titres, ni noms, ni titres animés,
+ni autres textes présents sur les images. La résolution des speakers appartient
+exclusivement à `transcript_3_with_speakers.txt`.
+
+Les speakers, les chunks, les embeddings, l'interface RAG et la synchronisation
+PostgreSQL consomment exclusivement les fichiers de
+`outputs/transcripts_whisper/`. Aucun fallback vers l'OCR n'est autorisé pour
+ces usages.
+
+### Transcript OCR réservé aux corrections
+
+Lorsque `has_subtitles=true`, le plan construit une référence OCR minimale :
+
+```text
+transcript.extract_ocr
+transcript.correct_ocr_spacing
+transcript.normalize_brand
+transcript.create_plain_ocr
+transcript.reconcile_ocr
+```
+
+Les fichiers timecodés et les états batch restent des intermédiaires internes
+dans `outputs/ocr/`. `outputs/transcripts_ocr/` contient exclusivement
+`plain_transcript.txt`; toute ancienne variante présente dans ce dossier est
+supprimée lors de sa régénération. Il n'existe plus de transcript OCR enrichi ni
+de transcript OCR avec speakers. Ce fichier n'est consommé ni par le RAG ni par
+la publication SQL : il sert uniquement à corriger `transcript_1_brut.txt`.
+Si aucun sous-titre OCR exploitable n'est extrait, WhisperX est conservé sans
+rapprochement.
 
 ### Vidéos courtes et longues
 
-Les deux branches de transcript se terminent par les tâches suivantes :
+Le traitement se termine par les tâches suivantes :
 
 | Profil | Tâches finales |
 |---|---|
@@ -388,9 +451,9 @@ Les relations logiques entre ces niveaux sont ensuite converties en
 
 | Durée | Sous-titres | Transcript | Chunks | Route type |
 |---|---|---|---|---|
-| `<= 600 s` | oui | OCR | détails uniquement | `short.ocr.<type>` |
+| `<= 600 s` | oui | WhisperX corrigé par référence OCR | détails uniquement | `short.whisper.<type>` |
 | `<= 600 s` | non | WhisperX | détails uniquement | `short.whisper.<type>` |
-| `> 600 s` | oui | OCR | détails + sections + global | `long.ocr.<type>` |
+| `> 600 s` | oui | WhisperX corrigé par référence OCR | détails + sections + global | `long.whisper.<type>` |
 | `> 600 s` | non | WhisperX | détails + sections + global | `long.whisper.<type>` |
 
 ## Manifeste JSON
@@ -416,6 +479,7 @@ Extrait simplifié :
     "status": "ready",
     "pipeline_id": "long.whisper.interview",
     "transcript_strategy": "whisper",
+    "ocr_correction_reference": "not_applicable",
     "chunk_strategy": "long",
     "visual_strategy": "interview"
   },
@@ -432,7 +496,7 @@ Extrait simplifié :
     "tasks": [
       {
         "id": "transcript.whisper",
-        "reason": "has_subtitles=false",
+        "reason": "canonical_transcript=whisperx",
         "handler": "pipeline.step_handlers.transcribe_whisper",
         "version": "1"
       }

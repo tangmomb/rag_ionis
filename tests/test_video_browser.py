@@ -18,6 +18,7 @@ class VideoBrowserTests(unittest.TestCase):
             (video_dir / "outputs" / "images" / "graphic").mkdir(parents=True)
             (video_dir / "outputs" / "ocr").mkdir(parents=True)
             (video_dir / "outputs" / "transcripts_ocr").mkdir(parents=True)
+            (video_dir / "outputs" / "transcripts_whisper").mkdir(parents=True)
             (video_dir / "outputs" / "speakers").mkdir(parents=True)
             (video_dir / "outputs" / "chunks").mkdir(parents=True)
             (video_dir / "video123.mp4").touch()
@@ -42,23 +43,32 @@ class VideoBrowserTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (video_dir / "outputs" / "transcripts_ocr" / "plain_transcript.txt").write_text(
-                "Bonjour depuis le transcript.", encoding="utf-8"
-            )
-            (video_dir / "outputs" / "transcripts_ocr" / "ocr_subtitles_timecoded.txt").write_text(
-                "[00:01] Bonjour brut.", encoding="utf-8"
+                "Comparaison OCR.", encoding="utf-8"
             )
             (
                 video_dir
                 / "outputs"
-                / "transcripts_ocr"
-                / "ocr_subtitles_timecoded_corrected.txt"
-            ).write_text("[00:01] Bonjour corrigé.", encoding="utf-8")
+                / "transcripts_whisper"
+                / "plain_transcript.txt"
+            ).write_text("Bonjour depuis WhisperX.", encoding="utf-8")
             (
                 video_dir
                 / "outputs"
-                / "transcripts_ocr"
-                / "ocr_subtitles_timecoded_corrected_enriched.txt"
-            ).write_text("[00:01] ANIMATIONS: Bonjour enrichi.", encoding="utf-8")
+                / "transcripts_whisper"
+                / "whisper_transcript_timecoded.txt"
+            ).write_text("[00:01] Bonjour WhisperX brut.", encoding="utf-8")
+            (
+                video_dir
+                / "outputs"
+                / "transcripts_whisper"
+                / "whisper_transcript_timecoded_corrected.txt"
+            ).write_text("[00:01] Bonjour WhisperX corrigé.", encoding="utf-8")
+            (
+                video_dir
+                / "outputs"
+                / "transcripts_whisper"
+                / "whisper_transcript_timecoded_corrected_enriched.txt"
+            ).write_text("[00:01] Bonjour WhisperX enrichi.", encoding="utf-8")
             (video_dir / "outputs" / "speakers" / "speakers_validated.json").write_text(
                 json.dumps({"speakers": ["Alice Martin", "Bob Durand"]}),
                 encoding="utf-8",
@@ -82,16 +92,30 @@ class VideoBrowserTests(unittest.TestCase):
             self.assertNotIn("summary", detail)
             self.assertEqual(detail["ocr"]["subtitle"]["00:01"], "Bonjour")
             self.assertEqual(detail["chunks"][0]["content"], "Premier chunk")
-            self.assertIn("transcript", detail["transcript"])
+            self.assertEqual(detail["transcript"], "Bonjour depuis WhisperX.")
             self.assertEqual(
                 [transcript["key"] for transcript in detail["transcripts"]],
-                ["plain", "raw_timecoded", "corrected_timecoded", "enriched"],
+                [
+                    "plain",
+                    "raw_timecoded",
+                    "corrected_timecoded",
+                    "enriched",
+                    "ocr_plain",
+                ],
             )
             self.assertEqual(
                 detail["transcripts"][2]["content"],
-                "[00:01] Bonjour corrigé.",
+                "[00:01] Bonjour WhisperX corrigé.",
             )
-            self.assertEqual(detail["transcripts"][3]["label"], "Enrichi")
+            self.assertEqual(
+                detail["transcripts"][3]["label"],
+                "Transcript enrichi — intercalaires",
+            )
+            self.assertEqual(detail["transcripts"][4]["content"], "Comparaison OCR.")
+            self.assertEqual(
+                detail["transcripts"][4]["label"],
+                "OCR plain utilisé pour les corrections",
+            )
             self.assertEqual(detail["speakers"], ["Alice Martin", "Bob Durand"])
 
     def test_legacy_dated_init_directories_remain_supported(self) -> None:

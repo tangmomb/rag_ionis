@@ -62,7 +62,7 @@ class BatchFingerprintTests(unittest.TestCase):
     def test_spacing_reinitializes_an_incompatible_state(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             video_path = Path(temporary_dir) / "video.mp4"
-            transcript_dir = Path(temporary_dir) / "outputs" / "transcripts_ocr"
+            transcript_dir = Path(temporary_dir) / "outputs" / "ocr"
             transcript_dir.mkdir(parents=True)
             (transcript_dir / spacing.SOURCE_NAME).write_text(
                 "[00:01] Bonjour",

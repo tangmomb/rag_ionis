@@ -18,42 +18,46 @@ from pipeline.steps.chunks import create_transcript_chunks as chunk_creation
 
 
 class CreateTranscriptChunksTests(unittest.TestCase):
-    def test_speaker_proposal_prefers_raw_whisper_before_plain_transcript(self) -> None:
+    def test_speaker_proposal_uses_corrected_whisper_instead_of_raw(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"
             transcript_dir = video_dir / "outputs" / "transcripts_whisper"
             transcript_dir.mkdir(parents=True)
             video = video_dir / "video123.mp4"
             video.touch()
-            raw = transcript_dir / "whisper_transcript_timecoded.txt"
+            raw = transcript_dir / "transcript_1_brut.txt"
             raw.write_text(
                 "[00:00-00:05] SPEAKER_00: Bonjour, je m'appelle Raw Speaker.",
                 encoding="utf-8",
             )
+            corrected = transcript_dir / "transcript_2_corrected.txt"
+            corrected.write_text(
+                "[00:00-00:05] SPEAKER_00: Bonjour, je m'appelle Corrected Speaker.",
+                encoding="utf-8",
+            )
             (transcript_dir / "plain_transcript.txt").write_text(
                 "Bonjour, je m'appelle Old Speaker.",
                 encoding="utf-8",
             )
 
-            self.assertEqual(speaker_proposal.source_text_path(video), raw)
+            self.assertEqual(speaker_proposal.source_text_path(video), corrected)
 
-    def test_has_sub_speaker_proposal_uses_corrected_ocr_before_plain_transcript(self) -> None:
+    def test_speaker_proposal_does_not_fall_back_to_raw_whisper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"
-            transcript_dir = video_dir / "outputs" / "transcripts_ocr"
+            transcript_dir = video_dir / "outputs" / "transcripts_whisper"
             transcript_dir.mkdir(parents=True)
             video = video_dir / "video123.mp4"
             video.touch()
-            corrected_ocr = transcript_dir / "ocr_subtitles_timecoded_corrected.txt"
-            corrected_ocr.write_text(
-                "[00:01] Bonjour, je m'appelle OCR Speaker.",
+            (transcript_dir / "transcript_1_brut.txt").write_text(
+                "[00:01] Bonjour, je m'appelle Raw Speaker.",
                 encoding="utf-8",
             )
             (transcript_dir / "plain_transcript.txt").write_text(
                 "Bonjour, je m'appelle Old Speaker.",
                 encoding="utf-8",
             )
-            self.assertEqual(speaker_proposal.source_text_path(video), corrected_ocr)
+            self.assertIsNone(speaker_proposal.source_text_path(video))
 
     def test_transcript_speakers_do_not_require_an_ocr_match(self) -> None:
         transcript = (

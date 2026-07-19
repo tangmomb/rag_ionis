@@ -1,6 +1,6 @@
 from pipeline.support.analysis import routing_fact
 from pipeline.support.json_io import read_json
-from pipeline.support.paths import existing_ocr_dir, transcripts_dir
+from pipeline.support.paths import OCR_DIR_NAME, existing_ocr_dir, transcripts_dir
 
 OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
@@ -20,7 +20,7 @@ def processed_ocr_path(video_path):
     return ocr_dir / OCR_PROCESSED_NAME
 
 
-def subtitle_path(video_path, *, transcripts_dir_name=None):
+def subtitle_path(video_path, *, transcripts_dir_name=OCR_DIR_NAME):
     transcript_dir = transcripts_dir(video_path, name=transcripts_dir_name)
     preferred = transcript_dir / OCR_SUBTITLE_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_SUFFIX}"
@@ -29,7 +29,7 @@ def subtitle_path(video_path, *, transcripts_dir_name=None):
     return preferred
 
 
-def subtitle_timecodes_path(video_path, *, transcripts_dir_name=None):
+def subtitle_timecodes_path(video_path, *, transcripts_dir_name=OCR_DIR_NAME):
     transcript_dir = transcripts_dir(video_path, name=transcripts_dir_name)
     preferred = transcript_dir / OCR_SUBTITLE_TIMECODES_NAME
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_OCR_SUBTITLE_TIMECODES_SUFFIX}"
@@ -138,7 +138,7 @@ def extract_for_video(
     video_path,
     *,
     force=False,
-    transcripts_dir_name=None,
+    transcripts_dir_name=OCR_DIR_NAME,
 ):
     if analysed_has_subtitles(video_path) is not True:
         print(

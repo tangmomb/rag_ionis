@@ -55,6 +55,51 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         self.assertIn("video_title", prompt)
         self.assertIn("Lou-Anne Corvedu présente son métier", prompt)
         self.assertIn("ocr_lower_third", prompt)
+        self.assertIn("sans jamais retirer", prompt)
+
+    def test_short_title_name_corrects_first_name_without_dropping_surname(self) -> None:
+        valid = speaker_validation.preserve_candidate_name_parts(
+            ["Matthieu"],
+            [
+                {
+                    "name": "Mathieu Dumontier",
+                    "methods": ["transcript_je_m_appelle"],
+                }
+            ],
+            "Portrait de Matthieu",
+        )
+
+        self.assertEqual(valid, ["Matthieu Dumontier"])
+
+    def test_title_spelling_corrects_complete_candidate_without_dropping_surname(self) -> None:
+        valid = speaker_validation.preserve_candidate_name_parts(
+            ["Mathieu Dumontier"],
+            [
+                {
+                    "name": "Mathieu Dumontier",
+                    "methods": ["transcript_je_m_appelle"],
+                }
+            ],
+            "Apporter ma pierre à l'édifice – Matthieu, Responsable Affaires",
+        )
+
+        self.assertEqual(valid, ["Matthieu Dumontier"])
+
+    def test_complete_model_name_is_kept(self) -> None:
+        valid = speaker_validation.preserve_candidate_name_parts(
+            ["Lou-Anne Corvedu"],
+            [{"name": "Lou-Anne Corveddu", "methods": ["ocr_lower_third"]}],
+        )
+
+        self.assertEqual(valid, ["Lou-Anne Corvedu"])
+
+    def test_unrelated_short_name_is_not_expanded(self) -> None:
+        valid = speaker_validation.preserve_candidate_name_parts(
+            ["Alice"],
+            [{"name": "Mathieu Dumontier", "methods": ["transcript_je_m_appelle"]}],
+        )
+
+        self.assertEqual(valid, ["Alice"])
 
     def test_parser_accepts_structured_and_legacy_answers(self) -> None:
         speakers = ["Lou-Anne Corveddu", "Ionis-STM"]

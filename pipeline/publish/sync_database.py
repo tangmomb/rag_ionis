@@ -8,7 +8,24 @@ from pathlib import Path
 import psycopg
 from dotenv import load_dotenv
 from pipeline.support.analysis import load_routing_facts
-from pipeline.support.paths import consolidate_init_dir, existing_chunks_dir, existing_transcripts_dir, existing_youtube_api_infos_path
+from pipeline.support.paths import (
+    CANONICAL_TRANSCRIPTS_DIR_NAME,
+    consolidate_init_dir,
+    existing_chunks_dir,
+    existing_transcripts_dir,
+    existing_youtube_api_infos_path,
+)
+from pipeline.steps.transcripts.artifacts import (
+    LEGACY_TRANSCRIPT_1_NAMES,
+    LEGACY_TRANSCRIPT_2_NAMES,
+    LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+    LEGACY_TRANSCRIPT_PLAIN_NAMES,
+    TRANSCRIPT_1_BRUT_NAME,
+    TRANSCRIPT_2_CORRECTED_NAME,
+    TRANSCRIPT_3_WITH_SPEAKERS_NAME,
+    TRANSCRIPT_ENRICHED_NAME,
+    TRANSCRIPT_PLAIN_NAME,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -22,22 +39,15 @@ CHUNK_LEVELS = {"global", "section", "detail"}
 DEFAULT_CHUNK_LEVEL = "detail"
 SCHEMA_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "001_schema.sql"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-PLAIN_TRANSCRIPT_NAME = "plain_transcript.txt"
-WHISPER_TRANSCRIPT_TIMECODED_NAME = "whisper_transcript_timecoded.txt"
-WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME = "whisper_transcript_timecoded_corrected.txt"
-WHISPER_TRANSCRIPT_ENRICHED_NAME = "whisper_transcript_timecoded_corrected_enriched.txt"
-OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
-OCR_SUBTITLE_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
-OCR_SUBTITLE_TIMECODED_CORRECTED_NAME = "ocr_subtitles_timecoded_corrected.txt"
-OCR_SUBTITLE_ENRICHED_NAME = "ocr_subtitles_timecoded_corrected_enriched.txt"
+PLAIN_TRANSCRIPT_NAME = TRANSCRIPT_PLAIN_NAME
+WHISPER_TRANSCRIPT_TIMECODED_NAME = TRANSCRIPT_1_BRUT_NAME
+WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME = TRANSCRIPT_2_CORRECTED_NAME
+WHISPER_TRANSCRIPT_WITH_SPEAKERS_NAME = TRANSCRIPT_3_WITH_SPEAKERS_NAME
+WHISPER_TRANSCRIPT_ENRICHED_NAME = TRANSCRIPT_ENRICHED_NAME
 LEGACY_ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected_enrichi.txt"
 LEGACY_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected.txt"
 LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
 LEGACY_PLAIN_TRANSCRIPT_SUFFIX = "_transcript.txt"
-LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
-LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
-LEGACY_OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX = "_ocr_subtitle_timecodes_corrected.txt"
-LEGACY_OCR_SUBTITLE_ENRICHED_SUFFIX = "_ocr_subtitle_timecodes_corrected_enrichi.txt"
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -982,7 +992,12 @@ def video_folder_name(path, root_dir):
 
 
 def transcript_paths(video_dir):
-    transcript_dir = existing_transcripts_dir(video_dir)
+    # Seul WhisperX alimente le transcript publie. L'OCR reste un artefact
+    # local de comparaison et ne doit jamais etre synchronise comme reference.
+    transcript_dir = existing_transcripts_dir(
+        video_dir,
+        name=CANONICAL_TRANSCRIPTS_DIR_NAME,
+    )
     if not transcript_dir.exists():
         return []
 
@@ -998,26 +1013,32 @@ def transcript_paths(video_dir):
         return None
 
     candidates = (
-        ("plain", (PLAIN_TRANSCRIPT_NAME,), (f"*{LEGACY_PLAIN_TRANSCRIPT_SUFFIX}",)),
+        (
+            "plain",
+            (PLAIN_TRANSCRIPT_NAME, *LEGACY_TRANSCRIPT_PLAIN_NAMES),
+            (f"*{LEGACY_PLAIN_TRANSCRIPT_SUFFIX}",),
+        ),
         (
             "timecoded",
             (
+                WHISPER_TRANSCRIPT_WITH_SPEAKERS_NAME,
                 WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME,
-                OCR_SUBTITLE_TIMECODED_CORRECTED_NAME,
                 WHISPER_TRANSCRIPT_TIMECODED_NAME,
-                OCR_SUBTITLE_TIMECODED_NAME,
+                *LEGACY_TRANSCRIPT_2_NAMES,
+                *LEGACY_TRANSCRIPT_1_NAMES,
             ),
             (
                 f"*{LEGACY_TIMECODED_TRANSCRIPT_SUFFIX}",
-                f"*{LEGACY_OCR_SUBTITLE_TIMECODED_CORRECTED_SUFFIX}",
-                f"*{LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX}",
                 f"*{LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX}",
             ),
         ),
         (
             "enriched",
-            (WHISPER_TRANSCRIPT_ENRICHED_NAME, OCR_SUBTITLE_ENRICHED_NAME),
-            (f"*{LEGACY_ENRICHED_TRANSCRIPT_SUFFIX}", f"*{LEGACY_OCR_SUBTITLE_ENRICHED_SUFFIX}"),
+            (
+                WHISPER_TRANSCRIPT_ENRICHED_NAME,
+                *LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+            ),
+            (f"*{LEGACY_ENRICHED_TRANSCRIPT_SUFFIX}",),
         ),
     )
     found = []

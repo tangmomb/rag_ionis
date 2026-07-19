@@ -20,7 +20,13 @@ cd E:\cooking\rag_ionis
 .\.venv\Scripts\python.exe -m pipeline.ingest.fetch_youtube_metadata
 ```
 
-Appelle `pipeline/ingest/fetch_youtube_metadata.py`. Le script contacte l'API YouTube et récupère les identifiants, titres, descriptions, durées, dates, URLs et statistiques. Les informations temporaires vont dans `downloads/youtube/info_videos/`.
+Appelle `pipeline/ingest/fetch_youtube_metadata.py`. Le script contacte l'API
+YouTube et récupère les identifiants, titres, descriptions, durées, dates, URLs
+et statistiques. Il recrée le cache dans
+`downloads/youtube/info_videos/`, puis écrase aussi
+`downloads/youtube/init/VIDEO_ID/metadata/youtube_video_metadata.json` pour
+chaque vidéo déjà présente. Les fichiers vidéo ne sont ni modifiés ni
+retéléchargés par cette commande.
 
 ## 2. Télécharger les vidéos
 
@@ -116,18 +122,26 @@ Les sorties sont placées dans `outputs/images/`, `outputs/interview/` et `outpu
 
 Cette commande appelle `pipeline/planner.py : processing_plan()`. Le planner choisit la suite selon le type, les sous-titres et la durée.
 
-Pour une vidéo courte avec sous-titres, la route contient notamment :
+Pour une vidéo courte avec sous-titres, WhisperX reste la chaîne canonique et la
+référence OCR de correction est construite :
 
 ```text
 ocr.build_processed → ocr.filter_overlays → ocr.extract_review_candidates
 → ocr.review_other_text → ocr.apply_review
+→ transcript.whisper
 → transcript.extract_ocr → transcript.correct_ocr_spacing
-→ transcript.normalize_brand → speakers.propose → speakers.validate
-→ speakers.assign_ocr → transcript.create_plain → transcript.enrich
+→ transcript.normalize_brand → transcript.create_plain_ocr
+→ speakers.propose → speakers.validate → transcript.reconcile_ocr
+→ transcript.enrich → transcript.create_plain
 → chunks.create → embeddings.create
 ```
 
-Pour une vidéo sans sous-titres, la partie transcript utilise `transcript.whisper`, puis `speakers.propose`, `speakers.validate`, `transcript.correct_whisper`, `transcript.enrich` et `transcript.create_plain`.
+On obtient alors le WhisperX brut, l'unique
+`transcripts_ocr/plain_transcript.txt` réservé aux corrections et le WhisperX
+corrigé après rapprochement. Les intermédiaires OCR timecodés restent dans
+`outputs/ocr/`. Pour une vidéo sans sous-titres,
+`transcript.correct_whisper` remplace `transcript.reconcile_ocr` et les tâches
+OCR de correction de sous-titres ne sont pas ajoutées.
 
 Cette commande prépare le plan mais n'exécute pas les traitements.
 
@@ -150,7 +164,10 @@ pipeline/__main__.py : main()
 → pipeline/steps/ : fonctions métier
 ```
 
-Elle enchaîne l'inspection, le nettoyage OCR, le transcript OCR ou WhisperX, l'identification des speakers, l'enrichissement, les chunks et les embeddings.
+Elle enchaîne l'inspection, le nettoyage OCR, le transcript WhisperX canonique,
+l'éventuelle référence OCR de correction, l'identification des speakers,
+l'ajout des seuls intercalaires dans `transcript_enriched`, les chunks et les
+embeddings.
 
 Le planner décide des étapes dans `pipeline/planner.py`, l'executor les exécute dans `pipeline/executor.py`, et `pipeline/catalog.py` relie chaque identifiant à sa fonction Python. Par exemple :
 
@@ -172,7 +189,8 @@ VIDEO_ID/
     ├── interview/
     ├── ocr/
     ├── speakers/
-    ├── transcripts_ocr/ ou transcripts_whisper/
+    ├── transcripts_whisper/  # source canonique
+    ├── transcripts_ocr/      # uniquement plain_transcript.txt pour correction
     ├── chunks/
     └── embeddings/
 ```

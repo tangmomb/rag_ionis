@@ -20,6 +20,41 @@ from pipeline.support.paths import consolidate_init_dir
 
 
 class IngestionPublicationTests(unittest.TestCase):
+    def test_sql_publication_uses_only_the_whisperx_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            video_dir = Path(temporary_dir)
+            whisper_dir = video_dir / "outputs" / "transcripts_whisper"
+            ocr_dir = video_dir / "outputs" / "transcripts_ocr"
+            whisper_dir.mkdir(parents=True)
+            ocr_dir.mkdir(parents=True)
+            (whisper_dir / "plain_transcript.txt").write_text(
+                "Canonique WhisperX",
+                encoding="utf-8",
+            )
+            (whisper_dir / "whisper_transcript_timecoded_corrected.txt").write_text(
+                "[00:00] Canonique WhisperX",
+                encoding="utf-8",
+            )
+            (ocr_dir / "plain_transcript.txt").write_text(
+                "Comparaison OCR",
+                encoding="utf-8",
+            )
+
+            found = update_sql.transcript_paths(video_dir)
+            for path in whisper_dir.iterdir():
+                path.unlink()
+            whisper_dir.rmdir()
+            ocr_only = update_sql.transcript_paths(video_dir)
+
+        self.assertEqual(
+            [(kind, path.parent.name) for kind, path in found],
+            [
+                ("plain", "transcripts_whisper"),
+                ("timecoded", "transcripts_whisper"),
+            ],
+        )
+        self.assertEqual(ocr_only, [])
+
     def test_hierarchical_embedding_loader_uses_level_specific_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             chunks_dir = Path(temporary_dir)
@@ -151,6 +186,45 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertEqual(payload["extraApiField"], {"preserved": True})
         self.assertEqual(payload["thumbnail_medium_url"], "medium.jpg")
         self.assertEqual(payload["duration_seconds"], 91)
+
+    def test_youtube_metadata_overwrites_existing_local_video_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            download_root = Path(temporary_dir)
+            video_id = "abcdefghijk"
+            video_dir = download_root / "init" / video_id
+            video_dir.mkdir(parents=True)
+            video_path = video_dir / f"{video_id}.mp4"
+            video_path.write_bytes(b"video")
+            target = video_dir / "metadata" / "youtube_video_metadata.json"
+            target.parent.mkdir()
+            target.write_text('{"title": "ancien"}\n', encoding="utf-8")
+            video = {
+                "id": video_id,
+                "snippet": {
+                    "publishedAt": "2026-07-14T12:00:00Z",
+                    "title": "Nouveau titre",
+                    "description": "Description",
+                },
+                "contentDetails": {"duration": "PT1M31S"},
+                "statistics": {"viewCount": "371"},
+            }
+            cache_path = get_data.write_video_info(
+                video,
+                download_root / "info_videos",
+            )
+
+            synced = get_data.sync_existing_video_info(
+                video,
+                cache_path,
+                download_root,
+            )
+
+            self.assertEqual(synced, target)
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8"))["title"],
+                "Nouveau titre",
+            )
+            self.assertEqual(video_path.read_bytes(), b"video")
 
     def test_existing_video_is_reused_without_youtube_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

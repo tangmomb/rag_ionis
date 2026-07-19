@@ -17,6 +17,10 @@ from .contracts import (
 from .options import PipelineOptions
 from .probe import probe_video
 from .support.json_io import read_json
+from .support.paths import (
+    CANONICAL_TRANSCRIPTS_DIR_NAME,
+    OCR_CORRECTION_TRANSCRIPTS_DIR_NAME,
+)
 from .support.youtube_metadata import (
     load_youtube_metadata,
     youtube_duration_seconds,
@@ -397,20 +401,18 @@ class PipelineContext:
         return value.value if value is not None else None
 
     @property
-    def transcript_strategy(self) -> str | None:
-        if self.has_subtitles is True:
-            return "ocr"
-        if self.has_subtitles is False:
-            return "whisper"
-        return None
+    def transcript_strategy(self) -> str:
+        """Strategie canonique, independante de la detection de sous-titres."""
+
+        return "whisper"
 
     @property
     def transcripts_dir_name(self) -> str:
-        if self.transcript_strategy == "ocr":
-            return "transcripts_ocr"
-        if self.transcript_strategy == "whisper":
-            return "transcripts_whisper"
-        return "transcripts"
+        return CANONICAL_TRANSCRIPTS_DIR_NAME
+
+    @property
+    def ocr_transcripts_dir_name(self) -> str:
+        return OCR_CORRECTION_TRANSCRIPTS_DIR_NAME
 
     @property
     def chunk_strategy(self) -> str:
@@ -419,7 +421,7 @@ class PipelineContext:
     @property
     def routing_ready(self) -> bool:
         return (
-            self.transcript_strategy is not None
+            self.has_subtitles is not None
             and self.video_type is not None
         )
 
@@ -438,6 +440,15 @@ class PipelineContext:
             "status": "ready" if not missing else "needs_content_inspection",
             "pipeline_id": ".".join(part for part in parts if part),
             "transcript_strategy": self.transcript_strategy,
+            "ocr_correction_reference": (
+                "enabled"
+                if self.has_subtitles is True
+                else (
+                    "not_applicable"
+                    if self.has_subtitles is False
+                    else "pending_detection"
+                )
+            ),
             "chunk_strategy": self.chunk_strategy,
             "visual_strategy": self.video_type,
             "missing_facts": missing,

@@ -10,9 +10,13 @@ from pipeline.support.paths import (
     output_is_current,
     relative_to_video_dir,
 )
+from pipeline.steps.transcripts.artifacts import (
+    LEGACY_TRANSCRIPT_PLAIN_NAMES,
+    TRANSCRIPT_PLAIN_NAME,
+)
 
 
-PLAIN_NAME = "plain_transcript.txt"
+PLAIN_NAME = TRANSCRIPT_PLAIN_NAME
 LEGACY_PLAIN_SUFFIX = "_transcript.txt"
 OCR_SUBTITLE_NAME = "ocr_subtitles.txt"
 LEGACY_OCR_SUBTITLE_SUFFIX = "_ocr_subtitle.txt"
@@ -32,6 +36,10 @@ def transcript_path(video_path, *, transcripts_dir_name=None):
     legacy = transcript_dir / f"{video_path.stem}{LEGACY_PLAIN_SUFFIX}"
     if legacy.exists() and not preferred.exists():
         return legacy
+    for name in LEGACY_TRANSCRIPT_PLAIN_NAMES:
+        legacy_current = transcript_dir / name
+        if legacy_current.exists() and not preferred.exists():
+            return legacy_current
     return preferred
 
 

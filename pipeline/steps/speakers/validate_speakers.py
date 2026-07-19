@@ -2,6 +2,7 @@ import json
 import re
 import sys
 import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from pipeline.support.json_io import read_json, write_json, write_jsonl
@@ -34,7 +35,9 @@ SYSTEM_PROMPT = (
     "Rejete les entreprises, ecoles, services, metiers, titres, lieux, slogans, URLs, "
     "mots OCR parasites et noms incomplets. Tu as aussi le titre de la video pour voir "
     "si un speaker s'y trouve. Si un speaker candidat ressemble beaucoup a celui "
-    "dans le titre, le titre prevaut: utilise l'orthographe complete du titre. "
+    "dans le titre, utilise le titre uniquement pour corriger l'orthographe des parties "
+    "du nom qu'il contient. Conserve toutes les autres parties du nom complet du candidat, "
+    "notamment son nom de famille. "
     "Reponds uniquement avec l'objet JSON demande."
 )
 def candidates_path(video_path):
@@ -76,6 +79,98 @@ def normalize_name(name):
     normalized = unicodedata.normalize("NFKD", str(name).strip().casefold())
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
     return re.sub(r"[^0-9a-z]+", "", normalized)
+
+
+def apply_title_spelling(name, video_title):
+    title_parts = re.findall(
+        r"[^\W\d_]+(?:[-'’][^\W\d_]+)*",
+        str(video_title),
+        flags=re.UNICODE,
+    )
+    corrected_parts = []
+    for name_part in str(name).split():
+        normalized_part = normalize_name(name_part)
+        if len(normalized_part) < 4 or not title_parts:
+            corrected_parts.append(name_part)
+            continue
+        best_title_part = max(
+            title_parts,
+            key=lambda title_part: SequenceMatcher(
+                None,
+                normalized_part,
+                normalize_name(title_part),
+            ).ratio(),
+        )
+        similarity = SequenceMatcher(
+            None,
+            normalized_part,
+            normalize_name(best_title_part),
+        ).ratio()
+        corrected_parts.append(best_title_part if similarity >= 0.9 else name_part)
+    return " ".join(corrected_parts)
+
+
+def preserve_candidate_name_parts(valid_speakers, candidates, video_title=""):
+    candidate_names = [
+        " ".join(str(item.get("name", "")).split()).strip()
+        for item in candidates or []
+        if isinstance(item, dict) and str(item.get("name", "")).strip()
+    ]
+    preserved = []
+
+    for valid_speaker in valid_speakers:
+        valid_name = " ".join(str(valid_speaker).split()).strip()
+        valid_parts = valid_name.split()
+        if not valid_parts:
+            preserved.append(valid_speaker)
+            continue
+
+        best_match = None
+        for candidate_name in candidate_names:
+            candidate_parts = candidate_name.split()
+            if len(candidate_parts) <= len(valid_parts):
+                continue
+
+            available = set(range(len(candidate_parts)))
+            replacements = {}
+            similarities = []
+            for valid_part in valid_parts:
+                if not available:
+                    break
+                best_index = max(
+                    available,
+                    key=lambda index: SequenceMatcher(
+                        None,
+                        normalize_name(valid_part),
+                        normalize_name(candidate_parts[index]),
+                    ).ratio(),
+                )
+                similarity = SequenceMatcher(
+                    None,
+                    normalize_name(valid_part),
+                    normalize_name(candidate_parts[best_index]),
+                ).ratio()
+                if similarity < 0.8:
+                    break
+                available.remove(best_index)
+                replacements[best_index] = valid_part
+                similarities.append(similarity)
+            else:
+                score = sum(similarities) / len(similarities)
+                if best_match is None or score > best_match[0]:
+                    best_match = (score, candidate_parts, replacements)
+
+        if best_match is None:
+            complete_name = valid_name
+        else:
+            _score, candidate_parts, replacements = best_match
+            complete_name = " ".join(
+                replacements.get(index, part)
+                for index, part in enumerate(candidate_parts)
+            )
+        preserved.append(apply_title_spelling(complete_name, video_title))
+
+    return preserved
 
 
 def unique_speakers(payload):
@@ -203,8 +298,10 @@ def build_response_request(model, speakers, video_title="", candidates=None):
         "Parmi cette liste de speakers, lesquels sont vraiment des personnes ? "
         "Place uniquement les noms valides dans valid_speakers, sans commentaire. "
         "Tu as aussi le titre de la video pour voir si un speaker s'y trouve. "
-        "Si un candidat ressemble beaucoup a un nom dans le titre, renvoie l'orthographe "
-        "du titre, qui prevaut. Si la liste des candidats est vide, extrais du titre "
+        "Si un candidat ressemble beaucoup a un nom dans le titre, utilise le titre pour "
+        "corriger uniquement l'orthographe des parties correspondantes, sans jamais retirer "
+        "le nom de famille ou une autre partie du nom complet candidat. "
+        "Si la liste des candidats est vide, extrais du titre "
         "un nom uniquement s'il identifie clairement une personne physique ; ignore "
         "les roles, entreprises, ecoles et autres organisations.\n\n"
         + json.dumps(
@@ -350,7 +447,11 @@ def validate_file_live(client, model, video_path, force=False):
     elif speakers or video_title:
         answer, request_log = ask_gpt(client, model, speakers, video_title, candidates)
         answer = answer.strip()
-        valid_speakers = parse_valid_speakers(answer)
+        valid_speakers = preserve_candidate_name_parts(
+            parse_valid_speakers(answer),
+            candidates,
+            video_title,
+        )
     else:
         body, request_log = build_response_request(model, speakers, video_title, candidates)
         _ = body
@@ -486,7 +587,11 @@ def finalize_batch_validation(video_path, model, source, target, speakers, state
     source_payload = load_json(source)
     video_title, candidates = validation_context(source_payload)
     valid_speakers = (
-        parse_valid_speakers(answer)
+        preserve_candidate_name_parts(
+            parse_valid_speakers(answer),
+            candidates,
+            video_title,
+        )
         if speakers
         else []
     )

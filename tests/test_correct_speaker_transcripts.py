@@ -14,12 +14,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from pipeline.steps.chunks import create_transcript_chunks as chunk_creation
+from pipeline.steps.transcripts import apply_speakers as speaker_stage
 from pipeline.steps.transcripts import correct_whisper_transcript as combined_correction
 from pipeline.steps.speakers import correct_speaker_transcripts as speaker_correction
 
 
 class CorrectSpeakerTranscriptsTests(unittest.TestCase):
-    def test_combined_step_creates_ocr_corrected_transcript_with_gpt_speaker(self) -> None:
+    def test_correction_and_speakers_are_two_separate_transcript_stages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"
             video_dir.mkdir()
@@ -31,7 +32,7 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             transcript_dir.mkdir(parents=True)
             ocr_dir.mkdir(parents=True)
             speakers_dir.mkdir(parents=True)
-            (transcript_dir / "whisper_transcript_timecoded.txt").write_text(
+            (transcript_dir / "transcript_1_brut.txt").write_text(
                 "[00:00-00:05] SPEAKER_00: Bonjour, je m'appelle Lucie Ouyaya.\n",
                 encoding="utf-8",
             )
@@ -42,7 +43,7 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             (speakers_dir / "speaker_candidates.json").write_text(
                 json.dumps(
                     {
-                        "source": "outputs/transcripts_whisper/whisper_transcript_timecoded.txt",
+                        "source": "outputs/transcripts_whisper/transcript_1_brut.txt",
                         "speakers": ["Lucie Ouyaya"],
                         "candidates": [
                             {
@@ -68,18 +69,54 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
 
             self.assertEqual(
                 result,
-                transcript_dir / "whisper_transcript_timecoded_corrected.txt",
+                transcript_dir / "transcript_2_corrected.txt",
             )
             text = result.read_text(encoding="utf-8")
-            self.assertIn("Loucif Ouyahia", text)
-            self.assertNotIn("Lucie Ouyaya", text)
-            correction_log = json.loads(
-                (speakers_dir / "speaker_transcript_corrections.json").read_text(encoding="utf-8")
-            )
+            self.assertIn("Lucie Ouyaya", text)
+            self.assertNotIn("Loucif Ouyahia", text)
+
+            with_speakers = speaker_stage.apply_speakers(video, force=True)
+
             self.assertEqual(
-                correction_log["files"][0]["path"],
-                "outputs/transcripts_whisper/whisper_transcript_timecoded_corrected.txt",
+                with_speakers,
+                transcript_dir / "transcript_3_with_speakers.txt",
             )
+            self.assertIn(
+                "Loucif Ouyahia",
+                with_speakers.read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "SPEAKER_00",
+                with_speakers.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "Lucie Ouyaya",
+                result.read_text(encoding="utf-8"),
+            )
+            self.assertFalse(
+                (speakers_dir / "speaker_transcript_corrections.json").exists()
+            )
+
+    def test_single_validated_speaker_replaces_every_whisper_label(self) -> None:
+        corrected, counts = speaker_correction.apply_speaker_labels(
+            (
+                "[00:00-00:05] SPEAKER_00: Bonjour.\n"
+                "[00:05-00:10] SPEAKER_01: Suite.\n"
+            ),
+            ["Matthieu"],
+        )
+
+        self.assertEqual(
+            corrected,
+            (
+                "[00:00-00:05] Matthieu: Bonjour.\n"
+                "[00:05-00:10] Matthieu: Suite.\n"
+            ),
+        )
+        self.assertEqual(
+            counts,
+            {"SPEAKER_00": 1, "SPEAKER_01": 1},
+        )
 
     def test_speaker_mapping_also_replaces_a_partially_ocr_corrected_name(self) -> None:
         mappings = [
@@ -193,22 +230,13 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
 
             result = speaker_correction.correct_speaker_transcripts(video, force=True)
 
-            self.assertEqual(result, speakers_dir / "speaker_transcript_corrections.json")
+            self.assertEqual(result, 2)
             self.assertIn("Loucif Ouyahia", plain.read_text(encoding="utf-8"))
             self.assertIn("Loucif Ouyahia", timecoded.read_text(encoding="utf-8"))
             self.assertIn("SPEAKER_00:", timecoded.read_text(encoding="utf-8"))
             self.assertEqual(list(transcript_dir.glob("*_speaker_corrected.txt")), [])
-
-            payload = json.loads(result.read_text(encoding="utf-8"))
-            self.assertEqual(payload["replacement_count"], 2)
-            self.assertEqual(
-                payload["mappings"][0],
-                {
-                    "source_name": "Lucie Ouyaya",
-                    "validated_name": "Loucif Ouyahia",
-                    "methods": ["transcript_je_m_appelle"],
-                    "changed": True,
-                },
+            self.assertFalse(
+                (speakers_dir / "speaker_transcript_corrections.json").exists()
             )
 
             chunks = video_dir / "outputs" / "chunks" / "transcript_chunks.json"

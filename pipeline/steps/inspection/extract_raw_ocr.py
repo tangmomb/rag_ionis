@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -37,6 +39,47 @@ def existing_raw_ocr_path(ocr_dir, group_name):
     if legacy.exists() and not preferred.exists():
         return legacy
     return preferred
+
+
+def extract_for_video_isolated(
+    video_path: Path,
+    *,
+    device: str = "gpu:0",
+    lang: str = "fr",
+    min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    force: bool = False,
+) -> list[Path]:
+    """Execute PaddleOCR outside the process that may already have loaded PyTorch.
+
+    PyTorch and Paddle ship different cuDNN DLL builds on Windows. Once one of
+    them is loaded, importing the other in the same process can fail with
+    WinError 127. A dedicated process gives Paddle a clean DLL namespace while
+    preserving the normal pipeline command and its checkpointing behavior.
+    """
+    command = [
+        sys.executable,
+        "-m",
+        "pipeline.workers.raw_ocr",
+        "--video-path",
+        str(Path(video_path).resolve()),
+        "--device",
+        device,
+        "--lang",
+        lang,
+        "--min-confidence",
+        str(min_confidence),
+    ]
+    if force:
+        command.append("--force")
+
+    print("[isolation] OCR Paddle dans un processus dedie", flush=True)
+    subprocess.run(command, check=True)
+
+    output_directory = output_ocr_raw_dir(video_path)
+    return [
+        existing_raw_ocr_path(output_directory, group_name)
+        for group_name in IMAGE_GROUPS
+    ]
 
 
 def write_group_raw_outputs(ocr_dir, group_name, raw_result):

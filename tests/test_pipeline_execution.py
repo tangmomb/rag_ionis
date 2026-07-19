@@ -25,6 +25,7 @@ from pipeline.manifest import (
     SCHEMA_VERSION,
     build_manifest,
     read_manifest,
+    write_manifest,
 )
 from pipeline.options import PipelineOptions
 
@@ -49,10 +50,6 @@ class PipelineExecutionTests(unittest.TestCase):
             }
             if routing_ready
             else {}
-        )
-        (metadata_dir / "pipeline_analysis.json").write_text(
-            json.dumps(facts),
-            encoding="utf-8",
         )
         (metadata_dir / "youtube_video_metadata.json").write_text(
             json.dumps({"duration_seconds": 180}),
@@ -834,6 +831,35 @@ class ManifestCompatibilityTests(unittest.TestCase):
             context = self.inspect_context(video)
 
         self.assertEqual(context.routing_facts, RoutingFacts())
+
+    def test_legacy_analysis_is_migrated_then_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "abcdefghijk"
+            metadata_dir = video_dir / "metadata"
+            metadata_dir.mkdir(parents=True)
+            video = video_dir / "abcdefghijk.mp4"
+            video.touch()
+            legacy = metadata_dir / "pipeline_analysis.json"
+            legacy.write_text(
+                json.dumps(
+                    {
+                        "has_subtitles": True,
+                        "video_type": "motion_design",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            context = self.inspect_context(video)
+            write_manifest(context)
+            manifest = read_manifest(context.manifest_path)
+            self.assertFalse(legacy.exists())
+
+        self.assertTrue(manifest["routing_facts"]["has_subtitles"])
+        self.assertEqual(
+            manifest["routing_facts"]["video_type"],
+            "motion_design",
+        )
 
     def test_inspect_migrates_v3_features_to_routing_facts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

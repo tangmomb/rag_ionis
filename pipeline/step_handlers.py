@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from pathlib import Path
 
 from .context import PipelineContext
-from .contracts import TaskResult
+from .contracts import TaskResult, VideoType
 
 
 ArtifactFingerprint = dict[str, tuple[int, int]]
@@ -189,36 +190,33 @@ def detect_interview(context: PipelineContext) -> TaskResult:
 
 def infer_video_type(context: PipelineContext) -> TaskResult:
     from pipeline.steps.inspection.infer_video_type import infer_for_video
-    from pipeline.support.analysis import analysed_infos_path
-    from pipeline.support.json_io import read_json
 
-    target_before = analysed_infos_path(context.video_path)
-    before = _snapshot((target_before,))
-    result = infer_for_video(
+    previous = context.video_type
+    video_type = infer_for_video(
         context.video_path,
         force=context.force_rebuild,
     )
-    target_after = analysed_infos_path(context.video_path)
-    payload = read_json(target_after, default={})
-    video_type = payload.get("video_type") if isinstance(payload, dict) else None
-    artifacts = (target_after,) if isinstance(video_type, str) and video_type else ()
-    return _artifact_result(
-        context,
-        result,
-        artifacts=artifacts,
-        state_paths=(target_after,),
-        before=before,
-        success_reason=f"Type de video infere: {video_type}.",
-        cached_reason=f"Type de video deja connu: {video_type}.",
-        missing_reason="Type de video non infere; classification des frames absente.",
+    normalized = VideoType.from_value(video_type)
+    if normalized is None:
+        return TaskResult.blocked(
+            "Type de video non infere; classification des frames absente."
+        )
+    context.routing_facts = replace(
+        context.routing_facts,
+        video_type=normalized,
     )
+    context.artifacts.by_task.pop("video.infer_type", None)
+    reason = f"Type de video infere: {normalized.value}."
+    if previous == normalized.value and not context.force_rebuild:
+        return TaskResult.cached(reason=reason, value=normalized.value)
+    return TaskResult.succeeded(normalized.value, reason=reason)
 
 
 def extract_raw_ocr(context: PipelineContext) -> TaskResult:
     from pipeline.steps.inspection.extract_raw_ocr import (
         IMAGE_GROUPS,
         existing_raw_ocr_path,
-        extract_for_video,
+        extract_for_video_isolated,
         output_ocr_raw_dir,
     )
 
@@ -228,7 +226,7 @@ def extract_raw_ocr(context: PipelineContext) -> TaskResult:
         for group in IMAGE_GROUPS
     )
     before = _snapshot(expected_before)
-    result = extract_for_video(
+    result = extract_for_video_isolated(
         context.video_path,
         force=context.force_rebuild,
     )
@@ -275,33 +273,31 @@ def extract_ocr_boxes(context: PipelineContext) -> TaskResult:
 
 def detect_subtitles(context: PipelineContext) -> TaskResult:
     from pipeline.steps.inspection.detect_subtitles import detect_for_video
-    from pipeline.support.analysis import analysed_infos_path
-    from pipeline.support.json_io import read_json
 
-    target_before = analysed_infos_path(context.video_path)
-    before = _snapshot((target_before,))
-    result = detect_for_video(
+    previous = context.has_subtitles
+    details = detect_for_video(
         context.video_path,
         force=context.force_rebuild,
     )
-    target_after = analysed_infos_path(context.video_path)
-    payload = read_json(target_after, default={})
     has_subtitles = (
-        payload.get("has_subtitles")
-        if isinstance(payload, dict)
+        details.get("has_subtitles")
+        if isinstance(details, Mapping)
         else None
     )
-    artifacts = (target_after,) if isinstance(has_subtitles, bool) else ()
-    return _artifact_result(
-        context,
-        result,
-        artifacts=artifacts,
-        state_paths=(target_after,),
-        before=before,
-        success_reason=f"Detection des sous-titres calculee: {has_subtitles}.",
-        cached_reason=f"Detection des sous-titres deja connue: {has_subtitles}.",
-        missing_reason="Detection des sous-titres impossible; positions OCR absentes.",
+    if not isinstance(has_subtitles, bool):
+        return TaskResult.blocked(
+            "Detection des sous-titres impossible; positions OCR absentes."
+        )
+    context.routing_facts = replace(
+        context.routing_facts,
+        has_subtitles=has_subtitles,
+        has_subtitles_details=dict(details),
     )
+    context.artifacts.by_task.pop("video.detect_subtitles", None)
+    reason = f"Detection des sous-titres calculee: {has_subtitles}."
+    if previous is has_subtitles and not context.force_rebuild:
+        return TaskResult.cached(reason=reason, value=has_subtitles)
+    return TaskResult.succeeded(has_subtitles, reason=reason)
 
 
 def build_processed_ocr(context: PipelineContext) -> TaskResult:

@@ -1,12 +1,12 @@
-from pipeline.support.json_io import read_json, write_json
-from pipeline.support.paths import ANALYSED_INFOS_NAME
-from pipeline.support.paths import analysed_infos_path as pipeline_analysed_infos_path
-from pipeline.support.paths import metadata_dir
-from pipeline.support.paths import video_base_dir, video_id
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from pipeline.support.json_io import read_json
+from pipeline.support.paths import analysed_infos_path, metadata_dir
 
 
-ANALYSED_INFOS_SUFFIX = "_analysed_infos.json"
-LEGACY_ANALYSED_INFOS_NAME = "analysed_infos.json"
+MANIFEST_NAME = "video_manifest.json"
 ALLOWED_KEYS = {
     "video_type",
     "has_subtitles",
@@ -14,13 +14,8 @@ ALLOWED_KEYS = {
 }
 
 
-def analysed_infos_path(video_path):
-    return pipeline_analysed_infos_path(video_path)
-
-
-def _load_allowed_data(target):
-    payload = read_json(target, default={})
-    if not isinstance(payload, dict):
+def _allowed_data(payload: object) -> dict[str, object]:
+    if not isinstance(payload, Mapping):
         return {}
     return {
         key: payload[key]
@@ -29,25 +24,29 @@ def _load_allowed_data(target):
     }
 
 
-def update_routing_facts(video_path, payload=None, **facts):
-    target = metadata_dir(video_path) / ANALYSED_INFOS_NAME
-    data = _load_allowed_data(target)
-    if not data:
-        data = _load_allowed_data(analysed_infos_path(video_path))
-    if not data:
-        legacy = video_base_dir(video_path) / f"{video_id(video_path)}{ANALYSED_INFOS_SUFFIX}"
-        data = _load_allowed_data(legacy)
-    updates = dict(payload or {})
-    updates.update(facts)
-    data.update(
-        (key, updates[key])
-        for key in ALLOWED_KEYS
-        if key in updates
+def load_routing_facts(
+    video_path,
+    *,
+    legacy_fallback: bool = True,
+) -> dict[str, object]:
+    """Charge les faits depuis le manifeste, avec migration des anciens runs."""
+    manifest = read_json(
+        metadata_dir(video_path) / MANIFEST_NAME,
+        default={},
     )
-    return write_json(target, data)
+    if isinstance(manifest, Mapping):
+        facts = _allowed_data(manifest.get("routing_facts"))
+        if facts:
+            return facts
+
+    if not legacy_fallback:
+        return {}
+
+    legacy_path = analysed_infos_path(video_path)
+    return _allowed_data(read_json(legacy_path, default={}))
 
 
-def update_analysed_infos(video_path, stage=None, payload=None):
-    """Compatibility alias for legacy steps; stage was never persisted."""
-    del stage
-    return update_routing_facts(video_path, payload)
+def routing_fact(video_path, key: str):
+    if key not in ALLOWED_KEYS:
+        raise KeyError(f"Fait de routage inconnu: {key}")
+    return load_routing_facts(video_path).get(key)

@@ -109,7 +109,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument(
         "--skip-inspection",
         action="store_true",
-        help="Reutilise les caracteristiques deja presentes dans pipeline_analysis.json.",
+        help="Reutilise les faits de routage deja presents dans video_manifest.json.",
     )
 
     task_parser = commands.add_parser(

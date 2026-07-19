@@ -7,7 +7,8 @@ from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
-from pipeline.support.paths import analysed_infos_path, consolidate_init_dir, existing_chunks_dir, existing_transcripts_dir, existing_youtube_api_infos_path
+from pipeline.support.analysis import load_routing_facts
+from pipeline.support.paths import consolidate_init_dir, existing_chunks_dir, existing_transcripts_dir, existing_youtube_api_infos_path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -653,11 +654,8 @@ def load_video_metadata(video_path):
     return None
 
 
-def load_video_analysis(video_path):
-    target = analysed_infos_path(video_path)
-    if target.exists():
-        return load_json(target)
-    return None
+def load_video_routing_facts(video_path):
+    return load_routing_facts(video_path)
 
 
 def load_video_speakers(video_path):
@@ -877,7 +875,7 @@ def video_storage_prefix(video_path, root_dir, prefix):
 
 def upsert_video(cursor, video_path, root_dir, bucket, prefix):
     payload = load_video_metadata(video_path) or {}
-    analysis = load_video_analysis(video_path) or {}
+    routing_facts = load_video_routing_facts(video_path)
     youtube_video_id = payload.get("youtube_video_id") or local_video_identifier(video_path)
     title = payload.get("title") or youtube_video_id
     description = payload.get("description")
@@ -885,8 +883,16 @@ def upsert_video(cursor, video_path, root_dir, bucket, prefix):
     published_at = parse_datetime(payload.get("published_at"))
     duration_seconds = parse_int(payload.get("duration_seconds"))
     thumbnail_medium_url = extract_thumbnail_medium_url(payload)
-    has_subtitles = analysis.get("has_subtitles") if isinstance(analysis.get("has_subtitles"), bool) else None
-    video_type = analysis.get("video_type") if isinstance(analysis.get("video_type"), str) else None
+    has_subtitles = (
+        routing_facts.get("has_subtitles")
+        if isinstance(routing_facts.get("has_subtitles"), bool)
+        else None
+    )
+    video_type = (
+        routing_facts.get("video_type")
+        if isinstance(routing_facts.get("video_type"), str)
+        else None
+    )
     speakers = load_video_speakers(video_path)
     s3_prefix = video_storage_prefix(video_path, root_dir, prefix)
     s3_uri = f"s3://{bucket}/{s3_prefix}" if bucket and s3_prefix else s3_prefix or None

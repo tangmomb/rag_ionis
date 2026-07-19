@@ -163,7 +163,6 @@ def execute_tasks(
                 raw_result = spec.handler(context)
             finally:
                 context._task_force = False
-            context.refresh_routing_facts()
             result = _validate_handler_result(
                 raw_result,
                 context=context,

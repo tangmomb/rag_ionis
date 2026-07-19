@@ -1,7 +1,6 @@
 import statistics
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path, update_routing_facts
 from pipeline.support.json_io import read_json
 from pipeline.support.paddle_ocr import (
     MIN_SUBTITLE_CLUSTER_SECONDS,
@@ -39,14 +38,6 @@ def location_path(ocr_dir):
 
 def load_json(path):
     return read_json(path)
-
-
-def write_has_subtitles(video_path, has_subtitles, details):
-    return update_routing_facts(
-        video_path,
-        has_subtitles=bool(has_subtitles),
-        has_subtitles_details=details,
-    )
 
 
 def subtitle_entries_from_boxes(payload, images_dir):
@@ -198,18 +189,10 @@ def analyze_subtitle_anchor(entries):
 
 
 def detect_for_video(video_path, force=False):
+    del force
     ocr_dir = existing_ocr_dir(video_path)
     images_dir = existing_images_dir(video_path)
     source = location_path(ocr_dir)
-    target = analysed_infos_path(video_path)
-
-    if target.exists() and not force:
-        try:
-            if "has_subtitles" in load_json(target):
-                print(f"[skip] {video_path.name}: has_subtitles existe deja")
-                return None
-        except Exception:
-            pass
 
     if not source.exists():
         print(f"[skip] OCR location introuvable: {source}")
@@ -223,6 +206,5 @@ def detect_for_video(video_path, force=False):
         **analysis,
     }
     has_subtitles = analysis["has_subtitles"]
-    write_has_subtitles(video_path, has_subtitles, details)
     print(f"[ok] {video_path.name}: has_subtitles={str(has_subtitles).lower()}", flush=True)
-    return True
+    return details

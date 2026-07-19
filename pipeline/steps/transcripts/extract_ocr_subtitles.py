@@ -1,4 +1,4 @@
-from pipeline.support.analysis import analysed_infos_path
+from pipeline.support.analysis import routing_fact
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import existing_ocr_dir, transcripts_dir
 
@@ -45,14 +45,7 @@ def load_processed_items(path):
 
 
 def analysed_has_subtitles(video_path):
-    path = analysed_infos_path(video_path)
-    if not path.exists():
-        return None
-    try:
-        payload = read_json(path)
-    except Exception:
-        return None
-    value = payload.get("has_subtitles")
+    value = routing_fact(video_path, "has_subtitles")
     return value if isinstance(value, bool) else None
 
 
@@ -149,7 +142,7 @@ def extract_for_video(
 ):
     if analysed_has_subtitles(video_path) is not True:
         print(
-            f"[skip] {video_path.name}: pipeline_analysis.has_subtitles n'est pas true"
+            f"[skip] {video_path.name}: manifest.routing_facts.has_subtitles n'est pas true"
         )
         return None
 

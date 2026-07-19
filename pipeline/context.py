@@ -123,12 +123,14 @@ class PipelineContext:
         from .manifest import read_manifest
 
         previous_manifest = read_manifest(metadata_dir / MANIFEST_NAME)
-        analysis_payload = load_json(
-            metadata_dir / ANALYSIS_NAME,
-            strict=True,
-        )
+        analysis_payload = cls._manifest_routing_facts(previous_manifest)
         if not analysis_payload:
-            analysis_payload = cls._manifest_routing_facts(previous_manifest)
+            # Compatibilite de migration uniquement. Toute nouvelle ecriture
+            # persiste ces faits dans video_manifest.json.
+            analysis_payload = load_json(
+                metadata_dir / ANALYSIS_NAME,
+                strict=True,
+            )
 
         source_metadata = load_youtube_metadata(video)
         media = probe_video(video)
@@ -474,16 +476,6 @@ class PipelineContext:
         else:
             self.execution.ensure_tasks(task_ids)
         self.plan = normalized
-
-    def refresh_routing_facts(self) -> None:
-        analysis_path = self.metadata_dir / ANALYSIS_NAME
-        if analysis_path.exists():
-            self.routing_facts = RoutingFacts.from_dict(
-                load_json(
-                    analysis_path,
-                    strict=True,
-                )
-            )
 
     def _artifact_path(self, value: str | Path) -> Path:
         candidate = Path(value)

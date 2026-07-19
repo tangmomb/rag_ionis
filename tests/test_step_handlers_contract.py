@@ -11,7 +11,12 @@ from pipeline import step_handlers
 from pipeline.catalog import TASKS, _frames_extracted
 from pipeline.context import PipelineContext
 from pipeline.contracts import TaskResult, TaskStatus
-from pipeline.steps.inspection import classify_frames, detect_interviews
+from pipeline.steps.inspection import (
+    classify_frames,
+    detect_interviews,
+    detect_subtitles,
+    infer_video_type,
+)
 
 
 class StepHandlerContractTests(unittest.TestCase):
@@ -136,6 +141,40 @@ class StepHandlerContractTests(unittest.TestCase):
         )
         self.assertEqual(interview_options.min_run_frames, 4)
         self.assertTrue(interview_options.force)
+
+    def test_routing_handlers_update_context_without_analysis_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+
+            with patch.object(
+                infer_video_type,
+                "infer_for_video",
+                return_value="motion_design",
+            ):
+                type_result = step_handlers.infer_video_type(context)
+
+            subtitle_details = {
+                "has_subtitles": True,
+                "reason": "test",
+            }
+            with patch.object(
+                detect_subtitles,
+                "detect_for_video",
+                return_value=subtitle_details,
+            ):
+                subtitle_result = step_handlers.detect_subtitles(context)
+
+            self.assertIs(type_result.status, TaskStatus.SUCCEEDED)
+            self.assertIs(subtitle_result.status, TaskStatus.SUCCEEDED)
+            self.assertEqual(context.video_type, "motion_design")
+            self.assertTrue(context.has_subtitles)
+            self.assertEqual(
+                context.routing_facts.has_subtitles_details,
+                subtitle_details,
+            )
+            self.assertFalse(
+                (context.metadata_dir / "pipeline_analysis.json").exists()
+            )
 
 
 if __name__ == "__main__":

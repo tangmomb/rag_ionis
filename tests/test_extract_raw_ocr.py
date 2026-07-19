@@ -19,6 +19,29 @@ class RecordingRawOcr:
 
 
 class ExtractRawOcrTests(unittest.TestCase):
+    def test_isolated_extraction_uses_a_clean_python_process(self) -> None:
+        video_path = Path("videos") / "abcdefghijk.mp4"
+
+        with patch.object(extract_raw_ocr.subprocess, "run") as run:
+            output_paths = extract_raw_ocr.extract_for_video_isolated(
+                video_path,
+                device="gpu:1",
+                lang="en",
+                min_confidence=0.75,
+                force=True,
+            )
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], extract_raw_ocr.sys.executable)
+        self.assertEqual(command[1:3], ["-m", "pipeline.workers.raw_ocr"])
+        self.assertIn(str(video_path.resolve()), command)
+        self.assertIn("gpu:1", command)
+        self.assertIn("en", command)
+        self.assertIn("0.75", command)
+        self.assertIn("--force", command)
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(len(output_paths), len(extract_raw_ocr.IMAGE_GROUPS))
+
     def test_extract_for_video_uses_typed_options_and_injected_recognizer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

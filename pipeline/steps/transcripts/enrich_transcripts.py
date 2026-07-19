@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 
-from pipeline.support.analysis import analysed_infos_path
+from pipeline.support.analysis import routing_fact
 from pipeline.support.json_io import read_json
 from pipeline.support.ocr_filtering import enriched_ocr_source_path, format_timecode
 from pipeline.support.paths import (
@@ -30,14 +30,7 @@ def parse_timecode(value):
 
 
 def analysed_video_type(video_path):
-    path = analysed_infos_path(video_path)
-    if not path.exists():
-        return None
-    try:
-        payload = read_json(path)
-    except Exception:
-        return None
-    value = payload.get("video_type")
+    value = routing_fact(video_path, "video_type")
     return value if isinstance(value, str) else None
 
 

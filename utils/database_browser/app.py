@@ -156,8 +156,12 @@ def video_directories() -> list[tuple[Path, Path]]:
 def video_output_paths(video_dir: Path) -> dict[str, Path | None]:
     transcript_variants = transcript_variant_paths(video_dir)
     return {
-        "analysis": first_existing(
-            [video_dir / "metadata" / "pipeline_analysis.json", video_dir / "outputs" / "metadata" / "pipeline_analysis.json"]
+        "manifest": first_existing(
+            [
+                video_dir / "metadata" / "video_manifest.json",
+                video_dir / "metadata" / "pipeline_analysis.json",
+                video_dir / "outputs" / "metadata" / "pipeline_analysis.json",
+            ]
         ),
         "transcript": next(
             (
@@ -219,8 +223,13 @@ def video_speakers(video_dir: Path) -> list[str]:
 def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
     metadata = read_json(video_dir / "metadata" / "youtube_video_metadata.json") or {}
     paths = video_output_paths(video_dir)
-    analysis = read_json(paths["analysis"]) if paths["analysis"] else {}
-    analysis = analysis if isinstance(analysis, dict) else {}
+    manifest = read_json(paths["manifest"]) if paths["manifest"] else {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    routing_facts = manifest.get("routing_facts")
+    if isinstance(routing_facts, dict):
+        facts = routing_facts
+    else:
+        facts = manifest
     images = [path for path in (video_dir / "outputs" / "images").rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS]
     chunks = chunk_items(paths["chunks"])
     embedding_count = len(list((video_dir / "outputs" / "chunks").glob("*_embedding.json")))
@@ -246,8 +255,8 @@ def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
         "duration_seconds": metadata.get("duration_seconds") or metadata.get("duration"),
         "published_at": metadata.get("published_at") or metadata.get("publishedAt"),
         "url": metadata.get("url") or f"https://www.youtube.com/watch?v={video_dir.name}",
-        "video_type": analysis.get("video_type"),
-        "has_subtitles": analysis.get("has_subtitles"),
+        "video_type": facts.get("video_type"),
+        "has_subtitles": facts.get("has_subtitles"),
         "speakers": video_speakers(video_dir),
         "stage": stage,
         "image_count": len(images),

@@ -26,8 +26,15 @@ class VideoBrowserTests(unittest.TestCase):
                 json.dumps({"youtube_video_id": "video123", "title": "Vidéo test", "duration_seconds": 42}),
                 encoding="utf-8",
             )
-            (video_dir / "metadata" / "pipeline_analysis.json").write_text(
-                json.dumps({"video_type": "interview", "has_subtitles": True}),
+            (video_dir / "metadata" / "video_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "routing_facts": {
+                            "video_type": "interview",
+                            "has_subtitles": True,
+                        }
+                    }
+                ),
                 encoding="utf-8",
             )
             (video_dir / "outputs" / "ocr" / "03_reviewed_ocr_overlays.json").write_text(

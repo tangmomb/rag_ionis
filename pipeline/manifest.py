@@ -8,6 +8,7 @@ from .context import PipelineContext
 from .contracts import RoutingFacts, RunExecution, utc_now
 from .options import PipelineOptions
 from .support.json_io import read_json, write_json
+from .support.paths import analysed_infos_path
 
 
 SCHEMA_VERSION = 4
@@ -193,6 +194,17 @@ def read_manifest(path: str | Path) -> dict[str, Any]:
 def build_manifest(context: PipelineContext) -> dict[str, Any]:
     """Construit le manifeste depuis l'unique état du contexte."""
 
+    for task_id, paths in list(context.artifacts.by_task.items()):
+        retained = [
+            path
+            for path in paths
+            if Path(path).name != "pipeline_analysis.json"
+        ]
+        if retained:
+            context.artifacts.by_task[task_id] = retained
+        else:
+            context.artifacts.by_task.pop(task_id, None)
+
     selected_options = context.options
     planned_tasks = list(context.plan)
     task_list = [task.to_dict() for task in planned_tasks]
@@ -231,4 +243,8 @@ def build_manifest(context: PipelineContext) -> dict[str, Any]:
 def write_manifest(context: PipelineContext) -> Path:
     payload = build_manifest(context)
     validate_manifest(payload)
-    return write_json(context.manifest_path, payload)
+    target = write_json(context.manifest_path, payload)
+    legacy_analysis = analysed_infos_path(context.video_path)
+    if legacy_analysis.exists() and legacy_analysis.resolve() != target.resolve():
+        legacy_analysis.unlink()
+    return target

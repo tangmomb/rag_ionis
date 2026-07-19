@@ -52,7 +52,6 @@ downloads/youtube/init/
     metadata/
       youtube_video_metadata.json
       video_manifest.json
-      pipeline_analysis.json
     outputs/
       images/
       interview/
@@ -139,7 +138,7 @@ flux :
 flowchart TD
     A["Sélectionner une vidéo"] --> B["Créer PipelineContext"]
     B --> C["Sonder le fichier vidéo"]
-    B --> D["Lire les JSON YouTube et d'analyse"]
+    B --> D["Lire les JSON YouTube et le manifeste"]
     C --> E["Checkpoint du contexte d'inspection"]
     D --> E
     E --> F["Appeler les 7 handlers d'inspection"]
@@ -164,8 +163,8 @@ En pratique :
 1. `discovery.py` résout le sélecteur en chemin vidéo.
 2. `PipelineContext.inspect()` lit obligatoirement `duration_seconds` dans
    `metadata/youtube_video_metadata.json`, appelle `probe_video()` pour les
-   caractéristiques du conteneur, puis recharge les observations déjà présentes
-   dans `metadata/pipeline_analysis.json`.
+   caractéristiques du conteneur, puis recharge les faits de routage déjà
+   présents dans `metadata/video_manifest.json`.
 3. L'inspection visuelle et OCR calcule `video_type` et `has_subtitles`.
 4. Chaque handler retourne un `TaskResult` avec son statut et ses artefacts.
 5. `processing_plan()` choisit la branche de transcript et le profil de chunks.
@@ -186,8 +185,8 @@ Il contient notamment :
 - `video_path`, les informations techniques sondées et les métadonnées YouTube,
   dont la durée de référence ;
 - `options`, c'est-à-dire les réglages effectifs du lancement ;
-- `routing_facts`, instance immuable de `RoutingFacts` chargée depuis
-  `metadata/pipeline_analysis.json` ;
+- `routing_facts`, instance immuable de `RoutingFacts` chargée depuis la section
+  correspondante de `metadata/video_manifest.json` ;
 - les propriétés dérivées `duration_seconds`, `is_long_video`,
   `transcript_strategy`, `chunk_strategy` et `video_type` ;
 - `plan`, une liste ordonnée de `PlannedTask` ;
@@ -244,13 +243,12 @@ Les informations sont volontairement réparties selon leur nature :
 |---|---|---|
 | `VIDEO_ID.mp4` | Source technique pour les codecs, le FPS, l'audio et la résolution. | Entrée, jamais modifiée. |
 | `metadata/youtube_video_metadata.json` | Métadonnées de l'API YouTube, notamment la durée de référence `duration_seconds`. | Produit par l'ingestion ; obligatoire pour inspecter et router la vidéo. |
-| `metadata/pipeline_analysis.json` | Uniquement les faits de routage : `video_type`, `has_subtitles` et ses détails. | Mis à jour par les étapes d'inspection concernées. |
-| `metadata/video_manifest.json` | Plan, exécution courante, historique, artefacts, options et vues dérivées de la route. | Réécrit atomiquement par l'orchestrateur ; ne pas modifier manuellement. |
+| `metadata/video_manifest.json` | Faits de routage, plan, exécution courante, historique, artefacts, options et route dérivée. | Source de vérité unique, réécrite atomiquement par l'orchestrateur ; ne pas modifier manuellement. |
 | `outputs/` | Frames, OCR, transcripts, speakers, chunks et embeddings. | Généré par les étapes métier. |
 
-`RoutingFacts` est la source typée du routage. Le manifeste est la source de
-vérité de l'exécution et des artefacts ; sa section `route` est calculée à partir
-des faits et de la durée.
+`RoutingFacts` est le contrat typé du routage. Sa représentation persistée se
+trouve dans `video_manifest.json.routing_facts` ; la section `route` est calculée
+à partir de ces faits et de la durée.
 
 ## Règles de routage
 
@@ -305,13 +303,17 @@ L'inspection est identique pour toutes les vidéos et respecte cet ordre :
 | 1 | `frames.extract` | `steps.inspection.extract_frames` | Frames échantillonnées dans `outputs/images/`. |
 | 2 | `frames.classify` | `steps.inspection.classify_frames` | Classification footage, graphic ou mixture. |
 | 3 | `video.detect_interview` | `steps.inspection.detect_interviews` | Indice d'interview dans `outputs/interview/`. |
-| 4 | `video.infer_type` | `steps.inspection.infer_video_type` | `video_type` dans `pipeline_analysis.json`. |
+| 4 | `video.infer_type` | `steps.inspection.infer_video_type` | `video_type` dans `video_manifest.json.routing_facts`. |
 | 5 | `ocr.extract_raw` | `steps.inspection.extract_raw_ocr` | OCR brut dans `outputs/ocr/`. |
 | 6 | `ocr.extract_boxes` | `steps.inspection.extract_ocr_boxes` | Positions des zones de texte. |
-| 7 | `video.detect_subtitles` | `steps.inspection.detect_subtitles` | `has_subtitles` et ses détails dans `pipeline_analysis.json`. |
+| 7 | `video.detect_subtitles` | `steps.inspection.detect_subtitles` | `has_subtitles` et ses détails dans `video_manifest.json.routing_facts`. |
 
 La durée n'est pas une étape d'inspection : elle est obtenue immédiatement par
 `probe.py` à partir du fichier vidéo.
+
+Sous Windows, `ocr.extract_raw` lance PaddleOCR dans un processus Python dédié.
+Cette isolation évite les conflits de DLL CUDA/cuDNN lorsque la classification
+des frames a déjà chargé PyTorch dans le processus principal.
 
 ### Traitements communs
 
@@ -561,7 +563,7 @@ S3_SECRET_ACCESS_KEY=...
 | `plan` | N'exécute aucune tâche. Si le routage est complet, écrit le plan de traitement ; sinon écrit le plan d'inspection. |
 | `plan --include-inspection` | Force l'écriture du plan d'inspection même si les caractéristiques sont déjà connues. |
 | `run` | Exécute l'inspection, recalcule la route, puis exécute le plan de traitement. |
-| `run --skip-inspection` | Réutilise `pipeline_analysis.json` si le routage est complet. Si une caractéristique manque, l'inspection est quand même exécutée. |
+| `run --skip-inspection` | Réutilise les faits du manifeste si le routage est complet. Si une caractéristique manque, l'inspection est quand même exécutée. |
 | `task --list` | Affiche les identifiants, phases et titres du registre. |
 | `task TASK_ID [SELECTOR]` | Exécute une seule tâche enregistrée avec le contexte, les options et les checkpoints habituels. |
 
@@ -657,7 +659,7 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 | `--details-per-section` | Nombre de chunks détail regroupés dans une section pour les vidéos longues. |
 
 Pour afficher le plan de traitement en dry-run, il faut disposer d'un
-`pipeline_analysis.json` complet :
+un manifeste contenant des `routing_facts` complets :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection --dry-run
@@ -777,7 +779,7 @@ Une étape ne doit pas appeler directement l'étape suivante. L'ordre appartient
 Pour ajouter une caractéristique qui influence le pipeline :
 
 1. produire ou lire sa valeur dans une étape d'inspection ;
-2. la stocker dans `metadata/pipeline_analysis.json` ;
+2. la renvoyer au handler pour mettre à jour `PipelineContext.routing_facts` ;
 3. l'ajouter à `RoutingFacts` avec sa validation et sa sérialisation ;
 4. l'exposer comme propriété dérivée dans `PipelineContext` et dans `route` ;
 5. modifier `processing_plan()` pour sélectionner les tâches concernées ;
@@ -797,7 +799,7 @@ Exemples :
 - `support/json_io.py` pour les lectures contrôlées et écritures atomiques ;
 - `support/openai_batch.py` pour l'état, le polling et la lecture JSONL des batches ;
 - résolution des chemins de sorties ;
-- lecture et mise à jour des seuls `RoutingFacts` ;
+- lecture des `RoutingFacts` persistés dans le manifeste ;
 - primitives PaddleOCR ;
 - filtrage géométrique ou textuel partagé.
 

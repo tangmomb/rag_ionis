@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from pipeline.support.analysis import update_routing_facts
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import (
     existing_images_dir,
@@ -86,11 +85,8 @@ def video_duration_seconds(video_path):
     return youtube_duration_seconds(load_youtube_metadata(video_path))
 
 
-def write_analysed_infos(video_path, video_type):
-    return update_routing_facts(video_path, video_type=video_type)
-
-
 def infer_for_video(video_path, force=False):
+    del force
     source = manifest_path(video_path)
     if not source.exists():
         print(f"[skip] manifest introuvable: {source}")
@@ -101,17 +97,15 @@ def infer_for_video(video_path, force=False):
         interview_payload = load_json(interview_source)
         if bool(interview_payload.get("is_interview")):
             video_type = "interview"
-            write_analysed_infos(video_path, video_type)
             print(f"[ok] {video_path.name}: video_type={video_type}", flush=True)
-            return True
+            return video_type
 
     payload = load_json(source)
     duration_seconds = video_duration_seconds(video_path)
     video_type = infer_video_type_from_manifest(payload, duration_seconds=duration_seconds)
-    write_analysed_infos(video_path, video_type)
     duration_label = f"{duration_seconds:g}s" if duration_seconds is not None else "inconnue"
     print(
         f"[ok] {video_path.name}: video_type={video_type}, duree={duration_label}",
         flush=True,
     )
-    return True
+    return video_type

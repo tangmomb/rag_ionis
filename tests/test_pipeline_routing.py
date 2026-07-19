@@ -32,8 +32,13 @@ class PipelineRoutingTests(unittest.TestCase):
             analysis["has_subtitles"] = has_subtitles
         if video_type is not None:
             analysis["video_type"] = video_type
-        (metadata_dir / "pipeline_analysis.json").write_text(
-            json.dumps(analysis),
+        (metadata_dir / "video_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "routing_facts": analysis,
+                }
+            ),
             encoding="utf-8",
         )
         return video

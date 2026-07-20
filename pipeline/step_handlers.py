@@ -154,10 +154,16 @@ def detect_interview(context: PipelineContext) -> TaskResult:
         LEGACY_MANIFEST_NAME,
         MANIFEST_NAME,
         SOURCE_DIR_NAMES,
+        candidate_image_files,
         detect_video,
     )
-    from pipeline.support.paths import existing_interview_dir
+    from pipeline.support.paths import existing_images_dir, existing_interview_dir
 
+    image_directory = existing_images_dir(context.video_path)
+    if not candidate_image_files(image_directory, SOURCE_DIR_NAMES):
+        return TaskResult.skipped(
+            "Detection d'interview ignoree; aucune frame footage candidate."
+        )
     output_directory = existing_interview_dir(context.video_path)
     candidates = (
         output_directory / MANIFEST_NAME,

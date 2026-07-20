@@ -154,6 +154,7 @@ class InterfaceAppTests(unittest.TestCase):
             {
                 "/",
                 "/api/rag",
+                "/api/rag/stream",
                 "/api/video-thumbnails",
                 "/health",
                 "/styles.css",

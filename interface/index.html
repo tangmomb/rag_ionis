@@ -431,19 +431,50 @@
         const loadingMessage = addLoadingMessage();
 
         try {
-          const response = await fetch(RAG_CONFIG.apiUrl, {
+          const response = await fetch(`${RAG_CONFIG.apiUrl}/stream`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
             body: JSON.stringify(payload),
           });
-
-          const data = await response.json();
           if (!response.ok) {
+            const data = await response.json();
             throw new Error(data.detail || "Erreur backend inconnue");
           }
 
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error("Le navigateur ne prend pas en charge le flux de réponse.");
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let data = null;
+          let streamError = null;
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              const event = JSON.parse(line);
+              if (event.type === "answer") {
+                const body = loadingMessage.querySelector(".message-body");
+                body.textContent = event.answer;
+                body.removeAttribute("role");
+                loadingMessage.classList.remove("loading-message");
+                loadingMessage.scrollIntoView({ behavior: "smooth", block: "end" });
+              } else if (event.type === "done") {
+                data = event.response;
+              } else if (event.type === "error") {
+                streamError = event.message || "Erreur backend inconnue";
+              }
+            }
+          }
+
+          if (streamError) throw new Error(streamError);
+          if (!data) throw new Error("Le flux s'est terminé sans réponse finale.");
           conversationId = data.conversation_id ?? conversationId;
           const meta = data.retrieval?.retrieval_mode || "rag";
           addMessage(

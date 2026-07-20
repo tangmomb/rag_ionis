@@ -128,16 +128,22 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             planner_plan.speakers = []
             memory_video_resolution["reason"] = "comparison_route_forced"
 
-    with trace_operation(
-        "rag.execution_plan",
-        kind="CHAIN",
-        input_value={
-            "planner_plan": planner_plan.model_dump(),
-            "memory_video_ids": memory_video_ids,
-        },
-    ) as execution_plan_span:
-        execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
-        execution_plan_span.set_output(execution_plan.model_dump())
+    execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
+    # Les routes sans SQL structuré n'ont pas de sous-opération longue à
+    # envelopper ; on conserve leur plan dans un span dédié.
+    if not (
+        execution_plan.sql_main_source
+        and execution_plan.route in {"rag", "multi_source", "agent"}
+    ):
+        with trace_operation(
+            "rag.execution_plan",
+            kind="CHAIN",
+            input_value={
+                "planner_plan": planner_plan.model_dump(),
+                "memory_video_ids": memory_video_ids,
+            },
+        ) as execution_plan_span:
+            execution_plan_span.set_output(execution_plan.model_dump())
 
     base_retrieval = {
         "route": execution_plan.route,
@@ -228,17 +234,33 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
 
     if execution_plan.route == "rag" and execution_plan.sql_main_source:
         sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
+        # Ce span couvre l'application réelle du plan : Phoenix l'affiche
+        # ainsi avant le SQL qu'il pilote, au lieu d'un span de construction
+        # instantané trié arbitrairement parmi ses frères.
         with trace_operation(
-            "rag.structured_sql",
+            "rag.execution_plan",
             kind="CHAIN",
             input_value={
                 "execution_plan": execution_plan.model_dump(),
-                "sql_sub_intent": sql_sub_intent,
             },
-        ) as sql_span:
-            sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
-            sql_span.set_output({**direct_trace, "results": sources})
-            trace_formatted_sql("rag.structured_sql", direct_trace)
+        ) as execution_plan_span:
+            with trace_operation(
+                "rag.structured_sql",
+                kind="CHAIN",
+                input_value={
+                    "execution_plan": execution_plan.model_dump(),
+                    "sql_sub_intent": sql_sub_intent,
+                },
+            ) as sql_span:
+                sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
+                sql_span.set_output({**direct_trace, "results": sources})
+                trace_formatted_sql("rag.structured_sql", direct_trace)
+            execution_plan_span.set_output(
+                {
+                    "execution_plan": execution_plan.model_dump(),
+                    "source_count": len(sources),
+                }
+            )
         fallback_trace: dict[str, Any] = {}
         retrieval_mode = "rag+structured_sql"
         if not sources:
@@ -311,16 +333,29 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         if execution_plan.sql_main_source:
             sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
             with trace_operation(
-                "rag.structured_sql",
+                "rag.execution_plan",
                 kind="CHAIN",
                 input_value={
                     "execution_plan": execution_plan.model_dump(),
-                    "sql_sub_intent": sql_sub_intent,
                 },
-            ) as sql_span:
-                doc_sources, doc_trace = lookup_video_document(execution_plan, sql_sub_intent)
-                sql_span.set_output({**doc_trace, "results": doc_sources})
-                trace_formatted_sql("rag.structured_sql", doc_trace)
+            ) as execution_plan_span:
+                with trace_operation(
+                    "rag.structured_sql",
+                    kind="CHAIN",
+                    input_value={
+                        "execution_plan": execution_plan.model_dump(),
+                        "sql_sub_intent": sql_sub_intent,
+                    },
+                ) as sql_span:
+                    doc_sources, doc_trace = lookup_video_document(execution_plan, sql_sub_intent)
+                    sql_span.set_output({**doc_trace, "results": doc_sources})
+                    trace_formatted_sql("rag.structured_sql", doc_trace)
+                execution_plan_span.set_output(
+                    {
+                        "execution_plan": execution_plan.model_dump(),
+                        "source_count": len(doc_sources),
+                    }
+                )
             multi_source_actions.append(
                 {
                     "action": len(multi_source_actions) + 1,

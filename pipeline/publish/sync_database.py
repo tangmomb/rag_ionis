@@ -687,6 +687,14 @@ def candidate_video_dirs(video_dir, video_ids=None):
     return [path for path in candidates if not selected_ids or path.name in selected_ids]
 
 
+def has_embeddings(video_dir):
+    return any((Path(video_dir) / "outputs" / "chunks").glob("*_embedding.json"))
+
+
+def ready_video_dirs(video_dirs):
+    return [video_dir for video_dir in video_dirs if has_embeddings(video_dir)]
+
+
 def local_video_identifier(video_path):
     path = Path(video_path)
     return path.name if path.is_dir() else path.stem
@@ -1191,7 +1199,9 @@ def main():
     else:
         prefix = normalize_prefix(args.prefix) if args.prefix is not None else default_prefix(video_dir)
 
-    video_dirs = candidate_video_dirs(video_dir, video_ids=args.video_id)
+    candidate_dirs = candidate_video_dirs(video_dir, video_ids=args.video_id)
+    video_dirs = ready_video_dirs(candidate_dirs)
+    not_ready_dirs = [path for path in candidate_dirs if path not in video_dirs]
     files = sorted(
         path
         for current_video_dir in video_dirs
@@ -1202,6 +1212,8 @@ def main():
     print(f"Dossier source: {video_dir}")
     print(f"Bucket S3: {args.bucket or '(aucun)'}")
     print(f"Prefixe S3: {prefix or '(racine)'}")
+    for skipped_video_dir in not_ready_dirs:
+        print(f"[skip] {skipped_video_dir.name}: aucun embedding produit.")
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:
@@ -1280,6 +1292,8 @@ def main():
 
     print(f"{videos_count} videos synchronisees, {stats_count} snapshots stats synchronises.")
     print(f"{assets_count} assets traites, {transcripts_count} transcripts synchronises, {chunks_count} chunks synchronises.")
+    if not_ready_dirs:
+        print(f"{len(not_ready_dirs)} videos ignorees sans embedding.")
     if skipped:
         print(f"{len(skipped)} fichiers ignores car video absente de la table videos.")
 

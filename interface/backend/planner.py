@@ -14,6 +14,11 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
 
 
+# La correction tolère une faute légère dans un prénom ou un nom, sans faire
+# remonter des noms qui ne partagent qu'une syllabe courte.
+SPEAKER_NAME_PART_SIMILARITY_THRESHOLD = 0.85
+
+
 def build_planner_prompt(question: str) -> tuple[str, str]:
     system_prompt = (
         "Tu es le planner d'un assistant conversationnel video. "
@@ -316,10 +321,18 @@ def resolve_speaker_filters(
             candidates.append(candidate)
 
     if not candidates:
-        return [], {"applied": False, "ambiguous": False, "requested": [], "suggestions": []}
+        return [], {
+            "applied": False,
+            "ambiguous": False,
+            "requested": [],
+            "suggestions": [],
+            "suggestion_scores": [],
+            "auto_resolved": False,
+        }
 
     resolved: list[str] = []
     suggestions: list[str] = []
+    suggestion_scores: dict[str, float] = {}
     ambiguous_candidates: list[str] = []
     unresolved_candidates: list[str] = []
     with connect_database() as connection:
@@ -346,21 +359,30 @@ def resolve_speaker_filters(
                     resolved.append(speaker)
             continue
 
-        candidate_tokens = normalized_candidate.split()
-
         def speaker_similarity(speaker: str) -> float:
-            normalized_speaker = normalize_text(speaker)
-            whole_score = SequenceMatcher(None, normalized_candidate, normalized_speaker).ratio()
-            speaker_tokens = normalized_speaker.split()
-            token_score = max(
-                (
-                    SequenceMatcher(None, candidate_token, speaker_token).ratio()
-                    for candidate_token in candidate_tokens
-                    for speaker_token in speaker_tokens
-                ),
-                default=0.0,
+            # Les tirets font partie de la graphie d'un prénom composé, mais
+            # l'utilisateur peut les omettre ("Lou Ann" / "Lou-Ann").
+            candidate_parts = re.sub(r"[-'’]", " ", normalized_candidate).split()
+            speaker_parts = re.sub(r"[-'’]", " ", normalize_text(speaker)).split()
+            if not candidate_parts or not speaker_parts:
+                return 0.0
+
+            if len(candidate_parts) == 1:
+                # Une recherche sur un seul mot peut désigner le prénom ou le
+                # nom, mais jamais un mot intermédiaire arbitraire.
+                comparable_parts = (speaker_parts[0], speaker_parts[-1])
+                return max(
+                    (SequenceMatcher(None, candidate_parts[0], part).ratio() for part in comparable_parts),
+                    default=0.0,
+                )
+
+            # Pour un nom complet, on aligne prénom et nom : pas de produit
+            # croisé entre tous les mots (ex. "Ann" ne doit pas matcher
+            # "Yannick" dans un autre nom).
+            return max(
+                SequenceMatcher(None, candidate_parts[0], speaker_parts[0]).ratio(),
+                SequenceMatcher(None, candidate_parts[-1], speaker_parts[-1]).ratio(),
             )
-            return max(whole_score, token_score)
 
         ranked = sorted(
             [
@@ -372,25 +394,50 @@ def resolve_speaker_filters(
             ],
             reverse=True,
         )
-        close_matches = [speaker for score, speaker in ranked if score >= 0.58][:3]
+        close_matches = [
+            (score, speaker)
+            for score, speaker in ranked
+            if score >= SPEAKER_NAME_PART_SIMILARITY_THRESHOLD
+        ][:3]
         if close_matches:
             ambiguous_candidates.append(candidate)
-            for speaker in close_matches:
+            for score, speaker in close_matches:
                 if speaker not in suggestions:
                     suggestions.append(speaker)
+                suggestion_scores[speaker] = max(suggestion_scores.get(speaker, 0.0), score)
         else:
             unresolved_candidates.append(candidate)
 
     if ambiguous_candidates:
+        unique_suggestions = suggestions[:3]
+        if len(unique_suggestions) == 1 and not unresolved_candidates:
+            speaker = unique_suggestions[0]
+            if speaker not in resolved:
+                resolved.append(speaker)
+            return resolved, {
+                "applied": True,
+                "ambiguous": False,
+                "requested": candidates,
+                "suggestions": unique_suggestions,
+                "suggestion_scores": [
+                    {"speaker": speaker, "score": round(suggestion_scores[speaker], 3)}
+                ],
+                "auto_resolved": True,
+            }
         return [], {
             "applied": True,
             "ambiguous": True,
             "requested": candidates,
             "ambiguous_requests": ambiguous_candidates,
-            "suggestions": suggestions[:3],
+            "suggestions": unique_suggestions,
+            "suggestion_scores": [
+                {"speaker": speaker, "score": round(suggestion_scores[speaker], 3)}
+                for speaker in unique_suggestions
+            ],
+            "auto_resolved": False,
             "message": (
-                "Vous parlez de " + " ou de ".join(suggestions[:3]) + " ?"
-                if suggestions
+                "Vous parlez de " + " ou de ".join(unique_suggestions) + " ?"
+                if unique_suggestions
                 else "Peux-tu préciser le nom de l'intervenant ?"
             ),
         }
@@ -402,6 +449,8 @@ def resolve_speaker_filters(
             "requested": candidates,
             "ambiguous_requests": unresolved_candidates,
             "suggestions": [],
+            "suggestion_scores": [],
+            "auto_resolved": False,
             "message": "Je ne trouve aucun nom proche dans la base. Peux-tu préciser le nom de l'intervenant ?",
         }
 
@@ -410,6 +459,8 @@ def resolve_speaker_filters(
         "ambiguous": False,
         "requested": candidates,
         "suggestions": [],
+        "suggestion_scores": [],
+        "auto_resolved": False,
     }
 
 

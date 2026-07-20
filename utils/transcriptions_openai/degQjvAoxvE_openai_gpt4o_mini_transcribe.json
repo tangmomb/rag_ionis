@@ -1,0 +1,14 @@
+{
+  "text": "Tack Week, jour 2, c'est parti ! Je suis Sophie Landarpoch, la fondatrice d'Olidys, une entreprise qui développe la première chaise ergonomique nomade. Alors aujourd'hui, j'anime l'atelier d'entrepreneuriat et design thinking. L'objectif, c'est vraiment déjà de réintroduire l'entrepreneuriat d'une manière assez large et le développement d'une produit. Je m'appelle Hugo Jardins, je suis responsable d'affaires de la maintenance tertiaire, plus exactement dans les bâtiments de bureaux du coup H26. On a eu deux ateliers, un atelier avec deux questions sur les missions d'un responsable d'affaires et aussi qu'est-ce qu'est la maintenance dans le bâtiment tertiaire. Je m'appelle Clara Delledas, je suis actuellement consultante Business Analyst SFEBI CRM chez Bioman. J'ai un spectre un peu multiple pour répondre à plusieurs enjeux de la cycle d'activité commerciale. Aujourd'hui, je viens me faire un atelier plutôt orienté data sur le métier d'analyste SFE dans un laboratoire. Prenez confiance en vous, mais toujours là pour apprendre. Même si demain dans un poste, vous n'avez pas tout fait, le but c'est toujours de monter en compétences, d'apprendre sans arrêt. Prenez confiance, ça advincit.",
+  "logprobs": null,
+  "usage": {
+    "input_tokens": 662,
+    "output_tokens": 274,
+    "total_tokens": 936,
+    "type": "tokens",
+    "input_token_details": {
+      "audio_tokens": 662,
+      "text_tokens": 0
+    }
+  }
+}

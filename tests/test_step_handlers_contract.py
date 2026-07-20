@@ -78,6 +78,20 @@ class StepHandlerContractTests(unittest.TestCase):
             self.assertIs(blocked.status, TaskStatus.BLOCKED)
             self.assertTrue(blocked.reason)
 
+    def test_interview_detection_skips_when_no_footage_frame_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            (context.outputs_dir / "images" / "graphic").mkdir(parents=True)
+
+            with patch(
+                "pipeline.steps.inspection.detect_interviews.detect_video"
+            ) as detect:
+                result = step_handlers.detect_interview(context)
+
+            self.assertIs(result.status, TaskStatus.SKIPPED)
+            self.assertIn("aucune frame footage", result.reason)
+            detect.assert_not_called()
+
     def test_frames_postcondition_requires_a_real_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             context = self.context(Path(temporary_directory))

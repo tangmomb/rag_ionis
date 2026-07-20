@@ -1,0 +1,113 @@
+{
+  "duration": null,
+  "segments": [
+    {
+      "id": "seg_0",
+      "end": 0.30000000000000004,
+      "speaker": "A",
+      "start": 0.15000000000000013,
+      "text": " Semaine,",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_1",
+      "end": 1.5999999999999999,
+      "speaker": "A",
+      "start": 0.40000000000000013,
+      "text": " week, jour, deux, c'est parti.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_2",
+      "end": 7.3,
+      "speaker": "B",
+      "start": 1.5999999999999999,
+      "text": " Bonjour, je suis Sophie Landaroche, la fondatrice d'Olidie, une entreprise qui développe la première chaise ergonomique nomade.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_3",
+      "end": 10.55,
+      "speaker": "B",
+      "start": 7.6000000000000005,
+      "text": " Alors aujourd'hui j'anime l'atelier d'entrepreneuriat et design thinking.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_4",
+      "end": 16.400000000000002,
+      "speaker": "B",
+      "start": 10.850000000000001,
+      "text": " L'objectif c'est vraiment déjà de réintroduire l'entrepreneuriat de manière assez large et le développement d'une produit.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_5",
+      "end": 26.400000000000002,
+      "speaker": "C",
+      "start": 16.6,
+      "text": " Je m'appelle Hugo Jardin, je suis responsable d'affaires de la maintenance tertiaire, à plus exactement dans les bâtiments de bureau du coup à Chevincis. On a eu deux ateliers, un atelier avec deux questions.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_6",
+      "end": 31.764000000000003,
+      "speaker": "C",
+      "start": 26.164,
+      "text": " question sur les missions d'un responsable d'affaires, et aussi uh qu'est-ce qu'est la maintenance d'un bâtiment tertiaire.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_7",
+      "end": 49.89,
+      "speaker": "B",
+      "start": 33.14,
+      "text": " Je m'appelle Clara Dal-Nedda, je suis actuellement consultante Business Analyst SFE BI et CRM chez Biomaine. J'inspecte un peu muti pour répondre à plusieurs enjeux de l'actualité commerciale. Aujourd'hui, je viens faire un atelier plutôt orienté data sur le métier d'analyste SFE dans un laboratoire.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_8",
+      "end": 53.04,
+      "speaker": "B",
+      "start": 50.39,
+      "text": " Prenez confiance en vous, vous pouvez tout faire pour apprendre.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_9",
+      "end": 55.29,
+      "speaker": "B",
+      "start": 53.239999999999995,
+      "text": " Même si demain dans un poste vous n'avez pas tout fait,",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_10",
+      "end": 58.589999999999996,
+      "speaker": "B",
+      "start": 55.44,
+      "text": " le but c'est toujours de monter en compétence, d'apprendre sans arrêt.",
+      "type": "transcript.text.segment"
+    },
+    {
+      "id": "seg_11",
+      "end": 60.468,
+      "speaker": "B",
+      "start": 58.868,
+      "text": " Prenez confiance, ça a bien se passer.",
+      "type": "transcript.text.segment"
+    }
+  ],
+  "task": null,
+  "text": "Semaine, week, jour, deux, c'est parti. Bonjour, je suis Sophie Landaroche, la fondatrice d'Olidie, une entreprise qui développe la première chaise ergonomique nomade. Alors aujourd'hui j'anime l'atelier d'entrepreneuriat et design thinking. L'objectif c'est vraiment déjà de réintroduire l'entrepreneuriat de manière assez large et le développement d'une produit. Je m'appelle Hugo Jardin, je suis responsable d'affaires de la maintenance tertiaire, à plus exactement dans les bâtiments de bureau du coup à Chevincis. On a eu deux ateliers, un atelier avec deux questions.\nquestion sur les missions d'un responsable d'affaires, et aussi uh qu'est-ce qu'est la maintenance d'un bâtiment tertiaire.\nJe m'appelle Clara Dal-Nedda, je suis actuellement consultante Business Analyst SFE BI et CRM chez Biomaine. J'inspecte un peu muti pour répondre à plusieurs enjeux de l'actualité commerciale. Aujourd'hui, je viens faire un atelier plutôt orienté data sur le métier d'analyste SFE dans un laboratoire. Prenez confiance en vous, vous pouvez tout faire pour apprendre. Même si demain dans un poste vous n'avez pas tout fait, le but c'est toujours de monter en compétence, d'apprendre sans arrêt.\nPrenez confiance, ça a bien se passer.",
+  "usage": {
+    "input_tokens": 1343,
+    "output_tokens": 1965,
+    "total_tokens": 3308,
+    "type": "tokens",
+    "input_token_details": {
+      "audio_tokens": 1226,
+      "text_tokens": 117
+    }
+  }
+}

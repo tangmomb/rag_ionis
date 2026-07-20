@@ -373,6 +373,22 @@ class IngestionPublicationTests(unittest.TestCase):
             self.assertEqual(result, {"uploaded": 1, "skipped": 0})
             self.assertEqual(sql_dirs, [first])
 
+    def test_database_publication_requires_an_embedding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            run_dir = Path(temporary_dir)
+            ready = run_dir / "abcdefghijk"
+            pending = run_dir / "lmnopqrstuv"
+            ready.mkdir()
+            pending.mkdir()
+            (ready / "outputs" / "chunks").mkdir(parents=True)
+            (ready / "outputs" / "chunks" / "chunk_01_embedding.json").write_text(
+                "{}", encoding="utf-8"
+            )
+
+            candidates = update_sql.candidate_video_dirs(run_dir)
+
+            self.assertEqual(update_sql.ready_video_dirs(candidates), [ready])
+
     def test_sql_reset_recreates_the_complete_data_schema(self) -> None:
         class RecordingCursor:
             def __init__(self) -> None:

@@ -66,24 +66,38 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(request_log["text"], body["text"])
         prompt = body["input"][1]["content"]
-        self.assertIn("video_title", prompt)
-        self.assertIn("Lou-Anne Corvedu présente son métier", prompt)
+        self.assertNotIn("video_title", prompt)
+        self.assertNotIn("Lou-Anne Corvedu présente son métier", prompt)
         self.assertNotIn('"methods"', prompt)
         self.assertNotIn("ocr_lower_third", prompt)
         self.assertIn("ocr_detected_texts", prompt)
-        self.assertIn('"expected_speaker_count": 2', prompt)
-        self.assertIn("contient 2 speaker(s) distinct(s)", prompt)
+        self.assertNotIn("expected_speaker_count", prompt)
+        self.assertNotIn("speaker(s) distinct(s)", prompt)
         self.assertIn("Lou-Anne Corveddu", prompt)
         self.assertIn("ajoute-les", prompt)
-        self.assertIn("title est souvent tres proche du nom", prompt)
-        self.assertIn("sans jamais retirer", prompt)
+        self.assertIn("Recherche et extrais explicitement", prompt)
+        self.assertIn("nom de l'entreprise", prompt)
+        self.assertIn("N'omets pas l'entreprise", prompt)
+        self.assertIn("CTO - Mappy.com", prompt)
         self.assertLess(
             prompt.index('"ocr_detected_texts"'),
             prompt.index('"candidates"'),
         )
+
+    def test_request_sends_transcript_excerpt_to_luna(self) -> None:
+        excerpt = "Bonjour, je suis Alice Martin, directrice." * 20
+        body, _request_log = speaker_validation.build_response_request(
+            "gpt-5.6-luna",
+            [],
+            transcript_excerpt=excerpt,
+        )
+
+        prompt = body["input"][1]["content"]
+        self.assertIn('"transcript_excerpt"', prompt)
+        self.assertIn(excerpt, prompt)
         self.assertLess(
-            prompt.index('"candidates"'),
-            prompt.index('"video_title"'),
+            prompt.index('"transcript_excerpt"'),
+            prompt.index('"ocr_detected_texts"'),
         )
 
     def test_short_title_name_corrects_first_name_without_dropping_surname(self) -> None:

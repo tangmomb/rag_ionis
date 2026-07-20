@@ -73,34 +73,84 @@ class PipelineRoutingTests(unittest.TestCase):
             correction_mode="balanced",
         )
 
-    def test_more_than_ten_minutes_keeps_whisper_canonical_and_adds_ocr_correction_reference(self) -> None:
+    def test_more_than_ten_minutes_uses_raw_and_plain_transcripts_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video = self.make_video(
                 Path(temporary_directory),
-                has_subtitles=True,
-                video_type="video_recording",
+                has_subtitles=None,
+                video_type="interview",
             )
             context = self.context(video, LONG_VIDEO_THRESHOLD_SECONDS + 1)
             tasks = processing_plan(context)
 
         self.assertTrue(context.is_long_video)
-        self.assertEqual(context.routing()["pipeline_id"], "long.whisper.video_recording")
+        self.assertEqual(context.video_type, "long_video")
+        self.assertEqual(context.routing()["pipeline_id"], "long.whisper.long_video")
+        self.assertTrue(context.routing_ready)
         self.assertEqual(
             context.routing()["ocr_correction_reference"],
-            "enabled",
+            "not_applicable",
         )
         self.assertEqual(context.transcripts_dir_name, "transcripts_whisper")
         self.assertEqual(context.ocr_transcripts_dir_name, "transcripts_ocr")
         task_ids = [task.id for task in tasks]
         self.assertIn("transcript.whisper", task_ids)
-        self.assertIn("transcript.extract_ocr", task_ids)
-        self.assertIn("transcript.create_plain_ocr", task_ids)
-        self.assertIn("transcript.reconcile_ocr", task_ids)
+        self.assertIn("transcript.create_plain", task_ids)
+        self.assertNotIn("ocr.build_processed", task_ids)
+        self.assertNotIn("ocr.filter_overlays", task_ids)
+        self.assertNotIn("ocr.extract_review_candidates", task_ids)
+        self.assertNotIn("ocr.review_other_text", task_ids)
+        self.assertNotIn("ocr.apply_review", task_ids)
+        self.assertNotIn("transcript.extract_ocr", task_ids)
+        self.assertNotIn("transcript.create_plain_ocr", task_ids)
+        self.assertNotIn("transcript.reconcile_ocr", task_ids)
+        self.assertNotIn("transcript.correct_whisper", task_ids)
+        self.assertIn("speakers.propose", task_ids)
+        self.assertIn("speakers.validate", task_ids)
+        self.assertNotIn("transcript.apply_speakers", task_ids)
+        self.assertNotIn("transcript.enrich", task_ids)
         self.assertNotIn("transcript.correct_ocr_spacing", task_ids)
         self.assertNotIn("transcript.enrich_ocr_comparison", task_ids)
         self.assertNotIn("speakers.assign_ocr", task_ids)
         self.assertIn("chunks.summarize_sections", task_ids)
         self.assertIn("chunks.summarize_video", task_ids)
+
+    def test_long_video_inspection_skips_images_and_ocr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video = self.make_video(
+                Path(temporary_directory),
+                has_subtitles=None,
+                video_type="interview",
+            )
+            context = self.context(video, LONG_VIDEO_THRESHOLD_SECONDS + 1)
+            task_ids = [task.id for task in inspection_plan(context)]
+
+        self.assertEqual(context.video_type, "long_video")
+        self.assertNotIn("frames.extract", task_ids)
+        self.assertNotIn("frames.classify", task_ids)
+        self.assertNotIn("video.detect_interview", task_ids)
+        self.assertIn("video.infer_type", task_ids)
+        self.assertNotIn("ocr.extract_raw", task_ids)
+
+    def test_review_scope_none_removes_the_complete_ocr_review_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video = self.make_video(
+                Path(temporary_directory),
+                has_subtitles=False,
+                video_type="interview",
+            )
+            context = self.context(video, 180)
+            context.options = PipelineOptions(review_scope="none")
+            task_ids = [task.id for task in processing_plan(context)]
+
+        self.assertIn("ocr.build_processed", task_ids)
+        self.assertIn("ocr.filter_overlays", task_ids)
+        self.assertNotIn("ocr.extract_review_candidates", task_ids)
+        self.assertNotIn("ocr.review_other_text", task_ids)
+        self.assertNotIn("ocr.apply_review", task_ids)
+        self.assertIn("transcript.whisper", task_ids)
+        self.assertNotIn("ocr.extract_boxes", task_ids)
+        self.assertNotIn("video.detect_subtitles", task_ids)
 
     def test_exactly_ten_minutes_selects_short_whisper_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -274,6 +324,10 @@ class PipelineRoutingTests(unittest.TestCase):
         )
         self.assertIs(facts.video_type, VideoType.INTERVIEW)
         self.assertFalse(facts.has_subtitles)
+        self.assertIs(
+            RoutingFacts.from_dict({"video_type": "long_video"}).video_type,
+            VideoType.LONG_VIDEO,
+        )
 
         with self.assertRaisesRegex(ValueError, "has_subtitles"):
             RoutingFacts.from_dict({"has_subtitles": "false"})

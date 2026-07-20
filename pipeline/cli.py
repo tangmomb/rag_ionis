@@ -65,8 +65,12 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--review-scope",
-        choices=("duo", "all"),
+        choices=("none", "duo", "all"),
         default="duo",
+        help=(
+            "'none' desactive la revue OpenAI des images OCR ambiguës, "
+            "'duo' limite la revue et 'all' traite toutes les candidates."
+        ),
     )
     parser.add_argument("--image-review-model", default=None)
     parser.add_argument("--speaker-validation-model", default=None)
@@ -118,6 +122,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-inspection",
         action="store_true",
         help="Reutilise les faits de routage deja presents dans video_manifest.json.",
+    )
+    run_parser.add_argument(
+        "--batch",
+        dest="openai_mode",
+        action="store_const",
+        const="batch",
+        help=(
+            "Raccourci de --openai-mode batch: utilise l'API Batch pour "
+            "tous les appels OpenAI de la pipeline."
+        ),
     )
 
     task_parser = commands.add_parser(

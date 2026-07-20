@@ -98,7 +98,8 @@ def prefilter_candidate_chunk_ids(query: ExecutionPlan) -> tuple[list[int] | Non
         SELECT c.id
         FROM chunks c
         JOIN videos v ON v.id = c.video_id
-        WHERE {where_sql}
+        WHERE c.chunk_level = 'detail'
+          AND {where_sql}
         ORDER BY c.id ASC
         LIMIT %s
     """
@@ -386,6 +387,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
         FROM chunks c
         JOIN videos v ON v.id = c.video_id
         WHERE to_tsvector('french', coalesce(c.content, '')) @@ websearch_to_tsquery('french', %s)
+          AND c.chunk_level = 'detail'
         {candidate_sql}
         ORDER BY score DESC, c.id ASC
         LIMIT %s
@@ -447,6 +449,7 @@ def fetch_vector_chunks(
         WHERE c.embedding IS NOT NULL
           AND c.embedding_model = %s
           AND c.embedding_dimensions = %s
+          AND c.chunk_level = 'detail'
         {candidate_sql}
         ORDER BY c.embedding <=> %s::vector(2000) ASC
         LIMIT %s
@@ -571,6 +574,96 @@ def rerank_chunks(question: str, chunks: list[dict[str, Any]], limit: int, reran
         }
 
     raise RuntimeError(f"Le rerank Cohere ({resolved_model}) n'a renvoye aucun resultat exploitable.")
+
+
+def expand_detail_context(
+    chunks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    detail_ids = [
+        int(chunk["chunk_id"])
+        for chunk in chunks
+        if chunk.get("chunk_level") == "detail"
+    ]
+    if not detail_ids:
+        return chunks, {
+            "applied": False,
+            "detail_count": 0,
+            "expanded_count": 0,
+            "sql": None,
+            "params": [],
+        }
+
+    sql = """
+        SELECT
+            detail.id,
+            section.id,
+            section.chunk_index,
+            section.content,
+            global_chunk.id,
+            global_chunk.chunk_index,
+            global_chunk.content
+        FROM chunks detail
+        LEFT JOIN chunks section
+          ON section.id = detail.chunk_parent_id
+         AND section.video_id = detail.video_id
+         AND section.chunk_level = 'section'
+        LEFT JOIN chunks global_chunk
+          ON global_chunk.id = section.chunk_parent_id
+         AND global_chunk.video_id = section.video_id
+         AND global_chunk.chunk_level = 'global'
+        WHERE detail.id = ANY(%s)
+          AND detail.chunk_level = 'detail'
+    """
+    params = [detail_ids]
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+    context_by_detail_id = {
+        int(row[0]): {
+            "section_context": (
+                {
+                    "chunk_id": int(row[1]),
+                    "chunk_index": row[2],
+                    "text": row[3],
+                }
+                if row[1] is not None
+                else None
+            ),
+            "global_context": (
+                {
+                    "chunk_id": int(row[4]),
+                    "chunk_index": row[5],
+                    "text": row[6],
+                }
+                if row[4] is not None
+                else None
+            ),
+        }
+        for row in rows
+    }
+    expanded = [
+        {
+            **chunk,
+            **context_by_detail_id.get(
+                int(chunk["chunk_id"]),
+                {"section_context": None, "global_context": None},
+            ),
+        }
+        for chunk in chunks
+    ]
+    return expanded, {
+        "applied": True,
+        "detail_count": len(detail_ids),
+        "expanded_count": sum(
+            1
+            for chunk in expanded
+            if chunk.get("section_context") or chunk.get("global_context")
+        ),
+        "sql": format_sql_for_trace(sql),
+        "params": params,
+    }
 
 
 def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -700,6 +793,20 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             "selected_chunk_ids": [item["chunk_id"] for item in final_chunks],
         }
 
+    with trace_operation(
+        "rag.retrieval.hierarchy",
+        kind="CHAIN",
+        input_value={
+            "strategy": "detail_then_parents",
+            "detail_chunk_ids": [item["chunk_id"] for item in final_chunks],
+        },
+    ) as hierarchy_span:
+        final_chunks, hierarchy_debug = expand_detail_context(final_chunks)
+        hierarchy_span.set_output(
+            {"trace": hierarchy_debug, "results": final_chunks}
+        )
+        trace_formatted_sql("rag.retrieval.hierarchy", hierarchy_debug)
+
     return final_chunks, {
         "answer_model": answer_model,
         "embedding_model": embedding_model,
@@ -720,4 +827,6 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         "vector": {**vector_debug, "results": vector_chunks},
         "rrf": {**fusion_debug, "results": fused_chunks},
         "rerank": rerank_debug,
+        "hierarchy_strategy": "detail_then_parents",
+        "hierarchy": hierarchy_debug,
     }

@@ -90,6 +90,8 @@ class ChunkSource(BaseModel):
     speakers: list[str] = Field(default_factory=list)
     video_description: str | None = None
     video_type: str | None = None
+    section_context: dict[str, Any] | None = None
+    global_context: dict[str, Any] | None = None
 
 
 class RagResponse(BaseModel):

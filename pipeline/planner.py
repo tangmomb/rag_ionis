@@ -21,6 +21,11 @@ COMMON_PROCESSING_TASKS = (
     "ocr.review_other_text",
     "ocr.apply_review",
 )
+OCR_REVIEW_TASKS = {
+    "ocr.extract_review_candidates",
+    "ocr.review_other_text",
+    "ocr.apply_review",
+}
 
 CANONICAL_AFTER_CORRECTION_TASKS = (
     "speakers.propose",
@@ -40,8 +45,19 @@ OCR_TRANSCRIPT_PREPARATION_TASKS = (
 )
 
 
-def inspection_plan() -> list[PlannedTask]:
-    return [PlannedTask(task_id, "inspection_required") for task_id in INSPECTION_TASKS]
+def inspection_plan(
+    context: PipelineContext | None = None,
+) -> list[PlannedTask]:
+    skipped_tasks = (
+        set(INSPECTION_TASKS) - {"video.infer_type"}
+        if context is not None and context.video_type == "long_video"
+        else set()
+    )
+    return [
+        PlannedTask(task_id, "inspection_required")
+        for task_id in INSPECTION_TASKS
+        if task_id not in skipped_tasks
+    ]
 
 
 def processing_plan(context: PipelineContext) -> list[PlannedTask]:
@@ -50,37 +66,63 @@ def processing_plan(context: PipelineContext) -> list[PlannedTask]:
             "Le plan de traitement exige la detection has_subtitles et video_type. "
             "Execute d'abord `python -m pipeline inspect ...`."
         )
-    tasks = [
-        PlannedTask(task_id, "all_videos")
-        for task_id in COMMON_PROCESSING_TASKS
-    ]
+    tasks = (
+        []
+        if context.video_type == "long_video"
+        else [
+            PlannedTask(task_id, "all_videos")
+            for task_id in COMMON_PROCESSING_TASKS
+            if (
+                context.options.review_scope != "none"
+                or task_id not in OCR_REVIEW_TASKS
+            )
+        ]
+    )
     tasks.append(
         PlannedTask("transcript.whisper", "canonical_transcript=whisperx")
     )
-    if context.has_subtitles is True:
+    if context.video_type == "long_video":
         tasks.extend(
-            PlannedTask(task_id, "ocr_transcript_for_reconciliation")
-            for task_id in OCR_TRANSCRIPT_PREPARATION_TASKS
+            [
+                PlannedTask(
+                    "transcript.create_plain",
+                    "long_video_plain_from_raw_whisperx",
+                ),
+                PlannedTask(
+                    "speakers.propose",
+                    "long_video_first_1000_transcript_chars",
+                ),
+                PlannedTask(
+                    "speakers.validate",
+                    "long_video_luna_speaker_search",
+                ),
+            ]
         )
-    correction_task = (
-        "transcript.reconcile_ocr"
-        if context.has_subtitles is True
-        else "transcript.correct_whisper"
-    )
-    correction_reason = (
-        "reconcile_whisperx_with_ocr"
-        if context.has_subtitles is True
-        else "correct_whisperx_with_visual_ocr"
-    )
-    tasks.append(PlannedTask(correction_task, correction_reason))
-    tasks.extend(
-        PlannedTask(task_id, "canonical_transcript=whisperx_corrected")
-        for task_id in CANONICAL_AFTER_CORRECTION_TASKS
-    )
-    tasks.extend(
-        PlannedTask(task_id, "canonical_transcript=whisperx_corrected")
-        for task_id in CANONICAL_FINALIZATION_TASKS
-    )
+    else:
+        if context.has_subtitles is True:
+            tasks.extend(
+                PlannedTask(task_id, "ocr_transcript_for_reconciliation")
+                for task_id in OCR_TRANSCRIPT_PREPARATION_TASKS
+            )
+        correction_task = (
+            "transcript.reconcile_ocr"
+            if context.has_subtitles is True
+            else "transcript.correct_whisper"
+        )
+        correction_reason = (
+            "reconcile_whisperx_with_ocr"
+            if context.has_subtitles is True
+            else "correct_whisperx_with_visual_ocr"
+        )
+        tasks.append(PlannedTask(correction_task, correction_reason))
+        tasks.extend(
+            PlannedTask(task_id, "canonical_transcript=whisperx_corrected")
+            for task_id in CANONICAL_AFTER_CORRECTION_TASKS
+        )
+        tasks.extend(
+            PlannedTask(task_id, "canonical_transcript=whisperx_corrected")
+            for task_id in CANONICAL_FINALIZATION_TASKS
+        )
 
     tasks.append(
         PlannedTask("chunks.create", f"duration_{context.chunk_strategy}")

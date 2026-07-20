@@ -367,6 +367,7 @@ select:focus, input:focus, textarea:focus { border-color: #6d9d7d; box-shadow: 0
   border-radius: 12px;
   background: #fafbf8;
 }
+.toggle-field.full { grid-column: 1 / -1; }
 .toggle-field strong { display: block; font-size: 10px; }
 .toggle-field small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; line-height: 1.35; }
 .switch { position: relative; flex: 0 0 auto; width: 34px; height: 20px; }

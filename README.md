@@ -142,7 +142,7 @@ flowchart TD
     B --> D["Lire les JSON YouTube et le manifeste"]
     C --> E["Checkpoint du contexte d'inspection"]
     D --> E
-    E --> F["Appeler les 7 handlers d'inspection"]
+    E --> F["Appeler les handlers d'inspection de la route"]
     F --> G["Muter le même contexte"]
     G --> H["Checkpoint après chaque étape"]
     H --> I{"Routage complet ?"}
@@ -166,11 +166,13 @@ En pratique :
    `metadata/youtube_video_metadata.json`, appelle `probe_video()` pour les
    caractéristiques du conteneur, puis recharge les faits de routage déjà
    présents dans `metadata/video_manifest.json`.
-3. L'inspection visuelle et OCR calcule `video_type` et `has_subtitles`.
+3. Pour les vidéos courtes, l'inspection visuelle et OCR calcule `video_type`
+   et `has_subtitles`. Pour `long_video`, la durée suffit et aucune image ni
+   étape OCR n'est produite.
 4. Chaque handler retourne un `TaskResult` avec son statut et ses artefacts.
-5. `processing_plan()` ajoute toujours la chaîne WhisperX canonique, ajoute la
-   référence OCR de correction si des sous-titres sont détectés, puis choisit
-   le profil de chunks.
+5. `processing_plan()` utilise la chaîne complète pour les vidéos courtes. Pour
+   `long_video`, il conserve uniquement WhisperX brut, le plain transcript et
+   les chunks hiérarchiques.
 6. `catalog.py` résout chaque identifiant en fonction Python.
 7. `executor.py` valide le plan entier et reprend les tâches dont la postcondition
    ou les artefacts sont encore valides.
@@ -272,14 +274,14 @@ utilisé uniquement pour les autres caractéristiques du fichier.
 | toutes les vidéos | transcript canonique WhisperX |
 | sous-titres incrustés détectés | plain transcript OCR de correction |
 | pas de sous-titres incrustés | aucune référence OCR de sous-titres |
-| interview, motion design ou captation | variante visuelle enregistrée dans la route |
+| interview, motion design, captation ou vidéo longue | variante enregistrée dans la route |
 
 Exemples de routes :
 
 ```text
 short.whisper.interview
 short.whisper.motion_design
-long.whisper.video_recording
+long.whisper.long_video
 ```
 
 Le seuil est strict : une vidéo de exactement 600 secondes reste courte.
@@ -293,8 +295,9 @@ La route possède trois dimensions :
 - `chunk_strategy` vaut `short` ou `long` ;
 - `transcript_strategy` vaut toujours `whisper` : il désigne la source
   canonique, pas la présence éventuelle d'une référence OCR de correction ;
-- `visual_strategy` vaut actuellement `interview`, `motion_design` ou
-  `video_recording`.
+- `visual_strategy` vaut actuellement `interview`, `long_video`,
+  `motion_design` ou `video_recording`. La valeur `long_video` est prioritaire
+  pour toute durée strictement supérieure à 600 secondes.
 
 Le type visuel est conservé dans la route et peut être consommé par les étapes
 métier. Il ne crée pas encore à lui seul une liste de tâches entièrement
@@ -307,7 +310,10 @@ artefacts OCR internes, sans servir de transcript de secours.
 
 ### Inspection commune
 
-L'inspection est identique pour toutes les vidéos et respecte cet ordre :
+L'inspection respecte cet ordre pour les vidéos courtes. Pour `long_video`, le
+type est imposé par la durée : seule `video.infer_type` est conservée, sans
+extraction de frames, classification, interview, OCR ni détection de
+sous-titres.
 
 | Ordre | Identifiant | Module | Résultat principal |
 |---:|---|---|---|
@@ -328,7 +334,7 @@ des frames a déjà chargé PyTorch dans le processus principal.
 
 ### Traitements communs
 
-Toutes les routes commencent par la préparation des textes visibles :
+Les routes courtes commencent par la préparation des textes visibles :
 
 ```text
 ocr.build_processed
@@ -338,19 +344,39 @@ ocr.review_other_text
 ocr.apply_review
 ```
 
-Cette partie reste commune car l'OCR sert à corriger WhisperX et à détecter les
-intercalaires. Quand des sous-titres sont détectés, il produit aussi l'unique
-plain transcript utilisé comme référence de correction.
+Cette partie est entièrement omise pour `long_video`. Pour les routes courtes,
+l'OCR sert à corriger WhisperX et à détecter les intercalaires. Quand des
+sous-titres sont détectés, il produit aussi l'unique plain transcript utilisé
+comme référence de correction.
 
 ### Transcript canonique WhisperX
 
-Toutes les vidéos commencent par WhisperX puis identifient les speakers :
+Les vidéos courtes commencent par WhisperX puis identifient les speakers :
 
 ```text
 transcript.whisper
 speakers.propose
 speakers.validate
 ```
+
+Pour `long_video`, la chaîne est volontairement minimale :
+
+```text
+transcript.whisper
+transcript.create_plain
+speakers.propose
+speakers.validate
+chunks.create
+chunks.summarize_sections
+chunks.summarize_video
+embeddings.create
+```
+
+WhisperX ne charge pas la diarisation sur cette route. Le dossier canonique
+contient donc uniquement `transcript_1_brut.txt` et `transcript_plain.txt` sur
+une nouvelle exécution. La recherche légère des speakers envoie à Luna
+uniquement les 1 000 premiers caractères de `transcript_plain.txt`. Les speakers
+validés sont publiables, mais aucun transcript avec speakers n'est créé.
 
 Sans sous-titres détectés, la correction visuelle historique reste utilisée :
 
@@ -392,7 +418,7 @@ Le code Python conserve lui-même les timecodes, les identifiants de speaker,
 l'ordre et le nombre de segments. Les remplacements sont consignés dans
 `transcript_2_corrections.tsv`.
 
-Les cinq artefacts canoniques sont :
+Pour les routes courtes, les cinq artefacts canoniques sont :
 
 | Artefact | Contenu |
 |---|---|
@@ -401,6 +427,9 @@ Les cinq artefacts canoniques sont :
 | `transcript_3_with_speakers.txt` | Transcript corrigé avec les speakers validés. |
 | `transcript_enriched.txt` | Copie du transcript avec speakers, augmentée uniquement des intercalaires OCR (`graphic`). |
 | `transcript_plain.txt` | Version sans timecodes destinée aux usages textuels. |
+
+Pour `long_video`, seuls `transcript_1_brut.txt` et
+`transcript_plain.txt` sont produits.
 
 `transcript_enriched.txt` n'ajoute ni sous-titres, ni noms, ni titres animés,
 ni autres textes présents sur les images. La résolution des speakers appartient
@@ -462,8 +491,7 @@ table PostgreSQL `chunks`. Les intervenants restent lus depuis
 |---|---|---|---|---|
 | `<= 600 s` | oui | WhisperX corrigé par référence OCR | détails uniquement | `short.whisper.<type>` |
 | `<= 600 s` | non | WhisperX | détails uniquement | `short.whisper.<type>` |
-| `> 600 s` | oui | WhisperX corrigé par référence OCR | détails + sections + global | `long.whisper.<type>` |
-| `> 600 s` | non | WhisperX | détails + sections + global | `long.whisper.<type>` |
+| `> 600 s` | non inspecté | WhisperX brut + plain | détails + sections + global | `long.whisper.long_video` |
 
 ## Manifeste JSON
 
@@ -479,18 +507,18 @@ Extrait simplifié :
   },
   "routing_facts": {
     "has_subtitles": false,
-    "video_type": "interview",
+    "video_type": "long_video",
     "has_subtitles_details": {
       "score": 0.08
     }
   },
   "route": {
     "status": "ready",
-    "pipeline_id": "long.whisper.interview",
+    "pipeline_id": "long.whisper.long_video",
     "transcript_strategy": "whisper",
     "ocr_correction_reference": "not_applicable",
     "chunk_strategy": "long",
-    "visual_strategy": "interview"
+    "visual_strategy": "long_video"
   },
   "artifacts": {
     "by_task": {
@@ -581,7 +609,7 @@ compatible du statut Python `TaskStatus.SUCCEEDED`. Chaque entrée peut contenir
 `plan.hash` et `execution.plan_hash` doivent toujours être identiques. Quand
 l'inspection terminée est remplacée par le plan de traitement :
 
-- l'exécution des sept tâches d'inspection est déplacée dans
+- l'exécution des tâches d'inspection de la route est déplacée dans
   `execution_history` ;
 - une nouvelle exécution, avec un nouveau `run_id`, est créée pour le plan de
   traitement.
@@ -617,7 +645,7 @@ WHISPERX_MODEL=large-v3
 WHISPERX_LANGUAGE=fr
 WHISPERX_DEVICE=cuda
 WHISPERX_COMPUTE_TYPE=float16
-WHISPERX_BATCH_SIZE=16
+WHISPERX_BATCH_SIZE=4
 
 S3_BUCKET_NAME=...
 S3_REGION=...
@@ -632,7 +660,7 @@ S3_SECRET_ACCESS_KEY=...
 | Commande | Effet |
 |---|---|
 | `inspect --probe-only` | Sonde seulement le fichier et écrit un manifeste contenant le plan d'inspection. Aucun traitement visuel ou OCR n'est lancé. |
-| `inspect` | Sonde la vidéo, exécute les sept tâches d'inspection, recharge le contexte puis écrit le plan de traitement sélectionné. |
+| `inspect` | Sonde la vidéo, exécute les tâches d'inspection de sa route, recharge le contexte puis écrit le plan de traitement sélectionné. |
 | `plan` | N'exécute aucune tâche. Si le routage est complet, écrit le plan de traitement ; sinon écrit le plan d'inspection. |
 | `plan --include-inspection` | Force l'écriture du plan d'inspection même si les caractéristiques sont déjà connues. |
 | `run` | Exécute l'inspection, recalcule la route, puis exécute le plan de traitement. |
@@ -695,6 +723,8 @@ Options utiles :
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --force
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --openai-mode batch
+.\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --batch
+.\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --review-scope none
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --review-scope all
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --correction-mode conservative
 ```
@@ -723,13 +753,21 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 |---|---|
 | `--force` | Avec `run`, supprime entièrement `outputs/` avant de tout reconstruire. Avec `task`, force uniquement la tâche demandée. |
 | `--dry-run` | Affiche les handlers sélectionnés sans les exécuter. |
-| `--openai-mode normal|batch` | Choisit le mode global des appels OpenAI compatibles. |
-| `--review-scope duo|all` | En mode `duo`, limite la revue des textes visuels à une image par vidéo. |
+| `--openai-mode normal|batch` | Choisit le mode de tous les appels OpenAI de la pipeline d'ingestion. |
+| `--batch` | Raccourci propre à `pipeline run` pour `--openai-mode batch`. |
+| `--review-scope none|duo|all` | `none` désactive entièrement la revue OpenAI des images OCR ambiguës, `duo` la limite et `all` traite toutes les candidates. |
 | `--image-review-model` | Remplace le modèle de revue des textes visuels. |
 | `--speaker-validation-model` | Remplace le modèle utilisé pour valider les speakers. |
 | `--correction-mode` | Règle la correction Whisper par OCR visuel des vidéos sans sous-titres. La route avec sous-titres utilise Luna. |
 | `--frame-interval` | Intervalle en secondes entre les frames extraites. |
 | `--details-per-section` | Nombre de chunks détail regroupés dans une section pour les vidéos longues. |
+
+Avec `--openai-mode batch`, la revue OCR, la réconciliation Whisper/OCR, la
+validation des speakers, les résumés de sections, le résumé global et les
+embeddings passent tous par l'API Batch. Chaque tâche attend son batch avant de
+laisser continuer les tâches qui dépendent de son résultat. Les fichiers
+d'état, d'entrée, de sortie et d'erreur sont conservés sous `outputs/` afin
+qu'une relance reprenne un batch compatible au lieu de le soumettre à nouveau.
 
 Pour afficher le plan de traitement en dry-run, il faut disposer d'un
 un manifeste contenant des `routing_facts` complets :
@@ -968,6 +1006,12 @@ Démarrer l'API et l'interface :
 Le backend combine recherche SQL, BM25, recherche vectorielle pgvector, fusion RRF
 et reranking. Les traces OpenTelemetry sont envoyées à Phoenix lorsque
 `PHOENIX_ENABLED=true`.
+
+La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
+Après la fusion et le reranking, chaque détail final est enrichi avec sa
+`section` parente puis son résumé `global` lorsqu'ils existent. Ces parents
+apportent du contexte à la génération sans participer au classement ni occuper
+une place supplémentaire dans les résultats.
 
 ## Tests
 

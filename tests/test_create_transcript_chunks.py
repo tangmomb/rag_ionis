@@ -59,16 +59,30 @@ class CreateTranscriptChunksTests(unittest.TestCase):
             )
             self.assertIsNone(speaker_proposal.source_text_path(video))
 
-    def test_transcript_speakers_do_not_require_an_ocr_match(self) -> None:
-        transcript = (
-            "Je m'appelle Hugo Géradain. "
-            "Je m'appelle Clara De Almeida."
-        )
-        speakers = speaker_proposal.propose_speakers(transcript, [])["speakers"]
+    def test_long_video_speaker_context_uses_first_1000_plain_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            transcript_dir = video_dir / "outputs" / "transcripts_whisper"
+            transcript_dir.mkdir(parents=True)
+            video = video_dir / "video123.mp4"
+            video.touch()
+            transcript_text = "A" * 1000 + "B" * 500
+            plain = transcript_dir / "transcript_plain.txt"
+            plain.write_text(transcript_text, encoding="utf-8")
 
-        self.assertEqual(speakers, ["Hugo Géradain", "Clara De Almeida"])
+            target = speaker_proposal.propose_for_video(
+                video,
+                force=True,
+                prefer_plain=True,
+                transcript_excerpt_chars=1000,
+            )
+            payload = json.loads(target.read_text(encoding="utf-8"))
 
-    def test_speaker_proposals_follow_transcript_order_across_detection_types(self) -> None:
+        self.assertTrue(payload["source"].endswith("transcript_plain.txt"))
+        self.assertEqual(payload["transcript_excerpt"], "A" * 1000)
+        self.assertEqual(payload["transcript_excerpt_chars"], 1000)
+
+    def test_transcript_introductions_do_not_create_speaker_candidates(self) -> None:
         transcript = (
             "Je suis Sophie Vanderpol, Fondatrice. "
             "Je m'appelle Hugo Jarguin, Responsable. "
@@ -77,10 +91,7 @@ class CreateTranscriptChunksTests(unittest.TestCase):
 
         speakers = speaker_proposal.propose_speakers(transcript, [])["speakers"]
 
-        self.assertEqual(
-            speakers,
-            ["Sophie Vanderpol", "Hugo Jarguin", "Clara Dalmada"],
-        )
+        self.assertEqual(speakers, [])
 
     def test_transcript_speaker_count_uses_distinct_diarization_labels(self) -> None:
         transcript = (
@@ -90,24 +101,6 @@ class CreateTranscriptChunksTests(unittest.TestCase):
         )
 
         self.assertEqual(speaker_proposal.transcript_speaker_count(transcript), 2)
-
-    def test_je_suis_detects_a_speaker(self) -> None:
-        transcript = (
-            "Je suis Sophie Vanderpol Je suis la Fondatrice d'Olidi. "
-            "Je suis Responsable d'Affaires."
-        )
-
-        speakers = speaker_proposal.propose_speakers(transcript, [])["speakers"]
-
-        self.assertIn("Sophie Vanderpol", speakers)
-        self.assertNotIn("la Fondatrice d'Olidi", speakers)
-
-    def test_moi_c_est_detects_a_speaker(self) -> None:
-        transcript = "Bonjour, moi c'est Alice Martin."
-
-        speakers = speaker_proposal.propose_speakers(transcript, [])['speakers']
-
-        self.assertEqual(speakers, ["Alice Martin"])
 
     def test_visual_lower_third_name_is_detected_from_current_ocr_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -155,79 +148,45 @@ class CreateTranscriptChunksTests(unittest.TestCase):
             self.assertEqual(names, ["Hugo Géradin"])
             self.assertEqual(source, ocr_dir / "01_processed_ocr_items.json")
 
-    def test_raw_ocr_texts_are_collected_and_deduplicated(self) -> None:
+    def test_filtered_ocr_texts_include_every_kind_except_subtitle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"
-            raw_dir = video_dir / "outputs" / "ocr" / "raw"
-            raw_dir.mkdir(parents=True)
+            ocr_dir = video_dir / "outputs" / "ocr"
+            ocr_dir.mkdir(parents=True)
             video = video_dir / "video123.mp4"
             video.touch()
-            (raw_dir / "raw_ocr_footage_frames.json").write_text(
+            filtered = ocr_dir / "02_filtered_ocr_overlays.json"
+            filtered.write_text(
                 json.dumps(
                     {
-                        "items": [
-                            {
-                                "raw": [
-                                    {
-                                        "rec_texts": [
-                                            "123456",
-                                            "123 567",
-                                            "1234 678",
-                                            " Alice Martin ",
-                                            "IONIS",
-                                            "Alice   Martin",
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (raw_dir / "raw_ocr_graphic_frames.json").write_text(
-                json.dumps(
-                    {
-                        "items": [
-                            {"raw": [{"rec_texts": ["ionis", "Bob Dupont"]}]}
-                        ]
+                        "kinds": {
+                            "graphic": {
+                                "00:01": "IONIS",
+                            },
+                            "others": {
+                                "00:02": " Alice   Martin / Directrice ",
+                                "00:03": "Bob Dupont / CTO",
+                            },
+                            "subtitle": {
+                                "00:04": "Je m'appelle Alice Martin",
+                            },
+                        }
                     }
                 ),
                 encoding="utf-8",
             )
 
-            texts, sources = speaker_proposal.load_raw_ocr_texts(video)
+            texts, source = speaker_proposal.load_filtered_ocr_texts(video)
 
             self.assertEqual(
                 texts,
-                ["123 567", "1234 678", "Alice Martin", "Bob Dupont"],
-            )
-            self.assertEqual(
-                [source.name for source in sources],
                 [
-                    "raw_ocr_footage_frames.json",
-                    "raw_ocr_graphic_frames.json",
+                    "IONIS",
+                    "Alice Martin / Directrice",
+                    "Bob Dupont / CTO",
                 ],
             )
-
-    def test_close_raw_ocr_variants_keep_only_the_longest_text(self) -> None:
-        texts = speaker_proposal.collapse_close_ocr_texts(
-            [
-                "Country Manager France-Benelux-Switzerland-Desigual",
-                "Country Manager France-Benelux-Switzerland - Desigual",
-                "Country Manager France-Benelux-Switzerland",
-                "Country Manager France-Benelux-Switzeriand - Desigual",
-                "Cyril Morcrette",
-            ]
-        )
-
-        self.assertEqual(
-            texts,
-            [
-                "Country Manager France-Benelux-Switzerland - Desigual",
-                "Cyril Morcrette",
-            ],
-        )
+            self.assertEqual(source, filtered)
 
     def test_chunks_do_not_require_or_store_validated_speakers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -263,7 +222,11 @@ class CreateTranscriptChunksTests(unittest.TestCase):
 
             with (
                 patch.object(speaker_proposal, "source_text_path", return_value=transcript),
-                patch.object(speaker_proposal, "load_ocr_speaker_candidates", return_value=([], None)),
+                patch.object(
+                    speaker_proposal,
+                    "load_ocr_speaker_candidates",
+                    return_value=(["Sophie Vanderpol"], None),
+                ),
                 patch.object(speaker_proposal, "candidates_path", return_value=candidates),
                 patch.object(speaker_proposal, "video_title", return_value="Sophie Vanderpol témoigne"),
             ):

@@ -10,7 +10,8 @@ from unittest.mock import patch
 from pipeline import step_handlers
 from pipeline.catalog import TASKS, _frames_extracted
 from pipeline.context import PipelineContext
-from pipeline.contracts import TaskResult, TaskStatus
+from pipeline.contracts import RoutingFacts, TaskResult, TaskStatus, VideoType
+from pipeline.options import PipelineOptions
 from pipeline.steps.inspection import (
     classify_frames,
     detect_interviews,
@@ -89,6 +90,175 @@ class StepHandlerContractTests(unittest.TestCase):
 
             (images / "frame.png").write_bytes(b"png")
             self.assertTrue(_frames_extracted(context))
+
+    def test_long_video_whisper_skips_diarization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            context.media["duration_seconds"] = 601.0
+            context.routing_facts = RoutingFacts(
+                video_type=VideoType.LONG_VIDEO,
+            )
+
+            def create_transcript(
+                _whisperx,
+                _model,
+                _video,
+                transcript_directory,
+                _audio_directory,
+                _device,
+                **_kwargs,
+            ):
+                target = transcript_directory / "transcript_1_brut.txt"
+                target.write_text("[00:00-00:01] Bonjour.\n", encoding="utf-8")
+                return target
+
+            with (
+                patch(
+                    "pipeline.steps.transcripts.transcribe_with_whisper.load_whisperx_model",
+                    return_value=(object(), object(), "cuda"),
+                ),
+                patch(
+                    "pipeline.steps.transcripts.transcribe_with_whisper.load_diarization_pipeline",
+                ) as load_diarization,
+                patch(
+                    "pipeline.steps.transcripts.transcribe_with_whisper.transcribe_video",
+                    side_effect=create_transcript,
+                ) as transcribe,
+            ):
+                result = step_handlers.transcribe_whisper(context)
+
+        self.assertIs(result.status, TaskStatus.SUCCEEDED)
+        load_diarization.assert_not_called()
+        self.assertIsNone(
+            transcribe.call_args.kwargs["diarization_pipeline"]
+        )
+
+    def test_section_summaries_use_configured_openai_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            context.options = PipelineOptions(openai_mode="batch")
+            target = context.outputs_dir / "chunks" / "transcript_chunks.json"
+            payload = {
+                "chunks": [
+                    {
+                        "chunk_index": 1,
+                        "chunk_level": "section",
+                        "content": "Resume",
+                    }
+                ]
+            }
+            def write_summary(*_args, **_kwargs):
+                target.parent.mkdir(parents=True)
+                target.write_text("{}", encoding="utf-8")
+                return target
+
+            with (
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.load_chunks",
+                    return_value=(payload, target),
+                ),
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.summarize_sections",
+                    side_effect=write_summary,
+                ) as summarize,
+            ):
+                result = step_handlers.summarize_sections(context)
+
+        self.assertIs(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(summarize.call_args.kwargs["mode"], "batch")
+        self.assertFalse(summarize.call_args.kwargs["reset_batch"])
+
+    def test_ocr_review_is_skipped_when_scope_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            context.options = PipelineOptions(review_scope="none")
+
+            with patch(
+                "pipeline.steps.ocr.review_other_text_candidates.review_video",
+            ) as review:
+                result = step_handlers.review_other_text(context)
+
+        self.assertIs(result.status, TaskStatus.SKIPPED)
+        review.assert_not_called()
+
+    def test_remaining_openai_steps_use_configured_batch_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            context.options = PipelineOptions(openai_mode="batch")
+
+            transcript_dir = context.outputs_dir / "transcripts_whisper"
+            transcript_dir.mkdir(parents=True)
+            source = transcript_dir / "transcript_1_brut.txt"
+            target = transcript_dir / "transcript_2_corrected.txt"
+            report = transcript_dir / "transcript_2_corrections.tsv"
+            source.write_text("[00:00-00:01] Bonjour.\n", encoding="utf-8")
+
+            def reconcile(*_args, **_kwargs):
+                target.write_text("Bonjour.\n", encoding="utf-8")
+                report.write_text("", encoding="utf-8")
+                return target
+
+            with patch(
+                "pipeline.steps.transcripts.reconcile_whisper_with_ocr.reconcile_file",
+                side_effect=reconcile,
+            ) as reconcile_mock:
+                result = step_handlers.reconcile_whisper_with_ocr(context)
+
+            self.assertIs(result.status, TaskStatus.SUCCEEDED)
+            self.assertEqual(reconcile_mock.call_args.kwargs["mode"], "batch")
+            self.assertFalse(
+                reconcile_mock.call_args.kwargs["reset_batch"]
+            )
+
+            chunks_target = (
+                context.outputs_dir / "chunks" / "transcript_chunks.json"
+            )
+            chunks_target.parent.mkdir(parents=True)
+            chunks_target.write_text("{}", encoding="utf-8")
+            global_payload = {
+                "chunks": [
+                    {
+                        "chunk_index": 1,
+                        "chunk_level": "global",
+                        "content": "Resume global",
+                    }
+                ]
+            }
+            with (
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.load_chunks",
+                    return_value=(global_payload, chunks_target),
+                ),
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.summarize_video",
+                    return_value=chunks_target,
+                ) as summarize_mock,
+            ):
+                result = step_handlers.summarize_video(context)
+
+            self.assertIs(result.status, TaskStatus.CACHED)
+            self.assertEqual(summarize_mock.call_args.kwargs["mode"], "batch")
+            self.assertFalse(
+                summarize_mock.call_args.kwargs["reset_batch"]
+            )
+
+            embedding_target = (
+                chunks_target.parent / "chunk_01_embedding.json"
+            )
+
+            def embed(*_args, **_kwargs):
+                embedding_target.write_text("{}", encoding="utf-8")
+                return True
+
+            with patch(
+                "pipeline.steps.embeddings.create_chunk_embeddings.create_embeddings_batch",
+                side_effect=embed,
+            ) as embed_mock:
+                result = step_handlers.create_embeddings(context)
+
+            self.assertIs(result.status, TaskStatus.SUCCEEDED)
+            self.assertTrue(embed_mock.call_args.kwargs["wait"])
+            self.assertFalse(embed_mock.call_args.kwargs["reset_batch"])
 
     def test_named_inspection_apis_build_typed_options(self) -> None:
         video = Path("video.mp4")

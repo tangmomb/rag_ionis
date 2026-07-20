@@ -12,7 +12,9 @@ from pipeline.support.paths import (
     transcripts_dir,
 )
 from pipeline.steps.transcripts.artifacts import (
+    LEGACY_TRANSCRIPT_1_NAMES,
     LEGACY_TRANSCRIPT_2_NAMES,
+    TRANSCRIPT_1_BRUT_NAME,
     LEGACY_TRANSCRIPT_ENRICHED_NAMES,
     TRANSCRIPT_2_CORRECTED_NAME,
     TRANSCRIPT_3_WITH_SPEAKERS_NAME,
@@ -192,7 +194,14 @@ def convert_ocr_file(
     return target
 
 
-def timecoded_inputs(transcript_dir):
+def timecoded_inputs(transcript_dir, *, raw_only=False):
+    if raw_only:
+        for name in (TRANSCRIPT_1_BRUT_NAME, *LEGACY_TRANSCRIPT_1_NAMES):
+            candidate = transcript_dir / name
+            if candidate.exists():
+                return [candidate]
+        return []
+
     if transcript_dir.name == CANONICAL_TRANSCRIPTS_DIR_NAME:
         canonical_names = (
             TRANSCRIPT_3_WITH_SPEAKERS_NAME,

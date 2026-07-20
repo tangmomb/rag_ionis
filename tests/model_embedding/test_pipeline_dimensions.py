@@ -162,6 +162,88 @@ class PipelineEmbeddingDimensionsTests(unittest.TestCase):
             payload = json.loads(target.read_text(encoding="utf-8"))
             self.assertEqual(payload["meta_data"], {"summary_strategy": "luna"})
 
+    def test_batch_embeddings_are_written_from_completed_output(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video"
+            chunks_dir = video_dir / "outputs" / "chunks"
+            chunks_dir.mkdir(parents=True)
+            video = video_dir / "video.mp4"
+            video.touch()
+            source = chunks_dir / "transcript_chunks.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "meta_data": {},
+                        "chunks": [
+                            {
+                                "chunk_index": 1,
+                                "chunk_level": "detail",
+                                "content": "Texte du chunk",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_path = (
+                chunks_dir
+                / chunk_embeddings.EMBEDDING_BATCH_OUTPUT_NAME
+            )
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "custom_id": "embedding-000001",
+                        "response": {
+                            "status_code": 200,
+                            "body": {
+                                "data": [
+                                    {"index": 0, "embedding": [0.1, 0.2, 0.3]}
+                                ]
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = {
+                "status": "completed",
+                "output_file_id": "output-file",
+            }
+            with (
+                patch("openai.OpenAI", return_value=object()),
+                patch.object(
+                    chunk_embeddings,
+                    "load_batch_state",
+                    return_value=state,
+                ),
+                patch.object(
+                    chunk_embeddings,
+                    "batch_state_matches",
+                    return_value=True,
+                ),
+                patch.object(
+                    chunk_embeddings,
+                    "poll_batch_state",
+                    return_value=state,
+                ),
+                patch.object(
+                    chunk_embeddings,
+                    "download_batch_files",
+                ),
+            ):
+                result = chunk_embeddings.create_embeddings_batch(
+                    DEFAULT_EMBEDDING_MODEL,
+                    3,
+                    video,
+                )
+
+            target = chunks_dir / "chunk_01_embedding.json"
+            payload = json.loads(target.read_text(encoding="utf-8"))
+
+        self.assertTrue(result)
+        self.assertEqual(payload["embedding"], [0.1, 0.2, 0.3])
+        self.assertEqual(payload["dimensions"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

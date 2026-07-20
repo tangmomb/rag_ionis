@@ -214,21 +214,38 @@ def ocr_groups(path: Path | None) -> dict[str, Any]:
     return {}
 
 
-def video_speakers(video_dir: Path) -> list[str]:
+def video_speaker_details(video_dir: Path) -> list[dict[str, str | None]]:
     path = video_dir / "outputs" / "speakers" / "speakers_validated.json"
     payload = read_json(path)
-    if not isinstance(payload, dict) or not isinstance(payload.get("speakers"), list):
+    if not isinstance(payload, dict):
         return []
-    speakers = []
+
+    raw_details = payload.get("speaker_details")
+    if not isinstance(raw_details, list):
+        raw_details = [
+            {"speaker": name, "title": ""}
+            for name in payload.get("speakers", [])
+        ]
+
+    details = []
     seen = set()
-    for value in payload["speakers"]:
-        name = " ".join(str(value).split()).strip()
+    for value in raw_details:
+        if not isinstance(value, dict):
+            continue
+        name = " ".join(
+            str(value.get("speaker") or value.get("name") or "").split()
+        ).strip()
+        title = " ".join(str(value.get("title") or "").split()).strip()
         key = name.casefold()
         if not name or key in seen:
             continue
         seen.add(key)
-        speakers.append(name)
-    return speakers
+        details.append({"name": name, "title": title or None})
+    return details
+
+
+def video_speakers(video_dir: Path) -> list[str]:
+    return [detail["name"] for detail in video_speaker_details(video_dir)]
 
 
 def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
@@ -258,6 +275,7 @@ def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
     else:
         stage = "Téléchargée"
     preview = images[0].relative_to(video_dir).as_posix() if images else None
+    speaker_details = video_speaker_details(video_dir)
     return {
         "run": run_dir.name,
         "id": str(metadata.get("youtube_video_id") or video_dir.name),
@@ -268,7 +286,8 @@ def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
         "url": metadata.get("url") or f"https://www.youtube.com/watch?v={video_dir.name}",
         "video_type": facts.get("video_type"),
         "has_subtitles": facts.get("has_subtitles"),
-        "speakers": video_speakers(video_dir),
+        "speakers": [detail["name"] for detail in speaker_details],
+        "speaker_details": speaker_details,
         "stage": stage,
         "image_count": len(images),
         "chunk_count": len(chunks),

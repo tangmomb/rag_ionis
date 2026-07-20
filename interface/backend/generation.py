@@ -167,6 +167,17 @@ def evaluate_source_sufficiency(
     }
 
 
+def source_context_text(source: dict[str, Any]) -> str:
+    parts = [str(source.get("text") or "").strip()]
+    section_context = source.get("section_context") or {}
+    global_context = source.get("global_context") or {}
+    if section_context.get("text"):
+        parts.append(f"Resume de section: {section_context['text']}")
+    if global_context.get("text"):
+        parts.append(f"Resume global: {global_context['text']}")
+    return "\n".join(part for part in parts if part)
+
+
 def generate_answer(
     client: OpenAI | None,
     question: str,
@@ -182,20 +193,32 @@ def generate_answer(
         if trace is not None:
             trace["action"] = "answer"
         return "\n\n".join(
-            f"[S{index}] {source['text']}"
+            f"[S{index}] {source_context_text(source)}"
             for index, source in enumerate(sources, start=1)
         )
 
     context_blocks = []
     for index, source in enumerate(sources, start=1):
+        section_context = source.get("section_context") or {}
+        global_context = source.get("global_context") or {}
         context_blocks.append(
             "\n".join(
                 [
                     f"Source {index}",
                     f"Titre: {source['video_title']}",
                     f"URL: {source['video_url']}",
-                    f"Chunk: {source['chunk_index']}",
-                    f"Texte: {source['text']}",
+                    f"Chunk detail: {source['chunk_index']}",
+                    f"Extrait pertinent: {source['text']}",
+                    *(
+                        [f"Resume de section: {section_context['text']}"]
+                        if section_context.get("text")
+                        else []
+                    ),
+                    *(
+                        [f"Resume global: {global_context['text']}"]
+                        if global_context.get("text")
+                        else []
+                    ),
                 ]
             )
         )

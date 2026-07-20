@@ -6,7 +6,7 @@ from typing import Any, Literal, Mapping
 
 
 OpenAIMode = Literal["normal", "batch"]
-ReviewScope = Literal["duo", "all"]
+ReviewScope = Literal["none", "duo", "all"]
 CorrectionMode = Literal["conservative", "balanced", "aggressive"]
 
 
@@ -40,8 +40,10 @@ class PipelineOptions:
     def __post_init__(self) -> None:
         if self.openai_mode not in {"normal", "batch"}:
             raise ValueError("openai_mode doit valoir 'normal' ou 'batch'.")
-        if self.review_scope not in {"duo", "all"}:
-            raise ValueError("review_scope doit valoir 'duo' ou 'all'.")
+        if self.review_scope not in {"none", "duo", "all"}:
+            raise ValueError(
+                "review_scope doit valoir 'none', 'duo' ou 'all'."
+            )
         if self.correction_mode not in {"conservative", "balanced", "aggressive"}:
             raise ValueError("correction_mode invalide.")
         if self.frame_interval_seconds <= 0:

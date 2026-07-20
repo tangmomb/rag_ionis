@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .contracts import (
+    LONG_VIDEO_THRESHOLD_SECONDS,
     PlannedTask,
     RoutingFacts,
     RunExecution,
     TaskExecution,
     TaskResult,
     TaskStatus,
+    VideoType,
 )
 from .options import PipelineOptions
 from .probe import probe_video
@@ -27,7 +29,6 @@ from .support.youtube_metadata import (
 )
 
 
-LONG_VIDEO_THRESHOLD_SECONDS = 600
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 ANALYSIS_NAME = "pipeline_analysis.json"
 MANIFEST_NAME = "video_manifest.json"
@@ -158,6 +159,17 @@ class PipelineContext:
         if not isinstance(previous_options, Mapping):
             previous_options = selected_options.to_dict()
         previous_facts = RoutingFacts.from_dict(analysis_payload)
+        duration_seconds = media["duration_seconds"]
+        if (
+            isinstance(duration_seconds, (int, float))
+            and not isinstance(duration_seconds, bool)
+            and duration_seconds > LONG_VIDEO_THRESHOLD_SECONDS
+        ):
+            previous_facts = RoutingFacts(
+                has_subtitles=previous_facts.has_subtitles,
+                video_type=VideoType.LONG_VIDEO,
+                has_subtitles_details=previous_facts.has_subtitles_details,
+            )
         fallback_plan_hash = cls._plan_hash(
             previous_plan,
             options_payload=dict(previous_options),
@@ -421,13 +433,16 @@ class PipelineContext:
     @property
     def routing_ready(self) -> bool:
         return (
-            self.has_subtitles is not None
-            and self.video_type is not None
+            self.video_type is not None
+            and (
+                self.video_type == "long_video"
+                or self.has_subtitles is not None
+            )
         )
 
     def routing(self) -> dict[str, Any]:
         missing = []
-        if self.has_subtitles is None:
+        if self.has_subtitles is None and self.video_type != "long_video":
             missing.append("has_subtitles")
         if self.video_type is None:
             missing.append("video_type")
@@ -441,12 +456,16 @@ class PipelineContext:
             "pipeline_id": ".".join(part for part in parts if part),
             "transcript_strategy": self.transcript_strategy,
             "ocr_correction_reference": (
-                "enabled"
-                if self.has_subtitles is True
+                "not_applicable"
+                if self.video_type == "long_video"
                 else (
-                    "not_applicable"
-                    if self.has_subtitles is False
-                    else "pending_detection"
+                    "enabled"
+                    if self.has_subtitles is True
+                    else (
+                        "not_applicable"
+                        if self.has_subtitles is False
+                        else "pending_detection"
+                    )
                 )
             ),
             "chunk_strategy": self.chunk_strategy,

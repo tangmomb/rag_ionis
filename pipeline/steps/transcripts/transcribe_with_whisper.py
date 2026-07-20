@@ -53,7 +53,9 @@ def refresh_environment_defaults():
         "WHISPERX_COMPUTE_TYPE",
         "float16" if DEFAULT_TRANSCRIBE_DEVICE == "cuda" else "int8",
     )
-    DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
+    DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "4"))
+    if DEFAULT_TRANSCRIBE_BATCH_SIZE < 1:
+        raise ValueError("WHISPERX_BATCH_SIZE doit etre un entier positif.")
     STRICT_CUDA = os.getenv("WHISPERX_STRICT_CUDA", "1").lower() not in {
         "0",
         "false",
@@ -152,7 +154,7 @@ def load_whisperx_model():
 
     print(
         f"[whisperx] model={DEFAULT_TRANSCRIBE_MODEL} device={device} "
-        f"compute_type={compute_type}"
+        f"compute_type={compute_type} batch_size={DEFAULT_TRANSCRIBE_BATCH_SIZE}"
     )
     model = whisperx.load_model(
         DEFAULT_TRANSCRIBE_MODEL,
@@ -238,6 +240,39 @@ def format_timestamped_transcript(segments):
     return "\n".join(lines)
 
 
+def is_cuda_out_of_memory(error):
+    message = str(error).lower()
+    return "cuda" in message and "out of memory" in message
+
+
+def clear_cuda_memory():
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def transcribe_with_batch_backoff(model, audio_path):
+    batch_size = DEFAULT_TRANSCRIBE_BATCH_SIZE
+    while True:
+        try:
+            return model.transcribe(
+                str(audio_path),
+                batch_size=batch_size,
+                language=DEFAULT_TRANSCRIBE_LANGUAGE,
+            )
+        except RuntimeError as error:
+            if not is_cuda_out_of_memory(error) or batch_size <= 1:
+                raise
+            next_batch_size = max(1, batch_size // 2)
+            print(
+                f"[warn] VRAM insuffisante avec batch_size={batch_size}; "
+                f"nouvelle tentative avec batch_size={next_batch_size}.",
+                flush=True,
+            )
+            clear_cuda_memory()
+            batch_size = next_batch_size
+
+
 def transcribe_with_whisperx(
     whisperx,
     model,
@@ -247,11 +282,7 @@ def transcribe_with_whisperx(
     min_speakers=None,
     max_speakers=None,
 ):
-    result = model.transcribe(
-        str(audio_path),
-        batch_size=DEFAULT_TRANSCRIBE_BATCH_SIZE,
-        language=DEFAULT_TRANSCRIBE_LANGUAGE,
-    )
+    result = transcribe_with_batch_backoff(model, audio_path)
     segments = result.get("segments", [])
     if not segments:
         return "", []
@@ -267,9 +298,7 @@ def transcribe_with_whisperx(
         return_char_alignments=False,
     )
     del align_model
-    gc.collect()
-    if torch is not None and torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clear_cuda_memory()
 
     if diarization_pipeline is not None:
         diarized_segments = diarization_pipeline(

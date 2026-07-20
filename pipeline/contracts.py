@@ -8,12 +8,16 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 
+LONG_VIDEO_THRESHOLD_SECONDS = 600
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 class VideoType(str, Enum):
     INTERVIEW = "interview"
+    LONG_VIDEO = "long_video"
     MOTION_DESIGN = "motion_design"
     VIDEO_RECORDING = "video_recording"
 

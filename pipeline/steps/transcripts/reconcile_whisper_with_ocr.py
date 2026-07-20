@@ -6,7 +6,21 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
+from types import SimpleNamespace
 
+from pipeline.support.json_io import write_jsonl
+from pipeline.support.openai_batch import (
+    COMPLETED_BATCH_STATUS,
+    batch_request_fingerprint,
+    batch_state_matches,
+    download_batch_files,
+    is_terminal_batch_status,
+    load_batch_state,
+    parse_jsonl,
+    poll_batch_state,
+    records_by_custom_id,
+    save_batch_state,
+)
 from pipeline.steps.transcripts.artifacts import (
     TRANSCRIPT_1_BRUT_NAME,
     TRANSCRIPT_2_CORRECTED_NAME,
@@ -26,6 +40,10 @@ OCR_SOURCE_NAMES = (
 )
 TARGET_NAME = TRANSCRIPT_2_CORRECTED_NAME
 REPORT_NAME = TRANSCRIPT_2_CORRECTIONS_NAME
+BATCH_STATE_NAME = "transcript_reconciliation_batch_state.json"
+BATCH_INPUT_NAME = "transcript_reconciliation_batch_input.jsonl"
+BATCH_OUTPUT_NAME = "transcript_reconciliation_batch_output.jsonl"
+BATCH_ERROR_NAME = "transcript_reconciliation_batch_error.jsonl"
 DEFAULT_CORRECTION_MODEL = os.getenv(
     "TRANSCRIPT_CORRECTION_MODEL",
     "gpt-5.6-luna",
@@ -102,6 +120,23 @@ def _response_text(response: object) -> str:
             if text:
                 pieces.append(str(text))
     return "\n".join(pieces).strip()
+
+
+def _response_text_from_payload(payload: dict[str, object]) -> str:
+    output_text = payload.get("output_text")
+    if output_text:
+        return str(output_text).strip()
+    pieces = []
+    for output in payload.get("output", []) or []:
+        for content in output.get("content", []) or []:
+            text = content.get("text")
+            if text:
+                pieces.append(str(text))
+    return "\n".join(pieces).strip()
+
+
+def batch_artifact_path(video_path: Path, name: str) -> Path:
+    return corrected_path(video_path).parent / name
 
 
 def luna_request(
@@ -264,13 +299,213 @@ def reconcile_transcripts_with_luna(
     return "\n".join(rendered_lines) + suffix, corrections
 
 
+def _write_reconciliation(
+    target: Path,
+    report: Path,
+    corrected_text: str,
+    corrections: list[tuple[str, str]],
+) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(corrected_text, encoding="utf-8")
+    report_lines = sorted(
+        {f"{source}\t{replacement}" for source, replacement in corrections}
+    )
+    report.write_text(
+        "\n".join(report_lines) + ("\n" if report_lines else ""),
+        encoding="utf-8",
+    )
+    print(f"[ok] {target} ({len(corrections)} rapprochement(s) OCR)")
+    print(f"[ok] {report}")
+    return target
+
+
+def reconcile_file_batch(
+    video_path: Path,
+    *,
+    force: bool = False,
+    model: str = DEFAULT_CORRECTION_MODEL,
+    wait: bool = True,
+    poll_interval_seconds: float = 30,
+    reset_batch: bool | None = None,
+) -> Path | None:
+    from openai import OpenAI
+
+    whisper_source = whisper_source_path(video_path)
+    ocr_source = ocr_source_path(video_path)
+    target = corrected_path(video_path)
+    report = corrections_path(video_path)
+    if not whisper_source.exists():
+        print(f"[skip] transcript WhisperX brut introuvable: {whisper_source}")
+        return None
+
+    dependencies = [whisper_source]
+    if ocr_source is not None:
+        dependencies.append(ocr_source)
+    if (
+        target.exists()
+        and report.exists()
+        and not force
+        and output_is_current(target, dependencies)
+        and output_is_current(report, dependencies)
+    ):
+        print(f"[skip] {target.name} existe deja")
+        return target
+
+    whisper_text = whisper_source.read_text(encoding="utf-8")
+    if ocr_source is None:
+        print("[warn] transcript OCR absent; WhisperX est conserve sans rapprochement")
+        return _write_reconciliation(target, report, whisper_text, [])
+
+    ocr_text = ocr_source.read_text(encoding="utf-8")
+    segments = []
+    for raw_line in whisper_text.splitlines():
+        match = WHISPER_LINE.match(raw_line)
+        if match:
+            segments.append(
+                {"index": len(segments), "text": match.group("body")}
+            )
+    if not segments:
+        return _write_reconciliation(target, report, whisper_text, [])
+
+    body = luna_request(model, segments, ocr_text)
+    state_path = batch_artifact_path(video_path, BATCH_STATE_NAME)
+    input_path = batch_artifact_path(video_path, BATCH_INPUT_NAME)
+    output_path = batch_artifact_path(video_path, BATCH_OUTPUT_NAME)
+    error_path = batch_artifact_path(video_path, BATCH_ERROR_NAME)
+    if reset_batch is None:
+        reset_batch = force
+    if reset_batch:
+        for path in (state_path, input_path, output_path, error_path):
+            path.unlink(missing_ok=True)
+
+    request_fingerprint = batch_request_fingerprint(
+        model or DEFAULT_CORRECTION_MODEL,
+        sources=(whisper_source, ocr_source),
+        custom_ids=("transcript-reconciliation",),
+        options={"workflow": "transcript_reconciliation", "request_body": body},
+    )
+    state = load_batch_state(state_path)
+    if state is not None and not batch_state_matches(state, request_fingerprint):
+        print(
+            "[batch] etat reconciliation incompatible; nouvelle soumission "
+            f"(ancien batch_id={state.get('batch_id', 'inconnu')})",
+            flush=True,
+        )
+        state = None
+    if state is None:
+        write_jsonl(
+            input_path,
+            [{
+                "custom_id": "transcript-reconciliation",
+                "method": "POST",
+                "url": "/v1/responses",
+                "body": body,
+            }],
+        )
+        client = OpenAI()
+        with input_path.open("rb") as batch_file:
+            uploaded = client.files.create(file=batch_file, purpose="batch")
+        batch = client.batches.create(
+            input_file_id=uploaded.id,
+            endpoint="/v1/responses",
+            completion_window="24h",
+            metadata={
+                "workflow": "transcript_reconciliation",
+                "model": model or DEFAULT_CORRECTION_MODEL,
+                "video": Path(video_path).name,
+            },
+        )
+        state = {
+            "mode": "batch",
+            "model": model or DEFAULT_CORRECTION_MODEL,
+            "batch_id": batch.id,
+            "status": batch.status,
+            "input_file_id": uploaded.id,
+            "submitted_count": 1,
+            "request_fingerprint": request_fingerprint,
+        }
+        save_batch_state(state_path, state)
+        print(
+            f"[batch] reconciliation submitted id={batch.id} "
+            f"status={batch.status} requests=1",
+            flush=True,
+        )
+        if not wait:
+            return state_path
+
+    client = OpenAI()
+    state = poll_batch_state(
+        client,
+        state,
+        state_path,
+        wait=wait,
+        poll_interval_seconds=poll_interval_seconds,
+        on_wait=lambda current, seconds: print(
+            f"[batch] reconciliation status={current['status']} "
+            f"batch_id={current['batch_id']} attente {seconds}s",
+            flush=True,
+        ),
+    )
+    if not is_terminal_batch_status(state["status"]):
+        return state_path
+    if state["status"] != COMPLETED_BATCH_STATUS:
+        raise RuntimeError(
+            "Batch de reconciliation termine avec statut non supporte: "
+            f"{state['status']}"
+        )
+    if not state.get("output_file_id"):
+        raise RuntimeError(
+            "Batch de reconciliation complete mais output_file_id absent."
+        )
+
+    download_batch_files(client, state, output_path, error_path)
+    record = records_by_custom_id(parse_jsonl(output_path)).get(
+        "transcript-reconciliation"
+    )
+    if record is None:
+        raise RuntimeError(
+            "Resultat batch introuvable pour transcript-reconciliation."
+        )
+    response = record.get("response") or {}
+    if response.get("status_code") != 200:
+        raise RuntimeError(
+            "Batch transcript-reconciliation en echec avec "
+            f"status={response.get('status_code')}"
+        )
+    raw_response = _response_text_from_payload(response.get("body") or {})
+    static_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: SimpleNamespace(output_text=raw_response)
+        )
+    )
+    corrected_text, corrections = reconcile_transcripts_with_luna(
+        static_client,
+        model,
+        whisper_text,
+        ocr_text,
+    )
+    return _write_reconciliation(target, report, corrected_text, corrections)
+
+
 def reconcile_file(
     video_path: Path,
     *,
     force: bool = False,
     client: object | None = None,
     model: str = DEFAULT_CORRECTION_MODEL,
+    mode: str = "live",
+    reset_batch: bool | None = None,
 ) -> Path | None:
+    if mode == "batch":
+        return reconcile_file_batch(
+            video_path,
+            force=force,
+            model=model,
+            wait=True,
+            reset_batch=reset_batch,
+        )
+    if mode != "live":
+        raise ValueError(f"Mode de reconciliation invalide: {mode!r}")
     whisper_source = whisper_source_path(video_path)
     ocr_source = ocr_source_path(video_path)
     target = corrected_path(video_path)
@@ -309,13 +544,4 @@ def reconcile_file(
             ocr_source.read_text(encoding="utf-8"),
         )
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(corrected_text, encoding="utf-8")
-    report_lines = sorted({f"{source}\t{replacement}" for source, replacement in corrections})
-    report.write_text(
-        "\n".join(report_lines) + ("\n" if report_lines else ""),
-        encoding="utf-8",
-    )
-    print(f"[ok] {target} ({len(corrections)} rapprochement(s) OCR)")
-    print(f"[ok] {report}")
-    return target
+    return _write_reconciliation(target, report, corrected_text, corrections)

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pipeline.contracts import LONG_VIDEO_THRESHOLD_SECONDS
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import (
     existing_images_dir,
@@ -57,6 +58,13 @@ def manifest_class_counts(payload):
 
 
 def infer_video_type_from_manifest(payload, duration_seconds=None):
+    if (
+        isinstance(duration_seconds, (int, float))
+        and not isinstance(duration_seconds, bool)
+        and duration_seconds > LONG_VIDEO_THRESHOLD_SECONDS
+    ):
+        return "long_video"
+
     footage_count, graphic_count, mixture_count = manifest_class_counts(payload)
     total_count = footage_count + graphic_count + mixture_count
     labels = {
@@ -87,6 +95,19 @@ def video_duration_seconds(video_path):
 
 def infer_for_video(video_path, force=False):
     del force
+    duration_seconds = video_duration_seconds(video_path)
+    if (
+        duration_seconds is not None
+        and duration_seconds > LONG_VIDEO_THRESHOLD_SECONDS
+    ):
+        video_type = "long_video"
+        print(
+            f"[ok] {video_path.name}: video_type={video_type}, "
+            f"duree={duration_seconds:g}s",
+            flush=True,
+        )
+        return video_type
+
     source = manifest_path(video_path)
     if not source.exists():
         print(f"[skip] manifest introuvable: {source}")
@@ -101,7 +122,6 @@ def infer_for_video(video_path, force=False):
             return video_type
 
     payload = load_json(source)
-    duration_seconds = video_duration_seconds(video_path)
     video_type = infer_video_type_from_manifest(payload, duration_seconds=duration_seconds)
     duration_label = f"{duration_seconds:g}s" if duration_seconds is not None else "inconnue"
     print(

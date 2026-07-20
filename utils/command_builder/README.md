@@ -14,3 +14,10 @@ Il génère des commandes PowerShell à exécuter depuis la racine du projet pou
 Les définitions sont alignées sur les parseurs `argparse` présents dans
 `pipeline/`. La suite de tests est lancée avec `unittest`, sans dépendance
 `pytest`.
+
+Pour `pipeline run`, l’interrupteur « Tout OpenAI en Batch » génère le
+raccourci `--batch`. Il couvre la revue OCR, la réconciliation, la validation
+des speakers, les résumés et les embeddings.
+
+La portée de revue OCR propose aussi « Désactivée », qui génère
+`--review-scope none` et supprime entièrement cette branche du plan.

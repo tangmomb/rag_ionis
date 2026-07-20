@@ -78,10 +78,14 @@ function renderDetail() {
     video.has_subtitles === true ? "Sous-titres détectés" : video.has_subtitles === false ? "Sans sous-titres" : null,
   ].filter(Boolean).map((value) => `<span class="badge">${escapeHtml(value)}</span>`).join("");
   const speakers = Array.isArray(video.speakers) ? video.speakers : [];
-  const speakerBadge = speakers.length
-    ? `<span class="badge speaker-badge" title="${escapeHtml(speakers.join(", "))}"><span class="badge-info">i</span>${escapeHtml(speakers.join(", "))}</span>`
-    : "";
-  $("#videoBadges").innerHTML = standardBadges + speakerBadge;
+  const speakerDetails = Array.isArray(video.speaker_details) && video.speaker_details.length
+    ? video.speaker_details
+    : speakers.map((name) => ({ name, title: null }));
+  const speakerBadges = speakerDetails.map((speaker) => {
+    const label = speaker.title ? `${speaker.name} — ${speaker.title}` : speaker.name;
+    return `<span class="badge speaker-badge" title="${escapeHtml(label)}"><span class="badge-info">i</span>${escapeHtml(label)}</span>`;
+  }).join("");
+  $("#videoBadges").innerHTML = standardBadges + speakerBadges;
   $("#videoMeta").textContent = `${video.id} · ${formatDuration(video.duration_seconds)} · ${video.run}`;
   $("#youtubeLink").href = video.url;
   $("#stats").innerHTML = [

@@ -348,6 +348,10 @@ def filter_ocr_overlays(context: PipelineContext) -> TaskResult:
 
 
 def extract_review_candidates(context: PipelineContext) -> TaskResult:
+    if context.options.review_scope == "none":
+        return TaskResult.skipped(
+            "Extraction des candidats de revue OCR desactivee."
+        )
     from pipeline.steps.ocr.extract_other_text_candidates import (
         extract_for_video,
         manifest_path,
@@ -372,6 +376,10 @@ def extract_review_candidates(context: PipelineContext) -> TaskResult:
 
 
 def review_other_text(context: PipelineContext) -> TaskResult:
+    if context.options.review_scope == "none":
+        return TaskResult.skipped(
+            "Revue OpenAI des images OCR ambigues desactivee."
+        )
     from pipeline.steps.ocr.review_other_text_candidates import (
         review_video,
         source_manifest_path,
@@ -407,6 +415,10 @@ def review_other_text(context: PipelineContext) -> TaskResult:
 
 
 def apply_ocr_review(context: PipelineContext) -> TaskResult:
+    if context.options.review_scope == "none":
+        return TaskResult.skipped(
+            "Application de la revue OCR desactivee."
+        )
     from pipeline.steps.ocr.apply_other_text_review import apply_review, output_path
 
     target = output_path(context.video_path)
@@ -507,7 +519,11 @@ def transcribe_whisper(context: PipelineContext) -> TaskResult:
         )
 
     whisperx, model, device = load_whisperx_model()
-    diarization_pipeline, diarization_device = load_diarization_pipeline(device)
+    if context.video_type == "long_video":
+        diarization_pipeline = None
+        diarization_device = None
+    else:
+        diarization_pipeline, diarization_device = load_diarization_pipeline(device)
     audio_directory = transcript_directory / "audio"
     transcript_directory.mkdir(parents=True, exist_ok=True)
     audio_directory.mkdir(parents=True, exist_ok=True)
@@ -551,6 +567,10 @@ def propose_speakers(context: PipelineContext) -> TaskResult:
         context.video_path,
         force=context.force_rebuild,
         transcripts_dir_name=context.transcripts_dir_name,
+        prefer_plain=context.video_type == "long_video",
+        transcript_excerpt_chars=(
+            1000 if context.video_type == "long_video" else None
+        ),
     )
     return _artifact_result(
         context,
@@ -661,6 +681,12 @@ def reconcile_whisper_with_ocr(context: PipelineContext) -> TaskResult:
     result = reconcile_file(
         context.video_path,
         force=context.force_rebuild,
+        mode=(
+            "batch"
+            if context.options.openai_mode == "batch"
+            else "live"
+        ),
+        reset_batch=context.options.force,
     )
     return _artifact_result(
         context,
@@ -747,15 +773,22 @@ def create_plain_transcript(context: PipelineContext) -> TaskResult:
     )
     from pipeline.support.paths import existing_transcripts_dir
 
+    transcript_directory = existing_transcripts_dir(
+        context.video_path,
+        name=context.transcripts_dir_name,
+    )
+    raw_only = context.video_type == "long_video"
     sources = timecoded_inputs(
-        existing_transcripts_dir(
-            context.video_path,
-            name=context.transcripts_dir_name,
-        )
+        transcript_directory,
+        raw_only=raw_only,
     )
     if not sources:
         return TaskResult.blocked(
-            "Aucun transcript timecode corrige n'est disponible."
+            (
+                "Le transcript WhisperX brut n'est pas disponible."
+                if raw_only
+                else "Aucun transcript timecode corrige n'est disponible."
+            )
         )
     targets = [output_path(source) for source in sources]
     before = _snapshot(targets)
@@ -857,6 +890,12 @@ def summarize_sections(context: PipelineContext) -> TaskResult:
         force=context.force_rebuild,
         details_per_section=context.options.details_per_section,
         model=context.options.chunk_summary_model,
+        mode=(
+            "batch"
+            if context.options.openai_mode == "batch"
+            else "live"
+        ),
+        reset_batch=context.options.force,
     )
     payload, target = load_chunks(context.video_path)
     artifacts = (target,) if chunks_at_level(payload, "section") else ()
@@ -890,6 +929,12 @@ def summarize_video(context: PipelineContext) -> TaskResult:
         context.video_path,
         force=context.force_rebuild,
         model=context.options.chunk_summary_model,
+        mode=(
+            "batch"
+            if context.options.openai_mode == "batch"
+            else "live"
+        ),
+        reset_batch=context.options.force,
     )
     payload, target = load_chunks(context.video_path)
     artifacts = (target,) if chunks_at_level(payload, "global") else ()
@@ -906,24 +951,36 @@ def summarize_video(context: PipelineContext) -> TaskResult:
 
 
 def create_embeddings(context: PipelineContext) -> TaskResult:
-    from openai import OpenAI
     from pipeline.steps.embeddings.create_chunk_embeddings import (
         DEFAULT_EMBEDDING_DIMENSIONS,
         DEFAULT_EMBEDDING_MODEL,
         chunks_dir,
         create_embeddings as create,
+        create_embeddings_batch,
     )
 
     target_directory = chunks_dir(context.video_path)
     before_paths = sorted(target_directory.glob("*_embedding.json"))
     before = _snapshot(before_paths)
-    result = create(
-        OpenAI(),
-        DEFAULT_EMBEDDING_MODEL,
-        DEFAULT_EMBEDDING_DIMENSIONS,
-        context.video_path,
-        force=context.force_rebuild,
-    )
+    if context.options.openai_mode == "batch":
+        result = create_embeddings_batch(
+            DEFAULT_EMBEDDING_MODEL,
+            DEFAULT_EMBEDDING_DIMENSIONS,
+            context.video_path,
+            force=context.force_rebuild,
+            wait=True,
+            reset_batch=context.options.force,
+        )
+    else:
+        from openai import OpenAI
+
+        result = create(
+            OpenAI(),
+            DEFAULT_EMBEDDING_MODEL,
+            DEFAULT_EMBEDDING_DIMENSIONS,
+            context.video_path,
+            force=context.force_rebuild,
+        )
     embedding_paths = sorted(target_directory.glob("*_embedding.json"))
     return _artifact_result(
         context,

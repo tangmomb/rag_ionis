@@ -70,7 +70,21 @@ class VideoBrowserTests(unittest.TestCase):
                 / "whisper_transcript_timecoded_corrected_enriched.txt"
             ).write_text("[00:01] Bonjour WhisperX enrichi.", encoding="utf-8")
             (video_dir / "outputs" / "speakers" / "speakers_validated.json").write_text(
-                json.dumps({"speakers": ["Alice Martin", "Bob Durand"]}),
+                json.dumps(
+                    {
+                        "speakers": ["Alice Martin", "Bob Durand"],
+                        "speaker_details": [
+                            {
+                                "speaker": "Alice Martin",
+                                "title": "Directrice générale",
+                            },
+                            {
+                                "speaker": "Bob Durand",
+                                "title": "CTO",
+                            },
+                        ],
+                    }
+                ),
                 encoding="utf-8",
             )
             (video_dir / "outputs" / "chunks" / "transcript_chunks.json").write_text(
@@ -88,6 +102,13 @@ class VideoBrowserTests(unittest.TestCase):
             self.assertEqual(indexed[0]["image_count"], 1)
             self.assertEqual(indexed[0]["embedding_count"], 1)
             self.assertEqual(indexed[0]["speakers"], ["Alice Martin", "Bob Durand"])
+            self.assertEqual(
+                indexed[0]["speaker_details"],
+                [
+                    {"name": "Alice Martin", "title": "Directrice générale"},
+                    {"name": "Bob Durand", "title": "CTO"},
+                ],
+            )
             self.assertNotIn("has_summary", indexed[0])
             self.assertNotIn("summary", detail)
             self.assertEqual(detail["ocr"]["subtitle"]["00:01"], "Bonjour")
@@ -117,6 +138,13 @@ class VideoBrowserTests(unittest.TestCase):
                 "OCR plain utilisé pour les corrections",
             )
             self.assertEqual(detail["speakers"], ["Alice Martin", "Bob Durand"])
+            self.assertEqual(
+                detail["speaker_details"],
+                [
+                    {"name": "Alice Martin", "title": "Directrice générale"},
+                    {"name": "Bob Durand", "title": "CTO"},
+                ],
+            )
 
     def test_legacy_dated_init_directories_remain_supported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

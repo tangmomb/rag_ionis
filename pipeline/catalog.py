@@ -73,6 +73,7 @@ _TASK_SPECS = (
         "inspection",
         "Inferer le type de video",
         step_handlers.infer_video_type,
+        version="2",
         postcondition=lambda context: context.video_type is not None,
     ),
     TaskSpec(

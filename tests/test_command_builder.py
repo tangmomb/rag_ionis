@@ -43,6 +43,26 @@ class CommandBuilderTests(unittest.TestCase):
         )
         self.assertNotIn('module: "pytest"', source)
 
+    def test_run_action_exposes_global_batch_shortcut(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('const runBatchField = {', source)
+        self.assertIn('flag: "--batch"', source)
+        self.assertIn('if (action.id === "run")', source)
+        self.assertIn(
+            'executionFields.splice(openaiModeIndex, 1, runBatchField);',
+            source,
+        )
+
+    def test_ocr_review_scope_can_be_disabled(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '["none", "Désactivée — aucun appel OpenAI"]',
+            source,
+        )
+        self.assertIn('flag: "--review-scope"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

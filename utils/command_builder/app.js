@@ -62,6 +62,7 @@ const commonPipelineFields = [
     value: "normal",
     defaultValue: "normal",
     options: [["normal", "Normal (défaut)"], ["batch", "Batch"]],
+    help: "En Batch, tous les appels OpenAI de l’ingestion utilisent l’API Batch.",
   },
   {
     id: "reviewScope",
@@ -70,7 +71,12 @@ const commonPipelineFields = [
     type: "select",
     value: "duo",
     defaultValue: "duo",
-    options: [["duo", "Duo (défaut)"], ["all", "Toutes les images"]],
+    options: [
+      ["none", "Désactivée — aucun appel OpenAI"],
+      ["duo", "Duo (défaut)"],
+      ["all", "Toutes les images"],
+    ],
+    help: "« Désactivée » ignore entièrement l’extraction, la revue et l’application des images OCR ambiguës.",
   },
   {
     id: "correctionMode",
@@ -87,6 +93,15 @@ const commonPipelineFields = [
   { id: "speakerModel", label: "Modèle de validation speakers", flag: "--speaker-validation-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
   { id: "chunkModel", label: "Modèle de résumé des chunks", flag: "--chunk-summary-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
 ];
+
+const runBatchField = {
+  id: "batch",
+  label: "Tout OpenAI en Batch",
+  flag: "--batch",
+  type: "boolean",
+  help: "OCR visuel, réconciliation, speakers, résumés et embeddings. Chaque étape attend son résultat avant de poursuivre.",
+  full: true,
+};
 
 const actions = [
   {
@@ -171,8 +186,8 @@ const actions = [
     id: "run",
     category: "Pipeline",
     title: "Lancer le pipeline",
-    short: "WhisperX canonique pour toutes les vidéos",
-    description: "Inspecte puis exécute la chaîne WhisperX canonique. Le plain transcript OCR sert uniquement à corriger les graphies proches.",
+    short: "Pipeline complet, en appels directs ou OpenAI Batch",
+    description: "Inspecte puis exécute la chaîne adaptée à chaque vidéo. Le mode Batch couvre tous les appels OpenAI et conserve ses fichiers d’état pour permettre la reprise.",
     icon: "▶",
     accent: "#d9f36d",
     pipelineCommand: "run",
@@ -431,10 +446,17 @@ function pipelineSections(action) {
   }
   primaryFields.push(...commonPipelineFields.slice(0, 2));
   if (action.extraFields) primaryFields.push(...action.extraFields);
+  const executionFields = commonPipelineFields.slice(2, 9);
+  if (action.id === "run") {
+    const openaiModeIndex = executionFields.findIndex(
+      (field) => field.id === "openaiMode",
+    );
+    executionFields.splice(openaiModeIndex, 1, runBatchField);
+  }
 
   return [
     { title: action.task ? "Tâche et sélection" : "Sélection", fields: primaryFields },
-    { title: "Exécution", fields: commonPipelineFields.slice(2, 9) },
+    { title: "Exécution", fields: executionFields },
     { title: "Modèles avancés", fields: commonPipelineFields.slice(9) },
   ];
 }

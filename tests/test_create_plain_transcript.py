@@ -122,6 +122,36 @@ class CreatePlainTranscriptTests(unittest.TestCase):
                 [with_speakers],
             )
 
+    def test_long_video_plain_uses_raw_even_if_corrected_files_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            transcript_dir = (
+                Path(temporary_directory)
+                / "outputs"
+                / plain_transcript.CANONICAL_TRANSCRIPTS_DIR_NAME
+            )
+            transcript_dir.mkdir(parents=True)
+            raw = transcript_dir / plain_transcript.TRANSCRIPT_1_BRUT_NAME
+            corrected = transcript_dir / plain_transcript.TRANSCRIPT_2_CORRECTED_NAME
+            raw.write_text("[00:01-00:03] Texte brut.\n", encoding="utf-8")
+            corrected.write_text(
+                "[00:01-00:03] Texte corrige.\n",
+                encoding="utf-8",
+            )
+
+            sources = plain_transcript.timecoded_inputs(
+                transcript_dir,
+                raw_only=True,
+            )
+            target = plain_transcript.convert_file(
+                transcript_dir.parents[1],
+                sources[0],
+                force=True,
+            )
+            target_text = target.read_text(encoding="utf-8")
+
+        self.assertEqual(sources, [raw])
+        self.assertEqual(target_text, "Texte brut.\n")
+
     def test_ocr_directory_contains_only_plain_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"

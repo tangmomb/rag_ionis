@@ -93,6 +93,53 @@ class WhisperXDiarizationTests(unittest.TestCase):
             [("audio.wav", {"min_speakers": 1, "max_speakers": 3})],
         )
 
+    def test_transcription_reduces_batch_size_after_cuda_oom(self) -> None:
+        class MemoryLimitedModel:
+            def __init__(self):
+                self.batch_sizes = []
+
+            def transcribe(self, _audio_path, **kwargs):
+                batch_size = kwargs["batch_size"]
+                self.batch_sizes.append(batch_size)
+                if batch_size > 2:
+                    raise RuntimeError("CUDA failed with error out of memory")
+                return {"segments": []}
+
+        model = MemoryLimitedModel()
+        with (
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_BATCH_SIZE", 8),
+            patch.object(transcription, "torch", None),
+        ):
+            text, speakers = transcription.transcribe_with_whisperx(
+                object(),
+                model,
+                Path("audio.wav"),
+                "cuda",
+            )
+
+        self.assertEqual(model.batch_sizes, [8, 4, 2])
+        self.assertEqual(text, "")
+        self.assertEqual(speakers, [])
+
+    def test_non_memory_cuda_error_is_not_retried(self) -> None:
+        class FailingModel:
+            def __init__(self):
+                self.calls = 0
+
+            def transcribe(self, _audio_path, **_kwargs):
+                self.calls += 1
+                raise RuntimeError("CUDA invalid configuration argument")
+
+        model = FailingModel()
+        with patch.object(transcription, "DEFAULT_TRANSCRIBE_BATCH_SIZE", 8):
+            with self.assertRaisesRegex(RuntimeError, "invalid configuration"):
+                transcription.transcribe_with_batch_backoff(
+                    model,
+                    Path("audio.wav"),
+                )
+
+        self.assertEqual(model.calls, 1)
+
     def test_gated_model_error_explains_how_to_unlock_access(self) -> None:
         from huggingface_hub.errors import GatedRepoError
 

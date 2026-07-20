@@ -125,6 +125,84 @@ class ReconcileWhisperOcrTests(unittest.TestCase):
                 "ionis stm\tIonis-STM\n",
             )
 
+    def test_file_step_can_finalize_a_batch_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            whisper_dir = video_dir / "outputs" / "transcripts_whisper"
+            ocr_dir = video_dir / "outputs" / "transcripts_ocr"
+            whisper_dir.mkdir(parents=True)
+            ocr_dir.mkdir(parents=True)
+            video = video_dir / "video123.mp4"
+            video.touch()
+            (whisper_dir / reconciliation.WHISPER_SOURCE_NAME).write_text(
+                "[00:00-00:05] SPEAKER_00: ionis stm.\n",
+                encoding="utf-8",
+            )
+            (ocr_dir / "plain_transcript.txt").write_text(
+                "Ionis-STM.\n",
+                encoding="utf-8",
+            )
+            output_path = (
+                whisper_dir / reconciliation.BATCH_OUTPUT_NAME
+            )
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "custom_id": "transcript-reconciliation",
+                        "response": {
+                            "status_code": 200,
+                            "body": {
+                                "output_text": json.dumps(
+                                    {
+                                        "segments": [
+                                            {
+                                                "index": 0,
+                                                "text": "Ionis-STM.",
+                                            }
+                                        ]
+                                    }
+                                )
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = {
+                "status": "completed",
+                "output_file_id": "output-file",
+            }
+            with (
+                patch("openai.OpenAI", return_value=object()),
+                patch.object(
+                    reconciliation,
+                    "load_batch_state",
+                    return_value=state,
+                ),
+                patch.object(
+                    reconciliation,
+                    "batch_state_matches",
+                    return_value=True,
+                ),
+                patch.object(
+                    reconciliation,
+                    "poll_batch_state",
+                    return_value=state,
+                ),
+                patch.object(
+                    reconciliation,
+                    "download_batch_files",
+                ),
+            ):
+                corrected = reconciliation.reconcile_file(
+                    video,
+                    mode="batch",
+                )
+
+            corrected_text = corrected.read_text(encoding="utf-8")
+
+        self.assertIn("Ionis-STM.", corrected_text)
+
 
 if __name__ == "__main__":
     unittest.main()

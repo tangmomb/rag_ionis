@@ -33,20 +33,15 @@ SYSTEM_PROMPT = (
     "Tu verifies une liste de speakers detectes automatiquement dans une video. "
     "Garde uniquement les noms qui designent vraiment des personnes physiques. "
     "Rejete les entreprises, ecoles, services, metiers, titres, lieux, slogans, URLs, "
-    "mots OCR parasites et noms incomplets. Tu disposes d'abord de tous les textes "
-    "detectes par OCR dans la video, puis des speakers que l'OCR soupconne, puis du "
-    "titre de la video. Il y a probablement des noms de speakers dans ces textes OCR. "
-    "Utilise-les pour identifier ou corriger les noms des personnes presentes. "
-    "Le nombre de speakers distincts detectes dans le transcript est fourni comme "
-    "objectif. Cherche ce nombre de noms, mais n'invente jamais une identite si les "
-    "indices disponibles sont insuffisants. "
+    "mots OCR parasites et noms incomplets. Tu disposes eventuellement d'un extrait "
+    "du debut du transcript, de textes detectes par OCR et de candidats existants. "
+    "Recherche les noms des personnes dans toutes ces sources, meme lorsqu'aucun "
+    "candidat n'a encore ete propose. "
     "Pour chaque personne, retourne aussi son title, c'est-a-dire son poste, sa "
-    "fonction ou son role. Dans les textes OCR fournis, ce title est souvent tres "
-    "proche du nom de la personne. Si aucun title n'est fiable, utilise une chaine vide. "
-    "Si un speaker candidat ressemble beaucoup a celui "
-    "dans le titre, utilise le titre uniquement pour corriger l'orthographe des parties "
-    "du nom qu'il contient. Conserve toutes les autres parties du nom complet du candidat, "
-    "notamment son nom de famille. "
+    "fonction ou son role. Recherche et extrais aussi explicitement dans les sources "
+    "le nom de son entreprise ou organisation, puis inclus-le dans title. Le poste "
+    "et l'entreprise sont souvent tres proches du nom de la personne. Si aucun title "
+    "n'est fiable, utilise une chaine vide. "
     "Reponds uniquement avec l'objet JSON demande."
 )
 def candidates_path(video_path):
@@ -219,10 +214,15 @@ def validation_context(payload):
         candidate_entries(payload),
         [
             " ".join(str(text).split()).strip()
-            for text in payload.get("raw_ocr_texts", []) or []
+            for text in (
+                payload.get("filtered_ocr_texts")
+                or payload.get("raw_ocr_texts")
+                or []
+            )
             if " ".join(str(text).split()).strip()
         ],
         max(0, int(payload.get("expected_speaker_count") or 0)),
+        str(payload.get("transcript_excerpt") or ""),
     )
 
 
@@ -320,6 +320,7 @@ def build_response_request(
     candidates=None,
     raw_ocr_texts=None,
     expected_speaker_count=0,
+    transcript_excerpt="",
 ):
     candidate_details = [
         {"name": str(candidate.get("name") or "").strip()}
@@ -328,37 +329,24 @@ def build_response_request(
     ]
     if not candidate_details:
         candidate_details = [{"name": name} for name in speakers]
-    speaker_count_instruction = (
-        f"Le transcript contient {expected_speaker_count} speaker(s) distinct(s) : "
-        "c'est le nombre de noms que tu dois chercher. Si tu ne peux pas tous les "
-        "identifier de facon fiable, retourne uniquement ceux qui sont etayes et "
-        "n'invente aucun nom. "
-        if expected_speaker_count > 0
-        else ""
-    )
     user_prompt = (
         "Identifie les speakers qui sont vraiment des personnes physiques. "
-        "Voici d'abord tous les textes detectes via OCR dans la video, puis les "
-        "speakers que l'OCR soupconne, puis le titre de la video. Il y a "
-        "probablement des noms de speakers dans ces textes OCR : ajoute-les meme "
-        "s'ils ne figurent pas encore parmi les candidats. Place uniquement les "
+        "Voici un extrait du debut du transcript, les textes detectes via OCR dans "
+        "la video, puis les speakers deja soupconnes. Recherche aussi les noms dans "
+        "le transcript et ajoute-les meme s'ils ne figurent pas encore parmi les "
+        "candidats. Place uniquement les personnes physiques dans la reponse. "
         "Pour chaque personne, retourne speaker avec son nom et title avec son poste, "
-        "sa fonction ou son role. Le title est souvent tres proche du nom dans les "
-        "textes OCR fournis. Si tu ne peux pas confirmer le title, utilise une chaine "
-        "vide. Reponds sans commentaire. "
-        + speaker_count_instruction
-        + "Si un candidat ressemble beaucoup a un nom dans le titre, utilise le titre pour "
-        "corriger uniquement l'orthographe des parties correspondantes, sans jamais retirer "
-        "le nom de famille ou une autre partie du nom complet candidat. "
-        "Si la liste des candidats est vide, extrais du titre "
-        "un nom uniquement s'il identifie clairement une personne physique ; ignore "
-        "les roles, entreprises, ecoles et autres organisations.\n\n"
+        "sa fonction ou son role. Recherche et extrais explicitement le nom de "
+        "l'entreprise ou de l'organisation dans le transcript ou les textes OCR, puis "
+        "inclus-le dans title, par exemple 'CTO - Mappy.com'. N'omets pas l'entreprise "
+        "lorsqu'elle est identifiable. Si tu ne peux pas confirmer le title, utilise "
+        "une chaine vide. Reponds sans commentaire. "
+        + "\n\n"
         + json.dumps(
             {
+                "transcript_excerpt": transcript_excerpt,
                 "ocr_detected_texts": raw_ocr_texts or [],
                 "candidates": candidate_details,
-                "video_title": video_title,
-                "expected_speaker_count": expected_speaker_count,
             },
             ensure_ascii=False,
             indent=2,
@@ -392,6 +380,7 @@ def ask_gpt(
     candidates=None,
     raw_ocr_texts=None,
     expected_speaker_count=0,
+    transcript_excerpt="",
 ):
     body, request_log = build_response_request(
         model,
@@ -400,6 +389,7 @@ def ask_gpt(
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     )
     if hasattr(client, "responses"):
         diagnostics = None
@@ -541,6 +531,7 @@ def validate_file_live(client, model, video_path, force=False):
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     ) = validation_context(payload)
     no_speech = payload.get("status") == "no_speech"
     if no_speech:
@@ -548,7 +539,7 @@ def validate_file_live(client, model, video_path, force=False):
         valid_speakers = []
         speaker_details = []
         request_log = None
-    elif speakers or video_title or raw_ocr_texts:
+    elif speakers or video_title or raw_ocr_texts or transcript_excerpt:
         answer, request_log = ask_gpt(
             client,
             model,
@@ -557,6 +548,7 @@ def validate_file_live(client, model, video_path, force=False):
             candidates,
             raw_ocr_texts,
             expected_speaker_count,
+            transcript_excerpt,
         )
         answer = answer.strip()
         speaker_details = preserve_speaker_details(
@@ -573,6 +565,7 @@ def validate_file_live(client, model, video_path, force=False):
             candidates,
             raw_ocr_texts,
             expected_speaker_count,
+            transcript_excerpt,
         )
         _ = body
         answer = "[]"
@@ -601,6 +594,7 @@ def speaker_batch_fingerprint(
     candidates,
     raw_ocr_texts,
     expected_speaker_count,
+    transcript_excerpt,
 ):
     body, _request_log = build_response_request(
         model,
@@ -609,6 +603,7 @@ def speaker_batch_fingerprint(
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     )
     return batch_request_fingerprint(
         model,
@@ -629,6 +624,7 @@ def submit_batch_validation(
     candidates,
     raw_ocr_texts,
     expected_speaker_count,
+    transcript_excerpt,
     *,
     request_fingerprint,
 ):
@@ -644,6 +640,7 @@ def submit_batch_validation(
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     )
 
     write_jsonl(
@@ -719,8 +716,9 @@ def finalize_batch_validation(video_path, model, source, target, speakers, state
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     ) = validation_context(source_payload)
-    if (speakers or video_title or raw_ocr_texts) and not answer:
+    if (speakers or video_title or raw_ocr_texts or transcript_excerpt) and not answer:
         diagnostics = response_diagnostics_from_payload(raw_payload)
         raise RuntimeError(
             "Le batch OpenAI n'a renvoye aucun texte pour speaker-validation. "
@@ -743,6 +741,7 @@ def finalize_batch_validation(video_path, model, source, target, speakers, state
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     )
     return write_validation_output(
         model,
@@ -778,9 +777,15 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     ) = validation_context(payload)
     no_speech = payload.get("status") == "no_speech"
-    if no_speech or (not speakers and not video_title and not raw_ocr_texts):
+    if no_speech or (
+        not speakers
+        and not video_title
+        and not raw_ocr_texts
+        and not transcript_excerpt
+    ):
         _body, request_log = build_response_request(
             model,
             speakers,
@@ -788,6 +793,7 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
             candidates,
             raw_ocr_texts,
             expected_speaker_count,
+            transcript_excerpt,
         )
         return write_validation_output(
             model,
@@ -821,6 +827,7 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
         candidates,
         raw_ocr_texts,
         expected_speaker_count,
+        transcript_excerpt,
     )
     state = load_batch_state(state_path)
     if state is not None and not batch_state_matches(
@@ -842,6 +849,7 @@ def validate_file_batch(model, video_path, force=False, wait=False, poll_interva
             candidates,
             raw_ocr_texts,
             expected_speaker_count,
+            transcript_excerpt,
             request_fingerprint=request_fingerprint,
         )
         if not wait:

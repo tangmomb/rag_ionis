@@ -4,7 +4,6 @@ import unittest
 from typing import Any
 
 from interface.backend.telemetry import TraceOperation
-from interface.backend.generation import partial_answer_output
 from interface.backend.utilities import format_sql_pretty
 
 
@@ -57,15 +56,6 @@ class TraceOperationTests(unittest.TestCase):
         self.assertIn("\nORDER BY c.id ASC", formatted)
         self.assertIn("\nLIMIT %s", formatted)
 
-    def test_partial_answer_output_decodes_a_streaming_json_prefix(self) -> None:
-        self.assertEqual(
-            partial_answer_output('{"answer":"Bonjour\\nle monde'),
-            "Bonjour\nle monde",
-        )
-        self.assertEqual(
-            partial_answer_output('{"answer":"Bonjour","action":"answer"}'),
-            "Bonjour",
-        )
 
 
 if __name__ == "__main__":

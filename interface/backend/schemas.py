@@ -15,7 +15,6 @@ from interface.backend.config import (
 
 
 PlannerRoute = Literal["direct", "rag", "memory", "multi_source", "agent"]
-DirectSubIntent = Literal["social"]
 SqlSubIntent = Literal["video_lookup", "video_transcript", "video_description", "video_stats"]
 AnswerAction = Literal["answer", "clarify", "abstain"]
 
@@ -37,7 +36,6 @@ class PlannerPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route: PlannerRoute = "rag"
-    direct_sub_intent: DirectSubIntent | None = None
     sql_sub_intent: SqlSubIntent | None = None
     query_text: str
     query_text_bm25: str | None = None
@@ -48,14 +46,12 @@ class PlannerPlan(BaseModel):
     use_memory: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
-    plan_notes: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ExecutionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route: PlannerRoute = "rag"
-    direct_sub_intent: DirectSubIntent | None = None
     sql_sub_intent: SqlSubIntent | None = None
     raw_question: str
     query_text: str
@@ -68,7 +64,6 @@ class ExecutionPlan(BaseModel):
     use_memory: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
-    plan_notes: list[str] = Field(default_factory=list, max_length=3)
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     final_k: int = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 

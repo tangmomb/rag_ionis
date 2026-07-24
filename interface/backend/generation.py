@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from typing import Any
 
 from openai import OpenAI
@@ -78,28 +77,6 @@ def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) ->
     if trace is not None:
         trace["action"] = action
     return answer or raw_answer
-
-
-def partial_answer_output(raw_answer: str) -> str:
-    """Extrait le champ `answer` d'une enveloppe JSON encore incomplète."""
-    match = re.search(r'"answer"\s*:\s*"', raw_answer)
-    if not match:
-        return ""
-    encoded = raw_answer[match.end() :]
-    escaped = False
-    for index, char in enumerate(encoded):
-        if char == '"' and not escaped:
-            encoded = encoded[:index]
-            break
-        escaped = char == "\\" and not escaped
-        if char != "\\":
-            escaped = False
-    while encoded:
-        try:
-            return json.loads(f'"{encoded}"')
-        except json.JSONDecodeError:
-            encoded = encoded[:-1]
-    return ""
 
 
 def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -413,7 +390,6 @@ def generate_sql_answer(
     sql_sub_intent: str | None,
     sources: list[dict[str, Any]],
     trace: dict[str, str] | None = None,
-    on_answer_update: Callable[[str], None] | None = None,
 ) -> str:
     if not sources:
         if trace is not None:
@@ -494,26 +470,9 @@ def generate_sql_answer(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Sous-route SQL: {sql_sub_intent}\n\nQuestion: {question}\n\nResultats:\n\n" + "\n\n".join(context_blocks)},
         ]
-    if on_answer_update is None:
-        response = client.responses.create(model=answer_model, input=input_messages)
-        record_answer_trace(trace, answer_model, input_messages, response)
-        answer = getattr(response, "output_text", "").strip()
-    else:
-        raw_answer = ""
-        stream = client.responses.create(model=answer_model, input=input_messages, stream=True)
-        for event in stream:
-            if getattr(event, "type", "") != "response.output_text.delta":
-                continue
-            raw_answer += str(getattr(event, "delta", "") or "")
-            partial_answer = partial_answer_output(raw_answer)
-            if partial_answer:
-                on_answer_update(partial_answer)
-        if trace is not None:
-            trace["prompt"] = json.dumps(
-                {"model": answer_model, "input": input_messages}, ensure_ascii=False
-            )
-            trace["response_raw"] = raw_answer
-        answer = raw_answer.strip()
+    response = client.responses.create(model=answer_model, input=input_messages)
+    record_answer_trace(trace, answer_model, input_messages, response)
+    answer = getattr(response, "output_text", "").strip()
     if answer:
         return parse_answer_output(answer, trace)
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable pour la route sql.")
@@ -526,7 +485,6 @@ def generate_final_answer(
     retrieval: dict[str, Any],
     sources: list[dict[str, Any]],
     trace: dict[str, str] | None = None,
-    on_answer_update: Callable[[str], None] | None = None,
 ) -> str:
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     source_evaluation = retrieval.get("source_evaluation") or {}
@@ -556,7 +514,6 @@ def generate_final_answer(
             retrieval.get("sql_sub_intent"),
             sources,
             trace,
-            on_answer_update,
         )
     if route == "rag":
         return generate_answer(client, question, answer_model, sources, trace)

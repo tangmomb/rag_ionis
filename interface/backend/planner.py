@@ -26,7 +26,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "Tu ne dois jamais pretendre acceder aux donnees, ni repondre a la question utilisateur. "
         "Tu ne dois jamais mentionner ni utiliser de details techniques d'implementation. "
         "Retourne uniquement un JSON valide avec les cles exactes: "
-        "route, direct_sub_intent, sql_sub_intent, query_text, query_text_bm25, title_hint, speakers, published_after, published_before, use_memory, use_rag, sql_main_source, plan_notes. "
+        "route, sql_sub_intent, query_text, query_text_bm25, title_hint, speakers, published_after, published_before, use_memory, use_rag, sql_main_source. "
         "route doit etre l'une de ces valeurs exactes: direct, rag, memory, multi_source, agent. "
         "direct = reponse sans recherche. "
         "rag = recherche documentaire dans les contenus video et documents associes. "
@@ -34,16 +34,15 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "memory = recherche dans l'historique conversationnel. "
         "multi_source = combinaison de plusieurs sources. "
         "agent = uniquement pour les demandes necessitant plusieurs etapes ou un raisonnement complexe. "
-        "direct_sub_intent peut etre null ou social. "
         "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_description, video_stats. "
-        "Si route=direct et que le message est une salutation, politesse, small talk ou message purement conversationnel, mets direct_sub_intent=social. "
+        "Choisis sql_sub_intent=video_transcript uniquement si l'utilisateur demande explicitement le transcript ou la transcription, notamment une transcription complete. "
         "Si sql_main_source=false, sql_sub_intent doit etre null. "
         "Si route=memory, use_memory=true et use_rag=false et sql_main_source=false. "
         "Si route=rag, use_rag=true et use_memory=false et sql_main_source=false. "
         "Pour une video, un transcript, des speakers ou des metadonnees, route=rag, sql_main_source=true et sql_sub_intent=video_lookup ou video_transcript. "
         "Si route=multi_source, active au moins deux booleens parmi use_memory, use_rag, sql_main_source. "
         "Si route=agent, tu peux activer plusieurs booleens si necessaire. "
-        "Exemples: 'bonjour' => route=direct et direct_sub_intent=social. "
+        "Exemples: 'bonjour' => route=direct. "
         "'qu'est-ce qui est dit sur Parcoursup ?' => route=rag. "
         "'trouve une video avec Andy Leveque' => route=rag, sql_main_source=true et sql_sub_intent=video_lookup. "
         "'donne le transcript complet de la video sur Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=video_transcript. "
@@ -64,8 +63,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "'trouver', 'identifier', 'expliquer', 'parler', 'video', 'contenu', 'personne', 'role'. "
         "Si la question porte sur une personne nommee Andy Leveque, query_text_bm25 doit ressembler a 'Andy Leveque' et pas a une phrase. "
         "speakers est un tableau. "
-        "Les dates peuvent etre null. "
-        "plan_notes est une liste courte de notes d'execution, 0 a 3 elements maximum."
+        "Les dates peuvent etre null."
     )
     return system_prompt, question
 
@@ -83,7 +81,6 @@ def build_social_answer(question: str) -> str:
 
 def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     route = str(payload.get("route") or "").strip()
-    direct_sub_intent = str(payload.get("direct_sub_intent") or "").strip() or None
     sql_sub_intent = str(payload.get("sql_sub_intent") or "").strip() or None
 
     if "sql_main_source" not in payload and "use_sql" in payload:
@@ -111,9 +108,6 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["use_rag"] = True
         payload["use_memory"] = False
         route = "rag"
-
-    if route == "direct" and direct_sub_intent is None:
-        payload["direct_sub_intent"] = "social"
 
     if route not in {"multi_source", "agent"} and not payload.get("sql_main_source"):
         payload["sql_sub_intent"] = None
@@ -233,7 +227,6 @@ def build_execution_plan(
 
     return ExecutionPlan(
         route=planner_plan.route or "rag",
-        direct_sub_intent=planner_plan.direct_sub_intent,
         sql_sub_intent=planner_plan.sql_sub_intent,
         raw_question=payload.question,
         query_text=(planner_plan.query_text or payload.question).strip() or payload.question,
@@ -246,7 +239,6 @@ def build_execution_plan(
         use_memory=planner_plan.use_memory,
         use_rag=planner_plan.use_rag,
         sql_main_source=planner_plan.sql_main_source,
-        plan_notes=planner_plan.plan_notes,
         top_k=DEFAULT_BM25_LIMIT,
         final_k=DEFAULT_FINAL_K,
     )

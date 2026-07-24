@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Iterator
-from queue import Queue
-from threading import Thread
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
 
 from interface.backend.database import (
     ConversationNotFoundError,
@@ -46,10 +41,7 @@ def video_thumbnails() -> list[str]:
             return [row[0] for row in cursor.fetchall()]
 
 
-def execute_rag(
-    payload: RagRequest,
-    on_answer_update: Callable[[str], None] | None = None,
-) -> RagResponse:
+def execute_rag(payload: RagRequest) -> RagResponse:
     if not payload.useSql:
         raise HTTPException(status_code=400, detail="Le backend actuel attend useSql=true pour interroger la base.")
 
@@ -103,7 +95,6 @@ def execute_rag(
                     retrieval,
                     sources,
                     answer_trace,
-                    on_answer_update,
                 )
                 generation_span.set_output(
                     {
@@ -200,38 +191,3 @@ def rag(payload: RagRequest) -> RagResponse:
         request_span.set_attribute("rag.source_count", len(response.sources))
         request_span.set_output(response.model_dump())
         return response
-
-
-@router.post("/rag/stream")
-def rag_stream(payload: RagRequest) -> StreamingResponse:
-    """Diffuse les mises à jour de la réponse pendant la génération OpenAI."""
-    events: Queue[dict[str, Any]] = Queue()
-
-    def run() -> None:
-        try:
-            response = execute_rag(
-                payload,
-                on_answer_update=lambda answer: events.put({"type": "answer", "answer": answer}),
-            )
-            events.put({"type": "done", "response": response.model_dump()})
-        except HTTPException as exc:
-            events.put({"type": "error", "message": str(exc.detail)})
-        except Exception as exc:  # pragma: no cover
-            events.put({"type": "error", "message": str(exc)})
-        finally:
-            events.put({"type": "end"})
-
-    def stream_events() -> Iterator[str]:
-        worker = Thread(target=run, daemon=True)
-        worker.start()
-        while True:
-            event = events.get()
-            if event["type"] == "end":
-                return
-            yield json.dumps(event, ensure_ascii=False) + "\n"
-
-    return StreamingResponse(
-        stream_events(),
-        media_type="application/x-ndjson",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )

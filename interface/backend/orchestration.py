@@ -147,7 +147,6 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
 
     base_retrieval = {
         "route": execution_plan.route,
-        "direct_sub_intent": execution_plan.direct_sub_intent,
         "sql_sub_intent": execution_plan.sql_sub_intent,
         "planner_prompt": planner_prompt,
         "planner_response_raw": planner_raw,
@@ -189,13 +188,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         return "", [], clarification_retrieval
 
     if execution_plan.route == "direct":
-        if execution_plan.direct_sub_intent == "social":
-            return build_direct_retrieval(base_retrieval, build_social_answer(contextual_question), "direct")
-        return build_direct_retrieval(
-            base_retrieval,
-            "Je peux repondre directement a ce type de message sans interroger la base, mais aucun sous-type direct n'a ete defini pour cette demande.",
-            "direct",
-        )
+        return build_direct_retrieval(base_retrieval, build_social_answer(contextual_question), "direct")
 
     if execution_plan.route == "memory":
         with trace_operation(

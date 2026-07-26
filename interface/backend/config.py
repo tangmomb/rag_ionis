@@ -9,8 +9,9 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_DIR / ".env", override=True)
 
-DEFAULT_PLANNER_MODEL = "gpt-5.6-luna"
-DEFAULT_GENERATION_MODEL = "gpt-5.6-luna"
+DEFAULT_PLANNER_MODEL = "gpt-5.6-sol"
+DEFAULT_REFORMULATION_MODEL = "gpt-5.6-luna"
+DEFAULT_GENERATION_MODEL = "gpt-5.6-sol"
 DEFAULT_RERANK_MODEL = "cohere-rerank"
 DEFAULT_COHERE_RERANK_MODEL = "rerank-v4.0-fast"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"

@@ -8,16 +8,16 @@ from interface.backend.config import (
     DEFAULT_PLANNER_MODEL,
     DEFAULT_RERANK_MODEL,
 )
-from interface.backend.database import fetch_conversation_memory, fetch_recent_cited_video_ids
+from interface.backend.database import fetch_conversation_memory
 from interface.backend.planner import (
     apply_deterministic_sql_policy,
     build_execution_plan,
     build_social_answer,
     extract_video_title_hint,
     has_structured_sql_filters,
-    is_memory_video_comparison,
     reformulate_question,
-    resolve_speaker_filters,
+    resolve_company_filters,
+    resolve_person_filters,
     run_planner,
     sanitize_video_title_hint,
 )
@@ -83,7 +83,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         )
         planner_plan.title_hint = sanitize_video_title_hint(
             contextual_question,
-            planner_plan.title_hint or extract_video_title_hint(contextual_question),
+            extract_video_title_hint(contextual_question) or planner_plan.title_hint,
         )
         apply_deterministic_sql_policy(contextual_question, planner_plan)
         planner_span.set_output(
@@ -95,52 +95,71 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             }
         )
 
-    with trace_operation(
-        "rag.speaker_resolution",
-        kind="CHAIN",
-        input_value={
-            "question": contextual_question,
-            "planned_speakers": planner_plan.speakers,
-        },
-    ) as speaker_span:
-        planner_plan.speakers, speaker_resolution = resolve_speaker_filters(
-            contextual_question,
-            planner_plan,
-        )
-        speaker_span.set_output(speaker_resolution)
-    memory_video_ids: list[int] = []
-    memory_video_resolution: dict[str, Any] = {
+    planned_persons = [
+        str(value).strip()
+        for value in planner_plan.persons
+        if str(value).strip()
+    ]
+    database_persons: list[str] = []
+    person_resolution: dict[str, Any] = {
         "applied": False,
-        "reason": "not_a_memory_comparison",
-        "video_ids": [],
+        "ambiguous": False,
+        "requested": [],
+        "suggestions": [],
+        "suggestion_scores": [],
+        "auto_resolved": False,
+        "reason": "no_planned_persons",
     }
-    if is_memory_video_comparison(contextual_question):
-        memory_video_ids, memory_video_resolution = fetch_recent_cited_video_ids(
-            payload.conversationId,
-        )
-        if len(memory_video_ids) >= 2:
-            planner_plan.route = "multi_source"
-            planner_plan.use_memory = True
-            planner_plan.use_rag = False
-            planner_plan.sql_main_source = True
-            planner_plan.sql_sub_intent = "video_stats"
-            planner_plan.title_hint = None
-            planner_plan.speakers = []
-            memory_video_resolution["reason"] = "comparison_route_forced"
+    if planned_persons:
+        with trace_operation(
+            "rag.person_resolution",
+            kind="CHAIN",
+            input_value={"planned_persons": planned_persons},
+        ) as person_span:
+            database_persons, person_resolution = resolve_person_filters(
+                planned_persons,
+            )
+            person_span.set_output(person_resolution)
 
-    execution_plan = build_execution_plan(payload, planner_plan, memory_video_ids)
+    planned_companies = [
+        str(value).strip()
+        for value in planner_plan.company
+        if str(value).strip()
+    ]
+    database_company: list[str] = []
+    company_resolution: dict[str, Any] = {
+        "applied": False,
+        "requested": [],
+        "resolved": [],
+        "matches": [],
+        "unresolved": [],
+        "reason": "no_planned_company",
+    }
+    if planned_companies:
+        with trace_operation(
+            "rag.company_resolution",
+            kind="CHAIN",
+            input_value={"planned_company": planned_companies},
+        ) as company_span:
+            database_company, company_resolution = resolve_company_filters(
+                planned_companies,
+            )
+            company_span.set_output(company_resolution)
+    execution_plan = build_execution_plan(
+        payload,
+        planner_plan,
+    )
     # Les routes sans SQL structuré n'ont pas de sous-opération longue à
     # envelopper ; on conserve leur plan dans un span dédié.
     if not (
         execution_plan.sql_main_source
-        and execution_plan.route in {"rag", "multi_source", "agent"}
+        and execution_plan.route in {"rag", "multi_source"}
     ):
         with trace_operation(
             "rag.execution_plan",
             kind="CHAIN",
             input_value={
                 "planner_plan": planner_plan.model_dump(),
-                "memory_video_ids": memory_video_ids,
             },
         ) as execution_plan_span:
             execution_plan_span.set_output(execution_plan.model_dump())
@@ -156,17 +175,17 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "planner_plan": planner_plan.model_dump(),
         "execution_plan": execution_plan.model_dump(),
         "validated_query": execution_plan.model_dump(),
-        "speaker_resolution": speaker_resolution,
-        "memory_video_resolution": memory_video_resolution,
+        "person_resolution": person_resolution,
+        "company_resolution": company_resolution,
     }
 
-    if speaker_resolution.get("ambiguous"):
+    if person_resolution.get("ambiguous"):
         clarification_retrieval = {
             **base_retrieval,
             "answer_model": normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL),
             "embedding_model": normalize_model_name(payload.embeddingModel, DEFAULT_EMBEDDING_MODEL),
             "rerank_model": normalize_model_name(payload.rerankModel or "", DEFAULT_RERANK_MODEL),
-            "retrieval_mode": "speaker_clarification",
+            "retrieval_mode": "person_clarification",
             "sql_main_source": execution_plan.sql_main_source,
             "sql_prefilters": False,
             "bm25_top_k": 0,
@@ -226,7 +245,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         return "", [], retrieval
 
     if execution_plan.route == "rag" and execution_plan.sql_main_source:
-        sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
+        sql_sub_intent = execution_plan.sql_sub_intent or "lookup"
         # Ce span couvre l'application réelle du plan : Phoenix l'affiche
         # ainsi avant le SQL qu'il pilote, au lieu d'un span de construction
         # instantané trié arbitrairement parmi ses frères.
@@ -245,7 +264,12 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                     "sql_sub_intent": sql_sub_intent,
                 },
             ) as sql_span:
-                sources, direct_trace = lookup_video_document(execution_plan, sql_sub_intent)
+                sources, direct_trace = lookup_video_document(
+                    execution_plan,
+                    sql_sub_intent,
+                    database_persons=database_persons,
+                    database_company=database_company,
+                )
                 sql_span.set_output({**direct_trace, "results": sources})
                 trace_formatted_sql("rag.structured_sql", direct_trace)
             execution_plan_span.set_output(
@@ -293,7 +317,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         }
         return "", sources, retrieval
 
-    if execution_plan.route in {"multi_source", "agent"}:
+    if execution_plan.route == "multi_source":
         memory_items: list[dict[str, str]] = []
         memory_trace: dict[str, Any] = {}
         doc_sources: list[dict[str, Any]] = []
@@ -324,7 +348,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             )
 
         if execution_plan.sql_main_source:
-            sql_sub_intent = execution_plan.sql_sub_intent or "video_lookup"
+            sql_sub_intent = execution_plan.sql_sub_intent or "lookup"
             with trace_operation(
                 "rag.execution_plan",
                 kind="CHAIN",
@@ -340,7 +364,12 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                         "sql_sub_intent": sql_sub_intent,
                     },
                 ) as sql_span:
-                    doc_sources, doc_trace = lookup_video_document(execution_plan, sql_sub_intent)
+                    doc_sources, doc_trace = lookup_video_document(
+                        execution_plan,
+                        sql_sub_intent,
+                        database_persons=database_persons,
+                        database_company=database_company,
+                    )
                     sql_span.set_output({**doc_trace, "results": doc_sources})
                     trace_formatted_sql("rag.structured_sql", doc_trace)
                 execution_plan_span.set_output(
@@ -364,7 +393,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                     "result_count": len(doc_sources),
                 }
             )
-        elif execution_plan.use_rag or execution_plan.route == "agent":
+        elif execution_plan.use_rag:
             doc_sources, doc_trace = retrieve_chunks(payload, execution_plan)
             multi_source_actions.append(
                 {

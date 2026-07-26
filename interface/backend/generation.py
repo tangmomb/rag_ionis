@@ -13,7 +13,6 @@ from interface.backend.utilities import normalize_text, safe_json_loads, seriali
 
 FINAL_ANSWER_STYLE = (
     "Réponds directement à la question avec les éléments disponibles. "
-    "Commence toujours par une phrase d'introduction qui reformule brièvement la question de l'utilisateur avant de donner les informations. "
     "Formate toujours la réponse en Markdown lisible, avec des paragraphes, listes ou tableaux lorsque cela améliore la clarté. "
     "N'introduis pas ta réponse par une formule comme « d'après les sources » "
     "ou « selon les documents ». "
@@ -115,16 +114,16 @@ def evaluate_source_sufficiency(
         for source in source_scores
         if source.get("cohere_relevance_score") is not None
     ]
-    speaker_resolution = retrieval.get("speaker_resolution") or {}
+    person_resolution = retrieval.get("person_resolution") or {}
     normalized_question = normalize_text(question)
     has_unresolved_video_reference = bool(
         re.search(r"\b(?:la|le|cette|ce|une|un)\s+video\b", normalized_question)
         or re.search(r"\bvideo\b.*\b(?:sur|de|a propos de)\b", normalized_question)
     )
 
-    if speaker_resolution.get("ambiguous"):
+    if person_resolution.get("ambiguous"):
         action_hint: AnswerAction = "clarify"
-        reason = "ambiguous_speaker"
+        reason = "ambiguous_person"
     elif not sources:
         action_hint: AnswerAction = "clarify" if has_unresolved_video_reference else "abstain"
         reason = "ambiguous_video_reference" if action_hint == "clarify" else "no_sources"
@@ -141,15 +140,15 @@ def evaluate_source_sufficiency(
         else None
     )
     message_source = (
-        "speaker_resolution"
-        if reason == "ambiguous_speaker"
+        "person_resolution"
+        if reason == "ambiguous_person"
         else "source_evaluation"
         if action_hint == "clarify"
         else None
     )
     selected_message = (
-        speaker_resolution.get("message")
-        if reason == "ambiguous_speaker"
+        person_resolution.get("message")
+        if reason == "ambiguous_person"
         else clarification_message
     )
 
@@ -289,33 +288,36 @@ def generate_memory_answer(
 
 
 def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
-    if sql_sub_intent == "video_stats":
+    if sql_sub_intent == "stats":
         return (
             "Tu reponds a une demande de statistiques sur une video. "
             "Identifie la video correspondante et presente les dernieres statistiques disponibles : vues, likes, commentaires et date du snapshot. "
-            "Commence par une phrase qui reformule la demande. "
             "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
         )
-    if sql_sub_intent == "video_description":
+    if sql_sub_intent == "description":
         return (
             "Tu reponds a une demande de description d'une video. "
             "Identifie la video a partir des resultats fournis. "
-            "Commence par une phrase qui reformule la demande de l'utilisateur. "
-            "Presente ensuite la description de la video dans un paragraphe naturel et lisible. "
+            "Presente la description de la video dans un paragraphe naturel et lisible. "
             "Ne recopie jamais la description brute seule et n'ajoute aucune information absente de la description. "
             "Il s'agit de restituer la description de la video, pas de la resumer ni de l'analyser. "
         )
-    if sql_sub_intent == "video_transcript":
+    if sql_sub_intent == "transcript_verbatim":
         return (
             "Tu reponds a une demande de transcript de video. "
             "Identifie la video correspondante dans les resultats fournis. "
-            "Commence par une courte phrase indiquant que tu restitues le transcript demande. "
             "Restitue le transcript fidelement, sans le remplacer par un resume, sans inventer de contenu et sans ajouter d'analyse non demandee. "
+        )
+    if sql_sub_intent == "transcript_qa":
+        return (
+            "Tu reponds a une demande d'analyse, de synthese ou a une question sur le contenu d'une video en utilisant son transcript enrichi avec timecodes comme source. "
+            "Respecte exactement l'operation demandee, synthetise les passages pertinents et ne restitue pas le transcript en entier. "
+            "N'invente aucune information absente du transcript. "
         )
     return (
         "Tu reponds a une demande de recherche de videos dans les resultats structures fournis. "
-        "Commence par une phrase qui reformule la demande. "
         "Presente chaque video trouvee de maniere claire avec son titre et son lien. "
+        "Si la question porte sur une personne, son poste ou sa fonction, utilise uniquement les informations d'intervenant fournies dans les resultats. "
         "Si plusieurs videos sont presentes, distingue-les nettement. "
         "Ne transforme pas une recherche de videos en description ou en resume. "
     )
@@ -356,7 +358,9 @@ def generate_multi_source_answer(
             )
         )
     source_block = "\n\n".join(source_blocks) or "Aucune source documentaire exploitable."
-    source_marker_instruction = "" if sql_sub_intent == "video_transcript" else SOURCE_MARKER_INSTRUCTION + " "
+    source_marker_instruction = (
+        "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
+    )
 
     input_messages = [
             {
@@ -394,7 +398,7 @@ def generate_sql_answer(
     if not sources:
         if trace is not None:
             trace["action"] = "abstain"
-        if sql_sub_intent == "video_lookup":
+        if sql_sub_intent == "lookup":
             return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
         return (
             "Je n'ai trouve aucun contenu correspondant a cette demande. "
@@ -404,7 +408,7 @@ def generate_sql_answer(
     if client is None or not answer_model:
         if trace is not None:
             trace["action"] = "answer"
-        if sql_sub_intent == "video_lookup":
+        if sql_sub_intent == "lookup":
             lines = ["Videos trouvees :"]
             for index, item in enumerate(sources, start=1):
                 lines.append(f"- [S{index}] {item['video_title']} ({item['video_url']})")
@@ -424,41 +428,10 @@ def generate_sql_answer(
             )
         )
 
-    if sql_sub_intent == "video_stats":
-        task_prompt = (
-            "Tu reponds a une demande de statistiques sur une video. "
-            "Identifie la video correspondante et presente les dernieres statistiques disponibles : vues, likes, commentaires et date du snapshot. "
-            "Commence par une phrase qui reformule la demande. "
-            "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
-        )
-    elif sql_sub_intent == "video_description":
-        task_prompt = (
-            "Tu reponds a une demande de description d'une video. "
-            "Identifie la video a partir des resultats fournis. "
-            "Commence par une phrase qui reformule la demande de l'utilisateur. "
-            "Presente ensuite la description de la video dans un paragraphe naturel et lisible. "
-            "Ne recopie jamais la description brute seule et n'ajoute aucune information absente de la description. "
-            "Il s'agit de restituer la description de la video, pas de la resumer ni de l'analyser."
-        )
-    elif sql_sub_intent == "video_transcript":
-        task_prompt = (
-            "Tu reponds a une demande de transcript de video. "
-            "Identifie la video correspondante dans les resultats fournis. "
-            "Commence par une courte phrase indiquant que tu restitues le transcript demande. "
-            "Restitue le transcript fidelement, sans le remplacer par un resume, sans inventer de contenu et sans ajouter d'analyse non demandee. "
-            "Sauf si user a précisé qu'il veut les timecodes, retire-les. "
-        )
-    else:
-        task_prompt = (
-            "Tu reponds a une demande de recherche de videos dans les resultats structures fournis. "
-            "Commence par une phrase qui reformule la demande. "
-            "Presente chaque video trouvee de maniere claire avec son titre et son lien. "
-            "Si plusieurs videos sont presentes, distingue-les nettement. "
-            "Ne transforme pas une recherche de videos en description ou en resume. "
-        )
-
     task_prompt = build_sql_sub_intent_prompt(sql_sub_intent)
-    source_marker_instruction = "" if sql_sub_intent == "video_transcript" else SOURCE_MARKER_INSTRUCTION + " "
+    source_marker_instruction = (
+        "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
+    )
     system_prompt = (
         task_prompt
         + "N'invente aucune information absente des resultats. "
@@ -489,11 +462,11 @@ def generate_final_answer(
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     source_evaluation = retrieval.get("source_evaluation") or {}
     action_hint = source_evaluation.get("action_hint")
-    if route not in {"direct", "memory"} and source_evaluation.get("reason") == "ambiguous_speaker":
+    if route not in {"direct", "memory"} and source_evaluation.get("reason") == "ambiguous_person":
         if trace is not None:
             trace["action"] = "clarify"
         return (
-            (retrieval.get("speaker_resolution") or {}).get("message")
+            (retrieval.get("person_resolution") or {}).get("message")
             or "Peux-tu préciser le nom de l'intervenant ?"
         )
     if route not in {"direct", "memory"} and action_hint == "clarify":
@@ -521,7 +494,7 @@ def generate_final_answer(
         return generate_sql_answer(client, question, answer_model, retrieval.get("sql_sub_intent"), sources, trace)
     if route == "memory":
         return generate_memory_answer(client, question, answer_model, retrieval.get("memory_items", []), trace)
-    if route in {"multi_source", "agent"}:
+    if route == "multi_source":
         return generate_multi_source_answer(
             client,
             question,

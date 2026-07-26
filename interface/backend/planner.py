@@ -8,7 +8,12 @@ from typing import Any
 
 from openai import OpenAI
 
-from interface.backend.config import DEFAULT_BM25_LIMIT, DEFAULT_FINAL_K, DEFAULT_PLANNER_MODEL
+from interface.backend.config import (
+    DEFAULT_BM25_LIMIT,
+    DEFAULT_FINAL_K,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_REFORMULATION_MODEL,
+)
 from interface.backend.database import connect_database, fetch_conversation_memory
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
@@ -16,39 +21,48 @@ from interface.backend.utilities import normalize_text, safe_json_loads, seriali
 
 # La correction tolère une faute légère dans un prénom ou un nom, sans faire
 # remonter des noms qui ne partagent qu'une syllabe courte.
-SPEAKER_NAME_PART_SIMILARITY_THRESHOLD = 0.85
+PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
+COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.90
 
 
-def build_planner_prompt(question: str) -> tuple[str, str]:
+def _build_legacy_planner_prompt(question: str) -> tuple[str, str]:
     system_prompt = (
         "Tu es le planner d'un assistant conversationnel video. "
         "Ton role est uniquement de comprendre la demande utilisateur et de produire un plan d'execution strict en JSON. "
         "Tu ne dois jamais pretendre acceder aux donnees, ni repondre a la question utilisateur. "
         "Tu ne dois jamais mentionner ni utiliser de details techniques d'implementation. "
         "Retourne uniquement un JSON valide avec les cles exactes: "
-        "route, sql_sub_intent, query_text, query_text_bm25, title_hint, speakers, published_after, published_before, use_memory, use_rag, sql_main_source. "
-        "route doit etre l'une de ces valeurs exactes: direct, rag, memory, multi_source, agent. "
+        "route, sql_sub_intent, query_text, query_text_bm25, title_hint, persons, company, published_after, published_before, use_memory, use_rag, sql_main_source. "
+        "route doit etre l'une de ces valeurs exactes: direct, rag, memory, multi_source. "
         "direct = reponse sans recherche. "
         "rag = recherche documentaire dans les contenus video et documents associes. "
-        "Les demandes structurees sur les metadonnees, speakers ou transcripts utilisent aussi rag, avec sql_main_source=true et le sous-intent SQL adapte. "
+        "Les demandes structurees sur les metadonnees, personnes ou transcripts utilisent aussi rag, avec sql_main_source=true et le sous-intent SQL adapte. "
         "memory = recherche dans l'historique conversationnel. "
         "multi_source = combinaison de plusieurs sources. "
-        "agent = uniquement pour les demandes necessitant plusieurs etapes ou un raisonnement complexe. "
-        "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: video_lookup, video_transcript, video_description, video_stats. "
-        "Choisis sql_sub_intent=video_transcript uniquement si l'utilisateur demande explicitement le transcript ou la transcription, notamment une transcription complete. "
+        "sql_sub_intent peut etre null ou l'une de ces valeurs exactes: lookup, stats, description, transcript_verbatim, transcript_qa. "
+        "Chaque sous-intent a un seul objectif: lookup recherche ou liste des videos, notamment par personne; stats retourne leurs statistiques; description retourne leur description; transcript_verbatim restitue la colonne transcript; transcript_qa repond ou produit une synthese a partir de la colonne transcript_timecodes_enrichi. "
+        "La base contient les tables et informations suivantes: videos pour les titres, URL, descriptions et dates; les personnes avec leur nom et leur metier, poste, profession, fonction ou role; stats pour les vues, likes et commentaires; transcripts.transcript pour le texte sans timecodes; transcripts.transcript_timecodes_enrichi pour le texte enrichi avec timecodes. "
+        "Utilise transcript_qa pour toute question demandant quand un propos apparait, a quel moment, a quelle minute, ou dans la video, dans quel passage ou avec quel timecode. "
+        "Utilise transcript_verbatim uniquement pour restituer la transcription elle-meme. "
         "Si sql_main_source=false, sql_sub_intent doit etre null. "
         "Si route=memory, use_memory=true et use_rag=false et sql_main_source=false. "
         "Si route=rag, use_rag=true et use_memory=false et sql_main_source=false. "
-        "Pour une video, un transcript, des speakers ou des metadonnees, route=rag, sql_main_source=true et sql_sub_intent=video_lookup ou video_transcript. "
+        "Pour rechercher ou lister une video, demander son transcript complet, ses personnes ou ses metadonnees, route=rag avec sql_main_source=true et le sql_sub_intent adapte. "
         "Si route=multi_source, active au moins deux booleens parmi use_memory, use_rag, sql_main_source. "
-        "Si route=agent, tu peux activer plusieurs booleens si necessaire. "
+        "Si tu identifies au moins deux personnes distinctes dans la question, remplis persons avec tous leurs noms et choisis obligatoirement route=multi_source. "
         "Exemples: 'bonjour' => route=direct. "
         "'qu'est-ce qui est dit sur Parcoursup ?' => route=rag. "
-        "'trouve une video avec Andy Leveque' => route=rag, sql_main_source=true et sql_sub_intent=video_lookup. "
-        "'donne le transcript complet de la video sur Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=video_transcript. "
-        "'donne la description de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_description. "
-        "'donne les statistiques de cette video' => route=rag, sql_main_source=true et sql_sub_intent=video_stats. "
-        "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux, utilise la recherche RAG sur le transcript. "
+        "'trouve une video avec Andy Leveque' => route=rag, sql_main_source=true et sql_sub_intent=lookup. "
+        "'donne le transcript complet de la video sur Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=transcript_verbatim. "
+        "'resume la video intitulee Parcoursup' => route=rag, sql_main_source=true et sql_sub_intent=transcript_qa. "
+        "'que dit cette video sur les stages ?' => route=rag, sql_main_source=true et sql_sub_intent=transcript_qa si la video est identifiee. "
+        "'donne la description de cette video' => route=rag, sql_main_source=true et sql_sub_intent=description. "
+        "'donne les statistiques de cette video' => route=rag, sql_main_source=true et sql_sub_intent=stats. "
+        "'qui intervient dans cette video ?' => route=rag, sql_main_source=true et sql_sub_intent=lookup. "
+        "'quel est le metier de Gabriel Dumy ?' => route=rag, sql_main_source=true, sql_sub_intent=lookup et persons=['Gabriel Dumy']. "
+        "Si l'utilisateur demande un resume, une synthese, ce que dit quelqu'un dans une video, ou les points principaux sans identifier une video precise, utilise la recherche RAG sur les chunks du transcript avec sql_main_source=false. "
+        "Si cette demande de contenu fournit le titre exact de la video, utilise transcript_qa avec sql_main_source=true, aussi bien pour un resume que pour une question. "
+        "Exemple: 'Que dit Matthieu dans la video « Apporter ma pierre a l'edifice » ?' => route=rag, use_rag=true, sql_main_source=true, sql_sub_intent=transcript_qa et title_hint contient le titre fourni. "
         "Si la question fait reference a plusieurs videos deja evoquees dans l'historique avec des formulations comme 'les precedentes', 'ces videos', 'les 3', 'laquelle', 'la plus vue' ou 'compare', choisis route=multi_source avec use_memory=true et sql_main_source=true lorsque des statistiques ou metadonnees SQL sont necessaires. "
         "'que t'ai-je demande juste avant ?' => route=memory. "
         "'compare ce que dit la base et ce qu'on s'est deja dit' => route=multi_source. "
@@ -56,14 +70,38 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "query_text_bm25 doit etre une version tres courte orientee mots-cles. "
         "title_hint contient le titre ou fragment de titre explicitement fourni par l'utilisateur, sinon null. "
         "Ne remplis title_hint que si le titre est explicitement présenté comme un titre. Les formulations 'une video avec [personne/groupe]', 'une video sur [sujet]' et 'une video qui parle de [sujet]' ne sont jamais un title_hint : dans ces cas, title_hint=null. "
-        "Exemple: 'j'ai besoin de la description de la video avec les alumnis' => title_hint=null et sql_sub_intent=video_description. "
+        "Exemple: 'j'ai besoin de la description de la video avec les alumnis' => title_hint=null et sql_sub_intent=description. "
         "query_text_bm25 ne doit contenir que des noms propres, acronymes, entites nommees, termes metier ou mots-cles concrets. "
         "Pour direct ou memory, query_text peut etre proche de la question brute. "
         "Pour rag ou sql, evite les verbes, les questions naturelles, les reformulations longues, les mots vides et les termes generiques comme "
         "'trouver', 'identifier', 'expliquer', 'parler', 'video', 'contenu', 'personne', 'role'. "
         "Si la question porte sur une personne nommee Andy Leveque, query_text_bm25 doit ressembler a 'Andy Leveque' et pas a une phrase. "
-        "speakers est un tableau. "
+        "persons contient toutes les personnes explicitement identifiees dans la question, sinon un tableau vide. "
+        "company contient toutes les entreprises explicitement identifiees dans la question, sinon un tableau vide. "
         "Les dates peuvent etre null."
+    )
+    return system_prompt, question
+
+
+def build_planner_prompt(question: str) -> tuple[str, str]:
+    system_prompt = (
+        "Tu planifies la requete d'un assistant video sans y repondre. Retourne uniquement un objet JSON avec exactement ces cles: "
+        "route, sql_sub_intent, query_text, query_text_bm25, title_hint, persons, company, published_after, published_before. "
+        "Routes: direct=sans recherche; rag=recherche dans les videos; memory=historique conversationnel; "
+        "multi_source=historique combine aux videos. "
+        "sql_sub_intent vaut null pour une recherche semantique, sinon une valeur parmi: "
+        "lookup (trouver ou lister des videos, notamment par personne, avec les noms et informations de metier, poste ou fonction disponibles), stats (vues, likes, commentaires), description, "
+        "transcript_verbatim (transcription complete sans timecodes, colonne transcripts.transcript), "
+        "transcript_qa (question, resume ou localisation temporelle comme 'a quel moment' dans une video identifiee, colonne transcripts.transcript_timecodes_enrichi). "
+        "Une question generale sur le contenu utilise route=rag et sql_sub_intent=null. "
+        "Une video identifiee par son titre avec une question sur son contenu utilise transcript_qa. "
+        "Une demande de transcript complet utilise transcript_verbatim. "
+        "title_hint contient uniquement un titre explicitement presente comme tel; une video avec une personne ou sur un sujet n'est pas un titre. "
+        "persons contient toutes les personnes explicitement identifiees dans la question, qu'elles soient ou non deja connues comme intervenantes. "
+        "company contient toutes les entreprises explicitement identifiees dans la question, sinon un tableau vide. "
+        "Si persons contient au moins deux personnes distinctes, route doit obligatoirement valoir multi_source. "
+        "query_text est adapte a la recherche semantique. query_text_bm25 est court et ne garde que noms propres, acronymes et mots-cles concrets. "
+        "Les champs inconnus sont null, sauf persons et company qui sont toujours des tableaux."
     )
     return system_prompt, question
 
@@ -79,7 +117,7 @@ def build_social_answer(question: str) -> str:
     return "Bonjour. Je peux t'aider a trouver une video, un transcript, un resume ou repondre a une question a partir de la base."
 
 
-def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
+def _normalize_legacy_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     route = str(payload.get("route") or "").strip()
     sql_sub_intent = str(payload.get("sql_sub_intent") or "").strip() or None
 
@@ -87,16 +125,32 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["sql_main_source"] = bool(payload.get("use_sql"))
     payload.pop("use_sql", None)
 
-    legacy_sql_intents = {"video_lookup", "video_transcript", "video_description", "video_stats"}
+    legacy_intent_map = {
+        "video_lookup": "lookup",
+        "video_transcript": "transcript_verbatim",
+        "video_description": "description",
+        "video_stats": "stats",
+    }
+    sql_intents = {
+        "lookup",
+        "stats",
+        "description",
+        "transcript_verbatim",
+        "transcript_qa",
+    }
     legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
 
-    if route in legacy_sql_intents:
+    if route in legacy_intent_map or route in sql_intents:
         payload["route"] = "rag"
-        payload["sql_sub_intent"] = route
+        payload["sql_sub_intent"] = legacy_intent_map.get(route, route)
         payload["sql_main_source"] = True
         payload["use_rag"] = True
         payload["use_memory"] = False
         return payload
+
+    if sql_sub_intent in legacy_intent_map:
+        payload["sql_sub_intent"] = legacy_intent_map[sql_sub_intent]
+        sql_sub_intent = payload["sql_sub_intent"]
 
     if route in legacy_routes:
         payload["route"] = legacy_routes[route]
@@ -109,10 +163,10 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["use_memory"] = False
         route = "rag"
 
-    if route not in {"multi_source", "agent"} and not payload.get("sql_main_source"):
+    if route != "multi_source" and not payload.get("sql_main_source"):
         payload["sql_sub_intent"] = None
-    elif sql_sub_intent not in legacy_sql_intents:
-        payload["sql_sub_intent"] = "video_lookup"
+    elif sql_sub_intent not in sql_intents:
+        payload["sql_sub_intent"] = "lookup"
 
     if route == "memory":
         payload["use_memory"] = True
@@ -127,7 +181,7 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         payload["use_rag"] = False
         payload["sql_main_source"] = False
 
-    if route not in {"direct", "rag", "memory", "multi_source", "agent"}:
+    if route not in {"direct", "rag", "memory", "multi_source"}:
         payload["route"] = "rag"
         payload["use_memory"] = False
         payload["use_rag"] = True
@@ -136,29 +190,81 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def extract_speaker_hint(question: str) -> list[str]:
-    patterns = [
-        r"(?:video|vidéo)\s+avec\s+([A-Za-zÀ-ÿ][\w'À-ÿ-]+(?:\s+[A-Za-zÀ-ÿ][\w'À-ÿ-]+)?)",
-        r"avec\s+([A-Za-zÀ-ÿ][\w'À-ÿ-]+(?:\s+[A-Za-zÀ-ÿ][\w'À-ÿ-]+)?)",
-        r"(?:où|ou)\s+parle\s+([A-Za-zÀ-ÿ][\w'À-ÿ-]+(?:\s+[A-Za-zÀ-ÿ][\w'À-ÿ-]+)?)",
-        r"intervention\s+de\s+([A-Za-zÀ-ÿ][\w'À-ÿ-]+(?:\s+[A-Za-zÀ-ÿ][\w'À-ÿ-]+)?)",
-    ]
-    found: list[str] = []
-    for pattern in patterns:
-        for match in re.finditer(pattern, question, flags=re.IGNORECASE):
-            value = (match.group(1) or "").strip(" ?!.,;:")
-            if not value:
-                continue
-            value = re.sub(r"^(un|une|le|la|les|du|de la|de l')\s+", "", value, flags=re.IGNORECASE)
-            normalized = " ".join(part.capitalize() for part in value.split())
-            if normalized not in found:
-                found.append(normalized)
-    return found
+def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalise uniquement les choix sémantiques; les sources sont dérivées ensuite."""
+    normalized = dict(payload)
+    route = str(normalized.get("route") or "").strip()
+    sql_sub_intent = str(normalized.get("sql_sub_intent") or "").strip() or None
+    legacy_intent_map = {
+        "video_lookup": "lookup",
+        "video_transcript": "transcript_verbatim",
+        "video_description": "description",
+        "video_stats": "stats",
+    }
+    sql_intents = {
+        "lookup",
+        "stats",
+        "description",
+        "transcript_verbatim",
+        "transcript_qa",
+    }
+    legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
+
+    if route in legacy_intent_map or route in sql_intents:
+        sql_sub_intent = legacy_intent_map.get(route, route)
+        route = "rag"
+    elif route == "sql":
+        route = "rag"
+        sql_sub_intent = legacy_intent_map.get(sql_sub_intent, sql_sub_intent) or "lookup"
+    else:
+        route = legacy_routes.get(route, route)
+        sql_sub_intent = legacy_intent_map.get(sql_sub_intent, sql_sub_intent)
+
+    if route not in {"direct", "rag", "memory", "multi_source"}:
+        route = "rag"
+    if route in {"direct", "memory"}:
+        sql_sub_intent = None
+    elif sql_sub_intent not in sql_intents:
+        sql_sub_intent = None
+
+    normalized["route"] = route
+    normalized["sql_sub_intent"] = sql_sub_intent
+    for derived_key in ("use_sql", "use_memory", "use_rag", "sql_main_source"):
+        normalized.pop(derived_key, None)
+    return normalized
+
+
+def derive_plan_sources(planner_plan: PlannerPlan) -> None:
+    """Déduit les sources d'exécution sans demander ces booléens au LLM."""
+    has_sql_intent = (
+        planner_plan.sql_sub_intent is not None
+        and not (
+            planner_plan.sql_sub_intent == "lookup"
+            and not (planner_plan.persons or planner_plan.company)
+        )
+    )
+
+    if planner_plan.route == "direct":
+        planner_plan.sql_sub_intent = None
+        planner_plan.use_memory = False
+        planner_plan.use_rag = False
+        planner_plan.sql_main_source = False
+    elif planner_plan.route == "memory":
+        planner_plan.sql_sub_intent = None
+        planner_plan.use_memory = True
+        planner_plan.use_rag = False
+        planner_plan.sql_main_source = False
+    elif planner_plan.route == "multi_source":
+        planner_plan.use_memory = True
+        planner_plan.use_rag = not has_sql_intent
+        planner_plan.sql_main_source = has_sql_intent
+    else:
+        planner_plan.use_memory = False
+        planner_plan.use_rag = True
+        planner_plan.sql_main_source = has_sql_intent
 
 
 def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str | None, str | None, bool]:
-    heuristic_speakers = extract_speaker_hint(question)
-
     system_prompt, user_prompt = build_planner_prompt(question)
     planner_input = [
         {"role": "system", "content": system_prompt},
@@ -173,9 +279,8 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
         fallback = PlannerPlan(
             route="rag",
             query_text=question,
-            speakers=heuristic_speakers,
-            use_rag=True,
         )
+        derive_plan_sources(fallback)
         return fallback, raw_prompt, json.dumps(fallback.model_dump(), ensure_ascii=False), False
 
     response = client.responses.create(model=DEFAULT_PLANNER_MODEL, input=planner_input)
@@ -185,46 +290,38 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
         fallback = PlannerPlan(
             route="rag",
             query_text=question,
-            speakers=heuristic_speakers,
-            use_rag=True,
         )
+        derive_plan_sources(fallback)
         return fallback, raw_prompt, raw_response, False
 
     try:
         parsed = normalize_planner_output(safe_json_loads(raw))
-        if heuristic_speakers:
-            existing = parsed.get("speakers") or []
-            merged: list[str] = []
-            for item in [*existing, *heuristic_speakers]:
-                cleaned = str(item).strip()
-                if cleaned and cleaned not in merged:
-                    merged.append(cleaned)
-            parsed["speakers"] = merged
         if not parsed.get("route"):
             parsed["route"] = "rag"
         if not parsed.get("query_text"):
             parsed["query_text"] = question
         validated = PlannerPlan.model_validate(parsed)
+        derive_plan_sources(validated)
         return validated, raw_prompt, raw_response, True
     except Exception:
         fallback = PlannerPlan(
             route="rag",
             query_text=question,
-            speakers=heuristic_speakers,
-            use_rag=True,
         )
+        derive_plan_sources(fallback)
         return fallback, raw_prompt, raw_response, False
 
 
 def build_execution_plan(
     payload: RagRequest,
     planner_plan: PlannerPlan,
-    video_ids: list[int] | None = None,
 ) -> ExecutionPlan:
+    derive_plan_sources(planner_plan)
     bm25_query = (planner_plan.query_text_bm25 or "").strip()
     if not bm25_query:
         bm25_query = (planner_plan.query_text or payload.question).strip() or payload.question
 
+    sql_main_source = planner_plan.sql_main_source
     return ExecutionPlan(
         route=planner_plan.route or "rag",
         sql_sub_intent=planner_plan.sql_sub_intent,
@@ -232,15 +329,15 @@ def build_execution_plan(
         query_text=(planner_plan.query_text or payload.question).strip() or payload.question,
         query_text_bm25=bm25_query,
         title_hint=planner_plan.title_hint,
-        speakers=planner_plan.speakers,
-        video_ids=video_ids or [],
+        persons=planner_plan.persons,
+        company=planner_plan.company,
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
         use_memory=planner_plan.use_memory,
         use_rag=planner_plan.use_rag,
-        sql_main_source=planner_plan.sql_main_source,
-        top_k=DEFAULT_BM25_LIMIT,
-        final_k=DEFAULT_FINAL_K,
+        sql_main_source=sql_main_source,
+        top_k=None if sql_main_source else DEFAULT_BM25_LIMIT,
+        final_k=None if sql_main_source else DEFAULT_FINAL_K,
     )
 
 
@@ -251,66 +348,131 @@ def has_explicit_structured_sql_request(question: str) -> bool:
     return bool(
         re.search(
             r"\b(?:url|lien|titre|description|descriptif|statistiques?|stats?|vues?|likes?|commentaires?|date de publication|publie|publiee|publiees|"
-            r"transcript|transcription|verbatim|timecodes?|sous-titres?|intervenant(?:e|s)?|speaker(?:s)?)\b",
+            r"transcript|transcription|verbatim|timecodes?|sous-titres?|intervenant(?:e|s)?|speaker(?:s)?|"
+            r"metier|profession|poste|fonction|role)\b",
             normalized,
         )
+        or re.search(r"\bqui\s+(?:intervient|parle)\b", normalized)
         or re.search(r"\b(?:quelle?|quelles?)\s+(?:video|videos|url|lien|titre|date)\b", normalized)
         or re.search(r"\b(?:trouve|trouver|cherche|chercher|liste|lister)\b.*\b(?:video|videos|transcript|transcription)\b", normalized)
+    )
+
+
+def has_document_content_request(question: str) -> bool:
+    """Détecte une demande de synthèse ou d'analyse du contenu vidéo."""
+    normalized = normalize_text(question)
+    return bool(
+        re.search(r"\bque\s+dit\b", normalized)
+        or re.search(r"\bqu[' ]?est ce que\b.*\bdit\b", normalized)
+        or re.search(r"\b(?:resume|resumer|synthese|synthetise|points? principaux?)\b", normalized)
+        or re.search(r"\b(?:de quoi parle|qu[' ]?apprend|explique)\b", normalized)
+    )
+
+
+def has_temporal_transcript_request(question: str) -> bool:
+    """Détecte une demande de localisation temporelle dans une vidéo."""
+    normalized = normalize_text(question)
+    return bool(
+        re.search(r"\b(?:a quel moment|a quelle minute|dans quel passage)\b", normalized)
+        or re.search(r"\b(?:quand|ou)\b.*\bdans\s+(?:la|cette|une)\s+video\b", normalized)
+        or re.search(r"\b(?:timecode|horodatage)\b", normalized)
+    )
+
+
+def has_person_title_request(question: str) -> bool:
+    """Détecte une question portant sur le poste ou la fonction d'une personne."""
+    normalized = normalize_text(question)
+    return bool(
+        re.search(
+            r"\b(?:metier|profession|poste|fonction|role)\s+(?:de|d[' ])\b",
+            normalized,
+        )
+        or re.search(
+            r"\b(?:quel(?:le)? est|connaitre|donne|indiquer?)\b.*"
+            r"\b(?:metier|profession|poste|fonction|role)\b",
+            normalized,
+        )
+        or re.search(
+            r"\btravaille(?:-t-il|-t-elle)?\s+(?:comme|en tant que)\b",
+            normalized,
+        )
     )
 
 
 def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> None:
     """Empêche le planner de basculer arbitrairement la source SQL principale."""
     if planner_plan.route in {"direct", "memory"}:
-        planner_plan.sql_main_source = False
         planner_plan.sql_sub_intent = None
+        derive_plan_sources(planner_plan)
+        return
+
+    if planner_plan.persons or planner_plan.company:
+        planner_plan.sql_sub_intent = "lookup"
+        derive_plan_sources(planner_plan)
+        return
+
+    if has_temporal_transcript_request(question):
+        planner_plan.sql_sub_intent = "transcript_qa"
+        derive_plan_sources(planner_plan)
+        return
+
+    if has_person_title_request(question):
+        planner_plan.sql_sub_intent = "lookup"
+        derive_plan_sources(planner_plan)
+        return
+
+    if has_document_content_request(question):
+        if planner_plan.title_hint:
+            planner_plan.sql_sub_intent = "transcript_qa"
+        else:
+            planner_plan.sql_sub_intent = None
+        derive_plan_sources(planner_plan)
         return
 
     if not has_explicit_structured_sql_request(question):
         # Le planner peut conserver SQL pour une question video complexe.
         # Si la recherche structuree echoue, orchestrate_request tentera le RAG.
+        derive_plan_sources(planner_plan)
         return
 
-    planner_plan.sql_main_source = True
-    normalized = question.lower()
+    normalized = normalize_text(question)
     if re.search(r"\b(?:statistiques?|stats?|vues?|likes?|commentaires?)\b", normalized):
-        planner_plan.sql_sub_intent = "video_stats"
+        planner_plan.sql_sub_intent = "stats"
     elif re.search(r"\b(?:description|descriptif|decris)\b", normalized):
-        planner_plan.sql_sub_intent = "video_description"
+        planner_plan.sql_sub_intent = "description"
     elif any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
-        planner_plan.sql_sub_intent = "video_transcript"
+        planner_plan.sql_sub_intent = "transcript_verbatim"
+    elif re.search(r"\b(?:intervenants?|speakers?|metier|profession|poste|fonction|role)\b", normalized) or re.search(
+        r"\bqui\s+(?:intervient|parle)\b",
+        normalized,
+    ):
+        planner_plan.sql_sub_intent = "lookup"
     else:
-        planner_plan.sql_sub_intent = planner_plan.sql_sub_intent or "video_lookup"
+        planner_plan.sql_sub_intent = "lookup"
+    derive_plan_sources(planner_plan)
 
 
 def has_structured_sql_filters(query: ExecutionPlan) -> bool:
     return any(
         [
-            bool(query.speakers),
+            bool(query.title_hint),
+            bool(query.persons),
+            bool(query.company),
             bool(query.published_after),
             bool(query.published_before),
         ]
     )
 
 
-def resolve_speaker_filters(
-    question: str,
-    planner_plan: PlannerPlan,
+def resolve_person_filters(
+    requested_persons: list[str],
 ) -> tuple[list[str], dict[str, Any]]:
-    """Ne conserve que les noms réellement présents dans la table speakers."""
-    candidates = [str(value).strip() for value in planner_plan.speakers if str(value).strip()]
-
-    # Pour les questions d'identité, le nom peut être dans query_text_bm25
-    # sans avoir été classé comme speaker par le planner.
-    identity_match = re.search(
-        r"\b(?:qui est|qui était|que fait|parle de|à propos de)\s+([^?!.;,]+)",
-        question,
-        flags=re.IGNORECASE,
-    )
-    if not candidates and identity_match:
-        candidate = identity_match.group(1).strip()
-        if candidate:
-            candidates.append(candidate)
+    """Ne conserve que les personnes réellement présentes dans la table SQL."""
+    candidates = [
+        str(value).strip()
+        for value in requested_persons
+        if str(value).strip()
+    ]
 
     if not candidates:
         return [], {
@@ -337,32 +499,32 @@ def resolve_speaker_filters(
                 ORDER BY name
                 """
             )
-            database_speakers = [str(row[0]).strip() for row in cursor.fetchall()]
+            database_persons = [str(row[0]).strip() for row in cursor.fetchall()]
 
     for candidate in candidates:
         normalized_candidate = normalize_text(candidate)
         exact_matches = [
-            speaker for speaker in database_speakers
-            if normalize_text(speaker) == normalized_candidate
+            person for person in database_persons
+            if normalize_text(person) == normalized_candidate
         ]
         if exact_matches:
-            for speaker in exact_matches:
-                if speaker not in resolved:
-                    resolved.append(speaker)
+            for person in exact_matches:
+                if person not in resolved:
+                    resolved.append(person)
             continue
 
-        def speaker_similarity(speaker: str) -> float:
+        def person_similarity(person: str) -> float:
             # Les tirets font partie de la graphie d'un prénom composé, mais
             # l'utilisateur peut les omettre ("Lou Ann" / "Lou-Ann").
             candidate_parts = re.sub(r"[-'’]", " ", normalized_candidate).split()
-            speaker_parts = re.sub(r"[-'’]", " ", normalize_text(speaker)).split()
-            if not candidate_parts or not speaker_parts:
+            person_parts = re.sub(r"[-'’]", " ", normalize_text(person)).split()
+            if not candidate_parts or not person_parts:
                 return 0.0
 
             if len(candidate_parts) == 1:
                 # Une recherche sur un seul mot peut désigner le prénom ou le
                 # nom, mais jamais un mot intermédiaire arbitraire.
-                comparable_parts = (speaker_parts[0], speaker_parts[-1])
+                comparable_parts = (person_parts[0], person_parts[-1])
                 return max(
                     (SequenceMatcher(None, candidate_parts[0], part).ratio() for part in comparable_parts),
                     default=0.0,
@@ -372,47 +534,47 @@ def resolve_speaker_filters(
             # croisé entre tous les mots (ex. "Ann" ne doit pas matcher
             # "Yannick" dans un autre nom).
             return max(
-                SequenceMatcher(None, candidate_parts[0], speaker_parts[0]).ratio(),
-                SequenceMatcher(None, candidate_parts[-1], speaker_parts[-1]).ratio(),
+                SequenceMatcher(None, candidate_parts[0], person_parts[0]).ratio(),
+                SequenceMatcher(None, candidate_parts[-1], person_parts[-1]).ratio(),
             )
 
         ranked = sorted(
             [
                 (
-                    speaker_similarity(speaker),
-                    speaker,
+                    person_similarity(person),
+                    person,
                 )
-                for speaker in database_speakers
+                for person in database_persons
             ],
             reverse=True,
         )
         close_matches = [
-            (score, speaker)
-            for score, speaker in ranked
-            if score >= SPEAKER_NAME_PART_SIMILARITY_THRESHOLD
+            (score, person)
+            for score, person in ranked
+            if score >= PERSON_NAME_PART_SIMILARITY_THRESHOLD
         ][:3]
         if close_matches:
             ambiguous_candidates.append(candidate)
-            for score, speaker in close_matches:
-                if speaker not in suggestions:
-                    suggestions.append(speaker)
-                suggestion_scores[speaker] = max(suggestion_scores.get(speaker, 0.0), score)
+            for score, person in close_matches:
+                if person not in suggestions:
+                    suggestions.append(person)
+                suggestion_scores[person] = max(suggestion_scores.get(person, 0.0), score)
         else:
             unresolved_candidates.append(candidate)
 
     if ambiguous_candidates:
         unique_suggestions = suggestions[:3]
         if len(unique_suggestions) == 1 and not unresolved_candidates:
-            speaker = unique_suggestions[0]
-            if speaker not in resolved:
-                resolved.append(speaker)
+            person = unique_suggestions[0]
+            if person not in resolved:
+                resolved.append(person)
             return resolved, {
                 "applied": True,
                 "ambiguous": False,
                 "requested": candidates,
                 "suggestions": unique_suggestions,
                 "suggestion_scores": [
-                    {"speaker": speaker, "score": round(suggestion_scores[speaker], 3)}
+                    {"person": person, "score": round(suggestion_scores[person], 3)}
                 ],
                 "auto_resolved": True,
             }
@@ -423,8 +585,8 @@ def resolve_speaker_filters(
             "ambiguous_requests": ambiguous_candidates,
             "suggestions": unique_suggestions,
             "suggestion_scores": [
-                {"speaker": speaker, "score": round(suggestion_scores[speaker], 3)}
-                for speaker in unique_suggestions
+                {"person": person, "score": round(suggestion_scores[person], 3)}
+                for person in unique_suggestions
             ],
             "auto_resolved": False,
             "message": (
@@ -435,15 +597,15 @@ def resolve_speaker_filters(
         }
 
     if unresolved_candidates:
-        return [], {
+        return resolved, {
             "applied": True,
-            "ambiguous": True,
+            "ambiguous": False,
             "requested": candidates,
-            "ambiguous_requests": unresolved_candidates,
+            "unresolved_requests": unresolved_candidates,
             "suggestions": [],
             "suggestion_scores": [],
             "auto_resolved": False,
-            "message": "Je ne trouve aucun nom proche dans la base. Peux-tu préciser le nom de l'intervenant ?",
+            "fallback_to_transcripts": True,
         }
 
     return resolved, {
@@ -456,8 +618,95 @@ def resolve_speaker_filters(
     }
 
 
+def resolve_company_filters(
+    requested_companies: list[str],
+) -> tuple[list[str], dict[str, Any]]:
+    """Résout les entreprises vers des termes réellement contenus dans title."""
+    candidates = [
+        str(value).strip()
+        for value in requested_companies
+        if str(value).strip()
+    ]
+    if not candidates:
+        return [], {
+            "applied": False,
+            "requested": [],
+            "resolved": [],
+            "matches": [],
+            "unresolved": [],
+        }
+
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT title
+                FROM speakers
+                WHERE title IS NOT NULL AND btrim(title) <> ''
+                ORDER BY title
+                """
+            )
+            database_titles = [str(row[0]).strip() for row in cursor.fetchall()]
+
+    resolved: list[str] = []
+    matches: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    for candidate in candidates:
+        candidate_tokens = re.findall(r"\w+", normalize_text(candidate))
+        if not candidate_tokens:
+            unresolved.append(candidate)
+            continue
+
+        phrase_size = len(candidate_tokens)
+        ranked: list[tuple[float, str, str]] = []
+        for title in database_titles:
+            title_tokens = re.findall(r"\w+", normalize_text(title))
+            for index in range(0, len(title_tokens) - phrase_size + 1):
+                phrase = " ".join(title_tokens[index:index + phrase_size])
+                score = SequenceMatcher(
+                    None,
+                    " ".join(candidate_tokens),
+                    phrase,
+                ).ratio()
+                ranked.append((score, phrase, title))
+
+        ranked.sort(reverse=True)
+        if not ranked or ranked[0][0] < COMPANY_TITLE_SIMILARITY_THRESHOLD:
+            unresolved.append(candidate)
+            continue
+
+        score, matched_term, matched_title = ranked[0]
+        if matched_term not in resolved:
+            resolved.append(matched_term)
+        matches.append(
+            {
+                "requested": candidate,
+                "resolved": matched_term,
+                "title": matched_title,
+                "score": round(score, 3),
+            }
+        )
+
+    return resolved, {
+        "applied": True,
+        "requested": candidates,
+        "resolved": resolved,
+        "matches": matches,
+        "unresolved": unresolved,
+        "similarity_threshold": COMPANY_TITLE_SIMILARITY_THRESHOLD,
+    }
+
+
 def extract_video_title_hint(question: str) -> str | None:
-    """Extrait un titre explicitement fourni par l'utilisateur pour le SQL vidéo."""
+    """Extrait un titre explicitement fourni par l'utilisateur."""
+    video_quoted_match = re.search(
+        r"\b(?:video|vidéo)\s*[\"«“]([^\"»”]+)[\"»”]",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if video_quoted_match:
+        return video_quoted_match.group(1).strip() or None
+
     quoted_match = re.search(r"[\"«“]([^\"»”]+)[\"»”]\s+dans\s+le\s+titre", question, flags=re.IGNORECASE)
     if quoted_match:
         return quoted_match.group(1).strip() or None
@@ -588,7 +837,7 @@ def reformulate_question(
 
     system_prompt, user_prompt = build_question_reformulation_prompt(question, memory_items)
     trace["prompt"] = json.dumps(
-        {"model": DEFAULT_PLANNER_MODEL, "input": [
+        {"model": DEFAULT_REFORMULATION_MODEL, "input": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]},
@@ -596,7 +845,7 @@ def reformulate_question(
     )
     try:
         response = client.responses.create(
-            model=DEFAULT_PLANNER_MODEL,
+            model=DEFAULT_REFORMULATION_MODEL,
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

@@ -14,8 +14,14 @@ from interface.backend.config import (
 )
 
 
-PlannerRoute = Literal["direct", "rag", "memory", "multi_source", "agent"]
-SqlSubIntent = Literal["video_lookup", "video_transcript", "video_description", "video_stats"]
+PlannerRoute = Literal["direct", "rag", "memory", "multi_source"]
+SqlSubIntent = Literal[
+    "lookup",
+    "stats",
+    "description",
+    "transcript_verbatim",
+    "transcript_qa",
+]
 AnswerAction = Literal["answer", "clarify", "abstain"]
 
 
@@ -40,7 +46,8 @@ class PlannerPlan(BaseModel):
     query_text: str
     query_text_bm25: str | None = None
     title_hint: str | None = None
-    speakers: list[str] = Field(default_factory=list)
+    persons: list[str] = Field(default_factory=list)
+    company: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
     use_memory: bool = False
@@ -57,15 +64,15 @@ class ExecutionPlan(BaseModel):
     query_text: str
     query_text_bm25: str
     title_hint: str | None = None
-    speakers: list[str] = Field(default_factory=list)
-    video_ids: list[int] = Field(default_factory=list)
+    persons: list[str] = Field(default_factory=list)
+    company: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
     use_memory: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
-    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
-    final_k: int = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
+    top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
+    final_k: int | None = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 
 
 class ChunkSource(BaseModel):
@@ -82,7 +89,9 @@ class ChunkSource(BaseModel):
     cohere_relevance_score: float | None = None
     rank_sources: dict[str, int] = Field(default_factory=dict)
     text: str
-    speakers: list[str] = Field(default_factory=list)
+    persons: list[str] = Field(default_factory=list)
+    person_details: list[dict[str, Any]] = Field(default_factory=list)
+    transcript: str | None = None
     video_description: str | None = None
     video_type: str | None = None
     section_context: dict[str, Any] | None = None

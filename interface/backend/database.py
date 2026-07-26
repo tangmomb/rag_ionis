@@ -63,7 +63,7 @@ def ensure_chat_schema() -> None:
                         contextual_question TEXT,
                         planner_prompt TEXT,
                         planner_response_raw TEXT,
-                        speaker_resolution_trace JSONB,
+                        person_resolution_trace JSONB,
                         pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
                         execution_plan_json JSONB,
                         sql_query JSONB,
@@ -153,7 +153,7 @@ def ensure_chat_schema() -> None:
                             contextual_question TEXT,
                             planner_prompt TEXT,
                             planner_response_raw TEXT,
-                            speaker_resolution_trace JSONB,
+                            person_resolution_trace JSONB,
                             pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
                             execution_plan_json JSONB,
                             sql_query JSONB,
@@ -192,7 +192,7 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS contextual_question TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS planner_prompt TEXT",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS planner_response_raw TEXT",
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS speaker_resolution_trace JSONB",
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS person_resolution_trace JSONB",
                     "ALTER TABLE chat.messages DROP COLUMN IF EXISTS intent_source",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE",
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS execution_plan_json JSONB",
@@ -301,11 +301,11 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
                         if not isinstance(source, dict):
                             continue
                         title = str(source.get("video_title") or "").strip()
-                        speakers = source.get("speakers") or []
+                        persons = source.get("persons") or []
                         if title:
                             label = title
-                            if speakers:
-                                label += f" (intervenants : {', '.join(map(str, speakers))})"
+                            if persons:
+                                label += f" (intervenants : {', '.join(map(str, persons))})"
                             source_labels.append(label)
                     if source_labels:
                         source_context = "\nSources de la réponse précédente : " + " ; ".join(source_labels)
@@ -319,81 +319,6 @@ def fetch_conversation_memory(conversation_id: int | None, limit: int = 8) -> tu
         "message_count": len(items),
         "sql": sql,
         "params": [conversation_id, limit],
-    }
-
-
-def fetch_recent_cited_video_ids(
-    conversation_id: int | None,
-    limit: int = 8,
-) -> tuple[list[int], dict[str, Any]]:
-    """Retrouve les videos citees dans l'historique pour les comparaisons implicites."""
-    if conversation_id is None:
-        return [], {"applied": False, "reason": "no_conversation_id", "video_ids": []}
-
-    ensure_chat_schema()
-    sql = """
-        SELECT cited_chunks
-        FROM chat.messages
-        WHERE conversation_id = %s
-        ORDER BY id DESC
-        LIMIT %s
-    """
-    with connect_database() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql, (conversation_id, limit))
-            rows = cursor.fetchall()
-
-    urls: list[str] = []
-    titles: list[str] = []
-    for (raw_chunks,) in rows:
-        try:
-            chunks = json.loads(raw_chunks) if isinstance(raw_chunks, str) else raw_chunks
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        if not isinstance(chunks, list):
-            continue
-        for source in chunks:
-            if not isinstance(source, dict):
-                continue
-            url = str(source.get("video_url") or "").strip()
-            title = str(source.get("video_title") or "").strip()
-            if url and url not in urls:
-                urls.append(url)
-            elif title and title not in titles:
-                titles.append(title)
-
-    if not urls and not titles:
-        return [], {"applied": True, "reason": "no_cited_videos", "video_ids": [], "sql": sql}
-
-    lookup_sql = """
-        SELECT id, url, title
-        FROM videos
-        WHERE (%s::text[] IS NOT NULL AND url = ANY(%s::text[]))
-           OR (%s::text[] IS NOT NULL AND title = ANY(%s::text[]))
-    """
-    with connect_database() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(lookup_sql, (urls, urls, titles, titles))
-            matches = cursor.fetchall()
-
-    ordered_ids: list[int] = []
-    for url in urls:
-        for video_id, matched_url, _title in matches:
-            if matched_url == url and int(video_id) not in ordered_ids:
-                ordered_ids.append(int(video_id))
-    for title in titles:
-        for video_id, _url, matched_title in matches:
-            if matched_title == title and int(video_id) not in ordered_ids:
-                ordered_ids.append(int(video_id))
-
-    return ordered_ids, {
-        "applied": True,
-        "reason": "cited_videos_resolved" if ordered_ids else "cited_videos_not_found",
-        "video_ids": ordered_ids,
-        "source_urls": urls,
-        "source_titles": titles,
-        "sql": lookup_sql,
-        "params": [urls, urls, titles, titles],
     }
 
 
@@ -428,7 +353,7 @@ def store_chat_message(
     question_reformulation_prompt: str | None,
     planner_prompt: str | None,
     planner_response_raw: str | None,
-    speaker_resolution_trace: dict[str, Any],
+    person_resolution_trace: dict[str, Any],
     pydantic_verification: bool,
     execution_plan_json: dict[str, Any],
     sql_query: dict[str, Any] | None,
@@ -459,7 +384,7 @@ def store_chat_message(
                     contextual_question,
                     planner_prompt,
                     planner_response_raw,
-                    speaker_resolution_trace,
+                    person_resolution_trace,
                     pydantic_verification,
                     execution_plan_json,
                     sql_query,
@@ -487,7 +412,7 @@ def store_chat_message(
                     contextual_question,
                     planner_prompt,
                     planner_response_raw,
-                    Jsonb(speaker_resolution_trace),
+                    Jsonb(person_resolution_trace),
                     pydantic_verification,
                     Jsonb(execution_plan_json),
                     Jsonb(sql_query) if sql_query is not None else None,

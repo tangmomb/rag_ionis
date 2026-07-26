@@ -45,6 +45,8 @@ def normalize_model_name(value: str, default: str) -> str:
     if lower in {"cohere rerank", "cohere-rerank"}:
         return "cohere-rerank"
     if lower in {"5.6 luna", "gpt 5.6 luna", "gpt-5.6 luna"}:
+        return "gpt-5.6-luna"
+    if lower in {"5.6 sol", "gpt 5.6 sol", "gpt-5.6 sol"}:
         return DEFAULT_GENERATION_MODEL
     # Compatibilite avec d'anciens clients : le modele de generation officiel
     # reste toujours celui defini par DEFAULT_GENERATION_MODEL.

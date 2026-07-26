@@ -133,7 +133,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                 contextual_question=retrieval.get("contextual_question", payload.question),
                 planner_prompt=retrieval["planner_prompt"],
                 planner_response_raw=retrieval["planner_response_raw"],
-                speaker_resolution_trace=retrieval["speaker_resolution"],
+                person_resolution_trace=retrieval["person_resolution"],
                 pydantic_verification=retrieval["pydantic_verification"],
                 execution_plan_json=retrieval["execution_plan"],
                 sql_query=sql_trace_for_storage(retrieval),

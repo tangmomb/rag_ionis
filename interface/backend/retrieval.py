@@ -26,12 +26,44 @@ from interface.backend.utilities import (
     resolve_cohere_rerank_model,
 )
 
-VIDEO_SPEAKER_NAMES_SQL = """
+VIDEO_PERSON_NAMES_SQL = """
 ARRAY(
-    SELECT speaker_row.name
-    FROM speakers speaker_row
-    WHERE speaker_row.video_id = v.id
-    ORDER BY speaker_row.id
+    SELECT person_row.name
+    FROM speakers person_row
+    WHERE person_row.video_id = v.id
+    ORDER BY person_row.id
+)
+"""
+
+VIDEO_PERSON_DETAILS_SQL = """
+COALESCE(
+    (
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'name', person_row.name,
+                'title', person_row.title
+            )
+            ORDER BY person_row.id
+        )
+        FROM speakers person_row
+        WHERE person_row.video_id = v.id
+    ),
+    '[]'::jsonb
+)
+"""
+
+VIDEO_TRANSCRIPT_DOCUMENT_SQL = """
+(
+    SELECT COALESCE(
+        transcript_row.transcript_timecodes_enrichi,
+        transcript_row.transcript
+    )
+    FROM transcripts transcript_row
+    WHERE transcript_row.video_id = v.id
+    ORDER BY
+        CASE WHEN transcript_row.language_code = 'fr' THEN 0 ELSE 1 END,
+        transcript_row.id DESC
+    LIMIT 1
 )
 """
 
@@ -48,29 +80,61 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
         sql_span.set_output_text(formatted_sql)
 
 
-def append_speaker_filter_clauses(clauses: list[str], params: list[Any], speakers: list[str]) -> None:
-    for speaker in speakers:
-        cleaned = speaker.strip()
-        if not cleaned:
-            continue
-        clauses.append(
-            """
-            EXISTS (
-                SELECT 1
-                FROM speakers speaker_row
-                WHERE speaker_row.video_id = v.id
-                  AND unaccent(lower(speaker_row.name)) LIKE unaccent(lower(%s))
-            )
-            """
+def append_person_filter_clauses(clauses: list[str], params: list[Any], persons: list[str]) -> None:
+    cleaned_persons = [person.strip() for person in persons if person.strip()]
+    if not cleaned_persons:
+        return
+    name_conditions = " OR ".join(
+        "unaccent(lower(person_row.name)) LIKE unaccent(lower(%s))"
+        for _ in cleaned_persons
+    )
+    clauses.append(
+        f"""
+        EXISTS (
+            SELECT 1
+            FROM speakers person_row
+            WHERE person_row.video_id = v.id
+              AND ({name_conditions})
         )
-        params.append(f"%{cleaned}%")
+        """
+    )
+    params.extend(f"%{person}%" for person in cleaned_persons)
+
+
+def append_company_filter_clauses(
+    clauses: list[str],
+    params: list[Any],
+    companies: list[str],
+) -> None:
+    cleaned_companies = [
+        company.strip() for company in companies if company.strip()
+    ]
+    if not cleaned_companies:
+        return
+    title_conditions = " OR ".join(
+        "unaccent(lower(person_row.title)) LIKE unaccent(lower(%s))"
+        for _ in cleaned_companies
+    )
+    clauses.append(
+        f"""
+        EXISTS (
+            SELECT 1
+            FROM speakers person_row
+            WHERE person_row.video_id = v.id
+              AND person_row.title IS NOT NULL
+              AND ({title_conditions})
+        )
+        """
+    )
+    params.extend(f"%{company}%" for company in cleaned_companies)
 
 
 def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    if query.speakers:
-        append_speaker_filter_clauses(clauses, params, query.speakers)
+    if query.title_hint:
+        clauses.append("unaccent(lower(v.title)) LIKE unaccent(lower(%s))")
+        params.append(f"%{query.title_hint}%")
     if query.published_after:
         clauses.append("v.published_at >= %s::timestamptz")
         params.append(query.published_after)
@@ -133,15 +197,23 @@ def candidate_sql_clause(candidate_chunk_ids: list[int] | None) -> tuple[str, li
     return " AND c.id = ANY(%s)", [candidate_chunk_ids]
 
 
-def build_video_lookup_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
+def build_video_lookup_conditions(
+    query: ExecutionPlan,
+    database_persons: list[str] | None = None,
+    database_company: list[str] | None = None,
+) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
     title_hint = query.title_hint
     if title_hint:
         clauses.append("unaccent(lower(v.title)) LIKE unaccent(lower(%s))")
         params.append(f"%{title_hint}%")
-    if query.speakers:
-        append_speaker_filter_clauses(clauses, params, query.speakers)
+    if database_persons:
+        append_person_filter_clauses(clauses, params, database_persons)
+    if database_company:
+        append_company_filter_clauses(clauses, params, database_company)
+    elif database_company is not None and query.company:
+        clauses.append("1 = 0")
     if query.published_after:
         clauses.append("v.published_at >= %s::timestamptz")
         params.append(query.published_after)
@@ -151,60 +223,172 @@ def build_video_lookup_conditions(query: ExecutionPlan) -> tuple[list[str], list
     return clauses, params
 
 
-def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if intent == "video_lookup":
-        clauses, params = build_video_lookup_conditions(query)
-        where_sql = " AND ".join(clauses) if clauses else "TRUE"
-        sql = f"""
+def lookup_video_document(
+    query: ExecutionPlan,
+    intent: str,
+    *,
+    database_persons: list[str] | None = None,
+    database_company: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if intent == "lookup":
+        def format_lookup_rows(
+            rows: list[Any],
+            *,
+            transcript_persons: list[str] | None = None,
+        ) -> list[dict[str, Any]]:
+            results = []
+            for row in rows:
+                person_details = row[4] or []
+                transcript = row[5]
+                person_lines = [
+                    f"- {item.get('name')}: {item.get('title') or 'poste non disponible'}"
+                    for item in person_details
+                    if isinstance(item, dict) and item.get("name")
+                ]
+                transcript_line = (
+                    "\nPersonnes trouvées dans le transcript: "
+                    + ", ".join(transcript_persons)
+                    if transcript_persons
+                    else ""
+                )
+                results.append(
+                    {
+                        "chunk_id": int(row[0]),
+                        "video_title": row[1],
+                        "video_url": row[2],
+                        "thumbnail_medium_url": row[3],
+                        "chunk_index": 0,
+                        "text": (
+                            f"Titre: {row[1]}\nURL: {row[2]}\n"
+                            f"Type: {row[6] or 'non disponible'}\n"
+                            "Intervenants et fonctions:\n"
+                            + ("\n".join(person_lines) or "- Aucun intervenant renseigne")
+                            + transcript_line
+                            + f"\nTranscript:\n{transcript or 'non disponible'}"
+                        ),
+                        "persons": [
+                            str(item["name"])
+                            for item in person_details
+                            if isinstance(item, dict) and item.get("name")
+                        ],
+                        "person_details": person_details,
+                        "transcript": transcript,
+                        "video_type": row[6],
+                        "bm25_score": None,
+                    }
+                )
+            return results
+
+        person_sql: str | None = None
+        person_params: list[Any] = []
+        person_rows: list[Any] = []
+        # Avec des personnes identifiées, la première recherche est strictement
+        # bornée aux noms résolus dans la table relationnelle. Sans personne, lookup
+        # conserve son comportement générique.
+        if (
+            database_persons
+            or database_company
+            or not (query.persons or query.company)
+        ):
+            clauses, person_params = build_video_lookup_conditions(
+                query,
+                database_persons,
+                database_company,
+            )
+            where_sql = " AND ".join(clauses) if clauses else "TRUE"
+            person_sql = f"""
             SELECT
                 v.id,
                 v.title,
                 v.url,
                 v.thumbnail_medium_url,
-                {VIDEO_SPEAKER_NAMES_SQL},
-                v.published_at,
+                {VIDEO_PERSON_DETAILS_SQL},
+                {VIDEO_TRANSCRIPT_DOCUMENT_SQL} AS transcript,
                 v.video_type
             FROM videos v
             WHERE {where_sql}
             ORDER BY v.published_at DESC NULLS LAST, v.id DESC
             LIMIT 10
+            """
+            with connect_database() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(person_sql, person_params)
+                    person_rows = cursor.fetchall()
+
+        if person_rows or not query.persons:
+            results = format_lookup_rows(person_rows)
+            return results, {
+                "mode": intent,
+                "lookup_strategy": (
+                    "company_title"
+                    if query.company
+                    else "persons_table"
+                    if query.persons
+                    else "generic"
+                ),
+                "sql": format_sql_for_trace(person_sql),
+                "params": person_params,
+                "result_count": len(results),
+            }
+
+        transcript_clauses, transcript_params = build_video_lookup_conditions(query)
+        transcript_document = (
+            "coalesce(t.transcript_timecodes_enrichi, t.transcript, '')"
+        )
+        transcript_persons = [
+            person.strip() for person in query.persons if person.strip()
+        ]
+        if transcript_persons:
+            transcript_person_conditions = " OR ".join(
+                f"unaccent(lower({transcript_document})) LIKE unaccent(lower(%s))"
+                for _ in transcript_persons
+            )
+            transcript_clauses.append(f"({transcript_person_conditions})")
+            transcript_params.extend(
+                f"%{person}%" for person in transcript_persons
+            )
+        transcript_where = (
+            " AND ".join(transcript_clauses) if transcript_clauses else "TRUE"
+        )
+        transcript_sql = f"""
+            SELECT
+                v.id,
+                v.title,
+                v.url,
+                v.thumbnail_medium_url,
+                {VIDEO_PERSON_DETAILS_SQL},
+                {transcript_document} AS transcript,
+                v.video_type
+            FROM videos v
+            JOIN transcripts t ON t.video_id = v.id
+            WHERE {transcript_where}
+            ORDER BY v.published_at DESC NULLS LAST, v.id DESC
+            LIMIT 10
         """
-        sql_params = params
         with connect_database() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(sql, sql_params)
-                rows = cursor.fetchall()
+                cursor.execute(transcript_sql, transcript_params)
+                transcript_rows = cursor.fetchall()
 
-        results = [
-            {
-                "chunk_id": int(row[0]),
-                "video_title": row[1],
-                "video_url": row[2],
-                "thumbnail_medium_url": row[3],
-                "chunk_index": 0,
-                "text": (
-                    f"Titre: {row[1]}\nURL: {row[2]}\n"
-                    f"Type: {row[6] or 'non disponible'}\n"
-                    f"Speakers: {', '.join(row[4] or [])}"
-                ),
-                "speakers": row[4] or [],
-                "video_type": row[6],
-                "bm25_score": None,
-            }
-            for row in rows
-        ]
+        results = format_lookup_rows(
+            transcript_rows,
+            transcript_persons=query.persons,
+        )
         return results, {
             "mode": intent,
-            "sql": format_sql_for_trace(sql),
-            "params": sql_params,
+            "lookup_strategy": "transcript_fallback",
+            "sql": format_sql_for_trace(transcript_sql),
+            "params": transcript_params,
             "result_count": len(results),
+            "persons_table": {
+                "sql": format_sql_for_trace(person_sql),
+                "params": person_params,
+                "result_count": len(person_rows),
+            },
         }
 
-    if intent == "video_stats":
+    if intent == "stats":
         clauses, params = build_video_lookup_conditions(query)
-        if query.video_ids:
-            clauses.append("v.id = ANY(%s)")
-            params.append(query.video_ids)
         clauses.append("s.id IS NOT NULL")
         where_sql = " AND ".join(clauses)
         sql = f"""
@@ -247,7 +431,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                     f"Commentaires: {row[5] if row[5] is not None else 'non disponible'}\n"
                     f"Date du snapshot: {row[6]}"
                 ),
-                "speakers": [],
+                "persons": [],
                 "bm25_score": None,
             }
             for row in rows
@@ -259,7 +443,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             "result_count": len(results),
         }
 
-    if intent == "video_description":
+    if intent == "description":
         clauses, params = build_video_lookup_conditions(query)
         where_sql = " AND ".join(clauses) if clauses else "TRUE"
         sql = f"""
@@ -286,7 +470,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
                 "thumbnail_medium_url": None,
                 "chunk_index": 0,
                 "text": f"Titre: {row[1]}\nURL: {row[2]}\nDescription: {row[3] or ''}",
-                "speakers": [],
+                "persons": [],
                 "video_description": row[3],
                 "bm25_score": None,
             }
@@ -299,20 +483,23 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             "result_count": len(results),
         }
 
-    if intent == "video_transcript":
-        document_expr = "coalesce(t.transcript_timecodes, t.transcript)"
+    if intent == "transcript_verbatim":
+        document_expr = "t.transcript"
+    elif intent == "transcript_qa":
+        document_expr = "t.transcript_timecodes_enrichi"
     else:
         raise RuntimeError(f"Intent direct non supporte: {intent}")
 
     clauses, params = build_video_lookup_conditions(query)
     terms = query.query_text_bm25.strip() or query.query_text.strip() or query.raw_question
-    clauses.append(
-        f"""
-        to_tsvector('french', coalesce(v.title, '') || ' ' || coalesce({document_expr}, ''))
-        @@ websearch_to_tsquery('french', %s)
-        """
-    )
-    params.append(terms)
+    if not query.title_hint:
+        clauses.append(
+            f"""
+            to_tsvector('french', coalesce(v.title, '') || ' ' || coalesce({document_expr}, ''))
+            @@ websearch_to_tsquery('french', %s)
+            """
+        )
+        params.append(terms)
 
     where_sql = " AND ".join(clauses) if clauses else "TRUE"
     sql = f"""
@@ -322,7 +509,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
             v.url,
             v.thumbnail_medium_url,
             {document_expr} AS document_text,
-            {VIDEO_SPEAKER_NAMES_SQL},
+            {VIDEO_PERSON_NAMES_SQL},
             ts_rank_cd(
                 to_tsvector('french', coalesce(v.title, '') || ' ' || coalesce({document_expr}, '')),
                 websearch_to_tsquery('french', %s)
@@ -355,7 +542,7 @@ def lookup_video_document(query: ExecutionPlan, intent: str) -> tuple[list[dict[
         "thumbnail_medium_url": row[3],
         "chunk_index": 0,
         "text": row[4],
-        "speakers": row[5] or [],
+        "persons": row[5] or [],
         "bm25_score": float(row[6]) if row[6] is not None else None,
     }
     return [result], {
@@ -379,7 +566,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             c.chunk_level,
             c.chunk_parent_id,
             c.content,
-            {VIDEO_SPEAKER_NAMES_SQL},
+            {VIDEO_PERSON_NAMES_SQL},
             ts_rank_cd(
                 to_tsvector('french', coalesce(c.content, '')),
                 websearch_to_tsquery('french', %s)
@@ -408,7 +595,7 @@ def fetch_bm25_chunks(query: ExecutionPlan, candidate_chunk_ids: list[int] | Non
             "chunk_level": row[5],
             "chunk_parent_id": int(row[6]) if row[6] is not None else None,
             "text": row[7],
-            "speakers": row[8] or [],
+            "persons": row[8] or [],
             "bm25_score": float(row[9]) if row[9] is not None else None,
         }
         for row in rows
@@ -442,7 +629,7 @@ def fetch_vector_chunks(
             c.chunk_level,
             c.chunk_parent_id,
             c.content,
-            {VIDEO_SPEAKER_NAMES_SQL},
+            {VIDEO_PERSON_NAMES_SQL},
             1 - (c.embedding <=> %s::vector(2000)) AS score
         FROM chunks c
         JOIN videos v ON v.id = c.video_id
@@ -477,7 +664,7 @@ def fetch_vector_chunks(
             "chunk_level": row[5],
             "chunk_parent_id": int(row[6]) if row[6] is not None else None,
             "text": row[7],
-            "speakers": row[8] or [],
+            "persons": row[8] or [],
             "vector_score": float(row[9]) if row[9] is not None else None,
         }
         for row in rows
@@ -668,6 +855,7 @@ def expand_detail_context(
 
 def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     client = get_openai_client()
+    final_k = execution_plan.final_k or DEFAULT_FINAL_K
     answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
     embedding_model = normalize_model_name(payload.embeddingModel, DEFAULT_EMBEDDING_MODEL)
     if embedding_model != DEFAULT_EMBEDDING_MODEL:
@@ -768,23 +956,23 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
                 "query": execution_plan.query_text,
                 "model": rerank_model,
                 "documents": fused_chunks,
-                "limit": execution_plan.final_k,
+                "limit": final_k,
             },
         ) as rerank_span:
             rerank_span.set_attribute("reranker.query", execution_plan.query_text)
             rerank_span.set_attribute("reranker.model_name", rerank_model)
-            rerank_span.set_attribute("reranker.top_k", execution_plan.final_k)
+            rerank_span.set_attribute("reranker.top_k", final_k)
             rerank_span.set_documents("reranker.input_documents", fused_chunks)
             final_chunks, rerank_debug = rerank_chunks(
                 execution_plan.query_text,
                 fused_chunks,
-                execution_plan.final_k,
+                final_k,
                 rerank_model,
             )
             rerank_span.set_documents("reranker.output_documents", final_chunks)
             rerank_span.set_output({"trace": rerank_debug, "results": final_chunks})
     else:
-        final_chunks = fused_chunks[: execution_plan.final_k]
+        final_chunks = fused_chunks[:final_k]
         rerank_debug = {
             "applied": False,
             "reason": "disabled",
@@ -815,7 +1003,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         "bm25_top_k": DEFAULT_BM25_LIMIT,
         "vector_top_k": DEFAULT_VECTOR_LIMIT,
         "rrf_top_n": DEFAULT_RRF_TOP_N,
-        "final_k": DEFAULT_FINAL_K,
+        "final_k": final_k,
         "used_rerank": payload.useRerank and bool(final_chunks),
         "sql_main_source": execution_plan.sql_main_source,
         "sql_prefilters": prefilter_debug["applied"],

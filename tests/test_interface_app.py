@@ -6,11 +6,472 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from interface.app import RagRequest, app
-from interface.backend import generation, retrieval
-from interface.backend.schemas import ExecutionPlan
+from interface.backend import generation, orchestration, planner, retrieval
+from interface.backend.config import (
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_REFORMULATION_MODEL,
+)
+from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class InterfaceAppTests(unittest.TestCase):
+    def test_planner_uses_sol_by_default(self) -> None:
+        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-sol")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-sol")
+
+    def test_temporal_video_question_forces_transcript_qa(self) -> None:
+        question = (
+            "À quel moment de la vidéo Matthieu répond-il à la question sur "
+            "le domaine dans lequel il se projette professionnellement ?"
+        )
+        plan = PlannerPlan(
+            route="rag",
+            query_text=question,
+            use_rag=True,
+            sql_main_source=False,
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertTrue(plan.sql_main_source)
+        self.assertEqual(plan.sql_sub_intent, "transcript_qa")
+
+    def test_planner_prompt_describes_transcript_database_capabilities(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt("Question")
+
+        self.assertIn("transcripts.transcript", system_prompt)
+        self.assertIn("transcripts.transcript_timecodes_enrichi", system_prompt)
+        self.assertIn("a quel moment", system_prompt)
+
+    def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
+        question = (
+            "Que dit Matthieu dans la vidéo « Apporter ma pierre à l’édifice "
+            "Énergies Renouvelables – Matthieu, Responsable Affaires, Bouygues » ?"
+        )
+        plan = PlannerPlan(
+            route="rag",
+            query_text=question,
+            title_hint=planner.extract_video_title_hint(question),
+            use_rag=True,
+            sql_main_source=True,
+            sql_sub_intent="lookup",
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertTrue(plan.sql_main_source)
+        self.assertEqual(plan.sql_sub_intent, "transcript_qa")
+        self.assertTrue(plan.use_rag)
+        self.assertEqual(
+            plan.title_hint,
+            "Apporter ma pierre à l’édifice Énergies Renouvelables – "
+            "Matthieu, Responsable Affaires, Bouygues",
+        )
+
+    def test_explicit_transcript_request_keeps_sql_main_source(self) -> None:
+        question = "Donne le transcript complet de la vidéo « Parcoursup »."
+        plan = PlannerPlan(
+            route="rag",
+            query_text=question,
+            use_rag=True,
+            sql_main_source=False,
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertTrue(plan.sql_main_source)
+        self.assertEqual(plan.sql_sub_intent, "transcript_verbatim")
+
+    def test_sql_execution_plan_has_no_rag_limits(self) -> None:
+        payload = RagRequest(question="Donne le transcript de la vidéo.")
+        plan = PlannerPlan(
+            route="rag",
+            query_text=payload.question,
+            use_rag=True,
+            sql_main_source=True,
+            sql_sub_intent="transcript_verbatim",
+        )
+
+        execution_plan = planner.build_execution_plan(payload, plan)
+
+        self.assertIsNone(execution_plan.top_k)
+        self.assertIsNone(execution_plan.final_k)
+
+    def test_document_rag_execution_plan_keeps_rag_limits(self) -> None:
+        payload = RagRequest(question="Que dit-on sur Parcoursup ?")
+        plan = PlannerPlan(
+            route="rag",
+            query_text=payload.question,
+            use_rag=True,
+            sql_main_source=False,
+        )
+
+        execution_plan = planner.build_execution_plan(payload, plan)
+
+        self.assertEqual(execution_plan.top_k, 40)
+        self.assertEqual(execution_plan.final_k, 5)
+
+    def test_execution_plan_only_exposes_requested_persons_and_company(self) -> None:
+        payload = RagRequest(question="Trouve les vidéos de Gabriel chez Bouygues.")
+        plan = PlannerPlan(
+            route="rag",
+            query_text=payload.question,
+            persons=["Gabriel Dumy"],
+            company=["Bouygues"],
+            sql_sub_intent="lookup",
+        )
+
+        serialized_plan = planner.build_execution_plan(payload, plan).model_dump()
+
+        self.assertEqual(serialized_plan["persons"], ["Gabriel Dumy"])
+        self.assertEqual(serialized_plan["company"], ["Bouygues"])
+        self.assertNotIn("database_persons", serialized_plan)
+        self.assertNotIn("database_company", serialized_plan)
+
+    def test_transcript_prompt_answers_content_question_without_verbatim(self) -> None:
+        prompt = generation.build_sql_sub_intent_prompt("transcript_qa")
+
+        self.assertIn("synthetise", prompt)
+        self.assertIn("ne restitue pas le transcript en entier", prompt)
+
+    def test_transcript_prompt_preserves_explicit_verbatim_request(self) -> None:
+        prompt = generation.build_sql_sub_intent_prompt("transcript_verbatim")
+
+        self.assertIn("Restitue le transcript fidelement", prompt)
+
+    def test_summary_with_explicit_title_uses_transcript_qa(self) -> None:
+        question = "Résume la vidéo « Titre exact »."
+        plan = PlannerPlan(
+            route="rag",
+            query_text=question,
+            title_hint=planner.extract_video_title_hint(question),
+            use_rag=True,
+            sql_main_source=False,
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertTrue(plan.sql_main_source)
+        self.assertEqual(plan.sql_sub_intent, "transcript_qa")
+
+    def test_transcript_sub_intents_select_distinct_database_columns(self) -> None:
+        executed_sql: list[str] = []
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def execute(self, sql, params):
+                executed_sql.append(sql)
+
+            def fetchone(self):
+                return None
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def cursor(self):
+                return Cursor()
+
+        query = ExecutionPlan(
+            raw_question="Question",
+            query_text="Question",
+            query_text_bm25="Question",
+            title_hint="Titre exact",
+        )
+        with patch.object(retrieval, "connect_database", return_value=Connection()):
+            retrieval.lookup_video_document(query, "transcript_verbatim")
+            retrieval.lookup_video_document(query, "transcript_qa")
+
+        self.assertIn("t.transcript IS NOT NULL", executed_sql[0])
+        self.assertNotIn("transcript_timecodes_enrichi", executed_sql[0])
+        self.assertIn("t.transcript_timecodes_enrichi IS NOT NULL", executed_sql[1])
+
+    def test_lookup_without_named_person_uses_rag_as_main_source(self) -> None:
+        question = "Qui intervient dans la vidéo « Titre exact » ?"
+        plan = PlannerPlan(
+            route="rag",
+            query_text=question,
+            title_hint=planner.extract_video_title_hint(question),
+            use_rag=True,
+            sql_main_source=False,
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertFalse(plan.sql_main_source)
+        self.assertEqual(plan.sql_sub_intent, "lookup")
+
+    def test_person_job_question_forces_lookup_sql(self) -> None:
+        question = "Quel est le métier de Gabriel Dumy ?"
+        plan = PlannerPlan(
+            route="rag",
+            query_text="métier profession fonction Gabriel Dumy",
+            query_text_bm25="Gabriel Dumy métier profession",
+            persons=["Gabriel Dumy"],
+            use_rag=True,
+            sql_main_source=False,
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertTrue(plan.sql_main_source)
+        self.assertEqual(plan.sql_sub_intent, "lookup")
+
+    def test_identified_person_always_forces_lookup(self) -> None:
+        question = "Que dit Gabriel Dumy dans cette vidéo ?"
+        plan = PlannerPlan(
+            route="rag",
+            query_text=question,
+            persons=["Gabriel Dumy"],
+            sql_sub_intent="transcript_qa",
+        )
+
+        planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertEqual(plan.sql_sub_intent, "lookup")
+        self.assertTrue(plan.sql_main_source)
+
+    def test_lookup_without_identified_person_is_not_sql_main_source(self) -> None:
+        plan = PlannerPlan(
+            route="rag",
+            query_text="vidéos sur les stages",
+            sql_sub_intent="lookup",
+            persons=[],
+        )
+
+        planner.derive_plan_sources(plan)
+
+        self.assertFalse(plan.sql_main_source)
+        self.assertTrue(plan.use_rag)
+
+    def test_lookup_with_identified_company_is_sql_main_source(self) -> None:
+        plan = PlannerPlan(
+            route="rag",
+            query_text="Bouygues",
+            sql_sub_intent="lookup",
+            company=["Bouygues"],
+        )
+
+        planner.derive_plan_sources(plan)
+
+        self.assertTrue(plan.sql_main_source)
+
+    def test_planner_prompt_maps_person_job_to_function_data(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt("Quel est le métier de Gabriel Dumy ?")
+
+        self.assertIn("informations de metier", system_prompt)
+        self.assertIn("metier, poste ou fonction", system_prompt)
+
+    def test_planner_prompt_routes_multiple_persons_to_multi_source(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt(
+            "Compare les interventions de Gabriel Dumy et Alice Martin."
+        )
+
+        self.assertIn(
+            "persons contient au moins deux personnes distinctes",
+            system_prompt,
+        )
+        self.assertIn("multi_source", system_prompt)
+
+    def test_planner_identifies_companies_in_dedicated_key(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt(
+            "Trouve les vidéos qui parlent de Bouygues et EDF."
+        )
+
+        self.assertIn("company", system_prompt)
+        self.assertIn(
+            "toutes les entreprises explicitement identifiees",
+            system_prompt,
+        )
+
+    def test_planner_prompt_omits_derived_source_flags(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt("Question")
+
+        self.assertNotIn("use_memory", system_prompt)
+        self.assertNotIn("use_rag", system_prompt)
+        self.assertNotIn("sql_main_source", system_prompt)
+
+    def test_source_flags_are_derived_from_sql_sub_intent(self) -> None:
+        normalized = planner.normalize_planner_output(
+            {
+                "route": "rag",
+                "sql_sub_intent": "lookup",
+                "query_text": "Gabriel Dumy",
+                "query_text_bm25": "Gabriel Dumy",
+                "title_hint": None,
+                "persons": ["Gabriel Dumy"],
+                "published_after": None,
+                "published_before": None,
+                "use_memory": True,
+                "use_rag": False,
+                "sql_main_source": False,
+            }
+        )
+        plan = PlannerPlan.model_validate(normalized)
+
+        planner.derive_plan_sources(plan)
+
+        self.assertFalse(plan.use_memory)
+        self.assertTrue(plan.use_rag)
+        self.assertTrue(plan.sql_main_source)
+
+    def test_lookup_returns_person_name_and_title(self) -> None:
+        executed_sql: list[str] = []
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def execute(self, sql, params):
+                executed_sql.append(sql)
+
+            def fetchall(self):
+                return [
+                    (
+                        42,
+                        "Portrait de Gabriel Dumy",
+                        "https://example.test/video",
+                        None,
+                        [{"name": "Gabriel Dumy", "title": "Responsable affaires"}],
+                        "[00:01] Gabriel Dumy: Bonjour.",
+                        "interview",
+                    )
+                ]
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def cursor(self):
+                return Cursor()
+
+        query = ExecutionPlan(
+            raw_question="Quel est le métier de Gabriel Dumy ?",
+            query_text="métier Gabriel Dumy",
+            query_text_bm25="Gabriel Dumy métier",
+            persons=["Gabriel Dumy"],
+            sql_main_source=True,
+            sql_sub_intent="lookup",
+        )
+        with patch.object(retrieval, "connect_database", return_value=Connection()):
+            sources, trace = retrieval.lookup_video_document(
+                query,
+                "lookup",
+                database_persons=["Gabriel Dumy"],
+            )
+
+        self.assertIn("person_row.title", executed_sql[0])
+        self.assertIn("transcript_timecodes_enrichi", executed_sql[0])
+        self.assertIn("Gabriel Dumy: Responsable affaires", sources[0]["text"])
+        self.assertEqual(
+            sources[0]["transcript"],
+            "[00:01] Gabriel Dumy: Bonjour.",
+        )
+        self.assertEqual(
+            sources[0]["person_details"],
+            [{"name": "Gabriel Dumy", "title": "Responsable affaires"}],
+        )
+        self.assertEqual(trace["mode"], "lookup")
+
+    def test_every_sql_sub_intent_has_a_dedicated_prompt(self) -> None:
+        prompts = {
+            intent: generation.build_sql_sub_intent_prompt(intent)
+            for intent in (
+                "lookup",
+                "stats",
+                "description",
+                "transcript_verbatim",
+                "transcript_qa",
+            )
+        }
+
+        self.assertEqual(len(set(prompts.values())), len(prompts))
+
+    def test_answer_prompts_do_not_require_question_reformulation(self) -> None:
+        prompts = [
+            generation.FINAL_ANSWER_STYLE,
+            *[
+                generation.build_sql_sub_intent_prompt(intent)
+                for intent in (
+                    "lookup",
+                    "stats",
+                    "description",
+                    "transcript_verbatim",
+                    "transcript_qa",
+                )
+            ],
+        ]
+
+        for prompt in prompts:
+            normalized = prompt.lower()
+            self.assertNotIn("reformul", normalized)
+            self.assertNotIn("commence par", normalized)
+
+    def test_legacy_video_prefixed_intent_is_normalized(self) -> None:
+        normalized = planner.normalize_planner_output(
+            {
+                "route": "rag",
+                "sql_sub_intent": "video_transcript",
+                "query_text": "Transcript",
+                "query_text_bm25": "Transcript",
+                "title_hint": None,
+                "persons": [],
+                "published_after": None,
+                "published_before": None,
+                "use_memory": False,
+                "use_rag": True,
+                "sql_main_source": True,
+            }
+        )
+
+        self.assertEqual(normalized["sql_sub_intent"], "transcript_verbatim")
+
+    def test_removed_agent_route_is_normalized_to_rag(self) -> None:
+        normalized = planner.normalize_planner_output(
+            {
+                "route": "agent",
+                "sql_sub_intent": None,
+                "query_text": "Question complexe",
+                "query_text_bm25": "Question complexe",
+                "title_hint": None,
+                "persons": [],
+                "published_after": None,
+                "published_before": None,
+            }
+        )
+
+        self.assertEqual(normalized["route"], "rag")
+
+    def test_explicit_title_is_used_directly_for_rag_prefilter(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Que dit la vidéo ?",
+            query_text="contenu",
+            query_text_bm25="contenu",
+            title_hint="Titre exact",
+        )
+        clauses, params = retrieval.build_prefilter_conditions(query)
+        self.assertIn(
+            "unaccent(lower(v.title)) LIKE unaccent(lower(%s))",
+            clauses,
+        )
+        self.assertEqual(params, ["%Titre exact%"])
+
     def test_bm25_search_is_limited_to_detail_chunks(self) -> None:
         class Cursor:
             def __enter__(self):

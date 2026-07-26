@@ -398,7 +398,7 @@ def generate_sql_answer(
     if not sources:
         if trace is not None:
             trace["action"] = "abstain"
-        if sql_sub_intent == "lookup":
+        if sql_sub_intent == "specific_persons":
             return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
         return (
             "Je n'ai trouve aucun contenu correspondant a cette demande. "
@@ -408,7 +408,7 @@ def generate_sql_answer(
     if client is None or not answer_model:
         if trace is not None:
             trace["action"] = "answer"
-        if sql_sub_intent == "lookup":
+        if sql_sub_intent == "specific_persons":
             lines = ["Videos trouvees :"]
             for index, item in enumerate(sources, start=1):
                 lines.append(f"- [S{index}] {item['video_title']} ({item['video_url']})")

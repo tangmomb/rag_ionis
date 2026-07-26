@@ -123,7 +123,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
 
     planned_companies = [
         str(value).strip()
-        for value in planner_plan.company
+        for value in planner_plan.companies
         if str(value).strip()
     ]
     database_company: list[str] = []
@@ -245,7 +245,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         return "", [], retrieval
 
     if execution_plan.route == "rag" and execution_plan.sql_main_source:
-        sql_sub_intent = execution_plan.sql_sub_intent or "lookup"
+        sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
         # Ce span couvre l'application réelle du plan : Phoenix l'affiche
         # ainsi avant le SQL qu'il pilote, au lieu d'un span de construction
         # instantané trié arbitrairement parmi ses frères.
@@ -348,7 +348,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             )
 
         if execution_plan.sql_main_source:
-            sql_sub_intent = execution_plan.sql_sub_intent or "lookup"
+            sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
             with trace_operation(
                 "rag.execution_plan",
                 kind="CHAIN",

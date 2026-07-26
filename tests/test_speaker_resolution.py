@@ -71,6 +71,32 @@ class PersonResolutionTests(unittest.TestCase):
         self.assertTrue(validated)
         self.assertEqual(plan.persons, ["Personne identifiée par le planner"])
 
+    def test_new_planner_keys_trigger_person_and_company_lookup(self) -> None:
+        client = _Client(
+            {
+                "route": "multi_source",
+                "sql_sub_intent": "specific_persons",
+                "query_text": "Gabriel Dumy Bouygues",
+                "query_text_bm25": "Gabriel Dumy Bouygues",
+                "title_hint": None,
+                "persons": ["Gabriel Dumy"],
+                "companies": ["Bouygues"],
+                "published_after": None,
+                "published_before": None,
+            }
+        )
+
+        plan, _, _, validated = planner.run_planner(
+            "Trouve les vidéos de Gabriel Dumy chez Bouygues.",
+            client,
+        )
+
+        self.assertTrue(validated)
+        self.assertEqual(plan.persons, ["Gabriel Dumy"])
+        self.assertEqual(plan.companies, ["Bouygues"])
+        self.assertEqual(plan.sql_sub_intent, "specific_persons")
+        self.assertTrue(plan.sql_main_source)
+
     def test_empty_person_list_does_not_query_database(self) -> None:
         with patch.object(planner, "connect_database") as connect_database:
             resolved, resolution = planner.resolve_person_filters([])
@@ -116,8 +142,8 @@ class PersonResolutionTests(unittest.TestCase):
             raw_question="Trouve les vidéos de Bouygue",
             query_text="Bouygue",
             query_text_bm25="Bouygue",
-            company=["Bouygue"],
-            sql_sub_intent="lookup",
+            companies=["Bouygue"],
+            sql_sub_intent="specific_persons",
             sql_main_source=True,
         )
 
@@ -177,7 +203,7 @@ class PersonResolutionTests(unittest.TestCase):
             query_text="Alice Martin Bob Durand",
             query_text_bm25="Alice Martin Bob Durand",
             persons=["Alice Martin", "Bob Durand"],
-            sql_sub_intent="lookup",
+            sql_sub_intent="specific_persons",
             sql_main_source=True,
         )
         with patch.object(
@@ -187,7 +213,7 @@ class PersonResolutionTests(unittest.TestCase):
         ):
             sources, trace = retrieval.lookup_video_document(
                 query,
-                "lookup",
+                "specific_persons",
                 database_persons=["Alice Martin", "Bob Durand"],
             )
 
@@ -222,6 +248,23 @@ class PersonResolutionTests(unittest.TestCase):
         self.assertEqual(resolution["suggestions"], ["Loucif Ouyahia"])
         self.assertGreaterEqual(resolution["suggestion_scores"][0]["score"], 0.85)
 
+    def test_multiple_fuzzy_persons_are_resolved_independently(self) -> None:
+        plan = PlannerPlan(
+            route="multi_source",
+            query_text="Ouyaiha Montessi",
+            persons=["Ouyaiha", "Montessi"],
+        )
+        with patch.object(planner, "connect_database", return_value=_Connection()):
+            resolved, resolution = planner.resolve_person_filters(plan.persons)
+
+        self.assertEqual(resolved, ["Loucif Ouyahia", "Yannick Montesi"])
+        self.assertFalse(resolution["ambiguous"])
+        self.assertTrue(resolution["auto_resolved"])
+        self.assertEqual(
+            resolution["suggestions"],
+            ["Loucif Ouyahia", "Yannick Montesi"],
+        )
+
     def test_multiple_matches_still_require_clarification(self) -> None:
         class TwoLouAnnCursor(_Cursor):
             def fetchall(self):
@@ -238,3 +281,25 @@ class PersonResolutionTests(unittest.TestCase):
         self.assertEqual(resolved, [])
         self.assertTrue(resolution["ambiguous"])
         self.assertEqual(resolution["suggestions"], ["Lou-Ann Martin", "Lou-Ann Corveddu"])
+
+    def test_ambiguous_person_does_not_discard_exact_matches(self) -> None:
+        class MixedCursor(_Cursor):
+            def fetchall(self):
+                return [
+                    ("Alice Martin",),
+                    ("Lou-Ann Corveddu",),
+                    ("Lou-Ann Martin",),
+                ]
+
+        class MixedConnection(_Connection):
+            def cursor(self):
+                return MixedCursor()
+
+        with patch.object(planner, "connect_database", return_value=MixedConnection()):
+            resolved, resolution = planner.resolve_person_filters(
+                ["Alice Martin", "Lou Ann"],
+            )
+
+        self.assertEqual(resolved, ["Alice Martin"])
+        self.assertTrue(resolution["ambiguous"])
+        self.assertEqual(resolution["ambiguous_requests"], ["Lou Ann"])

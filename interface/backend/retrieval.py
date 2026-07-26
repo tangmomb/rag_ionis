@@ -212,7 +212,7 @@ def build_video_lookup_conditions(
         append_person_filter_clauses(clauses, params, database_persons)
     if database_company:
         append_company_filter_clauses(clauses, params, database_company)
-    elif database_company is not None and query.company:
+    elif database_company is not None and query.companies:
         clauses.append("1 = 0")
     if query.published_after:
         clauses.append("v.published_at >= %s::timestamptz")
@@ -230,7 +230,7 @@ def lookup_video_document(
     database_persons: list[str] | None = None,
     database_company: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if intent == "lookup":
+    if intent == "specific_persons":
         def format_lookup_rows(
             rows: list[Any],
             *,
@@ -288,7 +288,7 @@ def lookup_video_document(
         if (
             database_persons
             or database_company
-            or not (query.persons or query.company)
+            or not (query.persons or query.companies)
         ):
             clauses, person_params = build_video_lookup_conditions(
                 query,
@@ -321,7 +321,7 @@ def lookup_video_document(
                 "mode": intent,
                 "lookup_strategy": (
                     "company_title"
-                    if query.company
+                    if query.companies
                     else "persons_table"
                     if query.persons
                     else "generic"

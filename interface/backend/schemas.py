@@ -16,7 +16,7 @@ from interface.backend.config import (
 
 PlannerRoute = Literal["direct", "rag", "memory", "multi_source"]
 SqlSubIntent = Literal[
-    "lookup",
+    "specific_persons",
     "stats",
     "description",
     "transcript_verbatim",
@@ -47,7 +47,7 @@ class PlannerPlan(BaseModel):
     query_text_bm25: str | None = None
     title_hint: str | None = None
     persons: list[str] = Field(default_factory=list)
-    company: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
     use_memory: bool = False
@@ -65,7 +65,7 @@ class ExecutionPlan(BaseModel):
     query_text_bm25: str
     title_hint: str | None = None
     persons: list[str] = Field(default_factory=list)
-    company: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
     use_memory: bool = False

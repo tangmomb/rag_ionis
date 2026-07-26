@@ -18,8 +18,21 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan
 class InterfaceAppTests(unittest.TestCase):
     def test_planner_uses_sol_by_default(self) -> None:
         self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-sol")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-sol")
         self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-sol")
+
+    def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
+        system_prompt, user_prompt = planner.build_question_reformulation_prompt(
+            "Et pour elle ?",
+            [{"role": "user", "text": "Que dit Alice Martin ?"}],
+        )
+
+        self.assertLess(len(system_prompt), 700)
+        self.assertIn("besoin de l'historique", system_prompt)
+        self.assertIn("follow_up", system_prompt)
+        self.assertIn("reformulated_question", system_prompt)
+        self.assertNotIn("point d'interrogation final", system_prompt)
+        self.assertIn("Message actuel : Et pour elle ?", user_prompt)
 
     def test_temporal_video_question_forces_transcript_qa(self) -> None:
         question = (
@@ -38,12 +51,11 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertTrue(plan.sql_main_source)
         self.assertEqual(plan.sql_sub_intent, "transcript_qa")
 
-    def test_planner_prompt_describes_transcript_database_capabilities(self) -> None:
+    def test_planner_prompt_describes_transcript_intent(self) -> None:
         system_prompt, _ = planner.build_planner_prompt("Question")
 
-        self.assertIn("transcripts.transcript", system_prompt)
-        self.assertIn("transcripts.transcript_timecodes_enrichi", system_prompt)
-        self.assertIn("a quel moment", system_prompt)
+        self.assertIn("transcript_verbatim", system_prompt)
+        self.assertIn("transcript complet", system_prompt)
 
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
         question = (
@@ -56,7 +68,7 @@ class InterfaceAppTests(unittest.TestCase):
             title_hint=planner.extract_video_title_hint(question),
             use_rag=True,
             sql_main_source=True,
-            sql_sub_intent="lookup",
+            sql_sub_intent="specific_persons",
         )
 
         planner.apply_deterministic_sql_policy(question, plan)
@@ -113,20 +125,21 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(execution_plan.top_k, 40)
         self.assertEqual(execution_plan.final_k, 5)
 
-    def test_execution_plan_only_exposes_requested_persons_and_company(self) -> None:
+    def test_execution_plan_only_exposes_requested_persons_and_companies(self) -> None:
         payload = RagRequest(question="Trouve les vidéos de Gabriel chez Bouygues.")
         plan = PlannerPlan(
             route="rag",
             query_text=payload.question,
             persons=["Gabriel Dumy"],
-            company=["Bouygues"],
-            sql_sub_intent="lookup",
+            companies=["Bouygues"],
+            sql_sub_intent="specific_persons",
         )
 
         serialized_plan = planner.build_execution_plan(payload, plan).model_dump()
 
         self.assertEqual(serialized_plan["persons"], ["Gabriel Dumy"])
-        self.assertEqual(serialized_plan["company"], ["Bouygues"])
+        self.assertEqual(serialized_plan["companies"], ["Bouygues"])
+        self.assertNotIn("company", serialized_plan)
         self.assertNotIn("database_persons", serialized_plan)
         self.assertNotIn("database_company", serialized_plan)
 
@@ -196,7 +209,7 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("transcript_timecodes_enrichi", executed_sql[0])
         self.assertIn("t.transcript_timecodes_enrichi IS NOT NULL", executed_sql[1])
 
-    def test_lookup_without_named_person_uses_rag_as_main_source(self) -> None:
+    def test_specific_persons_without_named_person_uses_rag_as_main_source(self) -> None:
         question = "Qui intervient dans la vidéo « Titre exact » ?"
         plan = PlannerPlan(
             route="rag",
@@ -209,9 +222,9 @@ class InterfaceAppTests(unittest.TestCase):
         planner.apply_deterministic_sql_policy(question, plan)
 
         self.assertFalse(plan.sql_main_source)
-        self.assertEqual(plan.sql_sub_intent, "lookup")
+        self.assertEqual(plan.sql_sub_intent, "specific_persons")
 
-    def test_person_job_question_forces_lookup_sql(self) -> None:
+    def test_person_job_question_forces_specific_persons_sql(self) -> None:
         question = "Quel est le métier de Gabriel Dumy ?"
         plan = PlannerPlan(
             route="rag",
@@ -225,9 +238,9 @@ class InterfaceAppTests(unittest.TestCase):
         planner.apply_deterministic_sql_policy(question, plan)
 
         self.assertTrue(plan.sql_main_source)
-        self.assertEqual(plan.sql_sub_intent, "lookup")
+        self.assertEqual(plan.sql_sub_intent, "specific_persons")
 
-    def test_identified_person_always_forces_lookup(self) -> None:
+    def test_identified_person_always_forces_specific_persons(self) -> None:
         question = "Que dit Gabriel Dumy dans cette vidéo ?"
         plan = PlannerPlan(
             route="rag",
@@ -238,14 +251,14 @@ class InterfaceAppTests(unittest.TestCase):
 
         planner.apply_deterministic_sql_policy(question, plan)
 
-        self.assertEqual(plan.sql_sub_intent, "lookup")
+        self.assertEqual(plan.sql_sub_intent, "specific_persons")
         self.assertTrue(plan.sql_main_source)
 
-    def test_lookup_without_identified_person_is_not_sql_main_source(self) -> None:
+    def test_specific_persons_without_identified_person_is_not_sql_main_source(self) -> None:
         plan = PlannerPlan(
             route="rag",
             query_text="vidéos sur les stages",
-            sql_sub_intent="lookup",
+            sql_sub_intent="specific_persons",
             persons=[],
         )
 
@@ -254,33 +267,30 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertFalse(plan.sql_main_source)
         self.assertTrue(plan.use_rag)
 
-    def test_lookup_with_identified_company_is_sql_main_source(self) -> None:
+    def test_specific_persons_with_identified_company_is_sql_main_source(self) -> None:
         plan = PlannerPlan(
             route="rag",
             query_text="Bouygues",
-            sql_sub_intent="lookup",
-            company=["Bouygues"],
+            sql_sub_intent="specific_persons",
+            companies=["Bouygues"],
         )
 
         planner.derive_plan_sources(plan)
 
         self.assertTrue(plan.sql_main_source)
 
-    def test_planner_prompt_maps_person_job_to_function_data(self) -> None:
+    def test_planner_prompt_maps_person_to_specific_persons(self) -> None:
         system_prompt, _ = planner.build_planner_prompt("Quel est le métier de Gabriel Dumy ?")
 
-        self.assertIn("informations de metier", system_prompt)
-        self.assertIn("metier, poste ou fonction", system_prompt)
+        self.assertIn("specific_persons", system_prompt)
+        self.assertIn("personnes ou entreprises", system_prompt)
 
     def test_planner_prompt_routes_multiple_persons_to_multi_source(self) -> None:
         system_prompt, _ = planner.build_planner_prompt(
             "Compare les interventions de Gabriel Dumy et Alice Martin."
         )
 
-        self.assertIn(
-            "persons contient au moins deux personnes distinctes",
-            system_prompt,
-        )
+        self.assertIn("plus d'une personne ou entreprise", system_prompt)
         self.assertIn("multi_source", system_prompt)
 
     def test_planner_identifies_companies_in_dedicated_key(self) -> None:
@@ -288,11 +298,8 @@ class InterfaceAppTests(unittest.TestCase):
             "Trouve les vidéos qui parlent de Bouygues et EDF."
         )
 
-        self.assertIn("company", system_prompt)
-        self.assertIn(
-            "toutes les entreprises explicitement identifiees",
-            system_prompt,
-        )
+        self.assertIn("companies", system_prompt)
+        self.assertIn("entreprises mentionnées", system_prompt)
 
     def test_planner_prompt_omits_derived_source_flags(self) -> None:
         system_prompt, _ = planner.build_planner_prompt("Question")
@@ -305,7 +312,7 @@ class InterfaceAppTests(unittest.TestCase):
         normalized = planner.normalize_planner_output(
             {
                 "route": "rag",
-                "sql_sub_intent": "lookup",
+                "sql_sub_intent": "specific_persons",
                 "query_text": "Gabriel Dumy",
                 "query_text_bm25": "Gabriel Dumy",
                 "title_hint": None,
@@ -367,12 +374,12 @@ class InterfaceAppTests(unittest.TestCase):
             query_text_bm25="Gabriel Dumy métier",
             persons=["Gabriel Dumy"],
             sql_main_source=True,
-            sql_sub_intent="lookup",
+            sql_sub_intent="specific_persons",
         )
         with patch.object(retrieval, "connect_database", return_value=Connection()):
             sources, trace = retrieval.lookup_video_document(
                 query,
-                "lookup",
+                "specific_persons",
                 database_persons=["Gabriel Dumy"],
             )
 
@@ -387,13 +394,13 @@ class InterfaceAppTests(unittest.TestCase):
             sources[0]["person_details"],
             [{"name": "Gabriel Dumy", "title": "Responsable affaires"}],
         )
-        self.assertEqual(trace["mode"], "lookup")
+        self.assertEqual(trace["mode"], "specific_persons")
 
     def test_every_sql_sub_intent_has_a_dedicated_prompt(self) -> None:
         prompts = {
             intent: generation.build_sql_sub_intent_prompt(intent)
             for intent in (
-                "lookup",
+                "specific_persons",
                 "stats",
                 "description",
                 "transcript_verbatim",
@@ -409,7 +416,7 @@ class InterfaceAppTests(unittest.TestCase):
             *[
                 generation.build_sql_sub_intent_prompt(intent)
                 for intent in (
-                    "lookup",
+                    "specific_persons",
                     "stats",
                     "description",
                     "transcript_verbatim",

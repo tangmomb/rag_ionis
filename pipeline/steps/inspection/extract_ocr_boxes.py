@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paddle_ocr import (
-    boxes_from_raw_result,
+    box_text_pairs_from_raw_result,
     seconds_from_image_name,
 )
 from pipeline.support.paths import existing_ocr_dir
@@ -81,13 +81,16 @@ def extract_for_video(video_path, *, force=False):
             image_name = raw_item.get("image")
             if not image_name:
                 continue
-            boxes = boxes_from_raw_result(raw_item.get("raw"))
+            box_text_pairs = box_text_pairs_from_raw_result(raw_item.get("raw"))
+            boxes = [box for box, _text in box_text_pairs]
+            texts = [text for _box, text in box_text_pairs]
             total_boxes += len(boxes)
             total_images += 1
             box_items.append(
                 {
                     "image": image_name,
                     "boxes": boxes,
+                    "texts": texts,
                 }
             )
             print(

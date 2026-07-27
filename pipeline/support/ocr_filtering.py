@@ -2,6 +2,7 @@ import json
 import re
 import unicodedata
 from collections import defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from pipeline.support.paths import existing_ocr_dir
@@ -17,6 +18,8 @@ SUBTITLE_REPEAT_IMAGE_WINDOW = 10
 SUBTITLE_NEIGHBOR_IMAGE_GAP = 3
 MIN_OVERLAY_SCORE = 0.9
 GRAPHIC_SEQUENCE_GAP_SECONDS = 5
+GRAPHIC_COUSIN_MIN_SIMILARITY = 0.62
+GRAPHIC_COUSIN_MIN_TEXT_LENGTH = 6
 ON_FOOTAGE_SEQUENCE_GAP_SECONDS = 1
 OTHERS_PROGRESSION_IMAGE_GAP = 10
 OVERLAY_KINDS = {"name", "lower_third", "title"}
@@ -248,6 +251,25 @@ def are_minor_ocr_variants(left_text, right_text, max_distance=2):
     return edit_distance_at_most(left_folded, right_folded, limit=max_distance)
 
 
+def graphic_texts_are_cousins(left_text, right_text):
+    if texts_are_progressive(left_text, right_text):
+        return True
+    if are_minor_ocr_variants(left_text, right_text):
+        return True
+
+    left_folded = fold_text(left_text)
+    right_folded = fold_text(right_text)
+    if (
+        min(len(left_folded), len(right_folded))
+        < GRAPHIC_COUSIN_MIN_TEXT_LENGTH
+    ):
+        return False
+    return (
+        SequenceMatcher(None, left_folded, right_folded).ratio()
+        >= GRAPHIC_COUSIN_MIN_SIMILARITY
+    )
+
+
 def other_entry_quality(entry):
     text = str(entry.get("text", ""))
     normalized = fold_text(text)
@@ -286,6 +308,42 @@ def group_items_by_image(items):
     return groups
 
 
+def graphic_cousin_components(image_groups, max_gap_seconds):
+    texts = [joined_group_text(group) for group in image_groups]
+    seconds = [
+        min(float(item.get("second", 0)) for item in group)
+        for group in image_groups
+    ]
+    remaining = set(range(len(image_groups)))
+    components = []
+
+    while remaining:
+        seed = min(remaining)
+        remaining.remove(seed)
+        component_indexes = [seed]
+        pending = [seed]
+
+        while pending:
+            current = pending.pop()
+            cousins = [
+                candidate
+                for candidate in sorted(remaining)
+                if abs(seconds[candidate] - seconds[current]) < max_gap_seconds
+                and graphic_texts_are_cousins(
+                    texts[current],
+                    texts[candidate],
+                )
+            ]
+            for cousin in cousins:
+                remaining.remove(cousin)
+                component_indexes.append(cousin)
+                pending.append(cousin)
+
+        components.append([image_groups[index] for index in component_indexes])
+
+    return components
+
+
 def collapse_graphic_time_groups(items, min_separator_seconds=GRAPHIC_SEQUENCE_GAP_SECONDS):
     collapsed = []
     visual_group = []
@@ -298,8 +356,27 @@ def collapse_graphic_time_groups(items, min_separator_seconds=GRAPHIC_SEQUENCE_G
         for item in visual_group:
             image_key = item.get("image") or f"__no_image__:{item['second']}:{item['text']}"
             by_image.setdefault(image_key, []).append(item)
-        selected_items = max(by_image.values(), key=image_group_score)
-        collapsed.extend(selected_items)
+        image_groups = sorted(
+            by_image.values(),
+            key=lambda group: min(float(item["second"]) for item in group),
+        )
+        supported_components = [
+            component
+            for component in graphic_cousin_components(
+                image_groups,
+                min_separator_seconds,
+            )
+            if len(component) >= 2
+        ]
+        selected_groups = [
+            max(component, key=image_group_score)
+            for component in supported_components
+        ]
+        selected_groups.sort(
+            key=lambda group: min(float(item["second"]) for item in group)
+        )
+        for selected_items in selected_groups:
+            collapsed.extend(selected_items)
         visual_group = []
 
     for item in items:

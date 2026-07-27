@@ -4,12 +4,14 @@ from pathlib import Path
 from pipeline.support.json_io import read_json
 from pipeline.support.paddle_ocr import (
     MIN_SUBTITLE_CLUSTER_SECONDS,
+    MIN_SUBTITLE_TEXT_VARIANTS,
     anchored_subtitle_match,
     box_bounds,
     box_geometry,
     image_size,
     infer_subtitle_anchors,
     seconds_from_image_name,
+    text_key,
 )
 from pipeline.support.paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
 
@@ -55,18 +57,22 @@ def subtitle_entries_from_boxes(payload, images_dir):
         size = sizes[image_name]
         second = seconds_from_image_name(Path(image_name).name)
 
-        for poly in item.get("boxes", []):
+        texts = item.get("texts")
+        has_text_metadata = isinstance(texts, list)
+        for index, poly in enumerate(item.get("boxes", [])):
             bounds = box_bounds(poly)
             if not bounds:
                 continue
             geometry = box_geometry(bounds, size)
-            entries.append(
-                {
-                    "image": image_name,
-                    "geometry": geometry,
-                    "second": second,
-                }
-            )
+            entry = {
+                "image": image_name,
+                "geometry": geometry,
+                "second": second,
+            }
+            if has_text_metadata:
+                text = texts[index] if index < len(texts) else ""
+                entry["key"] = text_key(text)
+            entries.append(entry)
 
     return entries
 
@@ -149,6 +155,24 @@ def analyze_subtitle_anchor(entries):
         if len(longest_run_seconds) >= 2
         else 0.0
     )
+    longest_run_second_set = set(longest_run_seconds)
+    longest_run_entries = [
+        entry
+        for entry in matching_entries
+        if entry["second"] in longest_run_second_set
+    ]
+    has_text_metadata = any("key" in entry for entry in longest_run_entries)
+    text_variants = sorted(
+        {
+            entry.get("key")
+            for entry in longest_run_entries
+            if entry.get("key")
+        }
+    )
+    has_text_variation = (
+        not has_text_metadata
+        or len(text_variants) >= MIN_SUBTITLE_TEXT_VARIANTS
+    )
     matching_images = []
     seen_images = set()
     for entry in matching_entries:
@@ -159,13 +183,20 @@ def analyze_subtitle_anchor(entries):
         matching_images.append(image_name)
 
     required_continuous_seconds = float(MIN_SUBTITLE_CLUSTER_SECONDS)
-    has_subtitles = longest_run_duration >= required_continuous_seconds
+    has_subtitles = (
+        longest_run_duration >= required_continuous_seconds
+        and has_text_variation
+    )
     return {
         "has_subtitles": has_subtitles,
         "reason": (
             "stable_anchor_across_continuous_seconds"
             if has_subtitles
-            else "not_enough_continuous_matching_seconds"
+            else (
+                "not_enough_text_variation"
+                if longest_run_duration >= required_continuous_seconds
+                else "not_enough_continuous_matching_seconds"
+            )
         ),
         "anchor_count": len(anchors),
         "anchor": {
@@ -184,6 +215,8 @@ def analyze_subtitle_anchor(entries):
         "longest_continuous_seconds_count": len(longest_run_seconds),
         "longest_continuous_seconds_duration": round(longest_run_duration, 3),
         "longest_continuous_seconds": longest_run_seconds,
+        "text_variant_count": len(text_variants),
+        "required_text_variant_count": MIN_SUBTITLE_TEXT_VARIANTS,
         "matching_images": matching_images,
     }
 

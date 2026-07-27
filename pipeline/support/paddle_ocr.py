@@ -43,6 +43,7 @@ MIN_OVERLAY_RELATIVE_HEIGHT = 0.03
 MIN_OVERLAY_RELATIVE_WIDTH = 0.24
 MIN_SUBTITLE_CLUSTER_SECONDS = 10
 MIN_SUBTITLE_CLUSTER_DURATION = 5
+MIN_SUBTITLE_TEXT_VARIANTS = 3
 STATIC_DECOR_MIN_SECONDS = 5
 STATIC_DECOR_MIN_DURATION = 5
 STATIC_DECOR_POSITION_TOLERANCE = 0.045
@@ -214,11 +215,17 @@ def is_primary_subtitle_box(cx, cy, relative_width, relative_height, word_count,
 def is_subtitle_anchor_candidate(entry):
     geometry = entry["geometry"]
     return (
-        0.35 <= geometry["cx"] <= 0.65
-        and 0.60 <= geometry["cy"] <= 0.94
-        and 0.018 <= geometry["relative_height"] <= 0.09
+        0.018 <= geometry["relative_height"] <= 0.09
         and geometry["relative_width"] >= 0.06
     )
+
+
+def subtitle_cluster_text_keys(cluster):
+    return {
+        entry.get("key")
+        for entry in cluster
+        if entry.get("key")
+    }
 
 
 def subtitle_cluster_score(cluster):
@@ -228,20 +235,21 @@ def subtitle_cluster_score(cluster):
     if seconds[-1] - seconds[0] < MIN_SUBTITLE_CLUSTER_DURATION:
         return 0.0
 
-    median_cx = statistics.median(entry["geometry"]["cx"] for entry in cluster)
-    median_cy = statistics.median(entry["geometry"]["cy"] for entry in cluster)
+    has_text_metadata = any("key" in entry for entry in cluster)
+    text_keys = subtitle_cluster_text_keys(cluster)
+    if has_text_metadata and len(text_keys) < MIN_SUBTITLE_TEXT_VARIANTS:
+        return 0.0
+
     x_spread = max(entry["geometry"]["cx"] for entry in cluster) - min(entry["geometry"]["cx"] for entry in cluster)
     y_spread = max(entry["geometry"]["cy"] for entry in cluster) - min(entry["geometry"]["cy"] for entry in cluster)
-    centrality = max(0.0, 1.0 - abs(median_cx - 0.5) * 2.0)
     temporal_density = min(len(seconds), len(cluster))
     stability = max(0.0, 1.0 - (x_spread + y_spread))
 
     return (
         temporal_density * 2.0
         + len(cluster) * 0.5
-        + centrality * 4.0
         + stability * 4.0
-        - abs(median_cy - 0.78) * 2.0
+        + min(len(text_keys), 10)
     )
 
 
@@ -1024,6 +1032,40 @@ def boxes_from_raw_result(raw_result):
         return boxes
 
     return boxes
+
+
+def box_text_pairs_from_raw_result(raw_result):
+    pairs = []
+
+    if isinstance(raw_result, dict):
+        polys = list(raw_result.get("rec_polys") or raw_result.get("dt_polys") or [])
+        texts = list(raw_result.get("rec_texts") or [])
+        for index, poly in enumerate(polys):
+            points = point_list(poly)
+            if not points:
+                continue
+            text = texts[index] if index < len(texts) else ""
+            pairs.append((points, normalize_detected_text(text)))
+        return pairs
+
+    if isinstance(raw_result, list):
+        for page in raw_result:
+            if isinstance(page, dict):
+                pairs.extend(box_text_pairs_from_raw_result(page))
+                continue
+            for line in page or []:
+                if not line:
+                    continue
+                poly = line[0] if isinstance(line, (list, tuple)) and line else None
+                points = point_list(poly)
+                if not points:
+                    continue
+                value = line[1] if isinstance(line, (list, tuple)) and len(line) > 1 else None
+                text = value[0] if isinstance(value, (list, tuple)) and value else ""
+                pairs.append((points, normalize_detected_text(text)))
+        return pairs
+
+    return pairs
 
 
 def ocr_items_from_raw_result(raw_result, image_name, image_path=None, min_confidence=0.9):

@@ -39,6 +39,33 @@ ANSWER_ACTION_INSTRUCTION = (
 )
 
 
+DEFAULT_ANSWER_PROMPT_TEMPLATE = (
+    "{route_instructions}\n\n"
+    "{source_marker_instruction}\n\n"
+    f"{ANSWER_ACTION_INSTRUCTION}\n\n"
+    f"{FINAL_ANSWER_STYLE}"
+)
+
+
+def render_answer_system_prompt(
+    prompt_template: str | None,
+    *,
+    route_instructions: str,
+    source_marker_instruction: str = "",
+) -> str:
+    template = (prompt_template or "").strip() or DEFAULT_ANSWER_PROMPT_TEMPLATE
+    replacements = {
+        "{route_instructions}": route_instructions.strip(),
+        "{source_marker_instruction}": source_marker_instruction.strip(),
+        "{answer_action_instruction}": ANSWER_ACTION_INSTRUCTION.strip(),
+        "{answer_style}": FINAL_ANSWER_STYLE.strip(),
+    }
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    return re.sub(r"\n{3,}", "\n\n", rendered).strip()
+
+
 def record_answer_trace(
     trace: dict[str, str] | None,
     model: str,
@@ -183,6 +210,7 @@ def generate_answer(
     answer_model: str | None,
     sources: list[dict[str, Any]],
     trace: dict[str, str] | None = None,
+    prompt_template: str | None = None,
 ) -> str:
     if not sources:
         if trace is not None:
@@ -225,12 +253,13 @@ def generate_answer(
     input_messages = [
             {
                 "role": "system",
-                "content": (
-                    "Tu es un assistant RAG. Réponds en français, de façon concise, "
-                    "en t'appuyant uniquement sur les sources fournies. "
-                     + SOURCE_MARKER_INSTRUCTION + " "
-                     + ANSWER_ACTION_INSTRUCTION + " "
-                     + FINAL_ANSWER_STYLE
+                "content": render_answer_system_prompt(
+                    prompt_template,
+                    route_instructions=(
+                        "Tu es un assistant RAG. Réponds en français, de façon concise, "
+                        "en t'appuyant uniquement sur les sources fournies."
+                    ),
+                    source_marker_instruction=SOURCE_MARKER_INSTRUCTION,
                 ),
             },
             {
@@ -252,6 +281,7 @@ def generate_memory_answer(
     answer_model: str | None,
     memory_items: list[dict[str, str]],
     trace: dict[str, str] | None = None,
+    prompt_template: str | None = None,
 ) -> str:
     if not memory_items:
         if trace is not None:
@@ -268,10 +298,12 @@ def generate_memory_answer(
     input_messages = [
             {
                 "role": "system",
-                "content": (
-                    "Tu réponds uniquement à partir de l'historique de conversation fourni. "
-                    + ANSWER_ACTION_INSTRUCTION + " "
-                    + FINAL_ANSWER_STYLE
+                "content": render_answer_system_prompt(
+                    prompt_template,
+                    route_instructions=(
+                        "Tu réponds uniquement à partir de l'historique "
+                        "de conversation fourni."
+                    ),
                 ),
             },
             {
@@ -332,6 +364,7 @@ def generate_multi_source_answer(
     sources: list[dict[str, Any]],
     sql_sub_intent: str | None = None,
     trace: dict[str, str] | None = None,
+    prompt_template: str | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
@@ -365,13 +398,15 @@ def generate_multi_source_answer(
     input_messages = [
             {
                 "role": "system",
-                "content": (
-                    "Tu synthétises plusieurs sources pour répondre en français. "
-                    "Distingue clairement ce qui vient de l'historique conversationnel et ce qui vient de la base si utile. "
-                     + build_sql_sub_intent_prompt(sql_sub_intent)
-                     + source_marker_instruction
-                     + ANSWER_ACTION_INSTRUCTION + " "
-                     + FINAL_ANSWER_STYLE
+                "content": render_answer_system_prompt(
+                    prompt_template,
+                    route_instructions=(
+                        "Tu synthétises plusieurs sources pour répondre en français. "
+                        "Distingue clairement ce qui vient de l'historique conversationnel "
+                        "et ce qui vient de la base si utile. "
+                        + build_sql_sub_intent_prompt(sql_sub_intent)
+                    ),
+                    source_marker_instruction=source_marker_instruction,
                 ),
             },
             {
@@ -394,6 +429,7 @@ def generate_sql_answer(
     sql_sub_intent: str | None,
     sources: list[dict[str, Any]],
     trace: dict[str, str] | None = None,
+    prompt_template: str | None = None,
 ) -> str:
     if not sources:
         if trace is not None:
@@ -432,12 +468,12 @@ def generate_sql_answer(
     source_marker_instruction = (
         "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
     )
-    system_prompt = (
-        task_prompt
-        + "N'invente aucune information absente des resultats. "
-        + source_marker_instruction
-        + ANSWER_ACTION_INSTRUCTION + " "
-        + FINAL_ANSWER_STYLE
+    system_prompt = render_answer_system_prompt(
+        prompt_template,
+        route_instructions=(
+            task_prompt + "N'invente aucune information absente des resultats."
+        ),
+        source_marker_instruction=source_marker_instruction,
     )
     input_messages = [
             {"role": "system", "content": system_prompt},
@@ -458,6 +494,7 @@ def generate_final_answer(
     retrieval: dict[str, Any],
     sources: list[dict[str, Any]],
     trace: dict[str, str] | None = None,
+    prompt_template: str | None = None,
 ) -> str:
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     source_evaluation = retrieval.get("source_evaluation") or {}
@@ -487,13 +524,31 @@ def generate_final_answer(
             retrieval.get("sql_sub_intent"),
             sources,
             trace,
+            prompt_template,
         )
     if route == "rag":
-        return generate_answer(client, question, answer_model, sources, trace)
+        return generate_answer(
+            client, question, answer_model, sources, trace, prompt_template
+        )
     if route == "sql":
-        return generate_sql_answer(client, question, answer_model, retrieval.get("sql_sub_intent"), sources, trace)
+        return generate_sql_answer(
+            client,
+            question,
+            answer_model,
+            retrieval.get("sql_sub_intent"),
+            sources,
+            trace,
+            prompt_template,
+        )
     if route == "memory":
-        return generate_memory_answer(client, question, answer_model, retrieval.get("memory_items", []), trace)
+        return generate_memory_answer(
+            client,
+            question,
+            answer_model,
+            retrieval.get("memory_items", []),
+            trace,
+            prompt_template,
+        )
     if route == "multi_source":
         return generate_multi_source_answer(
             client,
@@ -504,5 +559,8 @@ def generate_final_answer(
             sources,
             retrieval.get("sql_sub_intent"),
             trace,
+            prompt_template,
         )
-    return generate_answer(client, question, answer_model, sources, trace)
+    return generate_answer(
+        client, question, answer_model, sources, trace, prompt_template
+    )

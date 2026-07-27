@@ -132,6 +132,100 @@ Les données Phoenix persistent dans le volume Docker `rag_ionis_phoenix_data`.
 
 Le backend, OpenTelemetry/Phoenix et le pipeline GPU utilisent tous le venv unique `.venv`.
 
+## Lancer le RAG complet sur un dataset Phoenix
+
+Le script [`run_phoenix_experiment.py`](run_phoenix_experiment.py) récupère un
+dataset déjà présent dans Phoenix, exécute le pipeline RAG complet sur chaque
+exemple et enregistre les sorties dans une expérience.
+
+Lancé sans argument, il ouvre une fenêtre Tkinter qui demande :
+
+- le dataset Phoenix, choisi dans une liste déroulante ;
+- le nom de la nouvelle expérience.
+- le LLM de reformulation ;
+- le LLM du planner ;
+- le LLM de réponse.
+- les trois prompts système dans des zones de texte éditables.
+
+Les trois sélecteurs sont indépendants et proposent :
+
+1. `sol` (`gpt-5.6-sol`) ;
+2. `terra` (`gpt-5.6-terra`) ;
+3. `luna` (`gpt-5.6-luna`).
+
+Le nom enregistré dans Phoenix reçoit automatiquement les trois noms de
+modèles dans l'ordre reformulation, planner, réponse. Par exemple, le nom saisi
+`rag-v1` devient `rag-v1_terra_luna_sol`.
+
+Les prompts par défaut sont chargés dans trois onglets : `Reformulation`,
+`Planner` et `Réponse`. Leur contenu peut être modifié avant le lancement.
+Le prompt de réponse est un template commun aux routes RAG, SQL et mémoire. Il
+accepte les marqueurs dynamiques suivants :
+
+- `{route_instructions}` ;
+- `{source_marker_instruction}` ;
+- `{answer_action_instruction}` ;
+- `{answer_style}`.
+
+Un marqueur conservé dans la zone de texte est remplacé par les instructions
+correspondant à chaque exemple au moment de l'appel LLM.
+
+```powershell
+.\.venv\Scripts\python.exe .\utils\run_phoenix_experiment.py
+```
+
+La fenêtre peut être évitée pour une exécution automatisée en fournissant
+`--dataset`, `--experiment-name` et, si nécessaire, les trois modèles :
+
+```powershell
+.\.venv\Scripts\python.exe .\utils\run_phoenix_experiment.py `
+  --dataset "nom-du-dataset" `
+  --experiment-name "rag-modeles-mixtes" `
+  --reformulation-model terra `
+  --planner-model luna `
+  --answer-model sol
+```
+
+Le champ d'entrée contenant la question doit s'appeler `question` par défaut.
+Commencer par un seul exemple sans rien enregistrer :
+
+```powershell
+.\.venv\Scripts\python.exe .\utils\run_phoenix_experiment.py `
+  --dataset "nom-du-dataset" `
+  --dry-run
+```
+
+Puis lancer et enregistrer l'expérience sur tout le dataset :
+
+```powershell
+.\.venv\Scripts\python.exe .\utils\run_phoenix_experiment.py `
+  --dataset "nom-du-dataset" `
+  --experiment-name "rag-v1"
+```
+
+Si la question est imbriquée dans l'entrée du dataset, indiquer son chemin :
+
+```powershell
+.\.venv\Scripts\python.exe .\utils\run_phoenix_experiment.py `
+  --dataset "nom-du-dataset" `
+  --question-key "payload.question"
+```
+
+Le script appelle directement le code du backend : FastAPI n'a pas besoin
+d'être démarré, mais PostgreSQL et Phoenix doivent être accessibles et les clés
+`OPENAI_API_KEY` et `COHERE_API_KEY` doivent être configurées dans `.env`.
+Comme le parcours est identique à une requête utilisateur, chaque exemple crée
+aussi une conversation et un message dans PostgreSQL.
+
+Deux évaluations déterministes sont enregistrées :
+
+- `response_nonempty` vérifie qu'une réponse non vide a été produite ;
+- `answer_action` classe la sortie en `answer`, `clarify` ou `abstain`.
+
+Elles contrôlent le bon déroulement mais pas la justesse sémantique. Pour
+mesurer la qualité des réponses, ajouter ensuite des réponses de référence ou
+un évaluateur LLM.
+
 ## Lire une trace pour diagnostiquer une mauvaise réponse
 
 Ordre conseillé :

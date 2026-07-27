@@ -68,6 +68,21 @@ VIDEO_TRANSCRIPT_DOCUMENT_SQL = """
 """
 
 
+def normalized_sql_text(value_sql: str) -> str:
+    """Normalise accents, casse, ponctuation et espaces dans une expression SQL."""
+    return (
+        "btrim(regexp_replace("
+        f"unaccent(lower(coalesce({value_sql}, ''))), "
+        "'[^[:alnum:]]+', ' ', 'g'))"
+    )
+
+
+TITLE_CONTAINS_SQL = (
+    f"{normalized_sql_text('v.title')} LIKE "
+    f"concat(chr(37), {normalized_sql_text('%s')}, chr(37))"
+)
+
+
 def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
     formatted_sql = format_sql_pretty(trace.get("sql"))
     if formatted_sql is None:
@@ -133,8 +148,8 @@ def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[An
     clauses: list[str] = []
     params: list[Any] = []
     if query.title_hint:
-        clauses.append("unaccent(lower(v.title)) LIKE unaccent(lower(%s))")
-        params.append(f"%{query.title_hint}%")
+        clauses.append(TITLE_CONTAINS_SQL)
+        params.append(query.title_hint)
     if query.published_after:
         clauses.append("v.published_at >= %s::timestamptz")
         params.append(query.published_after)
@@ -206,8 +221,8 @@ def build_video_lookup_conditions(
     params: list[Any] = []
     title_hint = query.title_hint
     if title_hint:
-        clauses.append("unaccent(lower(v.title)) LIKE unaccent(lower(%s))")
-        params.append(f"%{title_hint}%")
+        clauses.append(TITLE_CONTAINS_SQL)
+        params.append(title_hint)
     if database_persons:
         append_person_filter_clauses(clauses, params, database_persons)
     if database_company:

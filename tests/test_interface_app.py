@@ -473,11 +473,10 @@ class InterfaceAppTests(unittest.TestCase):
             title_hint="Titre exact",
         )
         clauses, params = retrieval.build_prefilter_conditions(query)
-        self.assertIn(
-            "unaccent(lower(v.title)) LIKE unaccent(lower(%s))",
-            clauses,
-        )
-        self.assertEqual(params, ["%Titre exact%"])
+        self.assertEqual(clauses, [retrieval.TITLE_CONTAINS_SQL])
+        self.assertIn("regexp_replace", clauses[0])
+        self.assertIn("concat(chr(37)", clauses[0])
+        self.assertEqual(params, ["Titre exact"])
 
     def test_bm25_search_is_limited_to_detail_chunks(self) -> None:
         class Cursor:

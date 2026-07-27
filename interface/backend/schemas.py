@@ -8,6 +8,8 @@ from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_FINAL_K,
     DEFAULT_GENERATION_MODEL,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_REFORMULATION_MODEL,
     DEFAULT_TOP_K,
     MAX_FINAL_K,
     MAX_TOP_K,
@@ -29,7 +31,12 @@ class RagRequest(BaseModel):
     question: str = Field(min_length=1)
     conversationId: int | None = None
     apiUrl: str | None = None
+    reformulationModel: str = DEFAULT_REFORMULATION_MODEL
+    plannerModel: str = DEFAULT_PLANNER_MODEL
     answerModel: str = DEFAULT_GENERATION_MODEL
+    reformulationPrompt: str | None = None
+    plannerPrompt: str | None = None
+    answerPrompt: str | None = None
     embeddingModel: str = DEFAULT_EMBEDDING_MODEL
     rerankModel: str | None = None
     useSql: bool = True

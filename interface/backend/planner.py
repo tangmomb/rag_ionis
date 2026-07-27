@@ -25,8 +25,11 @@ PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
 COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.90
 
 
-def build_planner_prompt(question: str) -> tuple[str, str]:
-    system_prompt = (
+def build_planner_prompt(
+    question: str,
+    system_prompt_override: str | None = None,
+) -> tuple[str, str]:
+    default_system_prompt = (
         "Tu planifies la requete d'un assistant RAG sans y repondre. Retourne uniquement un objet JSON avec exactement ces cles: "
         "route, sql_sub_intent, query_text, query_text_bm25, title_hint, persons, companies, published_after, published_before. "
         "Première étape, identifier les personnes ou entreprises mentionnées dans la question. Les stocker dans les clés persons et companies sous forme de tableaux json."
@@ -38,6 +41,7 @@ def build_planner_prompt(question: str) -> tuple[str, str]:
         "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question. sql_sub_intent='stats' si la question demande des statistiques sur une video. sql_sub_intent='description' si la question demande explicitement la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées."
 
     )
+    system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     return system_prompt, question
 
 
@@ -206,14 +210,22 @@ def derive_plan_sources(planner_plan: PlannerPlan) -> None:
         planner_plan.sql_main_source = has_sql_intent
 
 
-def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str | None, str | None, bool]:
-    system_prompt, user_prompt = build_planner_prompt(question)
+def run_planner(
+    question: str,
+    client: OpenAI | None,
+    model: str = DEFAULT_PLANNER_MODEL,
+    system_prompt_override: str | None = None,
+) -> tuple[PlannerPlan, str | None, str | None, bool]:
+    system_prompt, user_prompt = build_planner_prompt(
+        question,
+        system_prompt_override,
+    )
     planner_input = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     raw_prompt = json.dumps(
-        {"model": DEFAULT_PLANNER_MODEL, "input": planner_input},
+        {"model": model, "input": planner_input},
         ensure_ascii=False,
     )
 
@@ -225,7 +237,7 @@ def run_planner(question: str, client: OpenAI | None) -> tuple[PlannerPlan, str 
         derive_plan_sources(fallback)
         return fallback, raw_prompt, json.dumps(fallback.model_dump(), ensure_ascii=False), False
 
-    response = client.responses.create(model=DEFAULT_PLANNER_MODEL, input=planner_input)
+    response = client.responses.create(model=model, input=planner_input)
     raw_response = serialize_openai_response(response)
     raw = getattr(response, "output_text", "").strip()
     if not raw:
@@ -711,13 +723,15 @@ def is_memory_video_comparison(question: str) -> bool:
 def build_question_reformulation_prompt(
     question: str,
     memory_items: list[dict[str, str]],
+    system_prompt_override: str | None = None,
 ) -> tuple[str, str]:
     history = "\n".join(
         f"{item['role']}: {item['text']}" for item in memory_items
     )
-    system_prompt = (
+    default_system_prompt = (
         "Tu reformules le dernier message utilisateur sans y répondre. 1) indiquer si le message a besoin de l'historique de la conversation pour être compris. 2) si oui, reformule le message en incluant les informations pertinentes de l'historique pour que la question soit complètement autonome. Si non, reformule le message de manière propre et bien écrit sans changer son sens. Répond sous la forme d'un objet JSON avec exactement ces clés: follow_up (booléen), reformulated_question (string)."
     )
+    system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     user_prompt = f"Message actuel : {question}\n\nHistorique récent :\n{history or '(vide)'}"
     return system_prompt, user_prompt
 
@@ -755,6 +769,8 @@ def reformulate_question(
     question: str,
     conversation_id: int | None,
     client: OpenAI | None,
+    model: str = DEFAULT_REFORMULATION_MODEL,
+    system_prompt_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Rend une relance autonome avant le planner, sans modifier le message stocké."""
     memory_items, memory_trace = fetch_conversation_memory(conversation_id)
@@ -769,9 +785,13 @@ def reformulate_question(
         trace["reason"] = "no_openai_client"
         return question, trace
 
-    system_prompt, user_prompt = build_question_reformulation_prompt(question, memory_items)
+    system_prompt, user_prompt = build_question_reformulation_prompt(
+        question,
+        memory_items,
+        system_prompt_override,
+    )
     trace["prompt"] = json.dumps(
-        {"model": DEFAULT_REFORMULATION_MODEL, "input": [
+        {"model": model, "input": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]},
@@ -779,7 +799,7 @@ def reformulate_question(
     )
     try:
         response = client.responses.create(
-            model=DEFAULT_REFORMULATION_MODEL,
+            model=model,
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

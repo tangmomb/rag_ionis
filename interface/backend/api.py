@@ -95,6 +95,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                     retrieval,
                     sources,
                     answer_trace,
+                    payload.answerPrompt,
                 )
                 generation_span.set_output(
                     {
@@ -178,6 +179,8 @@ def rag(payload: RagRequest) -> RagResponse:
         input_value={
             "question": payload.question,
             "conversation_id": payload.conversationId,
+            "reformulation_model": payload.reformulationModel,
+            "planner_model": payload.plannerModel,
             "answer_model": payload.answerModel,
             "embedding_model": payload.embeddingModel,
             "rerank_model": payload.rerankModel,

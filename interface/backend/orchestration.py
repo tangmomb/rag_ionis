@@ -6,6 +6,7 @@ from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PLANNER_MODEL,
+    DEFAULT_REFORMULATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
 from interface.backend.database import fetch_conversation_memory
@@ -57,29 +58,42 @@ def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_na
 
 def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     client = get_openai_client()
+    reformulation_model = normalize_model_name(
+        payload.reformulationModel,
+        DEFAULT_REFORMULATION_MODEL,
+    )
+    planner_model = normalize_model_name(
+        payload.plannerModel,
+        DEFAULT_PLANNER_MODEL,
+    )
     with trace_operation(
         "rag.reformulation",
         kind="CHAIN",
         input_value={
             "question": payload.question,
             "conversation_id": payload.conversationId,
+            "model": reformulation_model,
         },
     ) as reformulation_span:
         contextual_question, reformulation_trace = reformulate_question(
             payload.question,
             payload.conversationId,
             client,
+            reformulation_model,
+            payload.reformulationPrompt,
         )
         reformulation_span.set_output(reformulation_trace)
 
     with trace_operation(
         "rag.planner",
         kind="AGENT",
-        input_value={"question": contextual_question, "model": DEFAULT_PLANNER_MODEL},
+        input_value={"question": contextual_question, "model": planner_model},
     ) as planner_span:
         planner_plan, planner_prompt, planner_raw, pydantic_verification = run_planner(
             contextual_question,
             client,
+            planner_model,
+            payload.plannerPrompt,
         )
         planner_plan.title_hint = sanitize_video_title_hint(
             contextual_question,
@@ -172,6 +186,8 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "pydantic_verification": pydantic_verification,
         "question_reformulation": reformulation_trace,
         "contextual_question": contextual_question,
+        "reformulation_model": reformulation_model,
+        "planner_model": planner_model,
         "planner_plan": planner_plan.model_dump(),
         "execution_plan": execution_plan.model_dump(),
         "validated_query": execution_plan.model_dump(),

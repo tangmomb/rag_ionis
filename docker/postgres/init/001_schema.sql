@@ -47,8 +47,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     language_code TEXT NOT NULL,
     transcript TEXT,
-    transcript_timecodes TEXT,
-    transcript_timecodes_enrichi TEXT,
+    transcript_enriched TEXT,
     data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (video_id, language_code)
 );

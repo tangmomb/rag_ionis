@@ -288,12 +288,13 @@ class PipelineRoutingTests(unittest.TestCase):
         )
         self.assertLess(
             ocr_ids.index("speakers.validate"),
-            ocr_ids.index("transcript.apply_speakers"),
+            ocr_ids.index("transcript.enrich"),
         )
         self.assertLess(
-            ocr_ids.index("transcript.apply_speakers"),
+            ocr_ids.index("transcript.enrich"),
             ocr_ids.index("chunks.create"),
         )
+        self.assertNotIn("transcript.apply_speakers", ocr_ids)
         self.assertNotIn("speakers.assign_ocr", ocr_ids)
         self.assertNotIn("transcript.enrich_ocr_comparison", ocr_ids)
         self.assertIn("transcript.whisper", whisper_ids)

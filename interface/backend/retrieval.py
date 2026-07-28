@@ -55,7 +55,7 @@ COALESCE(
 VIDEO_TRANSCRIPT_DOCUMENT_SQL = """
 (
     SELECT COALESCE(
-        transcript_row.transcript_timecodes_enrichi,
+        transcript_row.transcript_enriched,
         transcript_row.transcript
     )
     FROM transcripts transcript_row
@@ -348,7 +348,7 @@ def lookup_video_document(
 
         transcript_clauses, transcript_params = build_video_lookup_conditions(query)
         transcript_document = (
-            "coalesce(t.transcript_timecodes_enrichi, t.transcript, '')"
+            "coalesce(t.transcript_enriched, t.transcript, '')"
         )
         transcript_persons = [
             person.strip() for person in query.persons if person.strip()
@@ -501,7 +501,7 @@ def lookup_video_document(
     if intent == "transcript_verbatim":
         document_expr = "t.transcript"
     elif intent == "transcript_qa":
-        document_expr = "t.transcript_timecodes_enrichi"
+        document_expr = "t.transcript_enriched"
     else:
         raise RuntimeError(f"Intent direct non supporte: {intent}")
 

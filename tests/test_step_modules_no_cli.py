@@ -25,7 +25,7 @@ class StepModulesNoCliTests(unittest.TestCase):
         step_files = sorted(
             path for path in STEPS_DIR.rglob("*.py") if path.name != "__init__.py"
         )
-        self.assertEqual(len(step_files), 28)
+        self.assertEqual(len(step_files), 27)
 
         violations: list[str] = []
         for path in step_files:

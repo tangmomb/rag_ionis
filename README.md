@@ -382,6 +382,8 @@ Sans sous-titres détectés, la correction visuelle historique reste utilisée :
 
 ```text
 transcript.correct_whisper
+speakers.propose
+speakers.validate
 transcript.enrich
 transcript.create_plain
 ```
@@ -397,7 +399,6 @@ transcript.create_plain_ocr
 transcript.reconcile_ocr
 speakers.propose
 speakers.validate
-transcript.apply_speakers
 transcript.enrich
 transcript.create_plain
 ```
@@ -418,22 +419,21 @@ Le code Python conserve lui-même les timecodes, les identifiants de speaker,
 l'ordre et le nombre de segments. Les remplacements sont consignés dans
 `transcript_2_corrections.tsv`.
 
-Pour les routes courtes, les cinq artefacts canoniques sont :
+Pour les routes courtes, les quatre artefacts canoniques sont :
 
 | Artefact | Contenu |
 |---|---|
 | `transcript_1_brut.txt` | Sortie WhisperX brute. |
 | `transcript_2_corrected.txt` | WhisperX corrigé par rapprochement OCR. |
-| `transcript_3_with_speakers.txt` | Transcript corrigé avec les speakers validés. |
-| `transcript_enriched.txt` | Copie du transcript avec speakers, augmentée uniquement des intercalaires OCR (`graphic`). |
+| `transcript_3_enriched.txt` | Transcript corrigé avec les speakers validés, augmenté uniquement des intercalaires OCR (`graphic`). |
 | `transcript_plain.txt` | Version sans timecodes destinée aux usages textuels. |
 
 Pour `long_video`, seuls `transcript_1_brut.txt` et
 `transcript_plain.txt` sont produits.
 
-`transcript_enriched.txt` n'ajoute ni sous-titres, ni noms, ni titres animés,
-ni autres textes présents sur les images. La résolution des speakers appartient
-exclusivement à `transcript_3_with_speakers.txt`.
+`transcript_3_enriched.txt` n'ajoute ni sous-titres, ni noms, ni titres animés,
+ni autres textes présents sur les images. La résolution des speakers et l'ajout
+des intercalaires sont réunis dans cette unique étape.
 
 Les speakers, les chunks, les embeddings, l'interface RAG et la synchronisation
 PostgreSQL consomment exclusivement les fichiers de

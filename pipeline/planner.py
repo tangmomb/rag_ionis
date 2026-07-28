@@ -33,7 +33,6 @@ CANONICAL_AFTER_CORRECTION_TASKS = (
 )
 
 CANONICAL_FINALIZATION_TASKS = (
-    "transcript.apply_speakers",
     "transcript.enrich",
     "transcript.create_plain",
 )

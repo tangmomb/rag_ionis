@@ -14,13 +14,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from pipeline.steps.chunks import create_transcript_chunks as chunk_creation
-from pipeline.steps.transcripts import apply_speakers as speaker_stage
 from pipeline.steps.transcripts import correct_whisper_transcript as combined_correction
+from pipeline.steps.transcripts import enrich_transcripts as enrichment
 from pipeline.steps.speakers import correct_speaker_transcripts as speaker_correction
 
 
 class CorrectSpeakerTranscriptsTests(unittest.TestCase):
-    def test_correction_and_speakers_are_two_separate_transcript_stages(self) -> None:
+    def test_enrichment_applies_speakers_without_intermediate_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             video_dir = Path(temporary_directory) / "video123"
             video_dir.mkdir()
@@ -38,6 +38,10 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             )
             (ocr_dir / "01_processed_ocr_items.json").write_text(
                 '{"items":[]}',
+                encoding="utf-8",
+            )
+            (ocr_dir / "02_filtered_ocr_overlays.json").write_text(
+                '{"kinds":{"graphic":{}}}',
                 encoding="utf-8",
             )
             (speakers_dir / "speaker_candidates.json").write_text(
@@ -75,19 +79,19 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             self.assertIn("Lucie Ouyaya", text)
             self.assertNotIn("Loucif Ouyahia", text)
 
-            with_speakers = speaker_stage.apply_speakers(video, force=True)
+            enriched = enrichment.enrich_transcript(video, force=True)
 
             self.assertEqual(
-                with_speakers,
-                transcript_dir / "transcript_3_with_speakers.txt",
+                enriched,
+                transcript_dir / "transcript_3_enriched.txt",
             )
             self.assertIn(
                 "Loucif Ouyahia",
-                with_speakers.read_text(encoding="utf-8"),
+                enriched.read_text(encoding="utf-8"),
             )
             self.assertNotIn(
                 "SPEAKER_00",
-                with_speakers.read_text(encoding="utf-8"),
+                enriched.read_text(encoding="utf-8"),
             )
             self.assertIn(
                 "Lucie Ouyaya",
@@ -95,6 +99,9 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             )
             self.assertFalse(
                 (speakers_dir / "speaker_transcript_corrections.json").exists()
+            )
+            self.assertFalse(
+                (transcript_dir / "transcript_3_with_speakers.txt").exists()
             )
 
     def test_single_validated_speaker_replaces_every_whisper_label(self) -> None:

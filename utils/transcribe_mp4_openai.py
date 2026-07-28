@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 
 DEFAULT_SEARCH_DIR = Path("downloads/youtube")
-VIDEO_EXTENSIONS = {".mp4"}
+MEDIA_EXTENSIONS = {".mp4", ".mp3", ".wav", ".m4a", ".aac", ".flac"}
 OUTPUT_DIR = Path(__file__).resolve().parent / "transcriptions_openai"
 MODEL_OPTIONS = [
     {
@@ -47,27 +47,27 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-def find_mp4_files(search_dir):
+def find_media_files(search_dir):
     if not search_dir.exists():
         return []
     return sorted(
         (
             path
             for path in search_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+            if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS
         ),
         key=lambda path: path.as_posix().lower(),
     )
 
 
-def prompt_video_path(candidates):
+def prompt_media_path(candidates):
     if candidates:
-        print("MP4 trouves :")
+        print("Fichiers audio/video trouves :")
         for index, path in enumerate(candidates, start=1):
             print(f"  {index}. {path}")
         print()
 
-    prompt = "Choisis un numero de fichier MP4 ou colle un chemin complet: "
+    prompt = "Choisis un numero ou colle un chemin audio/video complet: "
     while True:
         raw_value = input(prompt).strip().strip('"')
         if not raw_value:
@@ -82,9 +82,13 @@ def prompt_video_path(candidates):
             continue
 
         candidate_path = Path(raw_value)
-        if candidate_path.exists() and candidate_path.is_file() and candidate_path.suffix.lower() == ".mp4":
+        if (
+            candidate_path.exists()
+            and candidate_path.is_file()
+            and candidate_path.suffix.lower() in MEDIA_EXTENSIONS
+        ):
             return candidate_path
-        print("Fichier MP4 introuvable, recommence.")
+        print("Fichier audio/video introuvable ou format non pris en charge, recommence.")
 
 
 def prompt_model_choices():
@@ -167,13 +171,13 @@ def main():
     load_dotenv(override=True)
     client = OpenAI()
     search_dir = DEFAULT_SEARCH_DIR
-    candidates = find_mp4_files(search_dir)
+    candidates = find_media_files(search_dir)
 
     if not candidates:
-        print(f"Aucun MP4 trouve sous {search_dir}.")
-        print("Tu peux quand meme coller un chemin complet vers un fichier .mp4.")
+        print(f"Aucun fichier audio/video trouve sous {search_dir}.")
+        print("Tu peux quand meme coller un chemin complet vers un fichier pris en charge.")
 
-    video_path = prompt_video_path(candidates)
+    video_path = prompt_media_path(candidates)
     model_options = prompt_model_choices()
     print(f"[transcription] {video_path}")
     failures = 0

@@ -45,7 +45,11 @@ def refresh_environment_defaults():
     global DEFAULT_MIN_SPEAKERS
     global DEFAULT_MAX_SPEAKERS
 
-    DEFAULT_TRANSCRIBE_MODEL = os.getenv("WHISPERX_MODEL", "large-v3")
+    configured_model = os.getenv("WHISPERX_MODEL", "").strip()
+    local_large_v3 = ROOT_DIR / "models" / "faster-whisper-large-v3"
+    DEFAULT_TRANSCRIBE_MODEL = configured_model or (
+        str(local_large_v3) if local_large_v3.is_dir() else "large-v3"
+    )
     DEFAULT_TRANSCRIBE_LANGUAGE = os.getenv("WHISPERX_LANGUAGE", "fr")
     REQUESTED_TRANSCRIBE_DEVICE = os.getenv("WHISPERX_DEVICE", "cuda")
     DEFAULT_TRANSCRIBE_DEVICE = REQUESTED_TRANSCRIBE_DEVICE
@@ -105,12 +109,13 @@ def subtitle_timecodes_path(transcript_dir, video_path):
 
 
 def extract_audio(video_path, audio_dir):
-    audio_path = audio_dir / f"{video_path.stem}.wav"
+    executable = ffmpeg_exe()
+    audio_path = audio_dir / f"{video_path.stem}.mp3"
     if audio_path.exists():
         return audio_path
 
     command = [
-        str(ffmpeg_exe()),
+        str(executable),
         "-y",
         "-i",
         str(video_path),
@@ -119,6 +124,10 @@ def extract_audio(video_path, audio_dir):
         "1",
         "-ar",
         "16000",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        "64k",
         str(audio_path),
     ]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

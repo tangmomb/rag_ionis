@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -533,22 +532,19 @@ def transcribe_whisper(context: PipelineContext) -> TaskResult:
     audio_directory = transcript_directory / "audio"
     transcript_directory.mkdir(parents=True, exist_ok=True)
     audio_directory.mkdir(parents=True, exist_ok=True)
-    try:
-        result = transcribe_video(
-            whisperx,
-            model,
-            context.video_path,
-            transcript_directory,
-            audio_directory,
-            device,
-            diarization_pipeline=diarization_pipeline,
-            diarization_device=diarization_device,
-            min_speakers=DEFAULT_MIN_SPEAKERS,
-            max_speakers=DEFAULT_MAX_SPEAKERS,
-            force=context.force_rebuild,
-        )
-    finally:
-        shutil.rmtree(audio_directory, ignore_errors=True)
+    result = transcribe_video(
+        whisperx,
+        model,
+        context.video_path,
+        transcript_directory,
+        audio_directory,
+        device,
+        diarization_pipeline=diarization_pipeline,
+        diarization_device=diarization_device,
+        min_speakers=DEFAULT_MIN_SPEAKERS,
+        max_speakers=DEFAULT_MAX_SPEAKERS,
+        force=context.force_rebuild,
+    )
     return _artifact_result(
         context,
         result,
@@ -706,51 +702,21 @@ def reconcile_whisper_with_ocr(context: PipelineContext) -> TaskResult:
     )
 
 
-def apply_transcript_speakers(context: PipelineContext) -> TaskResult:
-    from pipeline.steps.transcripts.apply_speakers import (
-        apply_speakers,
-        corrected_source_path,
-        with_speakers_path,
-    )
-
-    source = corrected_source_path(context.video_path)
-    if not source.exists():
-        return TaskResult.blocked(
-            "Application des speakers impossible; transcript corrige absent."
-        )
-    target = with_speakers_path(context.video_path)
-    before = _snapshot((target,))
-    result = apply_speakers(
-        context.video_path,
-        force=context.force_rebuild,
-    )
-    return _artifact_result(
-        context,
-        result,
-        artifacts=(*_paths_from(result), target),
-        state_paths=(target,),
-        before=before,
-        success_reason="Transcript avec speakers cree.",
-        cached_reason="Transcript avec speakers deja a jour.",
-        missing_reason="Transcript avec speakers non produit.",
-    )
-
-
 def enrich_transcript(context: PipelineContext) -> TaskResult:
     from pipeline.steps.transcripts.enrich_transcripts import (
+        corrected_timecodes_path,
         enrich_transcript as enrich,
         enriched_path,
-        timecodes_path,
     )
 
     try:
-        source = timecodes_path(
+        source = corrected_timecodes_path(
             context.video_path,
             transcripts_dir_name=context.transcripts_dir_name,
         )
     except FileNotFoundError:
         return TaskResult.blocked(
-            "Enrichissement impossible; transcript avec speakers absent."
+            "Enrichissement impossible; transcript corrige absent."
         )
     target = enriched_path(source)
     before = _snapshot((target,))
@@ -759,13 +725,14 @@ def enrich_transcript(context: PipelineContext) -> TaskResult:
         force=context.force_rebuild,
         transcripts_dir_name=context.transcripts_dir_name,
     )
+    context.artifacts.by_task.pop("transcript.apply_speakers", None)
     return _artifact_result(
         context,
         result,
         artifacts=(*_paths_from(result), target),
         state_paths=(target,),
         before=before,
-        success_reason="Intercalaires ajoutes au transcript avec speakers.",
+        success_reason="Speakers et intercalaires ajoutes au transcript.",
         cached_reason="Transcript enrichi deja a jour.",
         missing_reason="Transcript enrichi non produit.",
     )

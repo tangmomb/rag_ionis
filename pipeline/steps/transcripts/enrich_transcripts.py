@@ -1,5 +1,10 @@
 import re
 
+from pipeline.steps.speakers.correct_speaker_transcripts import (
+    candidates_path,
+    correct_speaker_files,
+    validated_path,
+)
 from pipeline.support.json_io import read_json
 from pipeline.support.ocr_filtering import enriched_ocr_source_path, format_timecode
 from pipeline.support.paths import (
@@ -7,8 +12,11 @@ from pipeline.support.paths import (
     existing_transcripts_dir,
 )
 from pipeline.steps.transcripts.artifacts import (
-    TRANSCRIPT_3_WITH_SPEAKERS_NAME,
-    TRANSCRIPT_ENRICHED_NAME,
+    LEGACY_TRANSCRIPT_2_NAMES,
+    LEGACY_TRANSCRIPT_3_WITH_SPEAKERS_NAMES,
+    LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+    TRANSCRIPT_2_CORRECTED_NAME,
+    TRANSCRIPT_3_ENRICHED_NAME,
 )
 
 
@@ -27,31 +35,53 @@ def parse_timecode(value):
     return hours * 3600 + minutes * 60 + seconds
 
 
-def timecodes_path(video_path, *, transcripts_dir_name=None):
+def corrected_timecodes_path(video_path, *, transcripts_dir_name=None):
     transcript_dir = existing_transcripts_dir(
         video_path,
         name=transcripts_dir_name,
     )
-    candidates = (transcript_dir / TRANSCRIPT_3_WITH_SPEAKERS_NAME,)
+    candidates = (
+        transcript_dir / TRANSCRIPT_2_CORRECTED_NAME,
+        *(transcript_dir / name for name in LEGACY_TRANSCRIPT_2_NAMES),
+    )
     for candidate in candidates:
         if candidate.exists():
             return candidate
 
     raise FileNotFoundError(
-        f"Aucun transcript source trouve pour l'enrichissement de "
+        f"Aucun transcript corrige trouve pour l'enrichissement de "
         f"{video_path.stem} dans {transcript_dir}"
     )
 
 
 def enriched_path(source_path):
-    if (
-        source_path.parent.name == CANONICAL_TRANSCRIPTS_DIR_NAME
-        or source_path.name == TRANSCRIPT_3_WITH_SPEAKERS_NAME
-    ):
-        return source_path.with_name(TRANSCRIPT_ENRICHED_NAME)
+    if source_path.parent.name == CANONICAL_TRANSCRIPTS_DIR_NAME:
+        return source_path.with_name(TRANSCRIPT_3_ENRICHED_NAME)
     if source_path.name.endswith(CORRECTED_SUFFIX):
         return source_path.with_name(source_path.name[: -len(".txt")] + ENRICHED_SUFFIX)
     return source_path.with_name(f"{source_path.stem}{ENRICHED_SUFFIX}")
+
+
+def speaker_dependencies(video_path):
+    validated = validated_path(video_path)
+    if not validated.exists():
+        return []
+    dependencies = [validated]
+    validated_payload = read_json(validated)
+    candidates = candidates_path(video_path, validated_payload)
+    if candidates.exists():
+        dependencies.append(candidates)
+    return dependencies
+
+
+def remove_obsolete_transcript_files(target):
+    for name in (
+        *LEGACY_TRANSCRIPT_3_WITH_SPEAKERS_NAMES,
+        *LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+    ):
+        obsolete = target.with_name(name)
+        if obsolete != target and obsolete.exists():
+            obsolete.unlink()
 
 
 def parse_timecoded_source(path):
@@ -116,7 +146,7 @@ def enrich_transcript(
     *,
     transcripts_dir_name=None,
 ):
-    source = timecodes_path(
+    source = corrected_timecodes_path(
         video_path,
         transcripts_dir_name=transcripts_dir_name,
     )
@@ -124,14 +154,16 @@ def enrich_transcript(
     target = enriched_path(source)
 
     if not source.exists():
-        print(f"[skip] transcript avec speakers introuvable: {source}")
+        print(f"[skip] transcript corrige introuvable: {source}")
         return None
     dependencies = [source]
     if analyse.exists():
         dependencies.append(analyse)
+    dependencies.extend(speaker_dependencies(video_path))
     if target.exists() and not force and target.stat().st_mtime >= max(
         dependency.stat().st_mtime for dependency in dependencies
     ):
+        remove_obsolete_transcript_files(target)
         print(f"[skip] {target.name} existe deja")
         return target
     if target.exists() and not force:
@@ -150,5 +182,16 @@ def enrich_transcript(
         lines.extend(format_intercalaire_line(item) for item in intercalaires)
 
     target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    speaker_result = correct_speaker_files(
+        video_path,
+        [target],
+        force=force,
+        replace_speaker_labels=True,
+    )
+    if speaker_result is None:
+        target.unlink(missing_ok=True)
+        print("[skip] application des speakers impossible")
+        return None
+    remove_obsolete_transcript_files(target)
     print(f"[ok] {target}")
     return target

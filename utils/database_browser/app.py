@@ -109,17 +109,13 @@ TRANSCRIPT_VARIANTS = (
         ),
     ),
     (
-        "with_speakers",
-        "3 — Transcript avec speakers",
-        "transcripts_whisper",
-        ("transcript_3_with_speakers.txt",),
-    ),
-    (
         "enriched",
-        "Transcript enrichi — intercalaires",
+        "3 — Transcript enrichi avec speakers",
         "transcripts_whisper",
         (
+            "transcript_3_enriched.txt",
             "transcript_enriched.txt",
+            "transcript_3_with_speakers.txt",
             "whisper_transcript_timecoded_corrected_enriched.txt",
         ),
     ),

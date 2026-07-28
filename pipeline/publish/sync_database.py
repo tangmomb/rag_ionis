@@ -17,14 +17,9 @@ from pipeline.support.paths import (
     existing_youtube_api_infos_path,
 )
 from pipeline.steps.transcripts.artifacts import (
-    LEGACY_TRANSCRIPT_1_NAMES,
-    LEGACY_TRANSCRIPT_2_NAMES,
     LEGACY_TRANSCRIPT_ENRICHED_NAMES,
     LEGACY_TRANSCRIPT_PLAIN_NAMES,
-    TRANSCRIPT_1_BRUT_NAME,
-    TRANSCRIPT_2_CORRECTED_NAME,
-    TRANSCRIPT_3_WITH_SPEAKERS_NAME,
-    TRANSCRIPT_ENRICHED_NAME,
+    TRANSCRIPT_3_ENRICHED_NAME,
     TRANSCRIPT_PLAIN_NAME,
 )
 
@@ -41,13 +36,8 @@ DEFAULT_CHUNK_LEVEL = "detail"
 SCHEMA_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "001_schema.sql"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 PLAIN_TRANSCRIPT_NAME = TRANSCRIPT_PLAIN_NAME
-WHISPER_TRANSCRIPT_TIMECODED_NAME = TRANSCRIPT_1_BRUT_NAME
-WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME = TRANSCRIPT_2_CORRECTED_NAME
-WHISPER_TRANSCRIPT_WITH_SPEAKERS_NAME = TRANSCRIPT_3_WITH_SPEAKERS_NAME
-WHISPER_TRANSCRIPT_ENRICHED_NAME = TRANSCRIPT_ENRICHED_NAME
+WHISPER_TRANSCRIPT_ENRICHED_NAME = TRANSCRIPT_3_ENRICHED_NAME
 LEGACY_ENRICHED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected_enrichi.txt"
-LEGACY_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes_corrected.txt"
-LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX = "_transcript_timecodes.txt"
 LEGACY_PLAIN_TRANSCRIPT_SUFFIX = "_transcript.txt"
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -459,92 +449,15 @@ def ensure_transcripts_schema(cursor):
             video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
             language_code TEXT NOT NULL,
             transcript TEXT,
-            transcript_timecodes TEXT,
-            transcript_timecodes_enrichi TEXT,
+            transcript_enriched TEXT,
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )
     ensure_data_collected_date_column(cursor, "transcripts")
     cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript TEXT")
-    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes TEXT")
-    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_timecodes_enrichi TEXT")
+    cursor.execute("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS transcript_enriched TEXT")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS updated_at")
-
-    columns = table_columns(cursor, "transcripts")
-    if {"transcript_plain", "transcript_timecoded", "transcript_enriched"} & columns or {"transcript_type", "text"}.issubset(columns):
-        plain_expression = "MAX(transcript)" if "transcript" in columns else "NULL::text"
-        if "transcript_plain" in columns:
-            plain_expression = f"COALESCE({plain_expression}, MAX(transcript_plain))"
-        if {"transcript_type", "text"}.issubset(columns):
-            plain_expression = f"COALESCE({plain_expression}, MAX(text) FILTER (WHERE transcript_type = 'plain'))"
-
-        timecodes_expression = "MAX(transcript_timecodes)" if "transcript_timecodes" in columns else "NULL::text"
-        if "transcript_timecoded" in columns:
-            timecodes_expression = f"COALESCE({timecodes_expression}, MAX(transcript_timecoded))"
-        if {"transcript_type", "text"}.issubset(columns):
-            timecodes_expression = f"COALESCE({timecodes_expression}, MAX(text) FILTER (WHERE transcript_type = 'timecoded'))"
-
-        enriched_expression = "MAX(transcript_timecodes_enrichi)" if "transcript_timecodes_enrichi" in columns else "NULL::text"
-        if "transcript_enriched" in columns:
-            enriched_expression = f"COALESCE({enriched_expression}, MAX(transcript_enriched))"
-        if {"transcript_type", "text"}.issubset(columns):
-            enriched_expression = f"COALESCE({enriched_expression}, MAX(text) FILTER (WHERE transcript_type = 'enriched'))"
-
-        cursor.execute(
-            f"""
-            CREATE TEMP TABLE transcripts_merged ON COMMIT DROP AS
-            SELECT
-                MIN(id) AS id,
-                video_id,
-                language_code,
-                {plain_expression} AS transcript,
-                {timecodes_expression} AS transcript_timecodes,
-                {enriched_expression} AS transcript_timecodes_enrichi,
-                MIN(data_collected_date) AS data_collected_date
-            FROM transcripts
-            GROUP BY video_id, language_code
-            """
-        )
-        cursor.execute("ALTER TABLE transcripts DROP CONSTRAINT IF EXISTS transcripts_video_id_language_code_transcript_type_key")
-        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_type")
-        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS text")
-        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS segments")
-        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_plain")
-        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecoded")
-        cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_enriched")
-        cursor.execute("TRUNCATE transcripts")
-        cursor.execute(
-            """
-            INSERT INTO transcripts (
-                id,
-                video_id,
-                language_code,
-                transcript,
-                transcript_timecodes,
-                transcript_timecodes_enrichi,
-                data_collected_date
-            )
-            SELECT
-                id,
-                video_id,
-                language_code,
-                transcript,
-                transcript_timecodes,
-                transcript_timecodes_enrichi,
-                data_collected_date
-            FROM transcripts_merged
-            """
-        )
-        cursor.execute(
-            """
-            SELECT setval(
-                pg_get_serial_sequence('transcripts', 'id'),
-                COALESCE((SELECT MAX(id) FROM transcripts), 1),
-                (SELECT COUNT(*) > 0 FROM transcripts)
-            )
-            """
-        )
 
     cursor.execute("ALTER TABLE transcripts DROP CONSTRAINT IF EXISTS transcripts_video_id_language_code_key")
     cursor.execute("ALTER TABLE transcripts DROP CONSTRAINT IF EXISTS transcripts_video_id_language_code_transcript_type_key")
@@ -553,7 +466,8 @@ def ensure_transcripts_schema(cursor):
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS segments")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_plain")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecoded")
-    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_enriched")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecodes")
+    cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS transcript_timecodes_enrichi")
     cursor.execute("ALTER TABLE transcripts DROP COLUMN IF EXISTS video_summary")
     cursor.execute(
         """
@@ -1075,20 +989,6 @@ def transcript_paths(video_dir):
             (f"*{LEGACY_PLAIN_TRANSCRIPT_SUFFIX}",),
         ),
         (
-            "timecoded",
-            (
-                WHISPER_TRANSCRIPT_WITH_SPEAKERS_NAME,
-                WHISPER_TRANSCRIPT_TIMECODED_CORRECTED_NAME,
-                WHISPER_TRANSCRIPT_TIMECODED_NAME,
-                *LEGACY_TRANSCRIPT_2_NAMES,
-                *LEGACY_TRANSCRIPT_1_NAMES,
-            ),
-            (
-                f"*{LEGACY_TIMECODED_TRANSCRIPT_SUFFIX}",
-                f"*{LEGACY_UNCORRECTED_TIMECODED_TRANSCRIPT_SUFFIX}",
-            ),
-        ),
-        (
             "enriched",
             (
                 WHISPER_TRANSCRIPT_ENRICHED_NAME,
@@ -1111,8 +1011,7 @@ def upsert_transcript(cursor, video_id, transcript_type, transcript_path):
         return False
     column_by_type = {
         "plain": "transcript",
-        "timecoded": "transcript_timecodes",
-        "enriched": "transcript_timecodes_enrichi",
+        "enriched": "transcript_enriched",
     }
     column = column_by_type[transcript_type]
 

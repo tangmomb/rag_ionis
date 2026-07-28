@@ -206,8 +206,8 @@ class InterfaceAppTests(unittest.TestCase):
             retrieval.lookup_video_document(query, "transcript_qa")
 
         self.assertIn("t.transcript IS NOT NULL", executed_sql[0])
-        self.assertNotIn("transcript_timecodes_enrichi", executed_sql[0])
-        self.assertIn("t.transcript_timecodes_enrichi IS NOT NULL", executed_sql[1])
+        self.assertNotIn("transcript_enriched", executed_sql[0])
+        self.assertIn("t.transcript_enriched IS NOT NULL", executed_sql[1])
 
     def test_specific_persons_without_named_person_uses_rag_as_main_source(self) -> None:
         question = "Qui intervient dans la vidéo « Titre exact » ?"
@@ -384,7 +384,7 @@ class InterfaceAppTests(unittest.TestCase):
             )
 
         self.assertIn("person_row.title", executed_sql[0])
-        self.assertIn("transcript_timecodes_enrichi", executed_sql[0])
+        self.assertIn("transcript_enriched", executed_sql[0])
         self.assertIn("Gabriel Dumy: Responsable affaires", sources[0]["text"])
         self.assertEqual(
             sources[0]["transcript"],

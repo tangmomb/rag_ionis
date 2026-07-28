@@ -168,23 +168,18 @@ _TASK_SPECS = (
         step_handlers.reconcile_whisper_with_ocr,
     ),
     TaskSpec(
-        "transcript.apply_speakers",
-        "processing",
-        "Creer le transcript avec les speakers valides",
-        step_handlers.apply_transcript_speakers,
-    ),
-    TaskSpec(
         "transcript.enrich",
         "processing",
-        "Ajouter les intercalaires au transcript avec speakers",
+        "Appliquer les speakers et ajouter les intercalaires",
         step_handlers.enrich_transcript,
+        version="2",
     ),
     TaskSpec(
         "transcript.create_plain",
         "processing",
         "Creer le transcript sans timecodes",
         step_handlers.create_plain_transcript,
-        version="2",
+        version="3",
     ),
     TaskSpec(
         "transcript.create_plain_ocr",

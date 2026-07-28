@@ -130,7 +130,7 @@ class VideoBrowserTests(unittest.TestCase):
             )
             self.assertEqual(
                 detail["transcripts"][3]["label"],
-                "Transcript enrichi — intercalaires",
+                "3 — Transcript enrichi avec speakers",
             )
             self.assertEqual(detail["transcripts"][4]["content"], "Comparaison OCR.")
             self.assertEqual(

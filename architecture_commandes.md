@@ -131,7 +131,7 @@ ocr.build_processed → ocr.filter_overlays → ocr.extract_review_candidates
 → transcript.whisper
 → transcript.extract_ocr → transcript.normalize_brand
 → transcript.create_plain_ocr → transcript.reconcile_ocr
-→ speakers.propose → speakers.validate → transcript.apply_speakers
+→ speakers.propose → speakers.validate
 → transcript.enrich → transcript.create_plain
 → chunks.create → embeddings.create
 ```
@@ -168,12 +168,12 @@ pipeline/__main__.py : main()
 
 Elle enchaîne l'inspection, le nettoyage OCR, le transcript WhisperX canonique,
 l'éventuelle référence OCR de correction, l'identification des speakers,
-l'ajout des seuls intercalaires dans `transcript_enriched`, les chunks et les
-embeddings.
+l'application des speakers et l'ajout des seuls intercalaires dans
+`transcript_3_enriched.txt`, les chunks et les embeddings.
 
 Les speakers validés sont reliés à leur vidéo dans la table SQL `speakers`,
-avec leur nom et leur fonction. Ils restent présents dans le transcript avec
-speakers, mais ne sont pas copiés dans les chunks JSON ni dans la table SQL
+avec leur nom et leur fonction. Ils restent présents dans le transcript
+enrichi, mais ne sont pas copiés dans les chunks JSON ni dans la table SQL
 `chunks`.
 
 Le planner décide des étapes dans `pipeline/planner.py`, l'executor les exécute dans `pipeline/executor.py`, et `pipeline/catalog.py` relie chaque identifiant à sa fonction Python. Par exemple :

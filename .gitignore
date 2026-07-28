@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 downloads/
 models/huggingface/
+models/faster-whisper-large-v3/
 *.log
 others/
 .venv_py310_backup_20260705_140330/

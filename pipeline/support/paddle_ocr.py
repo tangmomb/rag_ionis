@@ -5,6 +5,7 @@ import re
 import statistics
 import sys
 import types
+from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -44,6 +45,7 @@ MIN_OVERLAY_RELATIVE_WIDTH = 0.24
 MIN_SUBTITLE_CLUSTER_SECONDS = 10
 MIN_SUBTITLE_CLUSTER_DURATION = 5
 MIN_SUBTITLE_TEXT_VARIANTS = 3
+SUBTITLE_NEAR_DUPLICATE_SIMILARITY = 0.82
 STATIC_DECOR_MIN_SECONDS = 5
 STATIC_DECOR_MIN_DURATION = 5
 STATIC_DECOR_POSITION_TOLERANCE = 0.045
@@ -220,46 +222,171 @@ def is_subtitle_anchor_candidate(entry):
     )
 
 
-def subtitle_cluster_text_keys(cluster):
+def subtitle_text_keys_are_near_duplicates(left, right):
+    left_key = compact_text_key(left)
+    right_key = compact_text_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+
+    shortest, longest = sorted((left_key, right_key), key=len)
+    if len(shortest) < 4:
+        return False
+    if shortest in longest and len(shortest) / len(longest) >= 0.65:
+        return True
+    return (
+        SequenceMatcher(None, left_key, right_key).ratio()
+        >= SUBTITLE_NEAR_DUPLICATE_SIMILARITY
+    )
+
+
+def is_meaningful_subtitle_text_key(key):
+    compact = compact_text_key(key)
+    return (
+        len(compact) >= 4
+        and sum(character.isalpha() for character in compact) >= 3
+    )
+
+
+def canonical_subtitle_text_keys(keys):
+    ordered_keys = sorted(
+        {
+            key
+            for key in keys
+            if key and is_meaningful_subtitle_text_key(key)
+        }
+    )
+    parents = list(range(len(ordered_keys)))
+
+    def find(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left_index, right_index):
+        left_root = find(left_index)
+        right_root = find(right_index)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for left_index, left in enumerate(ordered_keys):
+        for right_index in range(left_index + 1, len(ordered_keys)):
+            if subtitle_text_keys_are_near_duplicates(
+                left,
+                ordered_keys[right_index],
+            ):
+                union(left_index, right_index)
+
+    groups = defaultdict(list)
+    for index, key in enumerate(ordered_keys):
+        groups[find(index)].append(key)
+    representatives = {
+        root: min(group, key=lambda key: (len(compact_text_key(key)), key))
+        for root, group in groups.items()
+    }
     return {
+        key: representatives[find(index)]
+        for index, key in enumerate(ordered_keys)
+    }
+
+
+def subtitle_cluster_text_variants(cluster):
+    canonical_keys = canonical_subtitle_text_keys(
         entry.get("key")
         for entry in cluster
-        if entry.get("key")
+    )
+    keys_by_second = defaultdict(set)
+    for entry in cluster:
+        key = entry.get("key")
+        second = entry.get("second")
+        if key in canonical_keys and second is not None:
+            keys_by_second[second].add(canonical_keys[key])
+    return {
+        tuple(sorted(keys))
+        for keys in keys_by_second.values()
+        if keys
     }
+
+
+def longest_continuous_second_run(seconds):
+    ordered = sorted({second for second in seconds if second is not None})
+    if not ordered:
+        return []
+    if len(ordered) == 1:
+        return ordered
+
+    positive_gaps = [
+        current - previous
+        for previous, current in zip(ordered, ordered[1:])
+        if current > previous
+    ]
+    expected_step = min(positive_gaps) if positive_gaps else 0.5
+    max_allowed_gap = max(expected_step * 1.5, 0.75)
+
+    runs = []
+    current_run = [ordered[0]]
+    for second in ordered[1:]:
+        if second - current_run[-1] > max_allowed_gap:
+            runs.append(current_run)
+            current_run = []
+        current_run.append(second)
+    runs.append(current_run)
+    return max(
+        runs,
+        key=lambda run: (run[-1] - run[0], len(run)),
+    )
 
 
 def subtitle_cluster_score(cluster):
     seconds = sorted({entry["second"] for entry in cluster if entry["second"] is not None})
     if len(seconds) < MIN_SUBTITLE_CLUSTER_SECONDS:
         return 0.0
-    if seconds[-1] - seconds[0] < MIN_SUBTITLE_CLUSTER_DURATION:
+    continuous_seconds = longest_continuous_second_run(seconds)
+    if (
+        len(continuous_seconds) < 2
+        or continuous_seconds[-1] - continuous_seconds[0]
+        < MIN_SUBTITLE_CLUSTER_DURATION
+    ):
         return 0.0
 
-    has_text_metadata = any("key" in entry for entry in cluster)
-    text_keys = subtitle_cluster_text_keys(cluster)
-    if has_text_metadata and len(text_keys) < MIN_SUBTITLE_TEXT_VARIANTS:
+    continuous_second_set = set(continuous_seconds)
+    continuous_cluster = [
+        entry
+        for entry in cluster
+        if entry.get("second") in continuous_second_set
+    ]
+    has_text_metadata = any("key" in entry for entry in continuous_cluster)
+    text_variants = subtitle_cluster_text_variants(continuous_cluster)
+    if has_text_metadata and len(text_variants) < MIN_SUBTITLE_TEXT_VARIANTS:
         return 0.0
 
-    x_spread = max(entry["geometry"]["cx"] for entry in cluster) - min(entry["geometry"]["cx"] for entry in cluster)
-    y_spread = max(entry["geometry"]["cy"] for entry in cluster) - min(entry["geometry"]["cy"] for entry in cluster)
-    temporal_density = min(len(seconds), len(cluster))
+    x_spread = (
+        max(entry["geometry"]["cx"] for entry in continuous_cluster)
+        - min(entry["geometry"]["cx"] for entry in continuous_cluster)
+    )
+    y_spread = (
+        max(entry["geometry"]["cy"] for entry in continuous_cluster)
+        - min(entry["geometry"]["cy"] for entry in continuous_cluster)
+    )
+    temporal_density = min(len(continuous_seconds), len(continuous_cluster))
     stability = max(0.0, 1.0 - (x_spread + y_spread))
 
     return (
         temporal_density * 2.0
-        + len(cluster) * 0.5
+        + len(continuous_cluster) * 0.5
         + stability * 4.0
-        + min(len(text_keys), 10)
+        + min(len(text_variants), 10)
     )
 
 
-def infer_subtitle_anchors(entries):
+def ranked_subtitle_anchor_candidates(entries):
     candidates = [entry for entry in entries if is_subtitle_anchor_candidate(entry)]
     if len(candidates) < 2:
         return []
 
-    best_cluster = []
-    best_score = 0.0
+    clusters_by_position = {}
     for candidate in candidates:
         cluster = [
             other
@@ -268,13 +395,185 @@ def infer_subtitle_anchors(entries):
             and abs(other["geometry"]["cy"] - candidate["geometry"]["cy"]) <= SUBTITLE_CLUSTER_Y_TOLERANCE
         ]
         score = subtitle_cluster_score(cluster)
-        if score > best_score:
-            best_cluster = cluster
-            best_score = score
+        if score <= 0.0:
+            continue
+        geometries = [entry["geometry"] for entry in cluster]
+        signature = (
+            round(statistics.median(item["cx"] for item in geometries), 2),
+            round(statistics.median(item["cy"] for item in geometries), 2),
+        )
+        previous = clusters_by_position.get(signature)
+        if previous is None or score > previous["score"]:
+            clusters_by_position[signature] = {
+                "score": score,
+                "anchors": geometries,
+            }
+    return sorted(
+        clusters_by_position.values(),
+        key=lambda item: (-item["score"], -len(item["anchors"])),
+    )
 
-    if len(best_cluster) < 2:
+
+def analyze_subtitle_anchor_candidate(entries, anchors):
+    if len(anchors) < 2:
+        return None
+
+    anchor_cx = statistics.median(anchor["cx"] for anchor in anchors)
+    anchor_cy = statistics.median(anchor["cy"] for anchor in anchors)
+    anchor_height = statistics.median(
+        anchor["relative_height"]
+        for anchor in anchors
+    )
+    anchor_widths = [anchor["relative_width"] for anchor in anchors]
+    x_tolerance = max(
+        0.06,
+        min(0.16, statistics.median(anchor_widths) * 0.25),
+    )
+    y_tolerance = max(0.04, min(0.075, anchor_height * 1.6))
+    matching_entries = [
+        entry
+        for entry in entries
+        if entry.get("second") is not None
+        and anchored_subtitle_match(
+            entry["geometry"],
+            anchor_cx,
+            anchor_cy,
+            x_tolerance,
+            y_tolerance,
+        )
+    ]
+    matching_seconds = sorted(
+        {entry["second"] for entry in matching_entries}
+    )
+    longest_run_seconds = longest_continuous_second_run(matching_seconds)
+    longest_run_duration = (
+        longest_run_seconds[-1] - longest_run_seconds[0]
+        if len(longest_run_seconds) >= 2
+        else 0.0
+    )
+    longest_run_second_set = set(longest_run_seconds)
+    longest_run_entries = [
+        entry
+        for entry in matching_entries
+        if entry["second"] in longest_run_second_set
+    ]
+    has_text_metadata = any(
+        "key" in entry
+        for entry in longest_run_entries
+    )
+    text_variants = subtitle_cluster_text_variants(longest_run_entries)
+    has_text_variation = (
+        not has_text_metadata
+        or len(text_variants) >= MIN_SUBTITLE_TEXT_VARIANTS
+    )
+    required_continuous_seconds = float(MIN_SUBTITLE_CLUSTER_SECONDS)
+    has_subtitles = (
+        longest_run_duration >= required_continuous_seconds
+        and has_text_variation
+    )
+    return {
+        "has_subtitles": has_subtitles,
+        "reason": (
+            "stable_anchor_across_continuous_seconds"
+            if has_subtitles
+            else (
+                "not_enough_text_variation"
+                if longest_run_duration >= required_continuous_seconds
+                else "not_enough_continuous_matching_seconds"
+            )
+        ),
+        "anchor_count": len(anchors),
+        "anchor": {
+            "cx": round(anchor_cx, 4),
+            "cy": round(anchor_cy, 4),
+            "relative_height": round(anchor_height, 4),
+            "median_relative_width": round(
+                statistics.median(anchor_widths),
+                4,
+            ),
+        },
+        "tolerances": {
+            "x": round(x_tolerance, 4),
+            "y": round(y_tolerance, 4),
+        },
+        "required_continuous_seconds": required_continuous_seconds,
+        "total_matching_seconds_count": len(matching_seconds),
+        "all_matching_seconds": matching_seconds,
+        "longest_continuous_seconds_count": len(longest_run_seconds),
+        "longest_continuous_seconds_duration": round(
+            longest_run_duration,
+            3,
+        ),
+        "longest_continuous_seconds": longest_run_seconds,
+        "text_variant_count": len(text_variants),
+        "required_text_variant_count": MIN_SUBTITLE_TEXT_VARIANTS,
+        "_anchors": anchors,
+        "_matching_entries": matching_entries,
+    }
+
+
+def select_subtitle_anchor(entries):
+    candidates = ranked_subtitle_anchor_candidates(entries)
+    if not candidates:
+        return {
+            "has_subtitles": False,
+            "reason": "not_enough_anchor_candidates",
+            "anchor_count": 0,
+            "candidate_count": 0,
+            "required_continuous_seconds": float(
+                MIN_SUBTITLE_CLUSTER_SECONDS
+            ),
+            "total_matching_seconds_count": 0,
+            "all_matching_seconds": [],
+            "longest_continuous_seconds_count": 0,
+            "longest_continuous_seconds_duration": 0.0,
+            "longest_continuous_seconds": [],
+            "text_variant_count": 0,
+            "required_text_variant_count": MIN_SUBTITLE_TEXT_VARIANTS,
+            "_anchors": [],
+            "_matching_entries": [],
+        }
+
+    first_failure = None
+    valid_analyses = []
+    for rank, candidate in enumerate(candidates, start=1):
+        analysis = analyze_subtitle_anchor_candidate(
+            entries,
+            candidate["anchors"],
+        )
+        if analysis is None:
+            continue
+        analysis["candidate_rank"] = rank
+        analysis["candidate_count"] = len(candidates)
+        analysis["candidate_score"] = round(candidate["score"], 3)
+        if analysis["has_subtitles"]:
+            valid_analyses.append(analysis)
+            continue
+        if first_failure is None:
+            first_failure = analysis
+    if valid_analyses:
+        selected = max(
+            valid_analyses,
+            key=lambda analysis: (
+                analysis["anchor"]["median_relative_width"]
+                >= MIN_OVERLAY_RELATIVE_WIDTH,
+                analysis["text_variant_count"],
+                analysis["anchor"]["median_relative_width"],
+                analysis["longest_continuous_seconds_duration"],
+                analysis["candidate_score"],
+            ),
+        )
+        selected["valid_candidate_count"] = len(valid_analyses)
+        selected["candidate_selection"] = "best_valid_subtitle_signal"
+        return selected
+    return first_failure
+
+
+def infer_subtitle_anchors(entries):
+    analysis = select_subtitle_anchor(entries)
+    if not analysis or not analysis["has_subtitles"]:
         return []
-    return [entry["geometry"] for entry in best_cluster]
+    return analysis["_anchors"]
 
 
 def anchored_subtitle_match(geometry, anchor_cx, anchor_cy, x_tolerance, y_tolerance):

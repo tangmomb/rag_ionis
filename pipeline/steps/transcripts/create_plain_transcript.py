@@ -14,11 +14,11 @@ from pipeline.support.paths import (
 from pipeline.steps.transcripts.artifacts import (
     LEGACY_TRANSCRIPT_1_NAMES,
     LEGACY_TRANSCRIPT_2_NAMES,
-    TRANSCRIPT_1_BRUT_NAME,
+    LEGACY_TRANSCRIPT_3_WITH_SPEAKERS_NAMES,
     LEGACY_TRANSCRIPT_ENRICHED_NAMES,
+    TRANSCRIPT_1_BRUT_NAME,
     TRANSCRIPT_2_CORRECTED_NAME,
-    TRANSCRIPT_3_WITH_SPEAKERS_NAME,
-    TRANSCRIPT_ENRICHED_NAME,
+    TRANSCRIPT_3_ENRICHED_NAME,
     TRANSCRIPT_PLAIN_NAME,
 )
 
@@ -126,10 +126,10 @@ def output_path(input_path):
         input_path.parent.name == CANONICAL_TRANSCRIPTS_DIR_NAME
         or input_path.name
         in {
-            TRANSCRIPT_ENRICHED_NAME,
-            TRANSCRIPT_3_WITH_SPEAKERS_NAME,
+            TRANSCRIPT_3_ENRICHED_NAME,
             TRANSCRIPT_2_CORRECTED_NAME,
             *LEGACY_TRANSCRIPT_2_NAMES,
+            *LEGACY_TRANSCRIPT_3_WITH_SPEAKERS_NAMES,
             *LEGACY_TRANSCRIPT_ENRICHED_NAMES,
         }
     ):
@@ -204,10 +204,10 @@ def timecoded_inputs(transcript_dir, *, raw_only=False):
 
     if transcript_dir.name == CANONICAL_TRANSCRIPTS_DIR_NAME:
         canonical_names = (
-            TRANSCRIPT_3_WITH_SPEAKERS_NAME,
+            TRANSCRIPT_3_ENRICHED_NAME,
             TRANSCRIPT_2_CORRECTED_NAME,
             *LEGACY_TRANSCRIPT_2_NAMES,
-            TRANSCRIPT_ENRICHED_NAME,
+            *LEGACY_TRANSCRIPT_3_WITH_SPEAKERS_NAMES,
             *LEGACY_TRANSCRIPT_ENRICHED_NAMES,
         )
         for name in canonical_names:

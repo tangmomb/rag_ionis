@@ -1,16 +1,12 @@
-import statistics
 from pathlib import Path
 
 from pipeline.support.json_io import read_json
 from pipeline.support.paddle_ocr import (
-    MIN_SUBTITLE_CLUSTER_SECONDS,
-    MIN_SUBTITLE_TEXT_VARIANTS,
-    anchored_subtitle_match,
     box_bounds,
     box_geometry,
     image_size,
-    infer_subtitle_anchors,
     seconds_from_image_name,
+    select_subtitle_anchor,
     text_key,
 )
 from pipeline.support.paths import existing_images_dir, existing_ocr_dir, relative_to_video_dir
@@ -77,102 +73,10 @@ def subtitle_entries_from_boxes(payload, images_dir):
     return entries
 
 
-def longest_continuous_second_run(seconds):
-    ordered = sorted({second for second in seconds if second is not None})
-    if not ordered:
-        return []
-    if len(ordered) == 1:
-        return ordered
-
-    positive_gaps = [
-        current - previous
-        for previous, current in zip(ordered, ordered[1:])
-        if current > previous
-    ]
-    expected_step = min(positive_gaps) if positive_gaps else 0.5
-    max_allowed_gap = max(expected_step * 1.5, 0.75)
-
-    best_start = 0
-    best_end = 0
-    current_start = 0
-
-    for index in range(1, len(ordered)):
-        if ordered[index] - ordered[index - 1] > max_allowed_gap:
-            if (ordered[best_end] - ordered[best_start]) < (
-                ordered[index - 1] - ordered[current_start]
-            ):
-                best_start = current_start
-                best_end = index - 1
-            current_start = index
-
-    if (ordered[best_end] - ordered[best_start]) < (
-        ordered[-1] - ordered[current_start]
-    ):
-        best_start = current_start
-        best_end = len(ordered) - 1
-
-    return ordered[best_start : best_end + 1]
-
-
 def analyze_subtitle_anchor(entries):
-    anchors = infer_subtitle_anchors(entries)
-    if len(anchors) < 2:
-        return {
-            "has_subtitles": False,
-            "reason": "not_enough_anchor_candidates",
-            "anchor_count": len(anchors),
-            "required_continuous_seconds": float(MIN_SUBTITLE_CLUSTER_SECONDS),
-            "total_matching_seconds_count": 0,
-            "all_matching_seconds": [],
-            "longest_continuous_seconds_count": 0,
-            "longest_continuous_seconds_duration": 0.0,
-            "longest_continuous_seconds": [],
-            "matching_images": [],
-        }
-
-    anchor_cx = statistics.median(anchor["cx"] for anchor in anchors)
-    anchor_cy = statistics.median(anchor["cy"] for anchor in anchors)
-    anchor_height = statistics.median(anchor["relative_height"] for anchor in anchors)
-    anchor_widths = [anchor["relative_width"] for anchor in anchors]
-    x_tolerance = max(0.06, min(0.16, statistics.median(anchor_widths) * 0.25))
-    y_tolerance = max(0.04, min(0.075, anchor_height * 1.6))
-    matching_entries = [
-        entry
-        for entry in entries
-        if entry["second"] is not None
-        and anchored_subtitle_match(
-            entry["geometry"],
-            anchor_cx,
-            anchor_cy,
-            x_tolerance,
-            y_tolerance,
-        )
-    ]
-    matching_seconds = sorted({entry["second"] for entry in matching_entries})
-    longest_run_seconds = longest_continuous_second_run(matching_seconds)
-    longest_run_duration = (
-        longest_run_seconds[-1] - longest_run_seconds[0]
-        if len(longest_run_seconds) >= 2
-        else 0.0
-    )
-    longest_run_second_set = set(longest_run_seconds)
-    longest_run_entries = [
-        entry
-        for entry in matching_entries
-        if entry["second"] in longest_run_second_set
-    ]
-    has_text_metadata = any("key" in entry for entry in longest_run_entries)
-    text_variants = sorted(
-        {
-            entry.get("key")
-            for entry in longest_run_entries
-            if entry.get("key")
-        }
-    )
-    has_text_variation = (
-        not has_text_metadata
-        or len(text_variants) >= MIN_SUBTITLE_TEXT_VARIANTS
-    )
+    analysis = select_subtitle_anchor(entries)
+    matching_entries = analysis.pop("_matching_entries", [])
+    analysis.pop("_anchors", None)
     matching_images = []
     seen_images = set()
     for entry in matching_entries:
@@ -181,44 +85,8 @@ def analyze_subtitle_anchor(entries):
             continue
         seen_images.add(image_name)
         matching_images.append(image_name)
-
-    required_continuous_seconds = float(MIN_SUBTITLE_CLUSTER_SECONDS)
-    has_subtitles = (
-        longest_run_duration >= required_continuous_seconds
-        and has_text_variation
-    )
-    return {
-        "has_subtitles": has_subtitles,
-        "reason": (
-            "stable_anchor_across_continuous_seconds"
-            if has_subtitles
-            else (
-                "not_enough_text_variation"
-                if longest_run_duration >= required_continuous_seconds
-                else "not_enough_continuous_matching_seconds"
-            )
-        ),
-        "anchor_count": len(anchors),
-        "anchor": {
-            "cx": round(anchor_cx, 4),
-            "cy": round(anchor_cy, 4),
-            "relative_height": round(anchor_height, 4),
-            "median_relative_width": round(statistics.median(anchor_widths), 4),
-        },
-        "tolerances": {
-            "x": round(x_tolerance, 4),
-            "y": round(y_tolerance, 4),
-        },
-        "required_continuous_seconds": required_continuous_seconds,
-        "total_matching_seconds_count": len(matching_seconds),
-        "all_matching_seconds": matching_seconds,
-        "longest_continuous_seconds_count": len(longest_run_seconds),
-        "longest_continuous_seconds_duration": round(longest_run_duration, 3),
-        "longest_continuous_seconds": longest_run_seconds,
-        "text_variant_count": len(text_variants),
-        "required_text_variant_count": MIN_SUBTITLE_TEXT_VARIANTS,
-        "matching_images": matching_images,
-    }
+    analysis["matching_images"] = matching_images
+    return analysis
 
 
 def detect_for_video(video_path, force=False):

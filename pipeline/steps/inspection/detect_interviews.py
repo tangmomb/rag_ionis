@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import existing_images_dir, existing_interview_dir, interview_dir, relative_to_video_dir
 
@@ -23,6 +23,11 @@ class InterviewDetectionOptions:
     phash_similar_max: int = 6
     phash_ambiguous_max: int = 14
     ssim_min: float = 0.92
+    ssim_high_phash_min: float = 0.97
+    analysis_crop_bottom: float = 0.18
+    analysis_blur_radius: float = 1.0
+    cluster_similarity_min: float = 0.92
+    dominant_cluster_ratio_min: float = 0.70
     min_run_frames: int = 6
     max_gap_pairs: int = 1
     max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES
@@ -117,19 +122,40 @@ def dct_matrix(size):
 PHASH_DCT = dct_matrix(32)
 
 
-def grayscale_array(path, size, cache):
-    key = (str(path), size)
+def grayscale_array(path, size, cache, args):
+    key = (
+        str(path),
+        size,
+        args.analysis_crop_bottom,
+        args.analysis_blur_radius,
+    )
     if key not in cache:
-        image = Image.open(path).convert("L").resize((size, size), Image.Resampling.LANCZOS)
+        image = Image.open(path).convert("L")
+        crop_bottom = max(0.0, min(0.45, args.analysis_crop_bottom))
+        if crop_bottom:
+            visible_height = max(
+                1,
+                round(image.height * (1.0 - crop_bottom)),
+            )
+            image = image.crop((0, 0, image.width, visible_height))
+        image = image.resize((size, size), Image.Resampling.LANCZOS)
+        if args.analysis_blur_radius > 0:
+            image = image.filter(
+                ImageFilter.GaussianBlur(args.analysis_blur_radius)
+            )
         cache[key] = np.asarray(image, dtype=np.float32)
     return cache[key]
 
 
-def compute_phash(path, gray_cache, phash_cache):
-    cache_key = str(path)
+def compute_phash(path, args, gray_cache, phash_cache):
+    cache_key = (
+        str(path),
+        args.analysis_crop_bottom,
+        args.analysis_blur_radius,
+    )
     if cache_key in phash_cache:
         return phash_cache[cache_key]
-    pixels = grayscale_array(path, 32, gray_cache)
+    pixels = grayscale_array(path, 32, gray_cache, args)
     transformed = PHASH_DCT @ pixels @ PHASH_DCT.T
     low_freq = transformed[:8, :8]
     median = float(np.median(low_freq[1:, :]))
@@ -141,9 +167,9 @@ def phash_distance(hash_a, hash_b):
     return int(np.count_nonzero(hash_a != hash_b))
 
 
-def compute_ssim(path_a, path_b, gray_cache):
-    a = grayscale_array(path_a, 128, gray_cache) / 255.0
-    b = grayscale_array(path_b, 128, gray_cache) / 255.0
+def compute_ssim(path_a, path_b, args, gray_cache):
+    a = grayscale_array(path_a, 128, gray_cache, args) / 255.0
+    b = grayscale_array(path_b, 128, gray_cache, args) / 255.0
     mu_a = float(a.mean())
     mu_b = float(b.mean())
     var_a = float(a.var())
@@ -159,8 +185,8 @@ def compute_ssim(path_a, path_b, gray_cache):
 
 
 def classify_pair(frame_a, frame_b, args, gray_cache, phash_cache):
-    hash_a = compute_phash(frame_a, gray_cache, phash_cache)
-    hash_b = compute_phash(frame_b, gray_cache, phash_cache)
+    hash_a = compute_phash(frame_a, args, gray_cache, phash_cache)
+    hash_b = compute_phash(frame_b, args, gray_cache, phash_cache)
     distance = phash_distance(hash_a, hash_b)
     if distance <= args.phash_similar_max:
         return {
@@ -169,50 +195,183 @@ def classify_pair(frame_a, frame_b, args, gray_cache, phash_cache):
             "phash_distance": distance,
             "ssim": None,
         }
-    if distance >= args.phash_ambiguous_max:
-        return {
-            "is_similar": False,
-            "method": "phash",
-            "phash_distance": distance,
-            "ssim": None,
-        }
-
-    ssim_score = compute_ssim(frame_a, frame_b, gray_cache)
+    ssim_score = compute_ssim(frame_a, frame_b, args, gray_cache)
+    high_phash = distance >= args.phash_ambiguous_max
+    required_ssim = (
+        args.ssim_high_phash_min
+        if high_phash
+        else args.ssim_min
+    )
     return {
-        "is_similar": ssim_score >= args.ssim_min,
-        "method": "ssim",
+        "is_similar": ssim_score >= required_ssim,
+        "method": "ssim_high_phash" if high_phash else "ssim",
         "phash_distance": distance,
         "ssim": round(float(ssim_score), 6),
+        "required_ssim": required_ssim,
     }
 
 
-def bridge_single_gaps(pair_results, args):
+def scene_descriptor(path, args, cache):
+    cache_key = (
+        str(path),
+        args.analysis_crop_bottom,
+        args.analysis_blur_radius,
+    )
+    if cache_key in cache:
+        return cache[cache_key]
+
+    image = Image.open(path).convert("RGB")
+    crop_bottom = max(0.0, min(0.45, args.analysis_crop_bottom))
+    if crop_bottom:
+        visible_height = max(
+            1,
+            round(image.height * (1.0 - crop_bottom)),
+        )
+        image = image.crop((0, 0, image.width, visible_height))
+    image = image.resize((160, 96), Image.Resampling.BILINEAR)
+    image = image.filter(
+        ImageFilter.GaussianBlur(
+            max(2.0, args.analysis_blur_radius)
+        )
+    )
+    pixels = np.asarray(image, dtype=np.uint8)
+    descriptors = []
+    for row in range(3):
+        for column in range(4):
+            region = pixels[
+                row * 32 : (row + 1) * 32,
+                column * 40 : (column + 1) * 40,
+            ]
+            histogram = np.histogramdd(
+                region.reshape(-1, 3),
+                bins=(6, 6, 6),
+                range=((0, 256), (0, 256), (0, 256)),
+            )[0].ravel()
+            total = float(histogram.sum())
+            if total:
+                histogram /= total
+            descriptors.append(histogram)
+    descriptor = np.concatenate(descriptors)
+    norm = float(np.linalg.norm(descriptor))
+    if norm:
+        descriptor /= norm
+    cache[cache_key] = descriptor
+    return descriptor
+
+
+def dominant_visual_cluster(image_paths, args):
+    if not image_paths:
+        return {
+            "representative": None,
+            "frame_count": 0,
+            "frame_ratio": 0.0,
+            "frames": [],
+        }
+
+    cache = {}
+    descriptors = np.stack(
+        [
+            scene_descriptor(path, args, cache)
+            for path in image_paths
+        ]
+    )
+    similarities = descriptors @ descriptors.T
+    membership = similarities >= args.cluster_similarity_min
+    counts = membership.sum(axis=1)
+    mean_similarities = np.divide(
+        (similarities * membership).sum(axis=1),
+        counts,
+        out=np.zeros(len(image_paths), dtype=np.float64),
+        where=counts > 0,
+    )
+    representative_index = max(
+        range(len(image_paths)),
+        key=lambda index: (
+            int(counts[index]),
+            float(mean_similarities[index]),
+        ),
+    )
+    member_indexes = np.flatnonzero(
+        membership[representative_index]
+    ).tolist()
+    member_similarities = similarities[
+        representative_index,
+        member_indexes,
+    ]
+    return {
+        "representative": image_paths[representative_index],
+        "frame_count": len(member_indexes),
+        "frame_ratio": len(member_indexes) / len(image_paths),
+        "mean_similarity": float(member_similarities.mean()),
+        "min_similarity": float(member_similarities.min()),
+        "frames": [image_paths[index] for index in member_indexes],
+    }
+
+
+def bridge_transient_gaps(
+    pair_results,
+    image_paths,
+    args,
+    gray_cache,
+    phash_cache,
+):
     if args.max_gap_pairs <= 0 or len(pair_results) < 3:
         return pair_results
 
     bridged = [dict(item) for item in pair_results]
     limit = len(bridged)
-    for index, item in enumerate(bridged):
-        if item["is_similar"]:
+    index = 0
+    while index < limit:
+        if bridged[index]["is_similar"]:
+            index += 1
             continue
 
         gap_size = 1
-        while index + gap_size < limit and gap_size <= args.max_gap_pairs and not bridged[index + gap_size]["is_similar"]:
+        while (
+            index + gap_size < limit
+            and not bridged[index + gap_size]["is_similar"]
+        ):
             gap_size += 1
         if gap_size > args.max_gap_pairs:
+            index += gap_size
             continue
 
         left_index = index - 1
         right_index = index + gap_size
         if left_index < 0 or right_index >= limit:
+            index += gap_size
             continue
-        if not bridged[left_index]["is_similar"] or not bridged[right_index]["is_similar"]:
+        if (
+            not bridged[left_index]["is_similar"]
+            or not bridged[right_index]["is_similar"]
+        ):
+            index += gap_size
             continue
 
+        context_left_index = index - 1
+        context_right_index = index + gap_size + 1
+        context_decision = classify_pair(
+            image_paths[context_left_index],
+            image_paths[context_right_index],
+            args,
+            gray_cache,
+            phash_cache,
+        )
+        if not context_decision["is_similar"]:
+            index += gap_size
+            continue
+
+        context = {
+            "left_image": image_paths[context_left_index].name,
+            "right_image": image_paths[context_right_index].name,
+            **context_decision,
+        }
         for gap_index in range(index, index + gap_size):
             bridged[gap_index]["is_similar"] = True
             bridged[gap_index]["bridge_gap"] = True
             bridged[gap_index]["bridge_original_is_similar"] = False
+            bridged[gap_index]["bridge_context"] = context
+        index += gap_size
     return bridged
 
 
@@ -237,7 +396,13 @@ def build_sequences(image_paths, args):
         }
         raw_pair_results.append(item)
 
-    pair_results = bridge_single_gaps(raw_pair_results, args)
+    pair_results = bridge_transient_gaps(
+        raw_pair_results,
+        image_paths,
+        args,
+        gray_cache,
+        phash_cache,
+    )
     current = None
     sequences = []
 
@@ -278,49 +443,68 @@ def build_sequences(image_paths, args):
     return pair_results, serialized
 
 
-def write_outputs(video_path, image_paths, pair_results, sequences, args, classification_counts=None):
+def sequence_count_is_interview(sequence_count, max_interview_sequences):
+    return 1 <= sequence_count <= max_interview_sequences
+
+
+def write_outputs(
+    video_path,
+    image_paths,
+    dominant_cluster,
+    args,
+    classification_counts=None,
+):
     output_dir = ensure_clean_dir(interview_dir(video_path))
-
-    selected_names = []
-    seen = set()
-    source_by_name = {path.name: path for path in image_paths}
-    for sequence in sequences:
-        frame_items = []
-        for frame_name in sequence["frames"]:
-            if frame_name not in seen:
-                seen.add(frame_name)
-                selected_names.append(frame_name)
-            source_path = source_by_name[frame_name]
-            frame_items.append(
-                {
-                    "name": frame_name,
-                    "source": relative_to_video_dir(source_path, video_path),
-                }
-            )
-        sequence["frames"] = frame_items
-
-    sequence_rule_is_interview = len(sequences) < args.max_interview_sequences
-    blocked_by_graphics = bool(classification_counts and classification_counts["graphic_exceeds_footage"])
+    cluster_ratio = dominant_cluster["frame_ratio"]
+    is_interview = cluster_ratio >= args.dominant_cluster_ratio_min
+    representative = dominant_cluster["representative"]
+    cluster_frames = [
+        {
+            "name": path.name,
+            "source": relative_to_video_dir(path, video_path),
+        }
+        for path in dominant_cluster["frames"]
+    ]
     manifest = {
-        "method": "consecutive_similarity",
-        "is_interview": sequence_rule_is_interview and not blocked_by_graphics,
+        "method": "dominant_visual_cluster",
+        "is_interview": is_interview,
         "source_dirs": list(args.source_dirs),
         "frame_count": len(image_paths),
-        "selected_frame_count": len(selected_names),
-        "sequence_count": len(sequences),
-        "sequence_rule_is_interview": sequence_rule_is_interview,
-        "blocked_by_graphic_majority": blocked_by_graphics,
+        "selected_frame_count": dominant_cluster["frame_count"],
+        "dominant_cluster_ratio": round(cluster_ratio, 6),
+        "dominant_cluster": {
+            "representative": (
+                {
+                    "name": representative.name,
+                    "source": relative_to_video_dir(
+                        representative,
+                        video_path,
+                    ),
+                }
+                if representative is not None
+                else None
+            ),
+            "frame_count": dominant_cluster["frame_count"],
+            "frame_ratio": round(cluster_ratio, 6),
+            "mean_similarity": round(
+                dominant_cluster.get("mean_similarity", 0.0),
+                6,
+            ),
+            "min_similarity": round(
+                dominant_cluster.get("min_similarity", 0.0),
+                6,
+            ),
+            "frames": cluster_frames,
+        },
         "thresholds": {
-            "phash_similar_max": args.phash_similar_max,
-            "phash_ambiguous_max": args.phash_ambiguous_max,
-            "ssim_min": args.ssim_min,
-            "min_run_frames": args.min_run_frames,
-            "max_gap_pairs": args.max_gap_pairs,
-            "max_interview_sequences": args.max_interview_sequences,
+            "analysis_crop_bottom": args.analysis_crop_bottom,
+            "analysis_blur_radius": args.analysis_blur_radius,
+            "cluster_similarity_min": args.cluster_similarity_min,
+            "dominant_cluster_ratio_min": (
+                args.dominant_cluster_ratio_min
+            ),
         },
         "classification_counts": classification_counts,
-        "sequences": sequences,
-        "pairs": pair_results,
     }
     manifest_path = output_dir / MANIFEST_NAME
     write_json(manifest_path, manifest)
@@ -346,13 +530,21 @@ def detect_for_video(video_path, args):
     classification_counts = load_classification_counts(video_path)
 
     print(f"[analyse] {video_path.name}: {len(image_paths)} images candidates", flush=True)
-    pair_results, sequences = build_sequences(image_paths, args)
-    manifest_path = write_outputs(video_path, image_paths, pair_results, sequences, args, classification_counts)
+    cluster = dominant_visual_cluster(image_paths, args)
+    manifest_path = write_outputs(
+        video_path,
+        image_paths,
+        cluster,
+        args,
+        classification_counts,
+    )
     print(
         (
-            f"[ok] {video_path.name}: sequences={len(sequences)}, "
-            f"frames={sum(seq['frame_count'] for seq in sequences)}, "
-            f"is_interview={len(sequences) < args.max_interview_sequences and not bool(classification_counts and classification_counts['graphic_exceeds_footage'])} "
+            f"[ok] {video_path.name}: cluster="
+            f"{cluster['frame_count']}/{len(image_paths)} "
+            f"({cluster['frame_ratio']:.1%}), "
+            f"is_interview="
+            f"{cluster['frame_ratio'] >= args.dominant_cluster_ratio_min} "
             f"-> {manifest_path}"
         ),
         flush=True,
@@ -367,6 +559,11 @@ def detect_video(
     phash_similar_max: int = 6,
     phash_ambiguous_max: int = 14,
     ssim_min: float = 0.92,
+    ssim_high_phash_min: float = 0.97,
+    analysis_crop_bottom: float = 0.18,
+    analysis_blur_radius: float = 1.0,
+    cluster_similarity_min: float = 0.92,
+    dominant_cluster_ratio_min: float = 0.70,
     min_run_frames: int = 6,
     max_gap_pairs: int = 1,
     max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES,
@@ -381,6 +578,11 @@ def detect_video(
             phash_similar_max=phash_similar_max,
             phash_ambiguous_max=phash_ambiguous_max,
             ssim_min=ssim_min,
+            ssim_high_phash_min=ssim_high_phash_min,
+            analysis_crop_bottom=analysis_crop_bottom,
+            analysis_blur_radius=analysis_blur_radius,
+            cluster_similarity_min=cluster_similarity_min,
+            dominant_cluster_ratio_min=dominant_cluster_ratio_min,
             min_run_frames=min_run_frames,
             max_gap_pairs=max_gap_pairs,
             max_interview_sequences=max_interview_sequences,

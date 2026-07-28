@@ -49,7 +49,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             ocr_dir = video_dir / "outputs" / "ocr"
             transcript_dir.mkdir(parents=True)
             ocr_dir.mkdir(parents=True)
-            source = transcript_dir / plain_transcript.TRANSCRIPT_3_WITH_SPEAKERS_NAME
+            source = transcript_dir / plain_transcript.TRANSCRIPT_3_ENRICHED_NAME
             source.write_text("\n", encoding="utf-8")
             (ocr_dir / "02_filtered_ocr_overlays.json").write_text(
                 """
@@ -100,7 +100,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             "Bonjour. Voici mon parcours.",
         )
 
-    def test_canonical_plain_prefers_transcript_with_speakers(self) -> None:
+    def test_canonical_plain_prefers_transcript_3_enriched(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             transcript_dir = (
                 Path(temporary_directory)
@@ -108,9 +108,15 @@ class CreatePlainTranscriptTests(unittest.TestCase):
                 / plain_transcript.CANONICAL_TRANSCRIPTS_DIR_NAME
             )
             transcript_dir.mkdir(parents=True)
-            with_speakers = transcript_dir / plain_transcript.TRANSCRIPT_3_WITH_SPEAKERS_NAME
-            enriched = transcript_dir / plain_transcript.TRANSCRIPT_ENRICHED_NAME
-            with_speakers.write_text("[00:01] Alice Martin: Bonjour.\n", encoding="utf-8")
+            legacy_with_speakers = (
+                transcript_dir
+                / plain_transcript.LEGACY_TRANSCRIPT_3_WITH_SPEAKERS_NAMES[0]
+            )
+            enriched = transcript_dir / plain_transcript.TRANSCRIPT_3_ENRICHED_NAME
+            legacy_with_speakers.write_text(
+                "[00:01] Alice Martin: Ancien.\n",
+                encoding="utf-8",
+            )
             enriched.write_text(
                 "[00:01] Alice Martin: Bonjour.\n"
                 "[00:03] INTERCALAIRE: COMMENT TU T'APPELLES ?\n",
@@ -119,7 +125,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
 
             self.assertEqual(
                 plain_transcript.timecoded_inputs(transcript_dir),
-                [with_speakers],
+                [enriched],
             )
 
     def test_long_video_plain_uses_raw_even_if_corrected_files_exist(self) -> None:

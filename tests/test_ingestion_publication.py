@@ -31,8 +31,8 @@ class IngestionPublicationTests(unittest.TestCase):
                 "Canonique WhisperX",
                 encoding="utf-8",
             )
-            (whisper_dir / "whisper_transcript_timecoded_corrected.txt").write_text(
-                "[00:00] Canonique WhisperX",
+            (whisper_dir / "transcript_3_enriched.txt").write_text(
+                "[00:00] INTERCALAIRE: Canonique WhisperX",
                 encoding="utf-8",
             )
             (ocr_dir / "plain_transcript.txt").write_text(
@@ -50,7 +50,7 @@ class IngestionPublicationTests(unittest.TestCase):
             [(kind, path.parent.name) for kind, path in found],
             [
                 ("plain", "transcripts_whisper"),
-                ("timecoded", "transcripts_whisper"),
+                ("enriched", "transcripts_whisper"),
             ],
         )
         self.assertEqual(ocr_only, [])
@@ -412,6 +412,10 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertIn("name TEXT NOT NULL", statements[-1])
         self.assertIn("title TEXT", statements[-1])
         self.assertIn("is_long_video BOOLEAN GENERATED ALWAYS", statements[-1])
+        self.assertIn("transcript TEXT", statements[-1])
+        self.assertIn("transcript_enriched TEXT", statements[-1])
+        self.assertNotIn("transcript_timecodes TEXT", statements[-1])
+        self.assertNotIn("transcript_timecodes_enrichi TEXT", statements[-1])
         self.assertNotIn("video_summary", statements[-1])
         self.assertNotIn("DROP SCHEMA IF EXISTS chat", "\n".join(statements))
 

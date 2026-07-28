@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from psycopg import sql
 from psycopg.rows import dict_row
 
@@ -80,6 +82,29 @@ def read_text(path: Path | None) -> str:
         return path.read_text(encoding="utf-8")[:MAX_TEXT_CHARS]
     except (OSError, UnicodeDecodeError):
         return ""
+
+
+def write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def first_existing(paths: list[Path]) -> Path | None:
@@ -244,6 +269,45 @@ def video_speakers(video_dir: Path) -> list[str]:
     return [detail["name"] for detail in video_speaker_details(video_dir)]
 
 
+def video_chunk_profile(video_dir: Path) -> str:
+    existing_chunks = read_json(
+        video_dir / "outputs" / "chunks" / "transcript_chunks.json"
+    )
+    if isinstance(existing_chunks, dict):
+        chunking = existing_chunks.get("chunking")
+        profile = chunking.get("profile") if isinstance(chunking, dict) else None
+        if profile in {"short", "long"}:
+            return profile
+
+    from pipeline.context import LONG_VIDEO_THRESHOLD_SECONDS
+
+    metadata = read_json(
+        video_dir / "metadata" / "youtube_video_metadata.json"
+    )
+    duration = metadata.get("duration_seconds", 0) if isinstance(metadata, dict) else 0
+    try:
+        return (
+            "long"
+            if float(duration) > LONG_VIDEO_THRESHOLD_SECONDS
+            else "short"
+        )
+    except (TypeError, ValueError):
+        return "short"
+
+
+class SpeakerEdit(BaseModel):
+    name: str
+    title: str | None = None
+
+
+class SpeakersEdit(BaseModel):
+    speakers: list[SpeakerEdit]
+
+
+class EnrichedTranscriptEdit(BaseModel):
+    content: str
+
+
 def video_overview(run_dir: Path, video_dir: Path) -> dict[str, Any]:
     metadata = read_json(video_dir / "metadata" / "youtube_video_metadata.json") or {}
     paths = video_output_paths(video_dir)
@@ -344,6 +408,10 @@ def video_detail(run_name: str, video_id: str) -> dict[str, Any]:
             "label": variant["label"],
             "path": variant["path"].relative_to(video_dir).as_posix(),
             "content": read_text(variant["path"]),
+            "editable": (
+                variant["key"] == "enriched"
+                and variant["path"].stat().st_size <= MAX_TEXT_CHARS
+            ),
         }
         for variant in transcript_variant_paths(video_dir)
     ]
@@ -358,6 +426,136 @@ def video_detail(run_name: str, video_id: str) -> dict[str, Any]:
         }
     )
     return result
+
+
+@app.put("/api/videos/{run_name}/{video_id}/speakers")
+def update_video_speakers(
+    run_name: str,
+    video_id: str,
+    edit: SpeakersEdit,
+) -> dict[str, Any]:
+    _run_dir, video_dir = selected_video(run_name, video_id)
+    if len(edit.speakers) > 50:
+        raise HTTPException(status_code=422, detail="Maximum 50 speakers")
+
+    details: list[dict[str, str | None]] = []
+    seen: set[str] = set()
+    for speaker in edit.speakers:
+        name = " ".join(speaker.name.split()).strip()
+        title = " ".join((speaker.title or "").split()).strip()
+        if not name:
+            raise HTTPException(
+                status_code=422,
+                detail="Le nom d'un speaker ne peut pas etre vide",
+            )
+        if len(name) > 200 or len(title) > 300:
+            raise HTTPException(
+                status_code=422,
+                detail="Nom ou fonction de speaker trop long",
+            )
+        key = name.casefold()
+        if key in seen:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Speaker en double: {name}",
+            )
+        seen.add(key)
+        details.append({"name": name, "title": title or None})
+
+    target = video_dir / "outputs" / "speakers" / "speakers_validated.json"
+    payload = read_json(target)
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["speakers"] = [detail["name"] for detail in details]
+    payload["speaker_details"] = [
+        {
+            "speaker": detail["name"],
+            "title": detail["title"] or "",
+        }
+        for detail in details
+    ]
+    write_text_atomic(
+        target,
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
+    return {
+        "path": target.relative_to(video_dir).as_posix(),
+        "speakers": payload["speakers"],
+        "speaker_details": details,
+    }
+
+
+@app.put("/api/videos/{run_name}/{video_id}/transcripts/enriched")
+def update_enriched_transcript(
+    run_name: str,
+    video_id: str,
+    edit: EnrichedTranscriptEdit,
+) -> dict[str, Any]:
+    _run_dir, video_dir = selected_video(run_name, video_id)
+    encoded_size = len(edit.content.encode("utf-8"))
+    if encoded_size > MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Transcript limite a {MAX_TEXT_CHARS} octets",
+        )
+    if not edit.content.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Le transcript enrichi ne peut pas etre vide",
+        )
+
+    enriched = next(
+        (
+            variant
+            for variant in transcript_variant_paths(video_dir)
+            if variant["key"] == "enriched"
+        ),
+        None,
+    )
+    if enriched is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Transcript enrichi introuvable",
+        )
+    target = enriched["path"]
+    if target.stat().st_size > MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="Transcript trop volumineux pour etre edite ici",
+        )
+
+    write_text_atomic(target, edit.content)
+    from pipeline.steps.transcripts.create_plain_transcript import convert_file
+    from pipeline.steps.chunks.create_transcript_chunks import create_chunks
+
+    plain_target = convert_file(video_dir, target, force=True)
+    chunk_profile = video_chunk_profile(video_dir)
+    chunks_target = create_chunks(
+        video_dir,
+        force=True,
+        profile=chunk_profile,
+        transcripts_dir_name=target.parent.name,
+    )
+    if chunks_target is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Le transcript est enregistre, mais les chunks n'ont pas pu etre regeneres",
+        )
+    return {
+        "key": "enriched",
+        "path": target.relative_to(video_dir).as_posix(),
+        "content": edit.content,
+        "editable": True,
+        "plain": {
+            "path": plain_target.relative_to(video_dir).as_posix(),
+            "content": read_text(plain_target),
+        },
+        "chunks": {
+            "path": chunks_target.relative_to(video_dir).as_posix(),
+            "profile": chunk_profile,
+            "items": chunk_items(chunks_target),
+        },
+    }
 
 
 @app.get("/api/videos/{run_name}/{video_id}/media")

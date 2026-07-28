@@ -46,8 +46,7 @@ MIN_SUBTITLE_CLUSTER_SECONDS = 10
 MIN_SUBTITLE_CLUSTER_DURATION = 5
 MIN_SUBTITLE_TEXT_VARIANTS = 3
 SUBTITLE_NEAR_DUPLICATE_SIMILARITY = 0.82
-STATIC_DECOR_MIN_SECONDS = 5
-STATIC_DECOR_MIN_DURATION = 5
+STATIC_DECOR_MAX_IMAGES = 20
 STATIC_DECOR_POSITION_TOLERANCE = 0.045
 STATIC_DECOR_MIN_TEXT_LENGTH = 8
 STATIC_DECOR_VARIANT_RATIO = 0.82
@@ -792,19 +791,21 @@ def static_decor_keys(entries):
 
     static_keys = set()
     for group in groups:
-        seconds = sorted(
-            {
-                entry["item"].get("second")
-                for entry in group
-                if entry["item"].get("second") is not None
-            }
-        )
-        if len(seconds) < STATIC_DECOR_MIN_SECONDS:
-            continue
-        if seconds[-1] - seconds[0] < STATIC_DECOR_MIN_DURATION:
+        image_names = {
+            entry["item"].get("image")
+            for entry in group
+            if entry["item"].get("image")
+        }
+        if len(image_names) <= STATIC_DECOR_MAX_IMAGES:
             continue
         for entry in group:
-            static_keys.add((entry["key"], entry["item"].get("image"), entry["item"].get("text")))
+            static_keys.add(
+                (
+                    entry["key"],
+                    entry["item"].get("image"),
+                    entry["item"].get("text"),
+                )
+            )
 
     return static_keys
 

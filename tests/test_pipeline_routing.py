@@ -114,6 +114,7 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertNotIn("speakers.assign_ocr", task_ids)
         self.assertIn("chunks.summarize_sections", task_ids)
         self.assertIn("chunks.summarize_video", task_ids)
+        self.assertNotIn("embeddings.create", task_ids)
 
     def test_long_video_inspection_skips_images_and_ocr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -173,6 +174,20 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertIn("transcript.correct_whisper", task_ids)
         self.assertNotIn("transcript.reconcile_ocr", task_ids)
         self.assertNotIn("chunks.summarize_sections", task_ids)
+        self.assertNotIn("embeddings.create", task_ids)
+
+    def test_embeddings_stay_available_outside_the_processing_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video = self.make_video(
+                Path(temporary_directory),
+                has_subtitles=False,
+                video_type="video_recording",
+            )
+            context = self.context(video, 120)
+            task_ids = [task.id for task in processing_plan(context)]
+
+        self.assertNotIn("embeddings.create", task_ids)
+        self.assertIn("embeddings.create", TASKS)
 
     def test_motion_design_is_a_routing_dimension(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

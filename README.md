@@ -239,8 +239,9 @@ est encore vraie ; sans postcondition, tous ses artefacts doivent exister, les
 dossiers doivent être non vides et leur empreinte doit être inchangée. Une
 invalidation rejoue aussi les tâches aval. La taille et la date de modification
 de la vidéo participent au hash du plan. `pipeline run --force` supprime d'abord
-entièrement `outputs/`, puis reconstruit la chaîne sans reprise. En revanche,
-`pipeline task ... --force` ne force que la tâche demandée.
+entièrement `outputs/`, puis reconstruit la chaîne principale sans reprise,
+jusqu'aux chunks. Les embeddings doivent ensuite être recréés avec leur tâche
+dédiée. En revanche, `pipeline task ... --force` ne force que la tâche demandée.
 
 ### Sources de vérité
 
@@ -319,7 +320,7 @@ sous-titres.
 |---:|---|---|---|
 | 1 | `frames.extract` | `steps.inspection.extract_frames` | Frames échantillonnées dans `outputs/images/`. |
 | 2 | `frames.classify` | `steps.inspection.classify_frames` | Classification footage, graphic ou mixture. |
-| 3 | `video.detect_interview` | `steps.inspection.detect_interviews` | Indice d'interview dans `outputs/interview/`. |
+| 3 | `video.detect_interview` | `steps.inspection.detect_interviews` | Cluster dominant des embeddings DINO des frames `footage`, dans `outputs/interview/`. |
 | 4 | `video.infer_type` | `steps.inspection.infer_video_type` | `video_type` dans `video_manifest.json.routing_facts`. |
 | 5 | `ocr.extract_raw` | `steps.inspection.extract_raw_ocr` | OCR brut dans `outputs/ocr/`. |
 | 6 | `ocr.extract_boxes` | `steps.inspection.extract_ocr_boxes` | Positions des zones de texte. |
@@ -348,6 +349,11 @@ Cette partie est entièrement omise pour `long_video`. Pour les routes courtes,
 l'OCR sert à corriger WhisperX et à détecter les intercalaires. Quand des
 sous-titres sont détectés, il produit aussi l'unique plain transcript utilisé
 comme référence de correction.
+Lors de `ocr.build_processed`, un texte et ses variantes OCR proches ne sont
+considérés comme un décor statique que s'ils restent au même emplacement
+sur plus de 20 images distinctes dans toute la vidéo. Les groupes détectés sur
+20 images ou moins sont conservés, à condition que chaque détection respecte
+également le seuil de confiance OCR configuré (0,9 par défaut).
 
 ### Transcript canonique WhisperX
 
@@ -369,7 +375,6 @@ speakers.validate
 chunks.create
 chunks.summarize_sections
 chunks.summarize_video
-embeddings.create
 ```
 
 WhisperX ne charge pas la diarisation sur cette route. Le dossier canonique
@@ -434,6 +439,10 @@ Pour `long_video`, seuls `transcript_1_brut.txt` et
 `transcript_3_enriched.txt` n'ajoute ni sous-titres, ni noms, ni titres animés,
 ni autres textes présents sur les images. La résolution des speakers et l'ajout
 des intercalaires sont réunis dans cette unique étape.
+Pour relier les labels WhisperX (`SPEAKER_00`, etc.) aux noms validés, la
+résolution utilise d'abord les noms détectés par OCR au timecode de chaque voix,
+puis les auto-présentations prononcées. Les labels et noms encore sans
+correspondance sont associés par ordre numérique en dernier recours.
 
 Les speakers, les chunks, les embeddings, l'interface RAG et la synchronisation
 PostgreSQL consomment exclusivement les fichiers de
@@ -467,8 +476,18 @@ Le traitement se termine par les tâches suivantes :
 
 | Profil | Tâches finales |
 |---|---|
-| `short` | `chunks.create` avec le profil court, puis `embeddings.create`. |
-| `long` | `chunks.create` avec le profil long, `chunks.summarize_sections`, `chunks.summarize_video`, puis `embeddings.create`. |
+| `short` | `chunks.create` avec le profil court. |
+| `long` | `chunks.create` avec le profil long, `chunks.summarize_sections`, puis `chunks.summarize_video`. |
+
+La création des embeddings est volontairement hors du plan principal. Une fois
+les chunks produits par `pipeline run`, elle se lance explicitement :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline task embeddings.create VIDEO_ID
+```
+
+Le mode Batch reste disponible pour cette tâche isolée avec
+`--openai-mode batch`.
 
 Le profil long produit trois niveaux de chunks :
 
@@ -697,12 +716,19 @@ Exécuter l'inspection puis le pipeline sélectionné :
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
 ```
 
+Créer ensuite les embeddings à partir des chunks :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline task embeddings.create VIDEO_ID
+```
+
 Lister le registre ou exécuter une étape isolée :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline task --list
 .\.venv\Scripts\python.exe -m pipeline task frames.classify VIDEO_ID
 .\.venv\Scripts\python.exe -m pipeline task transcript.enrich VIDEO_ID --force
+.\.venv\Scripts\python.exe -m pipeline task embeddings.create VIDEO_ID
 ```
 
 Un identifiant absent du registre est rejeté avant le démarrage de l'exécution.
@@ -751,7 +777,7 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 
 | Option | Effet |
 |---|---|
-| `--force` | Avec `run`, supprime entièrement `outputs/` avant de tout reconstruire. Avec `task`, force uniquement la tâche demandée. |
+| `--force` | Avec `run`, supprime entièrement `outputs/` avant de reconstruire le plan principal jusqu'aux chunks ; les embeddings doivent ensuite être relancés séparément. Avec `task`, force uniquement la tâche demandée. |
 | `--dry-run` | Affiche les handlers sélectionnés sans les exécuter. |
 | `--openai-mode normal|batch` | Choisit le mode de tous les appels OpenAI de la pipeline d'ingestion. |
 | `--batch` | Raccourci propre à `pipeline run` pour `--openai-mode batch`. |
@@ -764,10 +790,18 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 
 Avec `--openai-mode batch`, la revue OCR, la réconciliation Whisper/OCR, la
 validation des speakers, les résumés de sections, le résumé global et les
-embeddings passent tous par l'API Batch. Chaque tâche attend son batch avant de
-laisser continuer les tâches qui dépendent de son résultat. Les fichiers
+autres appels OpenAI du plan principal passent par l'API Batch. Chaque tâche
+attend son batch avant de laisser continuer les tâches qui dépendent de son
+résultat. Les fichiers
 d'état, d'entrée, de sortie et d'erreur sont conservés sous `outputs/` afin
 qu'une relance reprenne un batch compatible au lieu de le soumettre à nouveau.
+
+Les embeddings ne sont pas créés par `pipeline run`. Pour les générer en Batch,
+il faut lancer séparément :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline task embeddings.create VIDEO_ID --openai-mode batch
+```
 
 Pour afficher le plan de traitement en dry-run, il faut disposer d'un
 un manifeste contenant des `routing_facts` complets :
@@ -804,8 +838,9 @@ la première tâche incomplète ou invalide :
 ```
 
 Si un fichier enregistré a disparu, sa tâche est réexécutée automatiquement.
-Utiliser `run --force` uniquement lorsqu'il faut supprimer puis reconstruire
-toutes les sorties. Associé à `--dry-run`, il ne supprime rien :
+Utiliser `run --force` uniquement lorsqu'il faut supprimer toutes les sorties,
+puis reconstruire le plan principal jusqu'aux chunks. Les embeddings doivent
+ensuite être relancés séparément. Associé à `--dry-run`, il ne supprime rien :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection --force

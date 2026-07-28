@@ -27,7 +27,7 @@ BATCH_STATE_NAME = "speaker_validation_batch_state.json"
 BATCH_INPUT_NAME = "speaker_validation_batch_input.jsonl"
 BATCH_OUTPUT_NAME = "speaker_validation_batch_output.jsonl"
 BATCH_ERROR_NAME = "speaker_validation_batch_error.jsonl"
-MAX_OUTPUT_TOKENS = 512
+MAX_OUTPUT_TOKENS = 2048
 MAX_LIVE_ATTEMPTS = 3
 SYSTEM_PROMPT = (
     "Tu verifies une liste de speakers detectes automatiquement dans une video. "
@@ -372,6 +372,43 @@ def build_response_request(
     return body, request_log
 
 
+def speaker_answer_error(answer):
+    if not str(answer).strip():
+        return "Reponse OpenAI vide."
+    try:
+        parse_speaker_details(answer)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
+def response_is_incomplete(diagnostics):
+    return (
+        diagnostics.get("status") == "incomplete"
+        or bool(diagnostics.get("incomplete_details"))
+    )
+
+
+def warn_retry(attempt, reason, diagnostics):
+    if attempt >= MAX_LIVE_ATTEMPTS:
+        return
+    print(
+        f"[warn] Reponse OpenAI inutilisable "
+        f"(tentative {attempt}/{MAX_LIVE_ATTEMPTS}): {reason}; relance... "
+        f"details={json.dumps(diagnostics, ensure_ascii=False)}",
+        flush=True,
+    )
+
+
+def exhausted_response_error(reason, diagnostics):
+    return RuntimeError(
+        f"OpenAI n'a renvoye aucun JSON complet apres "
+        f"{MAX_LIVE_ATTEMPTS} tentatives. "
+        f"Derniere erreur: {reason}. "
+        f"Details: {json.dumps(diagnostics, ensure_ascii=False)}"
+    )
+
+
 def ask_gpt(
     client,
     model,
@@ -393,35 +430,46 @@ def ask_gpt(
     )
     if hasattr(client, "responses"):
         diagnostics = None
+        failure_reason = "Reponse OpenAI vide."
         for attempt in range(1, MAX_LIVE_ATTEMPTS + 1):
             response = client.responses.create(**body)
             answer = response_text(response)
             diagnostics = response_diagnostics(response)
-            if answer:
+            if response_is_incomplete(diagnostics):
+                failure_reason = "Reponse tronquee par la limite de sortie"
+                warn_retry(attempt, failure_reason, diagnostics)
+                continue
+            failure_reason = speaker_answer_error(answer)
+            if failure_reason is None:
                 request_log["attempt_count"] = attempt
                 return answer, request_log
-            if attempt < MAX_LIVE_ATTEMPTS:
-                print(
-                    f"[warn] Reponse OpenAI vide (tentative {attempt}/{MAX_LIVE_ATTEMPTS}); relance... "
-                    f"details={json.dumps(diagnostics, ensure_ascii=False)}",
-                    flush=True,
-                )
-        raise RuntimeError(
-            f"OpenAI n'a renvoye aucun texte apres {MAX_LIVE_ATTEMPTS} tentatives. "
-            f"Details: {json.dumps(diagnostics, ensure_ascii=False)}"
-        )
+            warn_retry(attempt, failure_reason, diagnostics)
+        raise exhausted_response_error(failure_reason, diagnostics)
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=body["input"],
-        max_completion_tokens=body["max_output_tokens"],
-    )
-    answer = response.choices[0].message.content or ""
     request_log["api"] = "chat.completions.create"
     request_log["max_completion_tokens"] = body["max_output_tokens"]
-    if not answer.strip():
-        raise RuntimeError("OpenAI n'a renvoye aucun texte via chat.completions.create.")
-    return answer, request_log
+    diagnostics = None
+    failure_reason = "Reponse OpenAI vide."
+    for attempt in range(1, MAX_LIVE_ATTEMPTS + 1):
+        response = client.chat.completions.create(
+            model=model,
+            messages=body["input"],
+            max_completion_tokens=body["max_output_tokens"],
+        )
+        choice = response.choices[0]
+        answer = choice.message.content or ""
+        finish_reason = getattr(choice, "finish_reason", None)
+        diagnostics = {"finish_reason": finish_reason}
+        if finish_reason in {"length", "max_tokens"}:
+            failure_reason = "Reponse tronquee par la limite de sortie"
+            warn_retry(attempt, failure_reason, diagnostics)
+            continue
+        failure_reason = speaker_answer_error(answer)
+        if failure_reason is None:
+            request_log["attempt_count"] = attempt
+            return answer, request_log
+        warn_retry(attempt, failure_reason, diagnostics)
+    raise exhausted_response_error(failure_reason, diagnostics)
 
 
 def parse_speaker_details(answer):

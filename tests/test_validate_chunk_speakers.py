@@ -22,12 +22,39 @@ class FakeResponses:
 
     def create(self, **body):
         self.calls.append(body)
+        response = next(self.output_texts)
+        if isinstance(response, dict):
+            return SimpleNamespace(
+                output_text=response.get("output_text", ""),
+                output=[],
+                status=response.get("status", "completed"),
+                incomplete_details=response.get("incomplete_details"),
+                error=response.get("error"),
+            )
         return SimpleNamespace(
-            output_text=next(self.output_texts),
+            output_text=response,
             output=[],
             status="completed",
             incomplete_details=None,
             error=None,
+        )
+
+
+class FakeChatCompletions:
+    def __init__(self, choices):
+        self.choices = iter(choices)
+        self.calls = []
+
+    def create(self, **body):
+        self.calls.append(body)
+        content, finish_reason = next(self.choices)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content),
+                    finish_reason=finish_reason,
+                )
+            ]
         )
 
 
@@ -65,6 +92,8 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         self.assertFalse(speaker_item["additionalProperties"])
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(request_log["text"], body["text"])
+        self.assertEqual(body["max_output_tokens"], 2048)
+        self.assertEqual(request_log["max_output_tokens"], 2048)
         prompt = body["input"][1]["content"]
         self.assertNotIn("video_title", prompt)
         self.assertNotIn("Lou-Anne Corvedu présente son métier", prompt)
@@ -201,8 +230,95 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         responses = FakeResponses(["", "", ""])
         client = SimpleNamespace(responses=responses)
 
-        with self.assertRaisesRegex(RuntimeError, "aucun texte apres 3 tentatives"):
+        with self.assertRaisesRegex(RuntimeError, "aucun JSON complet apres 3 tentatives"):
             speaker_validation.ask_gpt(client, "gpt-5-nano", ["Lou-Anne Corveddu"])
+
+    def test_truncated_json_is_retried(self) -> None:
+        responses = FakeResponses(
+            [
+                '{"speakers":[{"speaker":"Gilles Babinet","title":"Digital Champion',
+                '{"speakers":[{"speaker":"Gilles Babinet","title":"Digital Champion"}]}',
+            ]
+        )
+        client = SimpleNamespace(responses=responses)
+
+        answer, request_log = speaker_validation.ask_gpt(
+            client,
+            "gpt-5-nano",
+            ["Gilles Babinet"],
+        )
+
+        self.assertIn('"Digital Champion"}]}', answer)
+        self.assertEqual(request_log["attempt_count"], 2)
+        self.assertEqual(len(responses.calls), 2)
+
+    def test_incomplete_response_status_is_retried(self) -> None:
+        responses = FakeResponses(
+            [
+                {
+                    "output_text": '{"speakers":[]}',
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+                '{"speakers":[]}',
+            ]
+        )
+        client = SimpleNamespace(responses=responses)
+
+        answer, request_log = speaker_validation.ask_gpt(
+            client,
+            "gpt-5-nano",
+            [],
+        )
+
+        self.assertEqual(answer, '{"speakers":[]}')
+        self.assertEqual(request_log["attempt_count"], 2)
+        self.assertEqual(len(responses.calls), 2)
+
+    def test_invalid_json_after_all_attempts_has_clear_error(self) -> None:
+        responses = FakeResponses(["{", "{", "{"])
+        client = SimpleNamespace(responses=responses)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "aucun JSON complet apres 3 tentatives",
+        ):
+            speaker_validation.ask_gpt(
+                client,
+                "gpt-5-nano",
+                ["Gilles Babinet"],
+            )
+
+    def test_chat_completion_length_finish_is_retried(self) -> None:
+        completions = FakeChatCompletions(
+            [
+                (
+                    '{"speakers":[{"speaker":"Gilles Babinet"',
+                    "length",
+                ),
+                (
+                    '{"speakers":[{"speaker":"Gilles Babinet","title":""}]}',
+                    "stop",
+                ),
+            ]
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=completions),
+        )
+
+        answer, request_log = speaker_validation.ask_gpt(
+            client,
+            "gpt-5-nano",
+            ["Gilles Babinet"],
+        )
+
+        self.assertIn('"Gilles Babinet"', answer)
+        self.assertEqual(request_log["attempt_count"], 2)
+        self.assertEqual(len(completions.calls), 2)
+        self.assertEqual(
+            completions.calls[0]["max_completion_tokens"],
+            2048,
+        )
 
     def test_empty_parser_input_has_clear_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "Reponse OpenAI vide"):

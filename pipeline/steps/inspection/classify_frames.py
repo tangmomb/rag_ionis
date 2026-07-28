@@ -5,11 +5,14 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline.support.json_io import write_json
+from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import existing_images_dir, images_dir, relative_to_video_dir
 
 DEFAULT_MODEL_PATH = Path("models/frame_filter_2026-07-02_21-30-31.joblib")
 DEFAULT_EMBEDDING_CACHE_DIRNAME = ".embedding_cache"
+DINO_EMBEDDING_DIMENSIONS = {
+    "facebook/dinov2-base": 768,
+}
 DEFAULT_BATCH_SIZE = 16
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 FOOTAGE_DIR_NAME = "footage"
@@ -147,11 +150,11 @@ def load_image_rgb(path, crop_bottom=0.0):
     return image
 
 
-def file_signature(path):
+def file_signature(path, stat_path=None):
     import hashlib
 
     p = Path(path)
-    stat = p.stat()
+    stat = Path(stat_path).stat() if stat_path is not None else p.stat()
     payload = f"{p.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -230,15 +233,118 @@ class FrozenBackboneEmbedder:
             )
 
 
-def cache_path_for_image(image_path, cache_dir, config):
+def cache_path_for_image(
+    image_path,
+    cache_dir,
+    config,
+    *,
+    stat_path=None,
+):
     signature = stable_hash(
         [
             "frame-filter-embedding-v1",
-            file_signature(image_path),
+            file_signature(image_path, stat_path=stat_path),
             config.to_dict(),
         ]
     )
     return cache_dir / f"{signature}.joblib"
+
+
+def load_cached_dino_embeddings(
+    image_paths,
+    images_directory,
+    cache_dir=None,
+):
+    import joblib
+    import numpy as np
+
+    paths = [Path(path) for path in image_paths]
+    images_root = Path(images_directory)
+    features_path = images_root / FEATURES_NAME
+    if not features_path.exists():
+        raise FileNotFoundError(
+            f"Features de classification introuvables: {features_path}"
+        )
+
+    payload = read_json(features_path)
+    backbones = payload.get("backbones", {})
+    if not isinstance(backbones, dict):
+        backbones = {}
+    dino_model = str(
+        backbones.get("dino", "facebook/dinov2-base")
+    )
+    clip_model = str(
+        backbones.get("clip", "openai/clip-vit-base-patch32")
+    )
+    config = EmbeddingConfig(
+        dino_model=dino_model,
+        clip_model=clip_model,
+        crop_bottom=float(payload.get("crop_bottom", 0.20)),
+    )
+    dimensions = payload.get("embedding_dimensions", {})
+    if not isinstance(dimensions, dict):
+        dimensions = {}
+    dino_dimensions = dimensions.get("dino")
+    if not isinstance(dino_dimensions, int) or dino_dimensions <= 0:
+        dino_dimensions = DINO_EMBEDDING_DIMENSIONS.get(dino_model)
+    if dino_dimensions is None:
+        raise ValueError(
+            "Dimension DINO inconnue pour "
+            f"{dino_model!r}; relancer la classification des frames."
+        )
+
+    items_by_image = {
+        Path(str(item.get("image", ""))).as_posix(): item
+        for item in payload.get("items", [])
+        if isinstance(item, dict) and item.get("image")
+    }
+    cache_root = (
+        Path(cache_dir)
+        if cache_dir is not None
+        else images_root / DEFAULT_EMBEDDING_CACHE_DIRNAME
+    )
+    vectors = []
+    for path in paths:
+        try:
+            relative_image = path.relative_to(images_root).as_posix()
+        except ValueError:
+            relative_image = path.name
+        item = items_by_image.get(relative_image)
+        if item is None:
+            raise KeyError(
+                f"Frame absente de {features_path}: {relative_image}"
+            )
+
+        cache_key = str(item.get("embedding_cache_key", "")).strip()
+        if cache_key:
+            cache_path = cache_root / cache_key
+        else:
+            # Les anciens artefacts ont ete mis en cache avant le
+            # deplacement de la frame dans footage/graphic/mixture.
+            original_path = images_root / str(
+                item.get("source_image") or path.name
+            )
+            cache_path = cache_path_for_image(
+                original_path,
+                cache_root,
+                config,
+                stat_path=path,
+            )
+        if not cache_path.exists():
+            raise FileNotFoundError(
+                "Embedding de frame introuvable: "
+                f"{cache_path}. Relancer la classification des frames."
+            )
+        vector = np.asarray(joblib.load(cache_path), dtype=np.float32)
+        if vector.ndim != 1 or vector.size < dino_dimensions:
+            raise ValueError(
+                f"Embedding invalide dans {cache_path}: {vector.shape}"
+            )
+        vectors.append(vector[:dino_dimensions])
+
+    if not vectors:
+        return np.empty((0, dino_dimensions), dtype=np.float32)
+    return np.vstack(vectors).astype(np.float32)
 
 
 def embed_image_paths(image_paths, embedder, batch_size=16, cache_dir=None):
@@ -382,21 +488,34 @@ def classify_paths(image_paths, args):
         predicted_index = int(max(range(len(class_names)), key=lambda class_idx: float(proba[index, class_idx])))
         predicted_label = class_names[predicted_index]
         roles.append(predicted_label)
-        items.append(
-            {
-                "source_image": path.name,
-                "second": image_second(path),
-                "pred_label": predicted_label,
-                "role": predicted_label,
-                **probs,
-            }
-        )
+        item = {
+            "source_image": path.name,
+            "second": image_second(path),
+            "pred_label": predicted_label,
+            "role": predicted_label,
+            **probs,
+        }
+        if args.cache_dir is not None:
+            item["embedding_cache_key"] = cache_path_for_image(
+                path,
+                Path(args.cache_dir),
+                config,
+            ).name
+        items.append(item)
 
     return {
         "roles": roles,
         "class_names": class_names,
         "crop_bottom": crop_bottom,
         "backbones": {"dino": dino_model, "clip": clip_model},
+        "embedding_dimensions": {
+            "dino": int(
+                getattr(embedder.dino_model.config, "hidden_size")
+            ),
+            "clip": int(
+                getattr(embedder.clip_model.config, "projection_dim")
+            ),
+        },
         "device": device,
         "items": items,
     }
@@ -445,6 +564,9 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
         "class_names": class_names,
         "crop_bottom": prediction_payload["crop_bottom"],
         "backbones": prediction_payload["backbones"],
+        "embedding_dimensions": prediction_payload[
+            "embedding_dimensions"
+        ],
         "items": sorted(items, key=lambda item: item["image"]),
     }
     write_json(features_path, features_payload)
@@ -457,6 +579,9 @@ def write_outputs(video_path, image_paths, images_dir, force, prediction_payload
         "class_names": class_names,
         "crop_bottom": prediction_payload["crop_bottom"],
         "backbones": prediction_payload["backbones"],
+        "embedding_dimensions": prediction_payload[
+            "embedding_dimensions"
+        ],
         "identification_strategy": "frame_filter_model",
         "class_counts": role_counts,
         "footage_count": role_counts.get("footage", 0),

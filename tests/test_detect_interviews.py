@@ -1,9 +1,16 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw
 
+from pipeline.steps.inspection.classify_frames import (
+    EmbeddingConfig,
+    cache_path_for_image,
+    load_cached_dino_embeddings,
+)
 from pipeline.steps.inspection.detect_interviews import (
     InterviewDetectionOptions,
     bridge_transient_gaps,
@@ -60,6 +67,67 @@ def create_frame(
 
 
 class InterviewDetectionTests(unittest.TestCase):
+    def test_loads_legacy_embedding_cache_after_frame_move(self):
+        import joblib
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            images_dir = Path(temporary_directory) / "images"
+            footage_dir = images_dir / "footage"
+            cache_dir = images_dir / ".embedding_cache"
+            footage_dir.mkdir(parents=True)
+            cache_dir.mkdir()
+            current_path = create_frame(
+                footage_dir / "00_01.jpg"
+            )
+            config = EmbeddingConfig(
+                dino_model="facebook/dinov2-base",
+                clip_model="openai/clip-vit-base-patch32",
+                crop_bottom=0.20,
+            )
+            cache_path = cache_path_for_image(
+                images_dir / current_path.name,
+                cache_dir,
+                config,
+                stat_path=current_path,
+            )
+            expected = np.arange(1280, dtype=np.float32)
+            joblib.dump(expected, cache_path)
+            (images_dir / "frame_classification_features.json").write_text(
+                json.dumps(
+                    {
+                        "crop_bottom": 0.20,
+                        "backbones": {
+                            "dino": config.dino_model,
+                            "clip": config.clip_model,
+                        },
+                        "items": [
+                            {
+                                "source_image": current_path.name,
+                                "image": "footage/00_01.jpg",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            embeddings = load_cached_dino_embeddings(
+                [current_path],
+                images_dir,
+            )
+
+        self.assertEqual(embeddings.shape, (1, 768))
+        np.testing.assert_array_equal(
+            embeddings[0],
+            expected[:768],
+        )
+
+    def test_default_cluster_similarity_accepts_zoom_variations(self):
+        self.assertEqual(
+            InterviewDetectionOptions().cluster_similarity_min,
+            0.88,
+        )
+
     def test_ignores_bottom_subtitles_and_interview_motion(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -175,6 +243,10 @@ class InterviewDetectionTests(unittest.TestCase):
             cluster = dominant_visual_cluster(
                 frames,
                 InterviewDetectionOptions(),
+                np.asarray(
+                    [[1.0, index * 0.001] for index in range(7)]
+                    + [[0.0, 1.0], [-1.0, 0.0], [-0.7, 0.7]],
+                ),
             )
 
         self.assertGreaterEqual(cluster["frame_ratio"], 0.70)
@@ -197,6 +269,11 @@ class InterviewDetectionTests(unittest.TestCase):
             cluster = dominant_visual_cluster(
                 frames,
                 InterviewDetectionOptions(),
+                np.asarray(
+                    [[1.0, 0.0]] * 6
+                    + [[0.0, 1.0]] * 2
+                    + [[-1.0, 0.0]] * 2,
+                ),
             )
 
         self.assertLess(cluster["frame_ratio"], 0.70)

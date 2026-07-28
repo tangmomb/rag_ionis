@@ -139,5 +139,4 @@ def processing_plan(context: PipelineContext) -> list[PlannedTask]:
                 ),
             ]
         )
-    tasks.append(PlannedTask("embeddings.create", "chunks_ready"))
     return tasks

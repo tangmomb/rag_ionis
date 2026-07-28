@@ -133,7 +133,7 @@ ocr.build_processed → ocr.filter_overlays → ocr.extract_review_candidates
 → transcript.create_plain_ocr → transcript.reconcile_ocr
 → speakers.propose → speakers.validate
 → transcript.enrich → transcript.create_plain
-→ chunks.create → embeddings.create
+→ chunks.create
 ```
 
 On obtient alors le WhisperX brut, l'unique
@@ -169,7 +169,13 @@ pipeline/__main__.py : main()
 Elle enchaîne l'inspection, le nettoyage OCR, le transcript WhisperX canonique,
 l'éventuelle référence OCR de correction, l'identification des speakers,
 l'application des speakers et l'ajout des seuls intercalaires dans
-`transcript_3_enriched.txt`, les chunks et les embeddings.
+`transcript_3_enriched.txt`, puis les chunks.
+
+Les embeddings sont créés séparément, après le pipeline principal :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline task embeddings.create VIDEO_ID
+```
 
 Les speakers validés sont reliés à leur vidéo dans la table SQL `speakers`,
 avec leur nom et leur fonction. Ils restent présents dans le transcript
@@ -212,7 +218,7 @@ Réutiliser les décisions déjà présentes dans le manifeste :
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection
 ```
 
-Tout reconstruire :
+Reconstruire le pipeline principal :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --force
@@ -221,7 +227,8 @@ Tout reconstruire :
 Cette variante supprime entièrement le dossier `outputs/` de chaque vidéo
 sélectionnée avant de relancer l'inspection et le traitement. Les vidéos et le
 dossier `metadata/` sont conservés. `pipeline task ... --force` reste ciblé et
-ne supprime pas `outputs/`.
+ne supprime pas `outputs/`. Comme les anciens embeddings ont aussi été
+supprimés, il faut relancer ensuite `pipeline task embeddings.create ...`.
 
 Simuler sans exécuter :
 
@@ -310,4 +317,7 @@ docker compose up -d postgres phoenix
 .\.venv\Scripts\python.exe -m uvicorn interface.app:app --host 127.0.0.1 --port 8000
 ```
 
-En résumé, `python -m pipeline run VIDEO_ID` est la grande commande centrale : elle relie automatiquement l'inspection, le choix de la route, la transcription, le découpage et les embeddings.
+En résumé, `python -m pipeline run VIDEO_ID` est la grande commande centrale :
+elle relie automatiquement l'inspection, le choix de la route, la transcription
+et le découpage. La création des embeddings reste une tâche explicite hors de
+ce pipeline principal.

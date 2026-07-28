@@ -4,6 +4,9 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter
+from pipeline.steps.inspection.classify_frames import (
+    load_cached_dino_embeddings,
+)
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import existing_images_dir, existing_interview_dir, interview_dir, relative_to_video_dir
 
@@ -26,7 +29,7 @@ class InterviewDetectionOptions:
     ssim_high_phash_min: float = 0.97
     analysis_crop_bottom: float = 0.18
     analysis_blur_radius: float = 1.0
-    cluster_similarity_min: float = 0.92
+    cluster_similarity_min: float = 0.88
     dominant_cluster_ratio_min: float = 0.70
     min_run_frames: int = 6
     max_gap_pairs: int = 1
@@ -211,55 +214,7 @@ def classify_pair(frame_a, frame_b, args, gray_cache, phash_cache):
     }
 
 
-def scene_descriptor(path, args, cache):
-    cache_key = (
-        str(path),
-        args.analysis_crop_bottom,
-        args.analysis_blur_radius,
-    )
-    if cache_key in cache:
-        return cache[cache_key]
-
-    image = Image.open(path).convert("RGB")
-    crop_bottom = max(0.0, min(0.45, args.analysis_crop_bottom))
-    if crop_bottom:
-        visible_height = max(
-            1,
-            round(image.height * (1.0 - crop_bottom)),
-        )
-        image = image.crop((0, 0, image.width, visible_height))
-    image = image.resize((160, 96), Image.Resampling.BILINEAR)
-    image = image.filter(
-        ImageFilter.GaussianBlur(
-            max(2.0, args.analysis_blur_radius)
-        )
-    )
-    pixels = np.asarray(image, dtype=np.uint8)
-    descriptors = []
-    for row in range(3):
-        for column in range(4):
-            region = pixels[
-                row * 32 : (row + 1) * 32,
-                column * 40 : (column + 1) * 40,
-            ]
-            histogram = np.histogramdd(
-                region.reshape(-1, 3),
-                bins=(6, 6, 6),
-                range=((0, 256), (0, 256), (0, 256)),
-            )[0].ravel()
-            total = float(histogram.sum())
-            if total:
-                histogram /= total
-            descriptors.append(histogram)
-    descriptor = np.concatenate(descriptors)
-    norm = float(np.linalg.norm(descriptor))
-    if norm:
-        descriptor /= norm
-    cache[cache_key] = descriptor
-    return descriptor
-
-
-def dominant_visual_cluster(image_paths, args):
+def dominant_visual_cluster(image_paths, args, descriptors):
     if not image_paths:
         return {
             "representative": None,
@@ -268,12 +223,17 @@ def dominant_visual_cluster(image_paths, args):
             "frames": [],
         }
 
-    cache = {}
-    descriptors = np.stack(
-        [
-            scene_descriptor(path, args, cache)
-            for path in image_paths
-        ]
+    descriptors = np.asarray(descriptors, dtype=np.float32)
+    if descriptors.ndim != 2 or len(descriptors) != len(image_paths):
+        raise ValueError(
+            "Un embedding DINO est requis pour chaque frame candidate."
+        )
+    norms = np.linalg.norm(descriptors, axis=1, keepdims=True)
+    descriptors = np.divide(
+        descriptors,
+        norms,
+        out=np.zeros_like(descriptors),
+        where=norms > 0,
     )
     similarities = descriptors @ descriptors.T
     membership = similarities >= args.cluster_similarity_min
@@ -466,7 +426,7 @@ def write_outputs(
         for path in dominant_cluster["frames"]
     ]
     manifest = {
-        "method": "dominant_visual_cluster",
+        "method": "dominant_dino_embedding_cluster",
         "is_interview": is_interview,
         "source_dirs": list(args.source_dirs),
         "frame_count": len(image_paths),
@@ -530,7 +490,15 @@ def detect_for_video(video_path, args):
     classification_counts = load_classification_counts(video_path)
 
     print(f"[analyse] {video_path.name}: {len(image_paths)} images candidates", flush=True)
-    cluster = dominant_visual_cluster(image_paths, args)
+    descriptors = load_cached_dino_embeddings(
+        image_paths,
+        images_dir,
+    )
+    cluster = dominant_visual_cluster(
+        image_paths,
+        args,
+        descriptors,
+    )
     manifest_path = write_outputs(
         video_path,
         image_paths,
@@ -562,7 +530,7 @@ def detect_video(
     ssim_high_phash_min: float = 0.97,
     analysis_crop_bottom: float = 0.18,
     analysis_blur_radius: float = 1.0,
-    cluster_similarity_min: float = 0.92,
+    cluster_similarity_min: float = 0.88,
     dominant_cluster_ratio_min: float = 0.70,
     min_run_frames: int = 6,
     max_gap_pairs: int = 1,

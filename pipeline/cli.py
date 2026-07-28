@@ -53,7 +53,8 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         "--force",
         action="store_true",
         help=(
-            "Avec `run`, supprime outputs/ avant reconstruction. "
+            "Avec `run`, supprime outputs/ avant reconstruction jusqu'aux chunks; "
+            "les embeddings restent une tache separee. "
             "Avec `task`, force uniquement la tache demandee."
         ),
     )

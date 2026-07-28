@@ -545,7 +545,17 @@ def filter_overlay_items(items):
     filtered_items = collapse_on_footage_progressions(filtered_items)
     filtered_items = remove_overlay_fragments(filtered_items)
     filtered_items = collapse_graphic_time_groups(filtered_items)
-    return remove_exact_overlay_duplicates(merge_same_second_overlays(filtered_items))
+    filtered_items = remove_exact_overlay_duplicates(
+        merge_same_second_overlays(filtered_items)
+    )
+    return [
+        item
+        for item in filtered_items
+        if not (
+            is_graphic_kind(item.get("kind"))
+            and "www" in str(item.get("text", "")).casefold()
+        )
+    ]
 
 
 def item_sort_key(item):

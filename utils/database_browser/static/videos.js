@@ -1,5 +1,15 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { videos: [], selected: null, detail: null, tab: "transcript", transcriptType: null };
+const state = {
+  videos: [],
+  selected: null,
+  detail: null,
+  tab: "transcript",
+  transcriptType: null,
+  transcriptEditing: false,
+  transcriptMessage: "",
+  speakerEditing: false,
+  speakerMessage: "",
+};
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
@@ -7,6 +17,17 @@ function escapeHtml(value) {
 
 async function getJson(url) {
   const response = await fetch(url);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.detail || "Erreur serveur");
+  return body;
+}
+
+async function putJson(url, payload) {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const body = await response.json();
   if (!response.ok) throw new Error(body.detail || "Erreur serveur");
   return body;
@@ -53,6 +74,10 @@ async function loadVideos(keepSelection = true) {
 
 async function selectVideo(run, id) {
   state.selected = { run, id };
+  state.speakerEditing = false;
+  state.speakerMessage = "";
+  state.transcriptEditing = false;
+  state.transcriptMessage = "";
   const url = new URL(window.location.href);
   url.searchParams.set("video", id);
   window.history.replaceState({}, "", url);
@@ -86,6 +111,14 @@ function renderDetail() {
     return `<span class="badge speaker-badge" title="${escapeHtml(label)}"><span class="badge-info">i</span>${escapeHtml(label)}</span>`;
   }).join("");
   $("#videoBadges").innerHTML = standardBadges + speakerBadges;
+  $("#speakerStatus").textContent = state.speakerMessage;
+  renderSpeakerEditor(speakerDetails);
+  $("#editSpeakers").onclick = () => {
+    state.speakerEditing = true;
+    state.speakerMessage = "";
+    $("#speakerStatus").textContent = "";
+    renderSpeakerEditor(speakerDetails);
+  };
   $("#videoMeta").textContent = `${video.id} · ${formatDuration(video.duration_seconds)} · ${video.run}`;
   $("#youtubeLink").href = video.url;
   $("#stats").innerHTML = [
@@ -106,6 +139,83 @@ function renderDetail() {
   switchTab(state.tab);
 }
 
+function speakerFormValues() {
+  return Array.from(document.querySelectorAll(".speaker-edit-row")).map((row) => ({
+    name: row.querySelector("[data-field='name']").value,
+    title: row.querySelector("[data-field='title']").value,
+  }));
+}
+
+function renderSpeakerEditor(speakers) {
+  const editor = $("#speakerEditor");
+  if (!state.speakerEditing) {
+    editor.classList.add("hidden");
+    editor.innerHTML = "";
+    return;
+  }
+  editor.classList.remove("hidden");
+  editor.innerHTML = `
+    <div class="speaker-editor-heading">
+      <strong>Speakers validés</strong>
+      <span>Nom et fonction</span>
+    </div>
+    <div class="speaker-edit-list">
+      ${speakers.map((speaker, index) => `
+        <div class="speaker-edit-row">
+          <input data-field="name" aria-label="Nom du speaker ${index + 1}" maxlength="200" value="${escapeHtml(speaker.name)}" placeholder="Nom">
+          <input data-field="title" aria-label="Fonction du speaker ${index + 1}" maxlength="300" value="${escapeHtml(speaker.title || "")}" placeholder="Fonction">
+          <button class="icon-button remove-speaker" data-index="${index}" aria-label="Supprimer ${escapeHtml(speaker.name || `le speaker ${index + 1}`)}">×</button>
+        </div>`).join("")}
+    </div>
+    <div class="edit-actions">
+      <button id="addSpeaker" class="button secondary compact-button">+ Ajouter</button>
+      <span class="actions-spacer"></span>
+      <button id="cancelSpeakers" class="button secondary compact-button">Annuler</button>
+      <button id="saveSpeakers" class="button compact-button" data-testid="save-speakers">Enregistrer</button>
+    </div>
+    <p id="speakerEditError" class="edit-error" role="alert"></p>`;
+
+  document.querySelectorAll(".remove-speaker").forEach((button) => button.addEventListener("click", () => {
+    const values = speakerFormValues();
+    values.splice(Number(button.dataset.index), 1);
+    renderSpeakerEditor(values);
+  }));
+  $("#addSpeaker").addEventListener("click", () => {
+    renderSpeakerEditor([...speakerFormValues(), { name: "", title: "" }]);
+  });
+  $("#cancelSpeakers").addEventListener("click", () => {
+    state.speakerEditing = false;
+    renderSpeakerEditor(speakers);
+  });
+  $("#saveSpeakers").addEventListener("click", saveSpeakers);
+}
+
+async function saveSpeakers() {
+  const button = $("#saveSpeakers");
+  const error = $("#speakerEditError");
+  button.disabled = true;
+  error.textContent = "";
+  try {
+    const result = await putJson(
+      `/api/videos/${encodeURIComponent(state.detail.run)}/${encodeURIComponent(state.detail.id)}/speakers`,
+      { speakers: speakerFormValues() },
+    );
+    state.detail.speakers = result.speakers;
+    state.detail.speaker_details = result.speaker_details;
+    const overview = state.videos.find((video) => video.run === state.detail.run && video.id === state.detail.id);
+    if (overview) {
+      overview.speakers = result.speakers;
+      overview.speaker_details = result.speaker_details;
+    }
+    state.speakerEditing = false;
+    state.speakerMessage = `Enregistré dans ${result.path}`;
+    renderDetail();
+  } catch (saveError) {
+    error.textContent = saveError.message;
+    button.disabled = false;
+  }
+}
+
 function renderTranscripts(transcripts) {
   const available = transcripts.filter((transcript) => transcript && transcript.content);
   if (!available.length) {
@@ -118,6 +228,15 @@ function renderTranscripts(transcripts) {
     state.transcriptType = available[0].key;
   }
   const selected = available.find((transcript) => transcript.key === state.transcriptType) || available[0];
+  const canEdit = selected.key === "enriched" && selected.editable === true;
+  const transcriptBody = state.transcriptEditing && canEdit
+    ? `<textarea id="transcriptEditor" class="transcript-editor" data-testid="enriched-transcript-editor">${escapeHtml(selected.content)}</textarea>
+       <div class="edit-actions transcript-edit-actions">
+         <button id="cancelTranscript" class="button secondary compact-button">Annuler</button>
+         <button id="saveTranscript" class="button compact-button" data-testid="save-enriched-transcript">Enregistrer</button>
+       </div>
+       <p id="transcriptEditError" class="edit-error" role="alert"></p>`
+    : `<pre class="transcript">${escapeHtml(selected.content)}</pre>`;
   $("#panel-transcript").innerHTML = `
     <div class="transcript-types">
       ${available.map((transcript) => `
@@ -126,14 +245,69 @@ function renderTranscripts(transcripts) {
         </button>`).join("")}
     </div>
     <div class="transcript-heading">
-      <strong>${escapeHtml(selected.label)}</strong>
+      <div>
+        <strong>${escapeHtml(selected.label)}</strong>
+        ${canEdit && !state.transcriptEditing ? '<button id="editTranscript" class="button secondary compact-button" data-testid="edit-enriched-transcript">Modifier</button>' : ""}
+      </div>
       <span>${escapeHtml(selected.path)}</span>
     </div>
-    <pre class="transcript">${escapeHtml(selected.content)}</pre>`;
+    ${state.transcriptMessage && selected.key === "enriched" ? `<p class="save-status transcript-save-status">${escapeHtml(state.transcriptMessage)}</p>` : ""}
+    ${transcriptBody}`;
   document.querySelectorAll(".transcript-type").forEach((button) => button.addEventListener("click", () => {
     state.transcriptType = button.dataset.transcriptType;
+    state.transcriptEditing = false;
+    state.transcriptMessage = "";
     renderTranscripts(state.detail.transcripts || []);
   }));
+  if (canEdit && !state.transcriptEditing) {
+    $("#editTranscript").addEventListener("click", () => {
+      state.transcriptEditing = true;
+      state.transcriptMessage = "";
+      renderTranscripts(state.detail.transcripts || []);
+    });
+  }
+  if (state.transcriptEditing && canEdit) {
+    $("#cancelTranscript").addEventListener("click", () => {
+      state.transcriptEditing = false;
+      renderTranscripts(state.detail.transcripts || []);
+    });
+    $("#saveTranscript").addEventListener("click", () => saveEnrichedTranscript(selected));
+  }
+}
+
+async function saveEnrichedTranscript(selected) {
+  const button = $("#saveTranscript");
+  const error = $("#transcriptEditError");
+  button.disabled = true;
+  error.textContent = "";
+  try {
+    const result = await putJson(
+      `/api/videos/${encodeURIComponent(state.detail.run)}/${encodeURIComponent(state.detail.id)}/transcripts/enriched`,
+      { content: $("#transcriptEditor").value },
+    );
+    selected.content = result.content;
+    selected.path = result.path;
+    selected.editable = result.editable;
+    const plainTranscript = (state.detail.transcripts || []).find((transcript) => transcript.key === "plain");
+    if (plainTranscript && result.plain) {
+      plainTranscript.path = result.plain.path;
+      plainTranscript.content = result.plain.content;
+    }
+    if (result.plain) state.detail.transcript = result.plain.content;
+    if (result.chunks) {
+      state.detail.chunks = result.chunks.items;
+      state.detail.chunk_count = result.chunks.items.length;
+      const overview = state.videos.find((video) => video.run === state.detail.run && video.id === state.detail.id);
+      if (overview) overview.chunk_count = result.chunks.items.length;
+      renderChunks(result.chunks.items);
+    }
+    state.transcriptEditing = false;
+    state.transcriptMessage = `Enregistré · transcript plain et ${result.chunks.items.length} chunk(s) régénérés`;
+    renderTranscripts(state.detail.transcripts || []);
+  } catch (saveError) {
+    error.textContent = saveError.message;
+    button.disabled = false;
+  }
 }
 
 function ocrCount(groups) {

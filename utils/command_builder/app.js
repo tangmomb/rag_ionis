@@ -51,7 +51,7 @@ const commonPipelineFields = [
     help: "Ajouté seulement si tu modifies le dossier par défaut.",
     full: true,
   },
-  { id: "force", label: "Forcer la régénération", flag: "--force", type: "boolean", help: "Avec run, supprime outputs/ avant reconstruction. Avec task, force seulement la tâche." },
+  { id: "force", label: "Forcer la régénération", flag: "--force", type: "boolean", help: "Avec run, supprime outputs/ puis reconstruit jusqu’aux chunks ; les embeddings doivent être relancés séparément. Avec task, force seulement la tâche." },
   { id: "dryRun", label: "Simulation", flag: "--dry-run", type: "boolean", help: "Affiche ce qui serait exécuté." },
   {
     id: "openaiMode",
@@ -98,7 +98,7 @@ const runBatchField = {
   label: "Tout OpenAI en Batch",
   flag: "--batch",
   type: "boolean",
-  help: "OCR visuel, réconciliation, speakers, résumés et embeddings. Chaque étape attend son résultat avant de poursuivre.",
+  help: "OCR visuel, réconciliation, speakers et résumés. Chaque étape attend son résultat avant de poursuivre.",
   full: true,
 };
 
@@ -185,8 +185,8 @@ const actions = [
     id: "run",
     category: "Pipeline",
     title: "Lancer le pipeline",
-    short: "Pipeline complet, en appels directs ou OpenAI Batch",
-    description: "Inspecte puis exécute la chaîne adaptée à chaque vidéo. Le mode Batch couvre tous les appels OpenAI et conserve ses fichiers d’état pour permettre la reprise.",
+    short: "Traitement jusqu’aux chunks, en direct ou OpenAI Batch",
+    description: "Inspecte puis exécute la chaîne adaptée à chaque vidéo jusqu’à la création des chunks. Les embeddings se lancent séparément avec la tâche dédiée.",
     icon: "▶",
     accent: "#d9f36d",
     pipelineCommand: "run",

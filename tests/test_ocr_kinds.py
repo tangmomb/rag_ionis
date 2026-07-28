@@ -1,10 +1,31 @@
 import unittest
 
 from pipeline.steps.ocr.build_processed_ocr import normalize_output_kinds
-from pipeline.support.paddle_ocr import classify_text
+from pipeline.support.paddle_ocr import (
+    classify_text,
+    compact_text_key,
+    records_from_raw_result,
+    static_decor_keys,
+    text_key,
+)
 
 
 class OcrKindTests(unittest.TestCase):
+    def static_entry(self, image_index, text):
+        return {
+            "item": {
+                "image": f"footage/frame_{image_index:02d}.jpg",
+                "text": text,
+                "kind": "others",
+            },
+            "key": text_key(text),
+            "compact_key": compact_text_key(text),
+            "geometry": {
+                "cx": 0.5,
+                "cy": 0.8,
+            },
+        }
+
     def test_classify_text_only_emits_canonical_non_graphic_kinds(self) -> None:
         image_size = (1000, 1000)
 
@@ -35,6 +56,56 @@ class OcrKindTests(unittest.TestCase):
         normalized = normalize_output_kinds(items)
 
         self.assertEqual({item["kind"] for item in normalized}, {"others"})
+
+    def test_image_count_rule_keeps_the_ocr_confidence_threshold(self) -> None:
+        records = records_from_raw_result(
+            {
+                "rec_texts": ["Détection faible", "Détection fiable"],
+                "rec_scores": [0.8999, 0.9],
+                "rec_polys": [
+                    [[0, 0], [10, 0], [10, 10], [0, 10]],
+                    [[0, 20], [10, 20], [10, 30], [0, 30]],
+                ],
+            },
+            min_confidence=0.9,
+        )
+
+        self.assertEqual(
+            [record["text"] for record in records],
+            ["Détection fiable"],
+        )
+
+    def test_static_text_on_twenty_distinct_images_is_kept(self) -> None:
+        entries = [
+            self.static_entry(
+                image_index,
+                "Ionis-STM promo 2015"
+                if image_index == 0
+                else "lonis-STM promo 2015",
+            )
+            for image_index in range(20)
+        ]
+        self.assertEqual(static_decor_keys(entries), set())
+
+    def test_static_text_on_twenty_one_distinct_images_is_removed(self) -> None:
+        entries = [
+            self.static_entry(
+                image_index,
+                "Ionis-STM promo 2015"
+                if image_index == 0
+                else "lonis-STM promo 2015",
+            )
+            for image_index in range(21)
+        ]
+        self.assertEqual(len(static_decor_keys(entries)), 21)
+
+    def test_separate_runs_are_accumulated_across_the_video(self) -> None:
+        entries = [
+            self.static_entry(image_index, "Ionis-STM promo 2015")
+            for image_index in (*range(9), *range(20, 29), *range(40, 49))
+        ]
+
+        self.assertEqual(len(static_decor_keys(entries)), 27)
 
 
 if __name__ == "__main__":

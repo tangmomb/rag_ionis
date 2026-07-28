@@ -1,6 +1,9 @@
 import unittest
 
-from pipeline.support.ocr_filtering import collapse_graphic_time_groups
+from pipeline.support.ocr_filtering import (
+    collapse_graphic_time_groups,
+    filter_overlay_items,
+)
 
 
 def graphic_items(second, image, *texts):
@@ -94,6 +97,29 @@ class OcrFilteringTests(unittest.TestCase):
         items = graphic_items(8.0, "graphic/00_08.jpg", "TEXTE ISOLE")
 
         self.assertEqual(collapse_graphic_time_groups(items), [])
+
+    def test_filtered_graphics_exclude_www_results(self):
+        items = [
+            *graphic_items(1.0, "graphic/00_01.jpg", "QUESTION COMPLETE ?"),
+            *graphic_items(
+                1.5,
+                "graphic/00_01_500.jpg",
+                "QUESTION COMPLETE ?",
+            ),
+            *graphic_items(8.0, "graphic/00_08.jpg", "www.ionis-stm.com"),
+            *graphic_items(
+                8.5,
+                "graphic/00_08_500.jpg",
+                "WWW.IONIS-STM.COM",
+            ),
+        ]
+
+        result = filter_overlay_items(items)
+
+        self.assertEqual(
+            [item["text"] for item in result],
+            ["QUESTION COMPLETE ?"],
+        )
 
 
 if __name__ == "__main__":

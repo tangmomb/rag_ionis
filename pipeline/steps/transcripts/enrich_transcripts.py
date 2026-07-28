@@ -6,7 +6,11 @@ from pipeline.steps.speakers.correct_speaker_transcripts import (
     validated_path,
 )
 from pipeline.support.json_io import read_json
-from pipeline.support.ocr_filtering import enriched_ocr_source_path, format_timecode
+from pipeline.support.ocr_filtering import (
+    enriched_ocr_source_path,
+    format_timecode,
+    processed_ocr_source_path,
+)
 from pipeline.support.paths import (
     CANONICAL_TRANSCRIPTS_DIR_NAME,
     existing_transcripts_dir,
@@ -71,6 +75,9 @@ def speaker_dependencies(video_path):
     candidates = candidates_path(video_path, validated_payload)
     if candidates.exists():
         dependencies.append(candidates)
+    ocr_source = processed_ocr_source_path(video_path)
+    if ocr_source.exists():
+        dependencies.append(ocr_source)
     return dependencies
 
 

@@ -145,6 +145,112 @@ class CorrectSpeakerTranscriptsTests(unittest.TestCase):
             {"SPEAKER_00": 2, "SPEAKER_01": 1, "SPEAKER_02": 1},
         )
 
+    def test_ocr_name_timecodes_override_numeric_label_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            video_dir.mkdir()
+            video = video_dir / "video123.mp4"
+            video.touch()
+            transcript_dir = video_dir / "outputs" / "transcripts_whisper"
+            speakers_dir = video_dir / "outputs" / "speakers"
+            ocr_dir = video_dir / "outputs" / "ocr"
+            transcript_dir.mkdir(parents=True)
+            speakers_dir.mkdir(parents=True)
+            ocr_dir.mkdir(parents=True)
+
+            enriched = transcript_dir / "transcript_3_enriched.txt"
+            enriched.write_text(
+                "[00:12-00:20] SPEAKER_01: Présentation de la rencontre.\n"
+                "[00:25-00:36] SPEAKER_03: Premier témoignage.\n"
+                "[00:36-00:47] SPEAKER_02: Deuxième témoignage.\n"
+                "[00:51-01:00] SPEAKER_00: Troisième témoignage.\n",
+                encoding="utf-8",
+            )
+            (speakers_dir / "speaker_candidates.json").write_text(
+                json.dumps({"speakers": []}),
+                encoding="utf-8",
+            )
+            (speakers_dir / "speakers_validated.json").write_text(
+                json.dumps(
+                    {
+                        "speakers": [
+                            "Valérie Pham-Trong",
+                            "Eric Modesto",
+                            "Cyril Morcrette",
+                            "Jérôme Hannebelle",
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (ocr_dir / "01_processed_ocr_items.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "kind": "others",
+                                "text": "Valérie Pham-Trong",
+                                "second": 17,
+                            },
+                            {
+                                "kind": "others",
+                                "text": "Eric Modesto",
+                                "second": 29.5,
+                            },
+                            {
+                                "kind": "others",
+                                "text": "Cyril Morcrette",
+                                "second": 41,
+                            },
+                            {
+                                "kind": "others",
+                                "text": "Jérôme Hannebelle",
+                                "second": 55,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = speaker_correction.correct_speaker_files(
+                video,
+                [enriched],
+                force=True,
+                replace_speaker_labels=True,
+            )
+
+            self.assertEqual(result, 4)
+            self.assertEqual(
+                enriched.read_text(encoding="utf-8"),
+                "[00:12-00:20] Valérie Pham-Trong: Présentation de la rencontre.\n"
+                "[00:25-00:36] Eric Modesto: Premier témoignage.\n"
+                "[00:36-00:47] Cyril Morcrette: Deuxième témoignage.\n"
+                "[00:51-01:00] Jérôme Hannebelle: Troisième témoignage.\n",
+            )
+
+    def test_ocr_hint_has_priority_over_conflicting_introduction(self) -> None:
+        corrected, counts = speaker_correction.apply_speaker_labels(
+            (
+                "[00:00-00:05] SPEAKER_01: Je suis Bob Durand.\n"
+                "[00:05-00:10] SPEAKER_00: Suite.\n"
+            ),
+            ["Alice Martin", "Bob Durand"],
+            label_hints={"SPEAKER_01": "Alice Martin"},
+        )
+
+        self.assertEqual(
+            corrected,
+            (
+                "[00:00-00:05] Alice Martin: Je suis Bob Durand.\n"
+                "[00:05-00:10] Bob Durand: Suite.\n"
+            ),
+        )
+        self.assertEqual(
+            counts,
+            {"SPEAKER_01": 1, "SPEAKER_00": 1},
+        )
+
     def test_speaker_mapping_also_replaces_a_partially_ocr_corrected_name(self) -> None:
         mappings = [
             {

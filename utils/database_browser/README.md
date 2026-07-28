@@ -11,6 +11,14 @@ Depuis la racine du projet :
 Puis ouvrir <http://127.0.0.1:8001/videos>.
 
 - Explorateur vidéo : <http://127.0.0.1:8001/videos>
+
+Dans l'explorateur vidéo, seuls les speakers validés et la variante
+`transcript_3_enriched.txt` sont modifiables. Une sauvegarde met directement à
+jour `outputs/speakers/speakers_validated.json` ou le fichier de transcript
+enrichi affiché. Après une modification du transcript enrichi,
+`transcript_plain.txt` puis `outputs/chunks/transcript_chunks.json` sont
+immédiatement régénérés avec la logique et le profil de chunks du pipeline. Les
+autres sorties restent en lecture seule.
 - Tables PostgreSQL : <http://127.0.0.1:8001/>
 
 L'explorateur vidéo indexe automatiquement `downloads/youtube/*_init`, puis permet d'ouvrir chaque vidéo et de consulter son transcript, les textes OCR, les images extraites, les chunks et les fichiers produits.

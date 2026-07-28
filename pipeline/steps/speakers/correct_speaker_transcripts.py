@@ -1,10 +1,12 @@
 import re
 import unicodedata
+from collections import defaultdict
 from difflib import SequenceMatcher
 from itertools import product
 from pathlib import Path
 
 from pipeline.support.json_io import read_json
+from pipeline.support.ocr_filtering import processed_ocr_source_path
 from pipeline.support.paths import (
     CANONICAL_TRANSCRIPTS_DIR_NAME,
     existing_speakers_dir,
@@ -19,6 +21,11 @@ SPEAKERS_VALIDATED_NAME = "speakers_validated.json"
 OBSOLETE_CORRECTIONS_NAME = "speaker_transcript_corrections.json"
 OBSOLETE_SPEAKER_CORRECTED_SUFFIX = "_speaker_corrected.txt"
 SPEAKER_LABEL_PATTERN = re.compile(r"\bSPEAKER_(\d+)\b")
+TIMECODED_SPEAKER_LINE = re.compile(
+    r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{2})\]\s*"
+    r"(SPEAKER_\d+)\s*:\s*(.*)$"
+)
+OCR_SPEAKER_KINDS = {"name", "lower_third", "others"}
 
 def normalize_name(name):
     normalized = unicodedata.normalize("NFKD", str(name).strip().casefold())
@@ -29,6 +36,15 @@ def normalize_name(name):
 
 def clean_name(name):
     return " ".join(str(name).split()).strip()
+
+
+def parse_timecode(value):
+    parts = [int(part) for part in str(value).split(":")]
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return minutes * 60 + seconds
+    hours, minutes, seconds = parts
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def load_json(path):
@@ -200,7 +216,129 @@ def apply_mappings(text, mappings):
     return corrected, counts
 
 
-def apply_speaker_labels(text, speakers):
+def timecoded_speaker_segments(text):
+    segments = []
+    for line in str(text).splitlines():
+        match = TIMECODED_SPEAKER_LINE.match(line)
+        if match is None:
+            continue
+        start, end, label, _body = match.groups()
+        segments.append(
+            {
+                "start": float(parse_timecode(start)),
+                "end": float(parse_timecode(end)),
+                "speaker": label,
+            }
+        )
+    return segments
+
+
+def speaker_label_at_time(segments, second, max_distance=2.0):
+    if not segments:
+        return None
+    second = float(second)
+    containing = [
+        segment
+        for segment in segments
+        if segment["start"] <= second <= segment["end"]
+    ]
+    if containing:
+        best = max(
+            containing,
+            key=lambda segment: min(
+                second - segment["start"],
+                segment["end"] - second,
+            ),
+        )
+        return best["speaker"]
+
+    nearest = min(
+        segments,
+        key=lambda segment: min(
+            abs(second - segment["start"]),
+            abs(second - segment["end"]),
+        ),
+    )
+    distance = min(
+        abs(second - nearest["start"]),
+        abs(second - nearest["end"]),
+    )
+    return nearest["speaker"] if distance <= max_distance else None
+
+
+def ocr_name_match(text, speakers):
+    text_key = normalize_name(text)
+    if not text_key:
+        return None, 0.0
+
+    exact_matches = [
+        speaker
+        for speaker in speakers
+        if normalize_name(speaker)
+        and re.search(
+            rf"(?<!\w){re.escape(normalize_name(speaker))}(?!\w)",
+            text_key,
+        )
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0], 1.0
+
+    similarities = [
+        (
+            SequenceMatcher(None, text_key, normalize_name(speaker)).ratio(),
+            speaker,
+        )
+        for speaker in speakers
+        if normalize_name(speaker)
+    ]
+    if not similarities:
+        return None, 0.0
+    similarity, speaker = max(similarities)
+    if similarity < 0.78:
+        return None, similarity
+    return speaker, similarity
+
+
+def build_ocr_speaker_label_hints(video_path, text, speakers):
+    source = processed_ocr_source_path(video_path)
+    if not source.exists() or len(speakers) < 2:
+        return {}
+    try:
+        items = load_json(source).get("items", []) or []
+    except (OSError, ValueError):
+        return {}
+
+    segments = timecoded_speaker_segments(text)
+    scores = defaultdict(float)
+    for item in items:
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind not in OCR_SPEAKER_KINDS:
+            continue
+        try:
+            second = float(item.get("second"))
+        except (TypeError, ValueError):
+            continue
+        label = speaker_label_at_time(segments, second)
+        speaker, similarity = ocr_name_match(item.get("text", ""), speakers)
+        if not label or not speaker:
+            continue
+        scores[(label, speaker)] += similarity
+
+    hints = {}
+    used_speakers = set()
+    for (label, speaker), _score in sorted(
+        scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+        if label in hints or speaker in used_speakers:
+            continue
+        hints[label] = speaker
+        used_speakers.add(speaker)
+    return hints
+
+
+def apply_speaker_labels(text, speakers, label_hints=None):
     corrected = str(text)
     counts = {}
     if not speakers:
@@ -212,6 +350,13 @@ def apply_speaker_labels(text, speakers):
     }
     label_speakers = {}
     if len(speakers) > 1:
+        label_speakers.update(
+            {
+                label: speaker
+                for label, speaker in (label_hints or {}).items()
+                if label in labels and speaker in speakers
+            }
+        )
         normalized_speakers = {
             speaker: normalize_name(speaker)
             for speaker in speakers
@@ -236,7 +381,12 @@ def apply_speaker_labels(text, speakers):
                 )
             ]
             if len(introduced) == 1:
-                label_speakers.setdefault(label_match.group(0), introduced[0])
+                introduced_speaker = introduced[0]
+                if introduced_speaker not in label_speakers.values():
+                    label_speakers.setdefault(
+                        label_match.group(0),
+                        introduced_speaker,
+                    )
 
         remaining_labels = sorted(
             labels - set(label_speakers),
@@ -297,9 +447,15 @@ def correct_speaker_files(
         corrected, counts = apply_mappings(original, mappings)
         label_counts = {}
         if replace_speaker_labels:
+            label_hints = build_ocr_speaker_label_hints(
+                video_path,
+                corrected,
+                speakers,
+            )
             corrected, label_counts = apply_speaker_labels(
                 corrected,
                 speakers,
+                label_hints=label_hints,
             )
         if corrected != original:
             source.write_text(corrected, encoding="utf-8")

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Vidéos · RAG IONIS</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body class="video-page">
   <aside class="sidebar">
@@ -27,6 +27,11 @@
         <div id="preview" class="video-preview"></div>
         <div class="video-intro">
           <div id="videoBadges" class="badges"></div>
+          <div class="speaker-actions">
+            <button id="editSpeakers" class="button secondary compact-button" data-testid="edit-speakers">Modifier les speakers</button>
+            <span id="speakerStatus" class="save-status" aria-live="polite"></span>
+          </div>
+          <div id="speakerEditor" class="speaker-editor hidden"></div>
           <p id="videoMeta" class="video-meta"></p>
           <a id="youtubeLink" class="button secondary inline-button" target="_blank" rel="noreferrer">Voir sur YouTube ↗</a>
         </div>
@@ -46,6 +51,6 @@
       <section id="panel-files" class="data-panel hidden"></section>
     </section>
   </main>
-  <script src="/static/videos.js"></script>
+  <script src="/static/videos.js?v=4"></script>
 </body>
 </html>

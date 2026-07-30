@@ -32,7 +32,7 @@ class StepHandlerContractTests(unittest.TestCase):
         )
 
     def test_every_catalog_handler_explicitly_returns_task_result(self) -> None:
-        self.assertEqual(len(TASKS), 26)
+        self.assertEqual(len(TASKS), 23)
         for task_id, spec in TASKS.items():
             with self.subTest(task_id=task_id):
                 self.assertIs(
@@ -181,19 +181,6 @@ class StepHandlerContractTests(unittest.TestCase):
         self.assertIs(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(summarize.call_args.kwargs["mode"], "batch")
         self.assertFalse(summarize.call_args.kwargs["reset_batch"])
-
-    def test_ocr_review_is_skipped_when_scope_is_none(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            context = self.context(Path(temporary_directory))
-            context.options = PipelineOptions(review_scope="none")
-
-            with patch(
-                "pipeline.steps.ocr.review_other_text_candidates.review_video",
-            ) as review:
-                result = step_handlers.review_other_text(context)
-
-        self.assertIs(result.status, TaskStatus.SKIPPED)
-        review.assert_not_called()
 
     def test_remaining_openai_steps_use_configured_batch_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

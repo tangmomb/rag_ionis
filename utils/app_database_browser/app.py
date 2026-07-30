@@ -205,7 +205,6 @@ def video_output_paths(video_dir: Path) -> dict[str, Path | None]:
         ),
         "ocr": first_existing(
             [
-                video_dir / "outputs" / "ocr" / "03_reviewed_ocr_overlays.json",
                 video_dir / "outputs" / "ocr" / "02_filtered_ocr_overlays.json",
                 video_dir / "outputs" / "ocr" / "01_processed_ocr_items.json",
             ]

@@ -6,8 +6,6 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
-from openai import OpenAI
-
 from interface.backend.config import (
     DEFAULT_BM25_LIMIT,
     DEFAULT_FINAL_K,
@@ -15,6 +13,7 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
 )
 from interface.backend.database import connect_database, fetch_conversation_memory
+from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
 
@@ -212,7 +211,7 @@ def derive_plan_sources(planner_plan: PlannerPlan) -> None:
 
 def run_planner(
     question: str,
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     model: str = DEFAULT_PLANNER_MODEL,
     system_prompt_override: str | None = None,
 ) -> tuple[PlannerPlan, str | None, str | None, bool]:
@@ -768,7 +767,7 @@ def repair_video_clarification_follow_up(
 def reformulate_question(
     question: str,
     conversation_id: int | None,
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     model: str = DEFAULT_REFORMULATION_MODEL,
     system_prompt_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:

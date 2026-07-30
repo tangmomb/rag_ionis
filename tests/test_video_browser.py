@@ -40,7 +40,7 @@ class VideoBrowserTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (video_dir / "outputs" / "ocr" / "03_reviewed_ocr_overlays.json").write_text(
+            (video_dir / "outputs" / "ocr" / "02_filtered_ocr_overlays.json").write_text(
                 json.dumps({"kinds": {"subtitle": {"00:01": "Bonjour"}}}),
                 encoding="utf-8",
             )

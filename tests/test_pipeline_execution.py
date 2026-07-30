@@ -1076,15 +1076,6 @@ class OrchestratorPublicApiTests(unittest.TestCase):
 
 
 class PipelineCliTests(unittest.TestCase):
-    def test_review_scope_none_is_accepted(self) -> None:
-        from pipeline.cli import parse_args
-
-        args = parse_args(
-            ["run", "abcdefghijk", "--review-scope", "none"]
-        )
-
-        self.assertEqual(args.review_scope, "none")
-
     def test_run_batch_alias_selects_global_openai_batch_mode(self) -> None:
         from pipeline.cli import parse_args
 

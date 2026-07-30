@@ -91,7 +91,7 @@ class RagModelSelectionTests(unittest.TestCase):
         )
 
         with (
-            patch.object(orchestration, "get_openai_client", return_value=client),
+            patch.object(orchestration, "get_llm_client", return_value=client),
             patch.object(
                 orchestration,
                 "reformulate_question",

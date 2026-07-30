@@ -14,7 +14,7 @@ if not exist "%API_PYTHON%" (
   exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$patterns = @('uvicorn interface.app:app','uvicorn utils.app_database_browser.app:app','http.server 8002','watchfiles'); Get-CimInstance Win32_Process | Where-Object { $process = $_; $process.Name -eq 'python.exe' -and ($patterns | Where-Object { $process.CommandLine -like ('*' + $_ + '*') }) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$patterns = @('uvicorn interface.app:app','uvicorn utils.app_database_browser.app:app','uvicorn utils.app_llm_tester.app:app','watchfiles'); Get-CimInstance Win32_Process | Where-Object { $process = $_; $process.Name -eq 'python.exe' -and ($patterns | Where-Object { $process.CommandLine -like ('*' + $_ + '*') }) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 docker compose up -d postgres phoenix
 
@@ -23,6 +23,8 @@ start "" "http://127.0.0.1:8006/"
 
 start "Database browser" cmd /k "%API_PYTHON% -m uvicorn utils.app_database_browser.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir utils/app_database_browser"
 start "" "http://127.0.0.1:8001/videos"
+start "LLM tester" cmd /k "%API_PYTHON% -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester"
+start "" "http://127.0.0.1:8002/"
 start "" "%~dp0utils\app_command_builder\index.html"
 start "" "http://127.0.0.1:6006/"
 start "" "https://www.youtube.com/@IONIS-STM/videos"
@@ -32,3 +34,5 @@ start "" "https://eu-west-3.console.aws.amazon.com/s3/buckets/rag-ionis-53252361
 start "" "https://platform.openai.com/usage"
 start "" "https://developers.openai.com/api/docs/pricing"
 start "" "https://platform.openai.com/tokenizer"
+start "" "https://console.mistral.ai/home"
+start "" "https://aistudio.google.com/usage?timeRange=last-1-day"

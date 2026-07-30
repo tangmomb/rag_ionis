@@ -66,7 +66,7 @@ class EnrichTranscriptsTests(unittest.TestCase):
                 "[00:06-00:10] Bob Durand: Suite.\n",
                 encoding="utf-8",
             )
-            overlays = ocr_dir / "03_reviewed_ocr_overlays.json"
+            overlays = ocr_dir / "02_filtered_ocr_overlays.json"
             overlays.write_text(
                 """
                 {

@@ -4,9 +4,8 @@ import json
 import re
 from typing import Any
 
-from openai import OpenAI
-
 from interface.backend.config import SOURCE_RELEVANCE_MIN
+from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import AnswerAction
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
 
@@ -205,7 +204,7 @@ def source_context_text(source: dict[str, Any]) -> str:
 
 
 def generate_answer(
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     sources: list[dict[str, Any]],
@@ -276,7 +275,7 @@ def generate_answer(
 
 
 def generate_memory_answer(
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     memory_items: list[dict[str, str]],
@@ -356,7 +355,7 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
 
 
 def generate_multi_source_answer(
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     route_name: str,
@@ -423,7 +422,7 @@ def generate_multi_source_answer(
 
 
 def generate_sql_answer(
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     sql_sub_intent: str | None,
@@ -488,7 +487,7 @@ def generate_sql_answer(
 
 
 def generate_final_answer(
-    client: OpenAI | None,
+    client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     retrieval: dict[str, Any],

@@ -12,7 +12,6 @@ OCR_DIR_NAME = "ocr"
 OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
 OCR_PROCESSED_FILTERED_NAME = "02_filtered_ocr_overlays.json"
-OCR_PROCESSED_REVIEWED_NAME = "03_reviewed_ocr_overlays.json"
 LEGACY_OCR_PROCESSED_CORRECTED_NAME = "ocr_processed_corrected.json"
 SUBTITLE_REPEAT_IMAGE_WINDOW = 10
 SUBTITLE_NEIGHBOR_IMAGE_GAP = 3
@@ -457,15 +456,7 @@ def filtered_ocr_path(video_path):
     return video_ocr_dir / OCR_PROCESSED_FILTERED_NAME
 
 
-def reviewed_ocr_path(video_path):
-    video_ocr_dir = existing_ocr_dir(video_path)
-    return video_ocr_dir / OCR_PROCESSED_REVIEWED_NAME
-
-
 def enriched_ocr_source_path(video_path):
-    reviewed = reviewed_ocr_path(video_path)
-    if reviewed.exists():
-        return reviewed
     return filtered_ocr_path(video_path)
 
 

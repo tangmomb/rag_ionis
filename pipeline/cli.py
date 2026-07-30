@@ -64,16 +64,6 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         choices=("normal", "batch"),
         default="normal",
     )
-    parser.add_argument(
-        "--review-scope",
-        choices=("none", "duo", "all"),
-        default="duo",
-        help=(
-            "'none' desactive la revue OpenAI des images OCR ambiguës, "
-            "'duo' limite la revue et 'all' traite toutes les candidates."
-        ),
-    )
-    parser.add_argument("--image-review-model", default=None)
     parser.add_argument("--speaker-validation-model", default=None)
     parser.add_argument("--chunk-summary-model", default=None)
     parser.add_argument(
@@ -171,8 +161,6 @@ def options_from_args(args: argparse.Namespace) -> PipelineOptions:
     return PipelineOptions(
         force=args.force,
         openai_mode=args.openai_mode,
-        review_scope=args.review_scope,
-        image_review_model=args.image_review_model or defaults.image_review_model,
         speaker_validation_model=(
             args.speaker_validation_model or defaults.speaker_validation_model
         ),

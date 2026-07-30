@@ -340,9 +340,6 @@ Les routes courtes commencent par la préparation des textes visibles :
 ```text
 ocr.build_processed
 ocr.filter_overlays
-ocr.extract_review_candidates
-ocr.review_other_text
-ocr.apply_review
 ```
 
 Cette partie est entièrement omise pour `long_video`. Pour les routes courtes,
@@ -750,8 +747,6 @@ Options utiles :
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --skip-inspection
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --openai-mode batch
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --batch
-.\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --review-scope none
-.\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --review-scope all
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID --correction-mode conservative
 ```
 
@@ -781,14 +776,12 @@ Un dossier vidéo doit contenir exactement un fichier `.mp4`, `.mkv`, `.webm`,
 | `--dry-run` | Affiche les handlers sélectionnés sans les exécuter. |
 | `--openai-mode normal|batch` | Choisit le mode de tous les appels OpenAI de la pipeline d'ingestion. |
 | `--batch` | Raccourci propre à `pipeline run` pour `--openai-mode batch`. |
-| `--review-scope none|duo|all` | `none` désactive entièrement la revue OpenAI des images OCR ambiguës, `duo` la limite et `all` traite toutes les candidates. |
-| `--image-review-model` | Remplace le modèle de revue des textes visuels. |
 | `--speaker-validation-model` | Remplace le modèle utilisé pour valider les speakers. |
 | `--correction-mode` | Règle la correction Whisper par OCR visuel des vidéos sans sous-titres. La route avec sous-titres utilise Luna. |
 | `--frame-interval` | Intervalle en secondes entre les frames extraites. |
 | `--details-per-section` | Nombre de chunks détail regroupés dans une section pour les vidéos longues. |
 
-Avec `--openai-mode batch`, la revue OCR, la réconciliation Whisper/OCR, la
+Avec `--openai-mode batch`, la réconciliation Whisper/OCR, la
 validation des speakers, les résumés de sections, le résumé global et les
 autres appels OpenAI du plan principal passent par l'API Batch. Chaque tâche
 attend son batch avant de laisser continuer les tâches qui dépendent de son
@@ -1047,6 +1040,34 @@ Après la fusion et le reranking, chaque détail final est enrichi avec sa
 `section` parente puis son résumé `global` lorsqu'ils existent. Ces parents
 apportent du contexte à la génération sans participer au classement ni occuper
 une place supplémentaire dans les résultats.
+
+## LLM Tester
+
+L'utilitaire `utils/app_llm_tester` envoie un message à OpenAI, Mistral ou
+Google et affiche côte à côte le texte extrait et le payload JSON complet.
+Les clés restent côté serveur et sont lues depuis `.env`.
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester
+```
+
+Ouvrir ensuite `http://127.0.0.1:8002/`. L'application est également démarrée
+par `start_app.bat`.
+
+Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix :
+
+```powershell
+.\.venv\Scripts\python.exe utils/run_phoenix_experiment.py
+```
+
+La fenêtre permet de choisir séparément un modèle OpenAI, Mistral ou Google
+pour la reformulation, le planner et la réponse finale. Les payloads propres à
+chaque API sont traduits vers une réponse commune, tandis que le JSON brut reste
+enregistrable dans les traces Phoenix.
+
+Les embeddings ne changent pas de fournisseur : ils doivent rester compatibles
+avec les vecteurs déjà présents en base et utilisent donc
+`text-embedding-3-large`.
 
 ## Tests
 

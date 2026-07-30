@@ -17,7 +17,7 @@ from interface.backend.generation import (
 from interface.backend.orchestration import orchestrate_request
 from interface.backend.schemas import ChunkSource, RagRequest, RagResponse
 from interface.backend.telemetry import current_trace_id, telemetry_status, trace_operation
-from interface.backend.utilities import get_openai_client
+from interface.backend.utilities import get_llm_client
 
 
 router = APIRouter()
@@ -88,7 +88,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                 },
             ) as generation_span:
                 answer = generate_final_answer(
-                    get_openai_client(),
+                    get_llm_client(),
                     retrieval.get("contextual_question", payload.question),
                     retrieval["answer_model"],
                     retrieval,

@@ -8,9 +8,6 @@ const TASKS = [
   ["video.detect_subtitles", "Détecter les sous-titres incrustés"],
   ["ocr.build_processed", "Construire l’OCR traité"],
   ["ocr.filter_overlays", "Filtrer les overlays OCR"],
-  ["ocr.extract_review_candidates", "Extraire les textes à vérifier"],
-  ["ocr.review_other_text", "Vérifier les autres textes"],
-  ["ocr.apply_review", "Appliquer la vérification OCR"],
   ["transcript.extract_ocr", "Construire le transcript OCR"],
   ["transcript.normalize_brand", "Normaliser Ionis-STM"],
   ["transcript.whisper", "Transcrire l’audio avec WhisperX"],
@@ -64,20 +61,6 @@ const commonPipelineFields = [
     help: "En Batch, tous les appels OpenAI de l’ingestion utilisent l’API Batch.",
   },
   {
-    id: "reviewScope",
-    label: "Portée de revue",
-    flag: "--review-scope",
-    type: "select",
-    value: "duo",
-    defaultValue: "duo",
-    options: [
-      ["none", "Désactivée — aucun appel OpenAI"],
-      ["duo", "Duo (défaut)"],
-      ["all", "Toutes les images"],
-    ],
-    help: "« Désactivée » ignore entièrement l’extraction, la revue et l’application des images OCR ambiguës.",
-  },
-  {
     id: "correctionMode",
     label: "Correction Whisper",
     flag: "--correction-mode",
@@ -88,7 +71,6 @@ const commonPipelineFields = [
   },
   { id: "frameInterval", label: "Intervalle des frames", flag: "--frame-interval", type: "number", value: "0.5", defaultValue: "0.5", min: "0.01", step: "0.1", suffix: "secondes" },
   { id: "detailsPerSection", label: "Détails par section", flag: "--details-per-section", type: "number", value: "6", defaultValue: "6", min: "1", step: "1", suffix: "chunks" },
-  { id: "imageReviewModel", label: "Modèle de revue d’image", flag: "--image-review-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
   { id: "speakerModel", label: "Modèle de validation speakers", flag: "--speaker-validation-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
   { id: "chunkModel", label: "Modèle de résumé des chunks", flag: "--chunk-summary-model", type: "text", placeholder: "Laisser vide = .env", advanced: true },
 ];
@@ -98,7 +80,7 @@ const runBatchField = {
   label: "Tout OpenAI en Batch",
   flag: "--batch",
   type: "boolean",
-  help: "OCR visuel, réconciliation, speakers et résumés. Chaque étape attend son résultat avant de poursuivre.",
+  help: "Réconciliation, speakers et résumés. Chaque étape attend son résultat avant de poursuivre.",
   full: true,
 };
 

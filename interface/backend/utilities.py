@@ -15,6 +15,10 @@ from interface.backend.config import (
     DEFAULT_GENERATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
+from interface.backend.llm_providers import (
+    RoutedLLMClient,
+    get_llm_client as build_routed_llm_client,
+)
 
 
 def get_openai_client() -> OpenAI | None:
@@ -22,6 +26,10 @@ def get_openai_client() -> OpenAI | None:
     if not api_key:
         return None
     return OpenAI(api_key=api_key)
+
+
+def get_llm_client() -> RoutedLLMClient | None:
+    return build_routed_llm_client()
 
 
 def get_cohere_client() -> Any | None:

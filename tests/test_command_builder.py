@@ -54,15 +54,5 @@ class CommandBuilderTests(unittest.TestCase):
             source,
         )
 
-    def test_ocr_review_scope_can_be_disabled(self) -> None:
-        source = APP_PATH.read_text(encoding="utf-8")
-
-        self.assertIn(
-            '["none", "Désactivée — aucun appel OpenAI"]',
-            source,
-        )
-        self.assertIn('flag: "--review-scope"', source)
-
-
 if __name__ == "__main__":
     unittest.main()

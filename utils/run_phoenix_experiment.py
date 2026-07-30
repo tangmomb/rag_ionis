@@ -28,6 +28,11 @@ from interface.backend.config import (
 )
 from interface.backend.database import ensure_chat_schema
 from interface.backend.generation import DEFAULT_ANSWER_PROMPT_TEMPLATE
+from interface.backend.llm_providers import (
+    LLM_MODEL_CATALOG,
+    LLMProviderError,
+    provider_for_model,
+)
 from interface.backend.planner import (
     build_planner_prompt,
     build_question_reformulation_prompt,
@@ -38,18 +43,28 @@ from interface.backend.utilities import normalize_model_name
 
 
 DEFAULT_PHOENIX_BASE_URL = "http://127.0.0.1:6006"
-LLM_MODEL_OPTIONS = (
-    ("1 - sol", RAG_LLM_MODEL_CHOICES[0]),
-    ("2 - terra", RAG_LLM_MODEL_CHOICES[1]),
-    ("3 - luna", RAG_LLM_MODEL_CHOICES[2]),
+LLM_MODEL_OPTIONS = tuple(
+    (
+        f"{provider_config['label']} - {model_label}",
+        model_id,
+    )
+    for provider_config in LLM_MODEL_CATALOG.values()
+    for model_label, model_id in provider_config["models"]
 )
 LLM_MODEL_IDS_BY_LABEL = dict(LLM_MODEL_OPTIONS)
 LLM_MODEL_LABELS_BY_ID = {
     model_id: label for label, model_id in LLM_MODEL_OPTIONS
 }
 LLM_MODEL_SHORT_NAMES = {
-    model_id: label.split(" - ", maxsplit=1)[1]
-    for label, model_id in LLM_MODEL_OPTIONS
+    RAG_LLM_MODEL_CHOICES[0]: "sol",
+    RAG_LLM_MODEL_CHOICES[1]: "terra",
+    RAG_LLM_MODEL_CHOICES[2]: "luna",
+    "mistral-medium-latest": "mistral-medium",
+    "mistral-small-latest": "mistral-small",
+    "mistral-large-latest": "mistral-large",
+    "gemini-3.1-flash-lite": "gemini-3-1-flash-lite",
+    "gemini-3.6-flash": "gemini-3-6-flash",
+    "gemini-3.5-flash-lite": "gemini-3-5-flash-lite",
 }
 DEFAULT_REFORMULATION_PROMPT = build_question_reformulation_prompt("", [])[0]
 DEFAULT_PLANNER_PROMPT = build_planner_prompt("")[0]
@@ -133,17 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reformulation-model",
         default=DEFAULT_REFORMULATION_MODEL,
-        help="Modele de reformulation : sol, terra, luna ou identifiant complet.",
+        help="Modele de reformulation OpenAI, Mistral ou Google.",
     )
     parser.add_argument(
         "--planner-model",
         default=DEFAULT_PLANNER_MODEL,
-        help="Modele du planner : sol, terra, luna ou identifiant complet.",
+        help="Modele du planner OpenAI, Mistral ou Google.",
     )
     parser.add_argument(
         "--answer-model",
         default=DEFAULT_GENERATION_MODEL,
-        help="Modele de reponse : sol, terra, luna ou identifiant complet.",
+        help="Modele de reponse OpenAI, Mistral ou Google.",
     )
     parser.add_argument(
         "--reformulation-prompt",
@@ -258,8 +273,17 @@ def compact_experiment_output(response: RagResponse) -> dict[str, Any]:
         "message_id": response.message_id,
         "diagnostics": {
             "reformulation_model": retrieval.get("reformulation_model"),
+            "reformulation_provider": model_provider_name(
+                retrieval.get("reformulation_model")
+            ),
             "planner_model": retrieval.get("planner_model"),
+            "planner_provider": model_provider_name(
+                retrieval.get("planner_model")
+            ),
             "answer_model": retrieval.get("answer_model"),
+            "answer_provider": model_provider_name(
+                retrieval.get("answer_model")
+            ),
             "route": execution_plan.get("route"),
             "sql_sub_intent": execution_plan.get("sql_sub_intent"),
             "retrieval_mode": retrieval.get("retrieval_mode"),
@@ -304,6 +328,15 @@ def model_short_name(model_id: str) -> str:
         return known_name
     normalized = re.sub(r"[^a-z0-9]+", "-", model_id.lower()).strip("-")
     return normalized or "modele"
+
+
+def model_provider_name(model_id: Any) -> str | None:
+    if not model_id:
+        return None
+    try:
+        return provider_for_model(str(model_id))
+    except LLMProviderError:
+        return "unknown"
 
 
 def experiment_name_with_models(
@@ -675,8 +708,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             experiment_metadata={
                 "application": "rag-ionis",
                 "reformulation_model": settings.reformulation_model,
+                "reformulation_provider": model_provider_name(
+                    settings.reformulation_model
+                ),
                 "planner_model": settings.planner_model,
+                "planner_provider": model_provider_name(
+                    settings.planner_model
+                ),
                 "answer_model": settings.answer_model,
+                "answer_provider": model_provider_name(
+                    settings.answer_model
+                ),
                 "prompts": {
                     "reformulation": settings.reformulation_prompt,
                     "planner": settings.planner_prompt,

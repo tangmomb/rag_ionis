@@ -16,9 +16,6 @@ Les définitions sont alignées sur les parseurs `argparse` présents dans
 `pytest`.
 
 Pour `pipeline run`, l’interrupteur « Tout OpenAI en Batch » génère le
-raccourci `--batch`. Il couvre la revue OCR, la réconciliation, la validation
+raccourci `--batch`. Il couvre la réconciliation, la validation
 des speakers et les résumés. Les embeddings se lancent séparément avec la tâche
 `embeddings.create`.
-
-La portée de revue OCR propose aussi « Désactivée », qui génère
-`--review-scope none` et supprime entièrement cette branche du plan.

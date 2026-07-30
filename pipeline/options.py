@@ -6,7 +6,6 @@ from typing import Any, Literal, Mapping
 
 
 OpenAIMode = Literal["normal", "batch"]
-ReviewScope = Literal["none", "duo", "all"]
 CorrectionMode = Literal["conservative", "balanced", "aggressive"]
 
 
@@ -14,13 +13,6 @@ CorrectionMode = Literal["conservative", "balanced", "aggressive"]
 class PipelineOptions:
     force: bool = False
     openai_mode: OpenAIMode = "normal"
-    review_scope: ReviewScope = "duo"
-    image_review_model: str = field(
-        default_factory=lambda: os.getenv(
-            "OCR_OTHERS_REVIEW_MODEL",
-            "gpt-5.6-luna",
-        )
-    )
     speaker_validation_model: str = field(
         default_factory=lambda: os.getenv(
             "CHUNK_SPEAKER_VALIDATION_MODEL",
@@ -40,10 +32,6 @@ class PipelineOptions:
     def __post_init__(self) -> None:
         if self.openai_mode not in {"normal", "batch"}:
             raise ValueError("openai_mode doit valoir 'normal' ou 'batch'.")
-        if self.review_scope not in {"none", "duo", "all"}:
-            raise ValueError(
-                "review_scope doit valoir 'none', 'duo' ou 'all'."
-            )
         if self.correction_mode not in {"conservative", "balanced", "aggressive"}:
             raise ValueError("correction_mode invalide.")
         if self.frame_interval_seconds <= 0:

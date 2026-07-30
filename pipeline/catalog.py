@@ -108,24 +108,6 @@ _TASK_SPECS = (
         step_handlers.filter_ocr_overlays,
     ),
     TaskSpec(
-        "ocr.extract_review_candidates",
-        "processing",
-        "Extraire les textes a verifier",
-        step_handlers.extract_review_candidates,
-    ),
-    TaskSpec(
-        "ocr.review_other_text",
-        "processing",
-        "Verifier les autres textes",
-        step_handlers.review_other_text,
-    ),
-    TaskSpec(
-        "ocr.apply_review",
-        "processing",
-        "Appliquer la verification OCR",
-        step_handlers.apply_ocr_review,
-    ),
-    TaskSpec(
         "transcript.extract_ocr",
         "processing",
         "Construire le transcript depuis les sous-titres OCR",

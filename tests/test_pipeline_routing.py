@@ -67,8 +67,6 @@ class PipelineRoutingTests(unittest.TestCase):
 
     def options(self) -> PipelineOptions:
         return PipelineOptions(
-            image_review_model="image-model",
-            review_scope="duo",
             speaker_validation_model="speaker-model",
             correction_mode="balanced",
         )
@@ -98,9 +96,6 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertIn("transcript.create_plain", task_ids)
         self.assertNotIn("ocr.build_processed", task_ids)
         self.assertNotIn("ocr.filter_overlays", task_ids)
-        self.assertNotIn("ocr.extract_review_candidates", task_ids)
-        self.assertNotIn("ocr.review_other_text", task_ids)
-        self.assertNotIn("ocr.apply_review", task_ids)
         self.assertNotIn("transcript.extract_ocr", task_ids)
         self.assertNotIn("transcript.create_plain_ocr", task_ids)
         self.assertNotIn("transcript.reconcile_ocr", task_ids)
@@ -132,26 +127,6 @@ class PipelineRoutingTests(unittest.TestCase):
         self.assertNotIn("video.detect_interview", task_ids)
         self.assertIn("video.infer_type", task_ids)
         self.assertNotIn("ocr.extract_raw", task_ids)
-
-    def test_review_scope_none_removes_the_complete_ocr_review_branch(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            video = self.make_video(
-                Path(temporary_directory),
-                has_subtitles=False,
-                video_type="interview",
-            )
-            context = self.context(video, 180)
-            context.options = PipelineOptions(review_scope="none")
-            task_ids = [task.id for task in processing_plan(context)]
-
-        self.assertIn("ocr.build_processed", task_ids)
-        self.assertIn("ocr.filter_overlays", task_ids)
-        self.assertNotIn("ocr.extract_review_candidates", task_ids)
-        self.assertNotIn("ocr.review_other_text", task_ids)
-        self.assertNotIn("ocr.apply_review", task_ids)
-        self.assertIn("transcript.whisper", task_ids)
-        self.assertNotIn("ocr.extract_boxes", task_ids)
-        self.assertNotIn("video.detect_subtitles", task_ids)
 
     def test_exactly_ten_minutes_selects_short_whisper_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

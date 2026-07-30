@@ -17,15 +17,7 @@ INSPECTION_TASKS = (
 COMMON_PROCESSING_TASKS = (
     "ocr.build_processed",
     "ocr.filter_overlays",
-    "ocr.extract_review_candidates",
-    "ocr.review_other_text",
-    "ocr.apply_review",
 )
-OCR_REVIEW_TASKS = {
-    "ocr.extract_review_candidates",
-    "ocr.review_other_text",
-    "ocr.apply_review",
-}
 
 CANONICAL_AFTER_CORRECTION_TASKS = (
     "speakers.propose",
@@ -71,10 +63,6 @@ def processing_plan(context: PipelineContext) -> list[PlannedTask]:
         else [
             PlannedTask(task_id, "all_videos")
             for task_id in COMMON_PROCESSING_TASKS
-            if (
-                context.options.review_scope != "none"
-                or task_id not in OCR_REVIEW_TASKS
-            )
         ]
     )
     tasks.append(

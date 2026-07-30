@@ -25,7 +25,7 @@ from interface.backend.planner import (
 from interface.backend.retrieval import lookup_video_document, retrieve_chunks, trace_formatted_sql
 from interface.backend.schemas import RagRequest
 from interface.backend.telemetry import trace_operation
-from interface.backend.utilities import get_openai_client, normalize_model_name
+from interface.backend.utilities import get_llm_client, normalize_model_name
 
 
 def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_name: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
@@ -57,7 +57,7 @@ def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_na
 
 
 def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-    client = get_openai_client()
+    client = get_llm_client()
     reformulation_model = normalize_model_name(
         payload.reformulationModel,
         DEFAULT_REFORMULATION_MODEL,

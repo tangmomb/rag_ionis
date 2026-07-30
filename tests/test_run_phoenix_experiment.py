@@ -95,6 +95,10 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         self.assertEqual(output["trace_id"], "abc123")
         self.assertEqual(output["sources"][0]["chunk_id"], 21)
         self.assertNotIn("text", output["sources"][0])
+        self.assertEqual(
+            output["diagnostics"]["reformulation_provider"],
+            None,
+        )
 
     def test_builtin_evaluators_capture_transport_quality_and_action(self) -> None:
         output = {"answer": "Reponse", "action": "clarify"}
@@ -146,15 +150,45 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         self.assertEqual(args.planner_model, "gpt-5.6-sol")
         self.assertEqual(args.answer_model, "gpt-5.6-sol")
 
-    def test_model_choices_match_requested_sol_terra_luna_order(self) -> None:
+    def test_model_choices_cover_all_supported_providers(self) -> None:
         self.assertEqual(
             run_phoenix_experiment.LLM_MODEL_OPTIONS,
             (
-                ("1 - sol", "gpt-5.6-sol"),
-                ("2 - terra", "gpt-5.6-terra"),
-                ("3 - luna", "gpt-5.6-luna"),
+                ("OpenAI - Sol", "gpt-5.6-sol"),
+                ("OpenAI - Terra", "gpt-5.6-terra"),
+                ("OpenAI - Luna", "gpt-5.6-luna"),
+                ("Mistral - Medium", "mistral-medium-latest"),
+                ("Mistral - Small", "mistral-small-latest"),
+                ("Mistral - Large", "mistral-large-latest"),
+                (
+                    "Google - Gemini 3.1 Flash-Lite",
+                    "gemini-3.1-flash-lite",
+                ),
+                ("Google - Gemini 3.6 Flash", "gemini-3.6-flash"),
+                (
+                    "Google - Gemini 3.5 Flash-Lite",
+                    "gemini-3.5-flash-lite",
+                ),
             ),
         )
+
+    def test_parser_accepts_models_from_other_providers(self) -> None:
+        args = run_phoenix_experiment.build_parser().parse_args(
+            [
+                "--dataset",
+                "questions-rag",
+                "--reformulation-model",
+                "mistral-small-latest",
+                "--planner-model",
+                "gemini-3.1-flash-lite",
+                "--answer-model",
+                "gemini-3.6-flash",
+            ]
+        )
+
+        self.assertEqual(args.reformulation_model, "mistral-small-latest")
+        self.assertEqual(args.planner_model, "gemini-3.1-flash-lite")
+        self.assertEqual(args.answer_model, "gemini-3.6-flash")
 
     def test_experiment_name_contains_models_in_pipeline_order(self) -> None:
         settings = run_phoenix_experiment.RagExperimentSettings(
@@ -179,6 +213,23 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
 
         self.assertEqual(name, "rag-v1_sol_sol_sol")
+
+    def test_experiment_name_distinguishes_external_providers(self) -> None:
+        settings = run_phoenix_experiment.RagExperimentSettings(
+            reformulation_model="mistral-medium-latest",
+            planner_model="gemini-3.1-flash-lite",
+            answer_model="gemini-3.6-flash",
+        )
+
+        name = run_phoenix_experiment.experiment_name_with_models(
+            "rag-multi",
+            settings,
+        )
+
+        self.assertEqual(
+            name,
+            "rag-multi_mistral-medium_gemini-3-1-flash-lite_gemini-3-6-flash",
+        )
 
 
 if __name__ == "__main__":

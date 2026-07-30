@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Comparer les réponses brutes des API OpenAI, Mistral et Google."
+    >
+    <title>LLM Tester — RAG IONIS</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Accueil LLM Tester">
+          <span class="brand-mark" aria-hidden="true">LLM</span>
+          <span>
+            <strong>Response tester</strong>
+            <small>OpenAI · Mistral · Google</small>
+          </span>
+        </a>
+        <div class="connection-state" id="connection-state">
+          <span class="pulse"></span>
+          Configuration en cours
+        </div>
+      </header>
+
+      <section class="intro">
+        <div>
+          <p class="eyebrow">UTILITAIRE LOCAL</p>
+          <h1>Un prompt.<br><em>Le payload complet.</em></h1>
+        </div>
+        <p class="intro-copy">
+          Envoie exactement le même type de requête à trois fournisseurs.
+          Lis le texte extrait et inspecte, à côté, le JSON réellement renvoyé.
+        </p>
+      </section>
+
+      <form id="request-form" class="composer">
+        <div class="provider-row" id="provider-row" aria-label="Fournisseur"></div>
+
+        <div class="settings-row">
+          <label class="field model-field">
+            <span>Modèle</span>
+            <select
+              id="model"
+              name="model"
+              required
+              aria-describedby="model-help"
+            ></select>
+            <input
+              id="custom-model"
+              class="custom-model"
+              type="text"
+              autocomplete="off"
+              placeholder="Identifiant du modèle"
+              aria-label="Identifiant personnalisé du modèle"
+              hidden
+            >
+            <small id="model-help">Choisis un modèle ou sélectionne « Autre modèle… ».</small>
+          </label>
+
+          <label class="field tokens-field">
+            <span>Sortie max.</span>
+            <div class="number-wrap">
+              <input
+                id="max-output-tokens"
+                name="maxOutputTokens"
+                type="number"
+                min="1"
+                max="32768"
+                step="1"
+                value="2048"
+                required
+              >
+              <small>tokens</small>
+            </div>
+          </label>
+        </div>
+
+        <label class="prompt-field">
+          <span>Message</span>
+          <textarea
+            id="message"
+            name="message"
+            rows="7"
+            maxlength="200000"
+            placeholder="Écris ton message ici…"
+            required
+          ></textarea>
+          <span class="prompt-meta">
+            <span id="character-count">0 caractère</span>
+            <span><kbd>Ctrl</kbd> + <kbd>Entrée</kbd> pour envoyer</span>
+          </span>
+        </label>
+
+        <div class="submit-row">
+          <p id="form-message" role="status" aria-live="polite"></p>
+          <button id="submit-button" type="submit">
+            <span>Envoyer la requête</span>
+            <span aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </form>
+
+      <section class="results" aria-label="Résultats">
+        <article class="result-card answer-card">
+          <header>
+            <div>
+              <p>RÉPONSE PURE</p>
+              <h2>Texte extrait</h2>
+            </div>
+            <button class="copy-button" data-copy-target="plain-response" type="button">
+              Copier
+            </button>
+          </header>
+          <div class="result-body">
+            <pre id="plain-response" class="plain-response empty">La réponse du modèle apparaîtra ici.</pre>
+          </div>
+        </article>
+
+        <article class="result-card json-card">
+          <header>
+            <div>
+              <p>RÉPONSE JSON</p>
+              <h2>Payload fournisseur</h2>
+            </div>
+            <button class="copy-button" data-copy-target="json-response" type="button">
+              Copier
+            </button>
+          </header>
+          <div class="result-body code-body">
+            <pre id="json-response" class="json-response empty">Le JSON complet apparaîtra ici.</pre>
+          </div>
+        </article>
+      </section>
+
+      <footer>
+        <span id="response-meta">Aucune requête envoyée</span>
+        <span>Les clés API restent côté serveur.</span>
+      </footer>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite">Copié</div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

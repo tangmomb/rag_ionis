@@ -15,7 +15,7 @@ import numpy as np
 from dotenv import load_dotenv
 
 try:
-    from tests.model_embedding.benchmark import (
+    from utils.model_embedding.benchmark import (
         DEFAULT_CACHE_DIR,
         DEFAULT_CASES_PATH,
         DEFAULT_CONFIGS_PATH,

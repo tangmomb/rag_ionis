@@ -221,7 +221,7 @@ class InterviewDetectionTests(unittest.TestCase):
         self.assertFalse(bridged[1]["is_similar"])
         self.assertNotIn("bridge_gap", bridged[1])
 
-    def test_dominant_cluster_accepts_seventy_percent(self):
+    def test_dominant_cluster_accepts_fifty_percent(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             frames = [
@@ -249,34 +249,40 @@ class InterviewDetectionTests(unittest.TestCase):
                 ),
             )
 
-        self.assertGreaterEqual(cluster["frame_ratio"], 0.70)
+        self.assertGreaterEqual(
+            cluster["frame_ratio"],
+            InterviewDetectionOptions().dominant_cluster_ratio_min,
+        )
 
-    def test_dominant_cluster_rejects_sixty_percent(self):
+    def test_dominant_cluster_rejects_forty_percent(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             frames = [
                 create_frame(root / f"interview_{index}.jpg")
-                for index in range(6)
+                for index in range(4)
             ]
             frames.extend(
                 create_frame(
                     root / f"graphic_{index}.jpg",
                     scene="graphic",
                 )
-                for index in range(4)
+                for index in range(6)
             )
 
             cluster = dominant_visual_cluster(
                 frames,
                 InterviewDetectionOptions(),
                 np.asarray(
-                    [[1.0, 0.0]] * 6
-                    + [[0.0, 1.0]] * 2
-                    + [[-1.0, 0.0]] * 2,
+                    [[1.0, 0.0]] * 4
+                    + [[0.0, 1.0]] * 3
+                    + [[-1.0, 0.0]] * 3,
                 ),
             )
 
-        self.assertLess(cluster["frame_ratio"], 0.70)
+        self.assertLess(
+            cluster["frame_ratio"],
+            InterviewDetectionOptions().dominant_cluster_ratio_min,
+        )
 
 
 if __name__ == "__main__":

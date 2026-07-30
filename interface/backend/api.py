@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException
 from interface.backend.database import (
     ConversationNotFoundError,
     connect_database,
-    sql_trace_for_storage,
     store_chat_message,
 )
 from interface.backend.generation import (
@@ -129,25 +128,6 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                 conversation_id=payload.conversationId,
                 user_message=payload.question,
                 answer_message=answer,
-                question_reformulation_prompt=retrieval.get("question_reformulation", {}).get("prompt"),
-                question_reformulation_response_raw=retrieval.get("question_reformulation", {}).get("response_raw"),
-                contextual_question=retrieval.get("contextual_question", payload.question),
-                planner_prompt=retrieval["planner_prompt"],
-                planner_response_raw=retrieval["planner_response_raw"],
-                person_resolution_trace=retrieval["person_resolution"],
-                pydantic_verification=retrieval["pydantic_verification"],
-                execution_plan_json=retrieval["execution_plan"],
-                sql_query=sql_trace_for_storage(retrieval),
-                prefilter_trace=retrieval["prefilter"],
-                bm25_trace=retrieval["bm25"],
-                vector_trace=retrieval["vector"],
-                rrf_trace=retrieval["rrf"],
-                rerank_trace=retrieval["rerank"],
-                source_evaluation_trace=retrieval["source_evaluation"],
-                multi_source_actions=retrieval.get("multi_source_actions", []),
-                cited_chunks=carousel_sources,
-                answer_prompt=answer_trace.get("prompt"),
-                answer_response_raw=answer_trace.get("response_raw"),
                 trace_id=trace_id,
             )
             storage_span.set_session_id(conversation_id)

@@ -30,7 +30,7 @@ class InterviewDetectionOptions:
     analysis_crop_bottom: float = 0.18
     analysis_blur_radius: float = 1.0
     cluster_similarity_min: float = 0.88
-    dominant_cluster_ratio_min: float = 0.70
+    dominant_cluster_ratio_min: float = 0.50
     min_run_frames: int = 6
     max_gap_pairs: int = 1
     max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES
@@ -531,7 +531,7 @@ def detect_video(
     analysis_crop_bottom: float = 0.18,
     analysis_blur_radius: float = 1.0,
     cluster_similarity_min: float = 0.88,
-    dominant_cluster_ratio_min: float = 0.70,
+    dominant_cluster_ratio_min: float = 0.50,
     min_run_frames: int = 6,
     max_gap_pairs: int = 1,
     max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES,

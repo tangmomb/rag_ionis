@@ -18,7 +18,7 @@ Ce dossier compare plusieurs modèles et dimensions sur les chunks réellement p
 Commencer par exporter le catalogue des chunks, sans appel OpenAI :
 
 ```powershell
-python tests/model_embedding/benchmark.py `
+python utils/model_embedding/benchmark.py `
   --catalog-only
 ```
 
@@ -27,7 +27,7 @@ Le fichier `reports/chunk_catalog.csv` contient les clés stables au format `vid
 Vérifier d'abord la sélection automatique sans appel OpenAI :
 
 ```powershell
-python tests/model_embedding/generate_cases.py `
+python utils/model_embedding/generate_cases.py `
   --video-dir downloads/youtube `
   --selection-only
 ```
@@ -35,7 +35,7 @@ python tests/model_embedding/generate_cases.py `
 Le fichier `reports/generation_selection.csv` répartit les chunks en round-robin entre les vidéos. Générer ensuite les questions :
 
 ```powershell
-python tests/model_embedding/generate_cases.py `
+python utils/model_embedding/generate_cases.py `
   --video-dir downloads/youtube
 ```
 
@@ -60,7 +60,7 @@ Relire chaque ligne et vérifier que :
 Après validation, copier le brouillon puis supprimer ou corriger les mauvaises lignes :
 
 ```powershell
-Copy-Item tests/model_embedding/cases.generated.jsonl tests/model_embedding/cases.jsonl
+Copy-Item utils/model_embedding/cases.generated.jsonl utils/model_embedding/cases.jsonl
 ```
 
 Le fichier `cases.generated.manifest.json` conserve le modèle utilisé, la graine, le nombre de vidéos, le hash des sources et les tokens d'entrée. Les fichiers générés sont ignorés par Git ; le fichier final `cases.jsonl` peut être versionné.
@@ -93,7 +93,7 @@ Les questions non répondables sont conservées dans le rapport détaillé, mais
 La variable `OPENAI_API_KEY` doit être présente dans l'environnement ou dans `.env` à la racine du projet.
 
 ```powershell
-python tests/model_embedding/benchmark.py
+python utils/model_embedding/benchmark.py
 ```
 
 Options utiles :
@@ -119,7 +119,7 @@ Une règle de choix raisonnable est de retenir la configuration la moins chère 
 ## 5. Exécuter les tests unitaires
 
 ```powershell
-python -m unittest tests.model_embedding.test_benchmark -v
+python -m unittest utils.model_embedding.test_benchmark -v
 ```
 
 Ces tests n'utilisent ni `OPENAI_API_KEY`, ni PostgreSQL.
@@ -129,7 +129,7 @@ Ces tests n'utilisent ni `OPENAI_API_KEY`, ni PostgreSQL.
 Après le benchmark vectoriel, comparer les finalistes avec la recherche réelle :
 
 ```powershell
-python tests/model_embedding/benchmark_rag.py
+python utils/model_embedding/benchmark_rag.py
 ```
 
 La configuration est définie dans `rag_configs.json`. Le test compare actuellement `small-1024`, `large-1024`, `large-2000` et `large-3072` avec :

@@ -95,27 +95,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     id BIGSERIAL PRIMARY KEY,
     conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
     user_message TEXT NOT NULL,
-    question_reformulation_prompt TEXT,
-    question_reformulation_response_raw TEXT,
-    contextual_question TEXT,
-    planner_prompt TEXT,
-    planner_response_raw TEXT,
-    speaker_resolution_trace JSONB,
-    pydantic_verification BOOLEAN NOT NULL DEFAULT FALSE,
-    execution_plan_json JSONB,
-    sql_query JSONB,
-    prefilter_trace JSONB,
-    bm25_trace JSONB,
-    vector_trace JSONB,
-    rrf_trace JSONB,
-    rerank_trace JSONB,
-    source_evaluation_trace JSONB,
-    multi_source_actions JSONB,
-    answer_prompt TEXT,
-    answer_response_raw TEXT,
     answer_message TEXT,
-    cited_chunks JSONB,
-    date TIMESTAMPTZ NOT NULL DEFAULT now(),
     trace_id TEXT
 );
 
@@ -134,5 +114,4 @@ CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_chat_messages_date ON chat.messages(date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id);

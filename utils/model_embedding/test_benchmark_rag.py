@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.model_embedding.benchmark import EvalCase
-from tests.model_embedding.benchmark_rag import (
+from utils.model_embedding.benchmark import EvalCase
+from utils.model_embedding.benchmark_rag import (
     RagSettings,
     reciprocal_rank_fusion,
     rerank_results,

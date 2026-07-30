@@ -14,16 +14,16 @@ if not exist "%API_PYTHON%" (
   exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$patterns = @('uvicorn interface.app:app','uvicorn utils.database_browser.app:app','http.server 8002','watchfiles'); Get-CimInstance Win32_Process | Where-Object { $process = $_; $process.Name -eq 'python.exe' -and ($patterns | Where-Object { $process.CommandLine -like ('*' + $_ + '*') }) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$patterns = @('uvicorn interface.app:app','uvicorn utils.app_database_browser.app:app','http.server 8002','watchfiles'); Get-CimInstance Win32_Process | Where-Object { $process = $_; $process.Name -eq 'python.exe' -and ($patterns | Where-Object { $process.CommandLine -like ('*' + $_ + '*') }) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 docker compose up -d postgres phoenix
 
 start "RAG IONIS API" cmd /k "%API_PYTHON% -m uvicorn interface.app:app --host 127.0.0.1 --port 8006 --reload --reload-dir interface"
 start "" "http://127.0.0.1:8006/"
 
-start "Database browser" cmd /k "%API_PYTHON% -m uvicorn utils.database_browser.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir utils/database_browser"
+start "Database browser" cmd /k "%API_PYTHON% -m uvicorn utils.app_database_browser.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir utils/app_database_browser"
 start "" "http://127.0.0.1:8001/videos"
-start "" "%~dp0utils\command_builder\index.html"
+start "" "%~dp0utils\app_command_builder\index.html"
 start "" "http://127.0.0.1:6006/"
 start "" "https://www.youtube.com/@IONIS-STM/videos"
 

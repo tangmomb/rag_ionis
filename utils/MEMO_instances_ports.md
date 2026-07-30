@@ -43,7 +43,7 @@ Cette commande cible uniquement l’API RAG, le database browser et le serveur S
 ```powershell
 $patterns = @(
   "uvicorn interface.app:app",
-  "uvicorn utils.database_browser.app:app",
+  "uvicorn utils.app_database_browser.app:app",
   "http.server 8002"
 )
 

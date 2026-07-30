@@ -14,14 +14,14 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 
 try:
-    from tests.model_embedding.benchmark import (
+    from utils.model_embedding.benchmark import (
         Chunk,
         content_hash,
         discover_chunks,
     )
 except ModuleNotFoundError:
     # Permet aussi l'execution directe avec
-    # `python tests/model_embedding/generate_cases.py`.
+    # `python utils/model_embedding/generate_cases.py`.
     from benchmark import Chunk, content_hash, discover_chunks
 
 if TYPE_CHECKING:

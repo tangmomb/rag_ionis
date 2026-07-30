@@ -8,8 +8,8 @@ from pipeline.catalog import TASKS
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-APP_PATH = ROOT_DIR / "utils" / "command_builder" / "app.js"
-INDEX_PATH = ROOT_DIR / "utils" / "command_builder" / "index.html"
+APP_PATH = ROOT_DIR / "utils" / "app_command_builder" / "app.js"
+INDEX_PATH = ROOT_DIR / "utils" / "app_command_builder" / "index.html"
 
 
 class CommandBuilderTests(unittest.TestCase):

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from utils.database_browser import app as browser
+from utils.app_database_browser import app as browser
 
 
 class VideoBrowserTests(unittest.TestCase):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tests.model_embedding.benchmark import (
+from utils.model_embedding.benchmark import (
     Chunk,
     EmbeddingConfig,
     EvalCase,
@@ -16,7 +16,7 @@ from tests.model_embedding.benchmark import (
     load_cases,
     write_reports,
 )
-from tests.model_embedding.generate_cases import (
+from utils.model_embedding.generate_cases import (
     CONTENU_COURANT,
     PRENOM_COURT,
     build_cases,

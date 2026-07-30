@@ -311,7 +311,7 @@ const actions = [
     icon: "▦",
     accent: "#f0e6d7",
     module: "uvicorn",
-    moduleTarget: "utils.database_browser.app:app",
+    moduleTarget: "utils.app_database_browser.app:app",
     sections: [
       {
         title: "Serveur",
@@ -319,7 +319,7 @@ const actions = [
           { id: "host", label: "Hôte", flag: "--host", type: "text", value: "127.0.0.1", required: true },
           { id: "port", label: "Port", flag: "--port", type: "number", value: "8001", required: true, min: "1", max: "65535" },
           { id: "reload", label: "Rechargement automatique", flag: "--reload", type: "boolean", checked: true },
-          { id: "reloadDir", label: "Dossier surveillé", flag: "--reload-dir", type: "text", value: "utils/database_browser" },
+          { id: "reloadDir", label: "Dossier surveillé", flag: "--reload-dir", type: "text", value: "utils/app_database_browser" },
         ],
       },
     ],

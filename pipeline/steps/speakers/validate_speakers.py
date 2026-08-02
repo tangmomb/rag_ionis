@@ -33,8 +33,9 @@ SYSTEM_PROMPT = (
     "Tu verifies une liste de speakers detectes automatiquement dans une video. "
     "Garde uniquement les noms qui designent vraiment des personnes physiques. "
     "Rejete les entreprises, ecoles, services, metiers, titres, lieux, slogans, URLs, "
-    "mots OCR parasites et noms incomplets. Tu disposes eventuellement d'un extrait "
-    "du debut du transcript, de textes detectes par OCR et de candidats existants. "
+    "mots OCR parasites et noms incomplets. Tu disposes du titre de la video et "
+    "eventuellement d'un extrait du debut du transcript, de textes detectes par OCR "
+    "et de candidats existants. "
     "Recherche les noms des personnes dans toutes ces sources, meme lorsqu'aucun "
     "candidat n'a encore ete propose. "
     "Pour chaque personne, retourne aussi son title, c'est-a-dire son poste, sa "
@@ -331,19 +332,21 @@ def build_response_request(
         candidate_details = [{"name": name} for name in speakers]
     user_prompt = (
         "Identifie les speakers qui sont vraiment des personnes physiques. "
-        "Voici un extrait du debut du transcript, les textes detectes via OCR dans "
-        "la video, puis les speakers deja soupconnes. Recherche aussi les noms dans "
-        "le transcript et ajoute-les meme s'ils ne figurent pas encore parmi les "
-        "candidats. Place uniquement les personnes physiques dans la reponse. "
+        "Voici le titre de la video, un extrait du debut du transcript, les textes "
+        "detectes via OCR dans la video, puis les speakers deja soupconnes. Recherche "
+        "aussi les noms dans le titre et le transcript, et ajoute-les meme s'ils ne "
+        "figurent pas encore parmi les candidats. Place uniquement les personnes "
+        "physiques dans la reponse. "
         "Pour chaque personne, retourne speaker avec son nom et title avec son poste, "
         "sa fonction ou son role. Recherche et extrais explicitement le nom de "
-        "l'entreprise ou de l'organisation dans le transcript ou les textes OCR, puis "
+        "l'entreprise ou de l'organisation dans le titre, le transcript ou les textes OCR, puis "
         "inclus-le dans title, par exemple 'CTO - Mappy.com'. N'omets pas l'entreprise "
         "lorsqu'elle est identifiable. Si tu ne peux pas confirmer le title, utilise "
         "une chaine vide. Reponds sans commentaire. "
         + "\n\n"
         + json.dumps(
             {
+                "video_title": str(video_title).strip(),
                 "transcript_excerpt": transcript_excerpt,
                 "ocr_detected_texts": raw_ocr_texts or [],
                 "candidates": candidate_details,

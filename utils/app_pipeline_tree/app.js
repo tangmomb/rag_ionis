@@ -67,10 +67,11 @@ function box(title, options = {}) {
     ? `<span class="llm-badge" title="Appel à un LLM">✦ LLM</span>`
     : "";
 
-  const tooltipId = options.tooltip
+  const tooltipContent = options.tooltip || options.technical;
+  const tooltipId = tooltipContent
     ? options.tooltipId || `node-info-tooltip-${++tooltipCounter}`
     : "";
-  const infoTooltip = options.tooltip
+  const infoTooltip = tooltipContent
     ? `
       <span class="info-tooltip">
         <button
@@ -80,7 +81,7 @@ function box(title, options = {}) {
           aria-describedby="${tooltipId}"
         >?</button>
         <span id="${tooltipId}" class="info-tooltip-content" role="tooltip">
-          ${options.tooltip}
+          ${tooltipContent}
         </span>
       </span>
     `
@@ -221,8 +222,9 @@ function shortChunkPipeline() {
         inputs: [
           artifact("outputs/transcripts_whisper/transcript_plain.txt"),
         ],
-        action:
-          "Découpage par phrases, autour de 1 000 caractères. Aucun résumé sur la route courte.",
+        action: "Crée les chunks de niveau detail.",
+        technical:
+          "Découpe le transcript par phrases en passages d’environ 1 000 caractères. La route courte ne crée aucun résumé de niveau section ou global.",
         outputs: [
           artifact("outputs/chunks/transcript_chunks.json", "niveau detail"),
         ],
@@ -233,18 +235,19 @@ function shortChunkPipeline() {
 
 function shortSpeakerPipeline() {
   return oneChild(
-    box("Proposer les speakers", {
+    box("Extraire les candidats speakers", {
       task: "speakers.propose",
       phase: "structure",
       phaseLabel: "Speakers",
-      summary: "Prépare les noms candidats sans appeler de LLM.",
+      summary: "Repère localement les noms possibles, sans appeler de LLM.",
       inputs: [
         artifact("outputs/transcripts_whisper/transcript_2_corrected.txt"),
         artifact("outputs/ocr/01_processed_ocr_items.json"),
         artifact("outputs/ocr/02_filtered_ocr_overlays.json"),
       ],
-      action:
-        "Repère les noms dans les cartouches bas d’écran et les auto-présentations (« je m’appelle », « je suis », « moi c’est »).",
+      action: "Extrait les candidats depuis le transcript et l’OCR.",
+      technical:
+        "Analyse tout <code>transcript_2_corrected.txt</code> pour extraire les noms qui suivent « je m’appelle », « je suis » ou « moi c’est », puis ajoute les noms trouvés dans les cartouches OCR bas d’écran. Cette étape écrit les candidats dans <code>speaker_candidates.json</code> sans rien envoyer au LLM. Le titre, le transcript complet et les textes OCR y sont seulement stockés pour l’étape de validation suivante.",
       outputs: [artifact("outputs/speakers/speaker_candidates.json")],
     }),
     oneChild(
@@ -255,13 +258,12 @@ function shortSpeakerPipeline() {
         llm: true,
         summary: "Garde les personnes physiques et cherche leur fonction.",
         inputs: [artifact("outputs/speakers/speaker_candidates.json")],
-        action:
-          "Le LLM vérifie les candidats et retourne des couples nom / fonction en JSON.",
+        action: "Envoie le contexte au LLM et valide les speakers.",
         llmCall:
-          "Textes OCR hors sous-titres et noms candidats. Sur cette route courte, l’extrait de transcript envoyé est vide.",
-        tooltipLabel: "Voir un exemple du prompt de validation des speakers",
+          "Titre de la vidéo, transcript WhisperX corrigé complet, textes OCR hors sous-titres et candidats extraits des auto-présentations ou des cartouches OCR.",
+        tooltipLabel: "Voir le prompt de validation des speakers",
         tooltip:
-          "Le prompt demande de ne conserver que les personnes physiques et de retourner leur poste avec leur entreprise lorsque celle-ci est identifiable. <span class=\"info-tooltip-example\"><strong>Exemple simplifié du prompt</strong><code><b>SYSTEM</b> — Vérifie les speakers détectés. Rejette entreprises, écoles, métiers, lieux, slogans et OCR parasites. Retourne uniquement un JSON <b>{speakers: [{speaker, title}]}</b>.<br><br><b>USER</b> — Identifie les personnes physiques et leur fonction.<br>{<br>&nbsp;&nbsp;&quot;transcript_excerpt&quot;: &quot;&quot;,<br>&nbsp;&nbsp;&quot;ocr_detected_texts&quot;: [&quot;Sophie Martin — Directrice IA, Ionis-STM&quot;],<br>&nbsp;&nbsp;&quot;candidates&quot;: [{&quot;name&quot;: &quot;Sophie Martin&quot;}]<br>}</code></span>",
+          "<span class=\"info-tooltip-example prompt-only\"><strong>Exemple simplifié du prompt</strong><code><b>SYSTEM</b> — Vérifie les speakers détectés à partir du titre, du transcript, de l’OCR et des candidats. Retourne uniquement un JSON <b>{speakers: [{speaker, title}]}</b>.<br><br><b>USER</b> — Identifie les personnes physiques et leur fonction.<br>{<br>&nbsp;&nbsp;&quot;video_title&quot;: &quot;Sophie Martin présente son métier&quot;,<br>&nbsp;&nbsp;&quot;transcript_excerpt&quot;: &quot;[00:02-00:06] SPEAKER_00: Bonjour, je suis Sophie Martin, directrice IA…&quot;,<br>&nbsp;&nbsp;&quot;ocr_detected_texts&quot;: [&quot;Sophie Martin — Directrice IA, Ionis-STM&quot;],<br>&nbsp;&nbsp;&quot;candidates&quot;: [{&quot;name&quot;: &quot;Sophie Martin&quot;}]<br>}</code></span>",
         outputs: [artifact("outputs/speakers/speakers_validated.json")],
       }),
       oneChild(
@@ -277,8 +279,9 @@ function shortSpeakerPipeline() {
             artifact("outputs/speakers/speakers_validated.json"),
             artifact("outputs/ocr/02_filtered_ocr_overlays.json"),
           ],
-          action:
-            "Associe les voix aux personnes et ajoute uniquement les textes OCR de type graphic comme INTERCALAIRE.",
+          action: "Associe les noms aux voix et ajoute les intercalaires.",
+          technical:
+            "Pour chaque nom validé retrouvé dans un OCR de type <code>name</code>, <code>lower_third</code> ou <code>others</code>, Python utilise le timecode de son apparition à l’écran et l’associe au segment <code>SPEAKER_XX</code> qui parle à cet instant. Si aucun segment ne contient exactement ce timecode, le segment le plus proche est accepté jusqu’à 2 secondes. Les correspondances nom–label sont cumulées, classées par score et rendues uniques avant de remplacer les labels <code>SPEAKER_XX</code> dans le transcript. Les auto-présentations comme « je m’appelle » complètent ces indices. Enfin, seuls les textes OCR de type <code>graphic</code> sont ajoutés sous forme d’<code>INTERCALAIRE</code> à leur propre timecode.",
           outputs: [
             artifact(
               "outputs/transcripts_whisper/transcript_3_enriched.txt",
@@ -296,8 +299,9 @@ function shortSpeakerPipeline() {
                 "outputs/transcripts_whisper/transcript_3_enriched.txt",
               ),
             ],
-            action:
-              "Retire timecodes, speakers et intercalaires. Si aucune parole ne reste, utilise graphic + others comme repli visuel.",
+            action: "Produit le transcript plain utilisé par le RAG.",
+            technical:
+              "Retire les timecodes, les noms de speakers et les intercalaires. Si aucune parole ne reste, construit un repli visuel depuis les catégories OCR <code>graphic</code> et <code>others</code>.",
             outputs: [
               artifact(
                 "outputs/transcripts_whisper/transcript_plain.txt",
@@ -319,7 +323,9 @@ function reconcileWithOcrPipeline() {
       phaseLabel: "Transcript OCR",
       summary: "Corrige les variantes connues de la marque, sans LLM.",
       inputs: [artifact("outputs/ocr/ocr_subtitles_timecoded.txt")],
-      action: "Applique des remplacements déterministes dans le fichier OCR.",
+      action: "Normalise les variantes de la marque.",
+      technical:
+        "Applique dans <code>ocr_subtitles_timecoded.txt</code> des expressions régulières déterministes qui remplacent notamment « ionis stm », « onis-stm » ou « l’onis stm » par <code>Ionis-STM</code>, puis réécrit le même fichier.",
       outputs: [artifact("outputs/ocr/ocr_subtitles_timecoded.txt")],
     }),
     oneChild(
@@ -327,9 +333,11 @@ function reconcileWithOcrPipeline() {
         task: "transcript.create_plain_ocr",
         phase: "transcript",
         phaseLabel: "Transcript OCR",
-        summary: "Prépare la référence OCR envoyée au LLM.",
-        inputs: [artifact("outputs/ocr/ocr_subtitles_timecoded.txt")],
-        action: "Retire les timecodes et concatène les sous-titres.",
+      summary: "Prépare la référence OCR envoyée au LLM.",
+      inputs: [artifact("outputs/ocr/ocr_subtitles_timecoded.txt")],
+      action: "Produit le transcript OCR sans timecodes.",
+      technical:
+        "Retire les timecodes de <code>ocr_subtitles_timecoded.txt</code>, concatène les sous-titres et écrit le résultat dans <code>outputs/transcripts_ocr/plain_transcript.txt</code>.",
         outputs: [
           artifact("outputs/transcripts_ocr/plain_transcript.txt"),
         ],
@@ -352,14 +360,13 @@ function reconcileWithOcrPipeline() {
               "transcript OCR complet",
             ),
           ],
-          action:
-            "Python lit <code>outputs/transcripts_whisper/transcript_1_brut.txt</code>, en extrait chaque corps de segment sous la forme {index, text} et retire donc les timecodes et labels SPEAKER_XX de la requête. Il lit aussi intégralement <code>outputs/transcripts_ocr/plain_transcript.txt</code>. Ces deux contenus sont réunis dans une seule requête au LLM. Python réattache ensuite à chaque texte corrigé les timecodes et speakers d’origine.",
+          action: "Corrige WhisperX à partir du transcript OCR.",
           llmCall:
             "Envoi conjoint des segments extraits de <code>transcript_1_brut.txt</code> et du contenu complet de <code>plain_transcript.txt</code>. Le LLM renvoie uniquement {index, text} pour chaque segment WhisperX.",
           tooltipId: "reconcile-segment-reassembly",
           tooltipLabel: "Comment Python réattache les timecodes et speakers",
           tooltip:
-            "Python mémorise, pour chaque index envoyé, la ligne d’origine, son préfixe de timecode et son éventuel label <code>SPEAKER_XX</code>. Après avoir vérifié que chaque index revient exactement une fois, il remplace uniquement le corps du segment : <code>préfixe original + speaker original + texte corrigé</code>. Les lignes non reconnues comme segments WhisperX restent inchangées. <span class=\"info-tooltip-example\"><strong>Exemple simplifié du prompt</strong><code><b>SYSTEM</b> — Corrige la transcription WhisperX à partir des sous-titres OCR. Conserve tous les segments, leurs index et leur ordre.<br><br><b>USER</b> — SEGMENTS WHISPERX : [{&quot;index&quot;: 0, &quot;text&quot;: &quot;Bienvenue à Ionis STM.&quot;}]<br>TRANSCRIPT OCR : Bienvenue à Ionis-STM.</code></span>",
+            "Python lit <code>transcript_1_brut.txt</code>, en extrait les corps de segments sous la forme {index, text} sans envoyer les timecodes ni les labels <code>SPEAKER_XX</code>, puis ajoute le contenu complet de <code>plain_transcript.txt</code> OCR à la même requête. Pour chaque index, il mémorise la ligne d’origine, son préfixe de timecode et son éventuel speaker. Après validation de tous les index retournés, il reconstruit chaque ligne avec <code>préfixe original + speaker original + texte corrigé</code>. Les lignes non reconnues comme segments WhisperX restent inchangées. <span class=\"info-tooltip-example\"><strong>Exemple simplifié du prompt</strong><code><b>SYSTEM</b> — Corrige la transcription WhisperX à partir des sous-titres OCR. Conserve tous les segments, leurs index et leur ordre.<br><br><b>USER</b> — SEGMENTS WHISPERX : [{&quot;index&quot;: 0, &quot;text&quot;: &quot;Bienvenue à Ionis STM.&quot;}]<br>TRANSCRIPT OCR : Bienvenue à Ionis-STM.</code></span>",
           outputs: [
             artifact(
               "outputs/transcripts_whisper/transcript_2_corrected.txt",
@@ -383,8 +390,9 @@ function ocrTranscriptPipeline() {
       phaseLabel: "Transcript OCR",
       summary: "Construit la référence depuis les sous-titres détectés.",
       inputs: [artifact("outputs/ocr/01_processed_ocr_items.json")],
-      action:
-        "Garde les éléments kind=subtitle, les trie et retire les doublons.",
+      action: "Produit le transcript OCR timecodé.",
+      technical:
+        "Sélectionne les éléments <code>kind=subtitle</code> de l’OCR traité, les trie chronologiquement et retire les doublons avant d’écrire <code>ocr_subtitles_timecoded.txt</code>.",
       outputs: [
         artifact("outputs/ocr/ocr_subtitles_timecoded.txt"),
       ],
@@ -404,8 +412,9 @@ function noSubtitleCorrectionPipeline() {
         artifact("outputs/transcripts_whisper/transcript_1_brut.txt"),
         artifact("outputs/ocr/01_processed_ocr_items.json"),
       ],
-      action:
-        "Construit un lexique avec les textes visuels et applique les correspondances fiables.",
+      action: "Corrige WhisperX avec le lexique visuel.",
+      technical:
+        "Construit un lexique déterministe depuis les textes OCR visuels, recherche les correspondances fiables dans <code>transcript_1_brut.txt</code> et écrit le transcript corrigé avec son rapport TSV.",
       outputs: [
         artifact(
           "outputs/transcripts_whisper/transcript_2_corrected.txt",
@@ -422,7 +431,7 @@ function noSubtitleCorrectionPipeline() {
 function commonShortProcessing(nextStep, hasSubtitles) {
   const subtitleClassification = hasSubtitles
     ? "La détection précédente a validé une zone stable : les OCR proches de cette ancre sont classés subtitle."
-    : "La détection précédente n’a validé aucune zone stable : les détections initialement susceptibles d’être des sous-titres sont reclassées others et aucun transcript OCR de sous-titres n’est construit sur cette route.";
+    : "La détection précédente n’a validé aucune zone stable : aucune catégorie subtitle n’est retenue pour cette route ; les textes sont classés graphic ou others et aucun transcript OCR de sous-titres n’est construit.";
 
   return oneChild(
     box("Construire l’OCR traité", {
@@ -437,7 +446,8 @@ function commonShortProcessing(nextStep, hasSubtitles) {
         artifact("outputs/ocr/raw/raw_ocr_graphic_frames.json"),
         artifact("outputs/ocr/raw/raw_ocr_mixture_frames.json"),
       ],
-      action:
+      action: "Classe, nettoie et déduplique les textes OCR.",
+      technical:
         `Garde les scores ≥ 0,90. ${subtitleClassification} Les OCR issus du dossier images/graphic sont classés graphic ; les autres sont classés others. <strong>Décors statiques :</strong> hors subtitles et graphics, les textes identiques ou proches sont regroupés lorsque le centre de leur box reste à ± 4,5 % sur les axes x et y. Un groupe présent sur plus de 20 images distinctes est considéré comme un décor et supprimé. Deux textes sont proches s’ils sont identiques ou, à partir de 8 caractères, si l’un contient au moins 65 % de l’autre ou si leur similarité atteint 0,82. Les libellés décoratifs connus comme ionis, stm, x ou in sont aussi retirés. <strong>Doublons :</strong> après normalisation de la casse, des espaces et de la ponctuation extérieure, deux items ayant le même texte à la même seconde sont fusionnés ; seul le premier dans l’ordre des frames et des boxes est conservé.`,
       outputs: [
         artifact("outputs/ocr/01_processed_ocr_items.json"),
@@ -450,8 +460,9 @@ function commonShortProcessing(nextStep, hasSubtitles) {
         phaseLabel: "OCR",
         summary: "Regroupe les textes visuels utiles.",
         inputs: [artifact("outputs/ocr/01_processed_ocr_items.json")],
-        action:
-          "Fusionne les fragments proches et organise les textes par catégorie et timecode.",
+        action: "Regroupe les overlays OCR utiles.",
+        technical:
+          "<strong>Fragments d’un même timecode :</strong> les textes appartenant à la même famille d’overlay sont concaténés dans leur ordre OCR. Les fragments d’un visuel <code>graphic</code> sont séparés par un espace ; ceux des catégories <code>name</code>, <code>lower_third</code> et <code>title</code> sont séparés par <code> / </code>. <strong>Lectures successives :</strong> pour un overlay sur footage vu sur des frames espacées d’au plus 1 seconde, si un texte répète ou prolonge l’autre, seule la lecture la plus complète est conservée. Un fragment court est également supprimé lorsqu’il est inclus dans une version plus longue détectée dans les 4 secondes suivantes. Pour les graphics séparés de moins de 5 secondes, les lectures identiques ou incluses sont regroupées ; à partir de 6 caractères, le regroupement accepte aussi jusqu’à 2 caractères différents ou une similarité d’au moins 0,62. La version la plus complète d’un groupe observé sur au moins 2 images est gardée. Enfin, les doublons exacts normalisés sont retirés. Le résultat est organisé par catégorie et par timecode dans <code>02_filtered_ocr_overlays.json</code>.",
         outputs: [
           artifact("outputs/ocr/02_filtered_ocr_overlays.json"),
         ],
@@ -463,8 +474,9 @@ function commonShortProcessing(nextStep, hasSubtitles) {
           phaseLabel: "Audio",
           summary: "Crée le transcript brut de référence.",
           inputs: [artifact("VIDEO_ID.mp4")],
-          action:
-            "Extrait l’audio et le transcrit avec WhisperX. Chaque mot est synchronisé avec son timecode. Pour les vidéos de 600 secondes ou moins, Pyannote attribue aussi un speaker aux paroles.",
+          action: "Produit le transcript WhisperX brut diarizé.",
+          technical:
+            "Extrait l’audio en MP3, transcrit et aligne chaque mot avec WhisperX, puis utilise Pyannote sur les vidéos de 600 secondes ou moins pour attribuer un label <code>SPEAKER_XX</code> aux paroles.",
           outputs: [
             artifact("outputs/transcripts_whisper/audio/VIDEO_ID.mp3"),
             artifact(
@@ -492,8 +504,9 @@ function subtitleDecision() {
       phaseLabel: "Décision",
       summary: "Recherche une zone de sous-titres stable.",
       inputs: [artifact("outputs/ocr/ocr_box_locations.json")],
-      action:
-        "Zone stable pendant au moins 10 s en continu, avec au moins 3 textes différents.",
+      action: "Décide si une zone de sous-titres est stable.",
+      technical:
+        "Valide la présence de sous-titres lorsqu’une même zone reste stable pendant au moins 10 secondes continues et contient au moins 3 variantes de texte.",
     },
   );
 }
@@ -528,8 +541,9 @@ function typeResult(type) {
           artifact("outputs/images/graphic/*.jpg"),
           artifact("outputs/images/mixture/*.jpg"),
         ],
-        action:
-          "PaddleOCR extrait texte, position et score. Sous Windows, il tourne dans un processus isolé.",
+        action: "Extrait le texte de chaque frame.",
+        technical:
+          "PaddleOCR extrait pour chaque détection le texte, la position et le score de confiance dans les trois familles de frames. Sous Windows, l’inférence s’exécute dans un processus isolé.",
         outputs: [
           artifact("outputs/ocr/raw/raw_ocr_footage_frames.json"),
           artifact("outputs/ocr/raw/raw_ocr_graphic_frames.json"),
@@ -543,7 +557,9 @@ function typeResult(type) {
           phaseLabel: "OCR",
           summary: "Associe chaque texte à une position et un timecode.",
           inputs: [artifact("outputs/ocr/raw/raw_ocr_*_frames.json")],
-          action: "Normalise les boxes OCR et récupère la seconde de la frame.",
+          action: "Associe chaque OCR à sa position et son timecode.",
+          technical:
+            "Normalise les coordonnées des boxes OCR et déduit la seconde correspondante depuis le nom timecodé de chaque frame.",
           outputs: [artifact("outputs/ocr/ocr_box_locations.json")],
         }),
         subtitleDecision(),
@@ -568,8 +584,9 @@ function motionDesignDecision() {
         artifact("metadata/youtube_video_metadata.json"),
         artifact("outputs/images/frame_classification_manifest.json"),
       ],
-      action:
-        "Les deux seuils sont stricts. Sans frame footage, la règle motion design est satisfaite.",
+      action: "Choisit motion_design ou video_recording.",
+      technical:
+        "Classe en <code>motion_design</code> si la durée est strictement inférieure à 180 secondes et si la part de frames <code>footage</code> est strictement inférieure à 15 %. Sans frame footage, cette seconde condition est satisfaite.",
     },
   );
 }
@@ -591,7 +608,8 @@ function interviewDecision() {
         artifact("outputs/images/footage/*.jpg"),
         artifact("outputs/images/frame_classification_features.json"),
       ],
-      action:
+      action: "Détecte un plan filmé dominant.",
+      technical:
         "Les embeddings DINO des frames footage sont normalisés en L2. Le produit scalaire calcule ensuite la similarité cosinus entre chaque paire. Pour chaque frame, on compte les voisines à ≥ 0,88 : celle qui en possède le plus devient le centre du cluster dominant. En cas d’égalité, la meilleure similarité moyenne l’emporte. Interview si ce cluster couvre au moins 50 % des frames footage.",
       outputs: [
         artifact(
@@ -610,7 +628,9 @@ function shortPipeline() {
       phaseLabel: "Images",
       summary: "Échantillonne la vidéo toutes les 0,5 seconde.",
       inputs: [artifact("VIDEO_ID.mp4")],
-      action: "FFmpeg crée des JPEG nommés avec leur timecode.",
+      action: "Extrait des frames JPEG timecodées.",
+      technical:
+        "FFmpeg échantillonne la vidéo toutes les 0,5 seconde et nomme chaque JPEG avec le timecode correspondant.",
       outputs: [artifact("outputs/images/*.jpg")],
     }),
     oneChild(
@@ -620,8 +640,9 @@ function shortPipeline() {
         phaseLabel: "Images",
         summary: "Classe footage, graphic ou mixture.",
         inputs: [artifact("outputs/images/*.jpg")],
-        action:
-          "DINOv2 et CLIP produisent chacun un vecteur global par frame : 768 dimensions pour DINOv2 et 512 pour CLIP. Après normalisation L2, les deux vecteurs sont concaténés en un vecteur de 1 280 dimensions. Le modèle local chargé depuis le fichier Joblib attend exactement ces 1 280 features pour classer l’image en footage, graphic ou mixture.",
+        action: "Classe chaque frame par famille visuelle.",
+        technical:
+          "DINOv2 et CLIP produisent chacun un vecteur global par frame : 768 dimensions pour DINOv2 et 512 pour CLIP. Chaque vecteur est normalisé séparément en L2, puis les deux sont concaténés en un vecteur de 1 280 dimensions sans nouvelle normalisation L2 ; sa norme vaut donc environ √2. Le <code>StandardScaler</code> du pipeline Joblib standardise ensuite chaque feature avec les statistiques d’entraînement avant la régression logistique. Le modèle attend exactement ces 1 280 features pour classer l’image en footage, graphic ou mixture.",
         outputs: [
           artifact(
             "outputs/images/frame_classification_manifest.json",
@@ -646,7 +667,9 @@ function longPipeline() {
       kind: "result",
       summary: "Ignore toute l’inspection visuelle et l’OCR.",
       inputs: [artifact("metadata/youtube_video_metadata.json")],
-      action: "Enregistre directement le type long_video.",
+      action: "Enregistre la route long_video.",
+      technical:
+        "Enregistre directement <code>long_video</code> dans le manifeste et ignore les étapes d’inspection visuelle, de classification des frames et d’OCR.",
     }),
     oneChild(
       box("Transcrire avec WhisperX", {
@@ -655,7 +678,9 @@ function longPipeline() {
         phaseLabel: "Audio",
         summary: "Transcrit et aligne l’audio sans diarisation.",
         inputs: [artifact("VIDEO_ID.mp4")],
-        action: "Extrait le MP3 puis produit le transcript brut timecodé.",
+        action: "Produit le transcript WhisperX brut timecodé.",
+        technical:
+          "Extrait l’audio en MP3, transcrit et aligne les paroles avec WhisperX, sans exécuter la diarisation Pyannote sur la route longue.",
         outputs: [
           artifact("outputs/transcripts_whisper/audio/VIDEO_ID.mp3"),
           artifact(
@@ -664,17 +689,20 @@ function longPipeline() {
         ],
       }),
       oneChild(
-        box("Créer le transcript plain", {
+        box("Créer le transcript plain depuis le brut", {
           task: "transcript.create_plain",
           phase: "transcript",
           phaseLabel: "Transcript",
-          summary: "Retire les timecodes du WhisperX brut.",
+          summary:
+            "Produit le transcript plain directement depuis le transcript WhisperX brut.",
           inputs: [
             artifact(
               "outputs/transcripts_whisper/transcript_1_brut.txt",
             ),
           ],
-          action: "Utilise toujours le brut sur la route longue.",
+          action: "Produit transcript_plain.txt depuis le brut.",
+          technical:
+            "Lit <code>transcript_1_brut.txt</code>, retire les timecodes et les éventuels labels <code>SPEAKER_XX</code>, puis concatène le texte restant dans <code>transcript_plain.txt</code>. Aucun transcript corrigé ou enrichi n’intervient sur la route longue.",
           outputs: [
             artifact(
               "outputs/transcripts_whisper/transcript_plain.txt",
@@ -682,17 +710,19 @@ function longPipeline() {
           ],
         }),
         oneChild(
-          box("Préparer les speakers", {
+          box("Extraire les candidats speakers", {
             task: "speakers.propose",
             phase: "structure",
             phaseLabel: "Speakers",
-            summary: "Prépare un contexte léger, sans LLM.",
+            summary: "Repère localement les noms dans les auto-présentations.",
             inputs: [
               artifact(
                 "outputs/transcripts_whisper/transcript_plain.txt",
               ),
             ],
-            action: "Conserve le titre et les 1 000 premiers caractères.",
+            action: "Extrait les candidats depuis le transcript plain.",
+            technical:
+              "Analyse tout <code>transcript_plain.txt</code> pour extraire les noms qui suivent « je m’appelle », « je suis » ou « moi c’est », puis écrit ces candidats dans <code>speaker_candidates.json</code> sans appeler le LLM. Le titre et les 1 000 premiers caractères sont seulement stockés dans cet artefact ; ils seront envoyés par l’étape de validation suivante.",
             outputs: [
               artifact("outputs/speakers/speaker_candidates.json"),
             ],
@@ -707,12 +737,12 @@ function longPipeline() {
               inputs: [
                 artifact("outputs/speakers/speaker_candidates.json"),
               ],
-              action: "Le LLM retourne une liste structurée nom / fonction.",
+              action: "Envoie le contexte au LLM et valide les speakers.",
               llmCall:
-                "Les 1 000 premiers caractères du transcript et les noms candidats. Aucun texte OCR n’est disponible sur la route longue.",
-              tooltipLabel: "Voir un exemple du prompt de validation des speakers",
+                "Le titre de la vidéo, les 1 000 premiers caractères du transcript et les candidats extraits dans le transcript complet. Aucun texte OCR n’est disponible sur la route longue.",
+              tooltipLabel: "Voir le prompt de validation des speakers",
               tooltip:
-                "Le même validateur recherche les personnes dans l’extrait du transcript, même si elles ne figurent pas encore parmi les candidats. <span class=\"info-tooltip-example\"><strong>Exemple simplifié du prompt</strong><code><b>SYSTEM</b> — Garde uniquement les personnes physiques. Pour chacune, retourne <b>speaker</b> et <b>title</b>, en incluant l’entreprise lorsqu’elle est identifiable.<br><br><b>USER</b> — Identifie les speakers dans ces sources.<br>{<br>&nbsp;&nbsp;&quot;transcript_excerpt&quot;: &quot;Bonjour, je suis Marc Dupont, responsable innovation chez Example Corp…&quot;,<br>&nbsp;&nbsp;&quot;ocr_detected_texts&quot;: [],<br>&nbsp;&nbsp;&quot;candidates&quot;: [{&quot;name&quot;: &quot;Marc Dupont&quot;}]<br>}</code></span>",
+                "<span class=\"info-tooltip-example prompt-only\"><strong>Exemple simplifié du prompt</strong><code><b>SYSTEM</b> — Garde uniquement les personnes physiques trouvées dans le titre, le transcript ou les candidats. Pour chacune, retourne <b>speaker</b> et <b>title</b>.<br><br><b>USER</b> — Identifie les speakers dans ces sources.<br>{<br>&nbsp;&nbsp;&quot;video_title&quot;: &quot;Portrait de Marc Dupont — Example Corp&quot;,<br>&nbsp;&nbsp;&quot;transcript_excerpt&quot;: &quot;Bonjour, je suis Marc Dupont, responsable innovation chez Example Corp…&quot;,<br>&nbsp;&nbsp;&quot;ocr_detected_texts&quot;: [],<br>&nbsp;&nbsp;&quot;candidates&quot;: [{&quot;name&quot;: &quot;Marc Dupont&quot;}]<br>}</code></span>",
               outputs: [
                 artifact("outputs/speakers/speakers_validated.json"),
               ],
@@ -728,7 +758,9 @@ function longPipeline() {
                     "outputs/transcripts_whisper/transcript_plain.txt",
                   ),
                 ],
-                action: "Crée des passages autour de 1 000 caractères.",
+                action: "Crée les chunks de niveau detail.",
+                technical:
+                  "Découpe le transcript plain par phrases en passages d’environ 1 000 caractères et les écrit au niveau <code>detail</code>.",
                 outputs: [
                   artifact(
                     "outputs/chunks/transcript_chunks.json",
@@ -737,7 +769,7 @@ function longPipeline() {
                 ],
               }),
               oneChild(
-                box("Résumer les sections", {
+                box("Créer les chunks section", {
                   task: "chunks.summarize_sections",
                   phase: "structure",
                   phaseLabel: "Chunks",
@@ -746,7 +778,7 @@ function longPipeline() {
                   inputs: [
                     artifact("outputs/chunks/transcript_chunks.json"),
                   ],
-                  action: "Ajoute les chunks de niveau section.",
+                  action: "Crée les chunks de niveau section.",
                   llmCall: "Le contenu de chaque groupe de 6 chunks.",
                   tooltipLabel: "Voir un exemple du prompt de résumé de section",
                   tooltip:
@@ -760,7 +792,7 @@ function longPipeline() {
                 }),
                 `
                   <div class="tree-node">
-                    ${box("Créer le résumé global", {
+                    ${box("Créer le chunk global", {
                       task: "chunks.summarize_video",
                       phase: "structure",
                       phaseLabel: "Données finales",
@@ -770,7 +802,7 @@ function longPipeline() {
                       inputs: [
                         artifact("outputs/chunks/transcript_chunks.json"),
                       ],
-                      action: "Ajoute la hiérarchie global → section → detail.",
+                      action: "Crée le chunk global et la hiérarchie.",
                       llmCall: "Les résumés de section.",
                       tooltipLabel: "Voir un exemple du prompt de résumé global",
                       tooltip:
@@ -803,8 +835,9 @@ function durationDecision() {
       phaseLabel: "Décision",
       summary: "Choisit la route courte ou longue.",
       inputs: [artifact("metadata/youtube_video_metadata.json")],
-      action:
-        "Lit duration_seconds. Le seuil est strict : 600 s reste une vidéo courte.",
+      action: "Choisit la route courte ou longue.",
+      technical:
+        "Lit <code>duration_seconds</code> dans les métadonnées YouTube. Le seuil est strict : une durée supérieure à 600 secondes prend la route longue ; 600 secondes exactement reste sur la route courte.",
     },
   );
 }
@@ -821,8 +854,9 @@ function renderTree() {
         artifact("VIDEO_ID.mp4"),
         artifact("metadata/youtube_video_metadata.json"),
       ],
-      action:
-        "Sonde le fichier, construit le plan et met à jour le manifeste après chaque tâche.",
+      action: "Initialise le contexte et le plan d’exécution.",
+      technical:
+        "Sonde le fichier vidéo, charge les métadonnées et le manifeste, construit le plan d’exécution puis checkpoint le manifeste avant et après chaque tâche.",
     }),
     durationDecision(),
   );

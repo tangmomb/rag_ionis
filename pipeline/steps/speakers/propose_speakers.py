@@ -26,11 +26,21 @@ OCR_PROCESSED_NAME = "01_processed_ocr_items.json"
 OCR_PROCESSED_CORRECTED_NAME = "corrected_ocr_items.json"
 LEGACY_OCR_PROCESSED_CORRECTED_SUFFIX = "_ocr_processed_corrected.json"
 SPEAKER_CANDIDATES_NAME = "speaker_candidates.json"
-SPEAKER_PROPOSAL_VERSION = 9
+SPEAKER_PROPOSAL_VERSION = 10
 OCR_LOWER_THIRD_MIN_TOP = 320
 TRANSCRIPT_SPEAKER_PATTERN = re.compile(r"\bSPEAKER_\d+\b", re.IGNORECASE)
+SPEAKER_JE_MAPPELLE_PATTERN = re.compile(
+    r"\bje\s+m['’]\s*appelle\s+",
+    re.IGNORECASE,
+)
+SPEAKER_JE_SUIS_PATTERN = re.compile(r"\bje\s+suis\s+", re.IGNORECASE)
+SPEAKER_MOI_CEST_PATTERN = re.compile(
+    r"\bmoi\s+c['’]\s*est\s+",
+    re.IGNORECASE,
+)
 SPEAKER_WORD_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’\-]+")
 LOWERCASE_CONNECTORS = {"d", "d'", "d’", "de", "du", "des", "la", "le"}
+SPEAKER_NAME_STOP_WORDS = {"je", "j'ai", "j’ai", "j", "moi"}
 NON_PERSON_NAME_KEYWORDS = {
     "analyst",
     "bi",
@@ -180,6 +190,10 @@ def is_probable_speaker_name(name):
     return bool(words) and any(is_capitalized_word(word) for word in words) and not is_non_person_name(name)
 
 
+def has_multiple_speaker_words(name):
+    return len(speaker_words(name)) >= 2
+
+
 def add_candidate(candidates, name, method):
     name = titlecase_all_caps_name(normalize_speaker_text(name))
     if not is_probable_speaker_name(name):
@@ -190,6 +204,42 @@ def add_candidate(candidates, name, method):
     entry = candidates.setdefault(key, {"name": name, "methods": []})
     if method not in entry["methods"]:
         entry["methods"].append(method)
+
+
+def extract_speaker_name(text, start_index):
+    words = []
+    text_after_intro = str(text)[start_index:]
+    phrase_end = re.search(r"[\n\r,.;:!?]", text_after_intro)
+    if phrase_end:
+        text_after_intro = text_after_intro[: phrase_end.start()]
+    matches = list(SPEAKER_WORD_PATTERN.finditer(text_after_intro))
+    index = 0
+    while index < len(matches):
+        word = matches[index].group(0)
+        lower_word = word.casefold()
+        if lower_word in SPEAKER_NAME_STOP_WORDS:
+            break
+        if is_capitalized_word(word):
+            words.append(word)
+            index += 1
+            continue
+        if lower_word in LOWERCASE_CONNECTORS:
+            next_index = index + 1
+            if lower_word == "de" and next_index + 1 < len(matches):
+                next_word = matches[next_index].group(0)
+                final_word = matches[next_index + 1].group(0)
+                if next_word.casefold() == "la" and is_capitalized_word(final_word):
+                    words.extend([word, next_word])
+                    index += 2
+                    continue
+            if next_index < len(matches) and is_capitalized_word(
+                matches[next_index].group(0)
+            ):
+                words.append(word)
+                index += 1
+                continue
+        break
+    return " ".join(words).strip(" ,.;:!?-–—")
 
 
 def ocr_box_bounds(item):
@@ -303,8 +353,29 @@ def transcript_speaker_count(text):
     )
 
 
-def propose_speakers(_text, ocr_names):
+def propose_speakers(text, ocr_names):
     candidates = {}
+    transcript_detections = []
+    introduction_patterns = (
+        (
+            SPEAKER_JE_MAPPELLE_PATTERN,
+            "transcript_je_m_appelle",
+            False,
+        ),
+        (SPEAKER_JE_SUIS_PATTERN, "transcript_je_suis", True),
+        (SPEAKER_MOI_CEST_PATTERN, "transcript_moi_c_est", True),
+    )
+    for pattern, method, requires_multiple_words in introduction_patterns:
+        for match in pattern.finditer(str(text)):
+            name = extract_speaker_name(text, match.end())
+            if requires_multiple_words and not has_multiple_speaker_words(name):
+                continue
+            transcript_detections.append((match.start(), name, method))
+    for _position, name, method in sorted(
+        transcript_detections,
+        key=lambda detection: detection[0],
+    ):
+        add_candidate(candidates, name, method)
     for name in ocr_names:
         add_candidate(candidates, name, "ocr_lower_third")
     values = list(candidates.values())
@@ -360,9 +431,9 @@ def propose_for_video(
         )
     text = source.read_text(encoding="utf-8")
     transcript_excerpt = (
-        text[:transcript_excerpt_chars]
-        if transcript_excerpt_chars is not None
-        else ""
+        text
+        if transcript_excerpt_chars is None
+        else text[:transcript_excerpt_chars]
     )
     expected_speaker_count = transcript_speaker_count(text)
     if not text.strip():

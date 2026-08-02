@@ -95,8 +95,8 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         self.assertEqual(body["max_output_tokens"], 2048)
         self.assertEqual(request_log["max_output_tokens"], 2048)
         prompt = body["input"][1]["content"]
-        self.assertNotIn("video_title", prompt)
-        self.assertNotIn("Lou-Anne Corvedu présente son métier", prompt)
+        self.assertIn('"video_title"', prompt)
+        self.assertIn("Lou-Anne Corvedu présente son métier", prompt)
         self.assertNotIn('"methods"', prompt)
         self.assertNotIn("ocr_lower_third", prompt)
         self.assertIn("ocr_detected_texts", prompt)
@@ -108,6 +108,10 @@ class ValidateChunkSpeakersTests(unittest.TestCase):
         self.assertIn("nom de l'entreprise", prompt)
         self.assertIn("N'omets pas l'entreprise", prompt)
         self.assertIn("CTO - Mappy.com", prompt)
+        self.assertLess(
+            prompt.index('"video_title"'),
+            prompt.index('"transcript_excerpt"'),
+        )
         self.assertLess(
             prompt.index('"ocr_detected_texts"'),
             prompt.index('"candidates"'),

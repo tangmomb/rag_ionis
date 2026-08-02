@@ -82,16 +82,84 @@ class CreateTranscriptChunksTests(unittest.TestCase):
         self.assertEqual(payload["transcript_excerpt"], "A" * 1000)
         self.assertEqual(payload["transcript_excerpt_chars"], 1000)
 
-    def test_transcript_introductions_do_not_create_speaker_candidates(self) -> None:
-        transcript = (
-            "Je suis Sophie Vanderpol, Fondatrice. "
-            "Je m'appelle Hugo Jarguin, Responsable. "
-            "Moi c'est Clara Dalmada."
+    def test_short_video_speaker_context_uses_full_corrected_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            transcript_dir = video_dir / "outputs" / "transcripts_whisper"
+            transcript_dir.mkdir(parents=True)
+            video = video_dir / "video123.mp4"
+            video.touch()
+            transcript_text = (
+                "[00:00-00:05] SPEAKER_00: Bonjour, "
+                "je m'appelle Alice Martin."
+            )
+            corrected = transcript_dir / "transcript_2_corrected.txt"
+            corrected.write_text(transcript_text, encoding="utf-8")
+
+            target = speaker_proposal.propose_for_video(video, force=True)
+            payload = json.loads(target.read_text(encoding="utf-8"))
+
+        self.assertTrue(payload["source"].endswith("transcript_2_corrected.txt"))
+        self.assertEqual(payload["transcript_excerpt"], transcript_text)
+        self.assertIsNone(payload["transcript_excerpt_chars"])
+
+    def test_long_video_candidates_are_extracted_beyond_prompt_excerpt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            video_dir = Path(temporary_directory) / "video123"
+            transcript_dir = video_dir / "outputs" / "transcripts_whisper"
+            transcript_dir.mkdir(parents=True)
+            video = video_dir / "video123.mp4"
+            video.touch()
+            transcript_text = "A" * 1100 + " Je m'appelle Alice Martin."
+            (transcript_dir / "transcript_plain.txt").write_text(
+                transcript_text,
+                encoding="utf-8",
+            )
+
+            target = speaker_proposal.propose_for_video(
+                video,
+                force=True,
+                prefer_plain=True,
+                transcript_excerpt_chars=1000,
+            )
+            payload = json.loads(target.read_text(encoding="utf-8"))
+
+        self.assertNotIn("Alice Martin", payload["transcript_excerpt"])
+        self.assertEqual(payload["speakers"], ["Alice Martin"])
+        self.assertEqual(
+            payload["candidates"][0]["methods"],
+            ["transcript_je_m_appelle"],
         )
 
-        speakers = speaker_proposal.propose_speakers(transcript, [])["speakers"]
+    def test_transcript_introductions_create_speaker_candidates(self) -> None:
+        transcript = (
+            "Je suis Sophie Vanderpol, Fondatrice. "
+            "Je m’appelle Hugo Jarguin, Responsable. "
+            "Moi c’est Clara Dalmada."
+        )
 
-        self.assertEqual(speakers, [])
+        proposal = speaker_proposal.propose_speakers(transcript, [])
+
+        self.assertEqual(
+            proposal["speakers"],
+            ["Sophie Vanderpol", "Hugo Jarguin", "Clara Dalmada"],
+        )
+        self.assertEqual(
+            [candidate["methods"] for candidate in proposal["candidates"]],
+            [
+                ["transcript_je_suis"],
+                ["transcript_je_m_appelle"],
+                ["transcript_moi_c_est"],
+            ],
+        )
+
+    def test_je_suis_without_a_person_name_is_not_a_candidate(self) -> None:
+        proposal = speaker_proposal.propose_speakers(
+            "Je suis responsable commercial et je suis très heureux.",
+            [],
+        )
+
+        self.assertEqual(proposal["speakers"], [])
 
     def test_transcript_speaker_count_uses_distinct_diarization_labels(self) -> None:
         transcript = (

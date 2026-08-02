@@ -2,7 +2,8 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import psycopg
@@ -160,9 +161,26 @@ def ensure_comments_schema(cursor):
             author_name TEXT,
             text TEXT NOT NULL,
             like_count BIGINT,
-            published_at TIMESTAMPTZ
+            published_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ,
+            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE
         )
         """
+    )
+    cursor.execute("ALTER TABLE comments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
+    cursor.execute(
+        "ALTER TABLE comments ADD COLUMN IF NOT EXISTS "
+        "first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+    )
+    cursor.execute(
+        "ALTER TABLE comments ADD COLUMN IF NOT EXISTS "
+        "last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+    )
+    cursor.execute(
+        "ALTER TABLE comments ADD COLUMN IF NOT EXISTS "
+        "is_deleted BOOLEAN NOT NULL DEFAULT FALSE"
     )
     cursor.execute("ALTER TABLE comments DROP COLUMN IF EXISTS raw_json")
     cursor.execute(
@@ -171,6 +189,99 @@ def ensure_comments_schema(cursor):
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id "
         "ON comments(parent_comment_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_comments_last_seen_at ON comments(last_seen_at)"
+    )
+    ensure_update_runs_schema(cursor)
+
+
+def ensure_update_runs_schema(cursor):
+    cursor.execute(
+        """
+        DO $$
+        BEGIN
+            IF to_regclass('data.update_runs') IS NULL
+               AND to_regclass('data.youtube_sync_runs') IS NOT NULL THEN
+                ALTER TABLE data.youtube_sync_runs RENAME TO update_runs;
+            END IF;
+        END
+        $$
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS update_runs (
+            id BIGSERIAL PRIMARY KEY,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            finished_at TIMESTAMPTZ,
+            archive_path TEXT,
+            status TEXT NOT NULL,
+            videos_discovered INTEGER NOT NULL DEFAULT 0,
+            videos_updated INTEGER NOT NULL DEFAULT 0,
+            videos_skipped INTEGER NOT NULL DEFAULT 0,
+            stats_snapshots INTEGER NOT NULL DEFAULT 0,
+            comments_seen INTEGER NOT NULL DEFAULT 0,
+            comments_new INTEGER NOT NULL DEFAULT 0,
+            comments_refreshed INTEGER NOT NULL DEFAULT 0,
+            comments_deleted INTEGER NOT NULL DEFAULT 0,
+            new_videos INTEGER NOT NULL DEFAULT 0,
+            new_video_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            previous_archive_path TEXT,
+            new_since_previous INTEGER NOT NULL DEFAULT 0,
+            new_since_previous_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            pipeline_videos_started INTEGER NOT NULL DEFAULT 0,
+            pipeline_videos_completed INTEGER NOT NULL DEFAULT 0,
+            videos_with_new_comments INTEGER NOT NULL DEFAULT 0,
+            new_comments_detected INTEGER NOT NULL DEFAULT 0,
+            errors JSONB NOT NULL DEFAULT '[]'::jsonb
+        )
+        """
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS archive_path TEXT"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "new_videos INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "new_video_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS previous_archive_path TEXT"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "new_since_previous INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "new_since_previous_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "pipeline_videos_started INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "pipeline_videos_completed INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "videos_with_new_comments INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "new_comments_detected INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "DROP INDEX IF EXISTS data.idx_youtube_sync_runs_started_at"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_update_runs_started_at "
+        "ON update_runs(started_at)"
     )
 
 
@@ -316,6 +427,8 @@ def reset_data_schema(cursor):
             public.video_transcripts,
             public.video_speakers,
             public.speakers,
+            public.update_runs,
+            public.youtube_sync_runs,
             public.stats,
             public.video_stats,
             public.video_daily_stats,
@@ -691,7 +804,12 @@ def candidate_video_dirs(video_dir, video_ids=None):
     if direct_videos:
         candidates = [video_dir]
     else:
-        candidates = [path for path in sorted(video_dir.iterdir()) if path.is_dir()]
+        candidates = [
+            path
+            for path in sorted(video_dir.iterdir())
+            if path.is_dir()
+            and path.name not in {"_00_info_videos", "_00_info_comments"}
+        ]
     selected_ids = set(video_ids or [])
     return [path for path in candidates if not selected_ids or path.name in selected_ids]
 
@@ -759,7 +877,15 @@ def load_video_comments(video_path):
     return payload
 
 
-def replace_video_comments(cursor, video_id, payload):
+@dataclass(frozen=True)
+class CommentSyncResult:
+    seen: int
+    created: int
+    refreshed: int
+    deleted: int
+
+
+def normalized_cached_comments(payload):
     comments = []
     seen_ids = set()
     for item in payload.get("comments", []):
@@ -780,10 +906,26 @@ def replace_video_comments(cursor, video_id, payload):
                 "text": str(item.get("text") or ""),
                 "like_count": parse_int(item.get("like_count")),
                 "published_at": parse_datetime(item.get("published_at")),
+                "updated_at": parse_datetime(item.get("updated_at")),
             }
         )
+    return comments
 
-    cursor.execute("DELETE FROM comments WHERE video_id = %s", (video_id,))
+
+def sync_video_comments_incremental(cursor, video_id, payload, *, collected_at=None):
+    comments = normalized_cached_comments(payload)
+    collected_at = (
+        collected_at
+        or parse_datetime(payload.get("fetched_at"))
+        or datetime.now(timezone.utc)
+    )
+
+    cursor.execute(
+        "SELECT youtube_comment_id FROM comments WHERE video_id = %s",
+        (video_id,),
+    )
+    existing_ids = {str(row[0]) for row in cursor.fetchall()}
+
     database_ids = {}
     ordered = sorted(
         comments,
@@ -805,9 +947,23 @@ def replace_video_comments(cursor, video_id, payload):
                 author_name,
                 text,
                 like_count,
-                published_at
+                published_at,
+                updated_at,
+                first_seen_at,
+                last_seen_at,
+                is_deleted
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+            ON CONFLICT (youtube_comment_id) DO UPDATE SET
+                video_id = EXCLUDED.video_id,
+                parent_comment_id = EXCLUDED.parent_comment_id,
+                author_name = EXCLUDED.author_name,
+                text = EXCLUDED.text,
+                like_count = EXCLUDED.like_count,
+                published_at = EXCLUDED.published_at,
+                updated_at = EXCLUDED.updated_at,
+                last_seen_at = EXCLUDED.last_seen_at,
+                is_deleted = FALSE
             RETURNING id
             """,
             (
@@ -818,10 +974,36 @@ def replace_video_comments(cursor, video_id, payload):
                 item["text"],
                 item["like_count"],
                 item["published_at"],
+                item["updated_at"],
+                collected_at,
+                collected_at,
             ),
         )
         database_ids[item["youtube_comment_id"]] = cursor.fetchone()[0]
-    return len(database_ids)
+
+    current_ids = list(database_ids)
+    cursor.execute(
+        """
+        UPDATE comments
+        SET is_deleted = TRUE
+        WHERE video_id = %s
+          AND is_deleted = FALSE
+          AND NOT (youtube_comment_id = ANY(%s::text[]))
+        """,
+        (video_id, current_ids),
+    )
+    deleted = max(0, int(cursor.rowcount or 0))
+    current_id_set = set(current_ids)
+    return CommentSyncResult(
+        seen=len(current_ids),
+        created=len(current_id_set - existing_ids),
+        refreshed=len(current_id_set & existing_ids),
+        deleted=deleted,
+    )
+
+
+def replace_video_comments(cursor, video_id, payload):
+    return sync_video_comments_incremental(cursor, video_id, payload).seen
 
 
 def replace_video_speakers(cursor, video_id, speaker_details):
@@ -1121,7 +1303,8 @@ def upsert_video_stats(cursor, video_id, payload, snapshot_date=None):
         ON CONFLICT (video_id, snapshot_date) DO UPDATE SET
             view_count = EXCLUDED.view_count,
             like_count = EXCLUDED.like_count,
-            comment_count = EXCLUDED.comment_count
+            comment_count = EXCLUDED.comment_count,
+            data_collected_date = now()
         """,
         (
             video_id,
@@ -1264,6 +1447,10 @@ def parse_args():
         help="Limite la mise a jour a cet ID video. Option repetable.",
     )
     parser.add_argument(
+        "--snapshot-date",
+        help="Date YYYY-MM-DD forcee pour le snapshot stats. Defaut: aujourd'hui.",
+    )
+    parser.add_argument(
         "--reset-database",
         action="store_true",
         help="Supprime et recree le schema data avant la mise a jour.",
@@ -1274,6 +1461,7 @@ def parse_args():
 def main():
     load_dotenv(override=True)
     args = parse_args()
+    snapshot_date = date.fromisoformat(args.snapshot_date) if args.snapshot_date else None
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     if not video_dir.exists() or not video_dir.is_dir():
         raise FileNotFoundError(f"Dossier introuvable: {video_dir}")
@@ -1322,7 +1510,12 @@ def main():
                 )
                 videos_count += 1
                 print(f"[video] {youtube_video_id}")
-                if upsert_video_stats(cursor, video_id, metadata_payload):
+                if upsert_video_stats(
+                    cursor,
+                    video_id,
+                    metadata_payload,
+                    snapshot_date=snapshot_date,
+                ):
                     stats_count += 1
                 comments_payload = (
                     None

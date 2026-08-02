@@ -88,7 +88,37 @@ CREATE TABLE IF NOT EXISTS comments (
     author_name TEXT,
     text TEXT NOT NULL,
     like_count BIGINT,
-    published_at TIMESTAMPTZ
+    published_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS update_runs (
+    id BIGSERIAL PRIMARY KEY,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    archive_path TEXT,
+    status TEXT NOT NULL,
+    videos_discovered INTEGER NOT NULL DEFAULT 0,
+    videos_updated INTEGER NOT NULL DEFAULT 0,
+    videos_skipped INTEGER NOT NULL DEFAULT 0,
+    stats_snapshots INTEGER NOT NULL DEFAULT 0,
+    comments_seen INTEGER NOT NULL DEFAULT 0,
+    comments_new INTEGER NOT NULL DEFAULT 0,
+    comments_refreshed INTEGER NOT NULL DEFAULT 0,
+    comments_deleted INTEGER NOT NULL DEFAULT 0,
+    new_videos INTEGER NOT NULL DEFAULT 0,
+    new_video_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    previous_archive_path TEXT,
+    new_since_previous INTEGER NOT NULL DEFAULT 0,
+    new_since_previous_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    pipeline_videos_started INTEGER NOT NULL DEFAULT 0,
+    pipeline_videos_completed INTEGER NOT NULL DEFAULT 0,
+    videos_with_new_comments INTEGER NOT NULL DEFAULT 0,
+    new_comments_detected INTEGER NOT NULL DEFAULT 0,
+    errors JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS chat.conversations (
@@ -117,6 +147,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
     ON chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);
+CREATE INDEX IF NOT EXISTS idx_comments_last_seen_at ON comments(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_update_runs_started_at ON update_runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id);

@@ -27,6 +27,8 @@ def reset_database(cursor):
             public.video_transcripts,
             public.video_speakers,
             public.speakers,
+            public.update_runs,
+            public.youtube_sync_runs,
             public.stats,
             public.video_stats,
             public.video_daily_stats,

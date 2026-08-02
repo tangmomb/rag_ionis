@@ -256,7 +256,7 @@ Les informations sont volontairement réparties selon leur nature :
 `pipeline.ingest.fetch_youtube_metadata` recrée le cache central et écrase
 également ce fichier dans chaque dossier vidéo local correspondant. Cette
 commande ne retélécharge pas les vidéos. Par défaut, elle synchronise aussi
-le cache central `info_comments/` et copie tous les commentaires et leurs
+le cache central `init/_00_info_comments/` et copie tous les commentaires et leurs
 réponses dans `metadata/youtube_comments.json` pour les vidéos déjà locales.
 Elle ne se connecte jamais à PostgreSQL. `--skip-comments` désactive cette
 récupération.
@@ -982,10 +982,81 @@ Récupérer localement les métadonnées et commentaires YouTube :
 ```
 
 Les commentaires et leurs réponses sont enregistrés dans
-`downloads/youtube/info_comments/VIDEO_ID.youtube_comments.json`, puis copiés
+`downloads/youtube/init/_00_info_comments/VIDEO_ID.youtube_comments.json`, puis copiés
 dans `init/VIDEO_ID/metadata/youtube_comments.json` si la vidéo est locale.
 Cette commande ne touche pas PostgreSQL. `pipeline.publish.sync_database`
 importe ensuite ces fichiers dans la table `comments`.
+
+### Actualisation YouTube quotidienne
+
+La commande dédiée au serveur parcourt la chaîne IONIS-STM avec la même collecte
+API que `pipeline.ingest.fetch_youtube_metadata` :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline.update_runs
+```
+
+Elle crée d’abord un dossier correspondant à la minute de lancement, avec un
+sous-dossier par vidéo :
+
+```text
+downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_video_metadata.json
+downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_comments.json
+```
+
+Ces archives ne sont jamais remplacées. Si deux lancements ont lieu dans la même
+minute, le second utilise par exemple `20260802_1437_02`. La commande ne modifie
+jamais `init/_00_info_videos/`, `init/_00_info_comments/` ni les dossiers vidéo de
+`init/`. Elle utilise directement les
+données collectées pour :
+
+- crée ou actualise le snapshot du jour dans `stats` ;
+- ajoute les nouveaux commentaires et actualise ceux déjà connus sans changer
+  leur `id` SQL, uniquement lorsqu’au moins un nouvel ID est présent par rapport
+  au JSON de l’archive précédente (ou de `init/` lors du premier lancement) ;
+- compare à la fin les dossiers vidéo de l’archive avec ceux de `init/`, affiche
+  le nombre de nouvelles vidéos et conserve leurs identifiants dans
+  `update_runs.new_video_ids` ; une vidéo absente de SQL est archivée mais
+  n’est pas insérée avant son passage dans le pipeline complet ;
+- compare ensuite l’archive actuelle à l’archive horodatée précédente et
+  journalise les nouveautés dans `new_since_previous` et
+  `new_since_previous_ids` ;
+- pour chaque vidéo nouvelle depuis l’archive précédente — ou absente de
+  `init/` lorsqu’il n’existe pas encore d’archive précédente — télécharge la
+  vidéo directement dans son dossier horodaté et lance
+  `pipeline run`, puis `embeddings.create` et enfin `sync_database` sur cette
+  seule vidéo ; la vidéo, le manifeste et tous les résultats restent dans cette
+  archive, et une publication SQL échouée est retentée au lancement suivant ;
+- marque `is_deleted = TRUE` les commentaires qui ne sont plus renvoyés par
+  YouTube ;
+- journalise le résultat et le chemin de l’archive dans `update_runs` ;
+- refuse un deuxième lancement simultané grâce à un verrou PostgreSQL.
+
+Pour tester une seule vidéo ou ignorer temporairement les commentaires :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline.update_runs --video-url "https://www.youtube.com/watch?v=VIDEO_ID"
+.\.venv\Scripts\python.exe -m pipeline.update_runs --skip-comments
+```
+
+Sur un serveur Linux, la commande équivalente est
+`./.venv/bin/python -m pipeline.update_runs`. Par exemple, une entrée
+cron quotidienne à 03:00 peut être installée avec le bon utilisateur de service
+(en adaptant `/srv/rag_ionis`) :
+
+```cron
+0 3 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_runs 2>&1 | logger -t rag-ionis-youtube
+```
+
+Le planificateur n’a besoin que de `DATABASE_URL` et `YOUTUBE_API_KEY` dans le
+fichier `.env` du projet. Une erreur limitée à une vidéo n’empêche pas les autres
+d’être actualisées et produit le statut `completed_with_errors`. Un échec global
+produit le statut `failed`. Les détails sont conservés dans `update_runs`.
+
+Un snapshot `stats` est écrit pour chaque vidéo publiée à chaque journée de
+collecte, même lorsque `view_count`, `like_count` et `comment_count` n’ont pas
+changé. La contrainte `(video_id, snapshot_date)` conserve une ligne par jour et
+permet de consulter l’évolution historique en base.
 
 Télécharger ou compléter les vidéos locales :
 
@@ -1023,6 +1094,10 @@ Démarrer PostgreSQL et Phoenix :
 ```powershell
 docker compose up -d postgres phoenix
 ```
+
+Le serveur PostgreSQL est configuré avec `timezone=Europe/Paris`. Les colonnes
+`TIMESTAMPTZ` restent des instants normalisés, mais toutes les sessions Docker
+les affichent automatiquement en heure de Paris, changement été/hiver compris.
 
 Rechercher les speakers dont le nom est identique ou ne diffère que d'une ou
 deux lettres, puis choisir dans une fenêtre Tkinter le nom et le poste à

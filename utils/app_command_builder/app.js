@@ -113,6 +113,32 @@ const actions = [
     ],
   },
   {
+    id: "youtube-daily-sync",
+    category: "YouTube",
+    title: "Daily sync YouTube",
+    short: "Stats, commentaires et pipeline des nouvelles vidéos",
+    description: "Parcourt la chaîne avec la même requête API que l’ingestion initiale, archive les JSON et écrit le snapshot SQL du jour même sans changement de compteurs. Chaque nouveauté est téléchargée, traitée, vectorisée et publiée en SQL depuis le dossier horodaté. Ne modifie pas init/_00_info_videos, init/_00_info_comments ni les dossiers vidéo de init.",
+    icon: "↻",
+    accent: "#d9eee8",
+    module: "pipeline.update_runs",
+    sections: [
+      {
+        title: "Sélection",
+        fields: [
+          { id: "videoUrl", label: "URL d’une vidéo YouTube", flag: "--video-url", type: "url", placeholder: "https://www.youtube.com/watch?v=…", help: "Laisse vide pour parcourir la chaîne IONIS-STM.", full: true, exclusive: "youtubeDailySelection" },
+          { id: "limit", label: "Limiter les vidéos de la chaîne", flag: "--limit", type: "number", min: "1", step: "1", placeholder: "Toutes", exclusive: "youtubeDailySelection" },
+        ],
+      },
+      {
+        title: "Actualisation",
+        fields: [
+          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube", full: true },
+          { id: "skipComments", label: "Actualiser uniquement les stats", flag: "--skip-comments", type: "boolean" },
+        ],
+      },
+    ],
+  },
+  {
     id: "download",
     category: "YouTube",
     title: "Télécharger les vidéos",

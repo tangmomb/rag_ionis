@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 import shutil
 import time
@@ -12,6 +11,7 @@ import yt_dlp
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 
+from pipeline.support.json_io import write_json
 from pipeline.support.paths import (
     init_dir,
     youtube_api_infos_path,
@@ -24,6 +24,8 @@ CHANNEL = "https://www.youtube.com/@IONIS-STM/videos"
 DOWNLOAD_DIR = Path("downloads/youtube")
 BIN_DIR = Path("downloads/bin")
 DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
+DEFAULT_YOUTUBE_API_RETRIES = 3
+DEFAULT_YOUTUBE_API_RETRY_DELAY_SECONDS = 1.0
 # Keep the downloaded MP4 broadly compatible with Windows media players.
 # Generic bestaudio often resolves to Opus/WebM, which is not reliably
 # supported by the default Windows player.
@@ -38,9 +40,31 @@ def youtube(endpoint, ignore_403=False, **params):
     url = f"{API}/{endpoint}"
     query = {**params, "key": os.environ["YOUTUBE_API_KEY"]}
     print(f"{url}?{urlencode({**query, 'key': '***'})}")
-    time.sleep(DEFAULT_YOUTUBE_API_SLEEP_SECONDS)
+    response = None
+    for attempt in range(1, DEFAULT_YOUTUBE_API_RETRIES + 1):
+        time.sleep(DEFAULT_YOUTUBE_API_SLEEP_SECONDS)
+        try:
+            response = requests.get(url, params=query, timeout=30)
+        except requests.RequestException:
+            if attempt == DEFAULT_YOUTUBE_API_RETRIES:
+                raise
+            delay = DEFAULT_YOUTUBE_API_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+            print(f"[retry] {endpoint}: erreur reseau, nouvelle tentative dans {delay:.0f}s")
+            time.sleep(delay)
+            continue
+        if response.status_code != 429 and response.status_code < 500:
+            break
+        if attempt == DEFAULT_YOUTUBE_API_RETRIES:
+            break
+        delay = DEFAULT_YOUTUBE_API_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+        print(
+            f"[retry] {endpoint}: HTTP {response.status_code}, "
+            f"nouvelle tentative dans {delay:.0f}s"
+        )
+        time.sleep(delay)
 
-    response = requests.get(url, params=query, timeout=30)
+    if response is None:
+        raise RuntimeError(f"Aucune reponse YouTube pour {endpoint}.")
     if ignore_403 and response.status_code == 403:
         error = response.json().get("error", {})
         reason = error.get("errors", [{}])[0].get("reason")
@@ -191,8 +215,7 @@ def write_video_info(video, info_dir):
     payload = video_info_payload(video)
     info_dir.mkdir(parents=True, exist_ok=True)
     path = info_dir / f"{video['id']}{YOUTUBE_API_INFOS_SUFFIX}"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path
+    return write_json(path, payload)
 
 
 def sync_existing_video_info(video, cache_path, download_dir):
@@ -263,6 +286,7 @@ def normalized_comment(comment, parent_youtube_comment_id=None):
         "text": snippet.get("textOriginal") or snippet.get("textDisplay") or "",
         "like_count": snippet.get("likeCount"),
         "published_at": snippet.get("publishedAt"),
+        "updated_at": snippet.get("updatedAt"),
     }
 
 
@@ -336,11 +360,7 @@ def write_comments(video_id, payload, comments_dir):
     target_dir = Path(comments_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{video_id}{YOUTUBE_COMMENTS_SUFFIX}"
-    target.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return target
+    return write_json(target, payload)
 
 
 def sync_existing_comments(video, cache_path, download_dir):
@@ -394,11 +414,11 @@ def main():
     load_dotenv(override=True)
     args = parse_args()
     videos = fetch_video(args.video_url) if args.video_url else fetch_videos(CHANNEL, limit=args.limit)
-    info_dir = Path(args.download_dir) / "info_videos"
+    info_dir = Path(args.download_dir) / "init" / "_00_info_videos"
     if info_dir.exists():
         shutil.rmtree(info_dir)
     comments_count = 0
-    comments_dir = Path(args.download_dir) / "info_comments"
+    comments_dir = Path(args.download_dir) / "init" / "_00_info_comments"
     if not args.skip_comments and comments_dir.exists():
         shutil.rmtree(comments_dir)
 

@@ -286,7 +286,7 @@ class IngestionPublicationTests(unittest.TestCase):
             }
             cache_path = get_data.write_video_info(
                 video,
-                download_root / "info_videos",
+                download_root / "init" / "_00_info_videos",
             )
 
             synced = get_data.sync_existing_video_info(
@@ -364,7 +364,7 @@ class IngestionPublicationTests(unittest.TestCase):
             cache_path = get_data.write_comments(
                 video_id,
                 payload,
-                download_root / "info_comments",
+                download_root / "init" / "_00_info_comments",
             )
 
             target = get_data.sync_existing_comments(
@@ -379,14 +379,30 @@ class IngestionPublicationTests(unittest.TestCase):
                 payload,
             )
 
-    def test_sql_sync_replaces_comments_and_resolves_parent_id(self) -> None:
+    def test_youtube_cache_directories_are_inside_init(self) -> None:
+        root = Path("downloads/youtube")
+
+        self.assertEqual(
+            download_videos.info_cache_dir(root),
+            root / "init" / "_00_info_videos",
+        )
+        self.assertEqual(
+            download_videos.comments_cache_dir(root),
+            root / "init" / "_00_info_comments",
+        )
+
+    def test_sql_sync_upserts_comments_and_resolves_parent_id(self) -> None:
         class RecordingCursor:
             def __init__(self) -> None:
                 self.calls = []
                 self.ids = iter((100, 101))
+                self.rowcount = 0
 
             def execute(self, sql, params=None) -> None:
                 self.calls.append((" ".join(sql.split()), params))
+
+            def fetchall(self):
+                return []
 
             def fetchone(self):
                 return (next(self.ids),)
@@ -418,9 +434,14 @@ class IngestionPublicationTests(unittest.TestCase):
         )
 
         self.assertEqual(imported, 2)
-        self.assertEqual(cursor.calls[0], ("DELETE FROM comments WHERE video_id = %s", (42,)))
+        self.assertEqual(
+            cursor.calls[0],
+            ("SELECT youtube_comment_id FROM comments WHERE video_id = %s", (42,)),
+        )
+        self.assertIn("ON CONFLICT (youtube_comment_id) DO UPDATE", cursor.calls[1][0])
         self.assertEqual(cursor.calls[1][1][1], None)
         self.assertEqual(cursor.calls[2][1][1], 100)
+        self.assertIn("SET is_deleted = TRUE", cursor.calls[3][0])
 
     def test_existing_video_is_reused_without_youtube_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -535,6 +556,20 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertIn("name TEXT NOT NULL UNIQUE", statements[-1])
         self.assertNotIn("UNIQUE (video_id, name)", statements[-1])
         self.assertIn("title TEXT", statements[-1])
+        self.assertIn("CREATE TABLE IF NOT EXISTS update_runs", statements[-1])
+        self.assertIn("archive_path TEXT", statements[-1])
+        self.assertIn("new_videos INTEGER", statements[-1])
+        self.assertIn("new_video_ids JSONB", statements[-1])
+        self.assertIn("previous_archive_path TEXT", statements[-1])
+        self.assertIn("new_since_previous INTEGER", statements[-1])
+        self.assertIn("new_since_previous_ids JSONB", statements[-1])
+        self.assertIn("pipeline_videos_started INTEGER", statements[-1])
+        self.assertIn("pipeline_videos_completed INTEGER", statements[-1])
+        self.assertIn("videos_with_new_comments INTEGER", statements[-1])
+        self.assertIn("new_comments_detected INTEGER", statements[-1])
+        self.assertIn("first_seen_at TIMESTAMPTZ", statements[-1])
+        self.assertIn("last_seen_at TIMESTAMPTZ", statements[-1])
+        self.assertIn("is_deleted BOOLEAN", statements[-1])
         self.assertIn("is_long_video BOOLEAN GENERATED ALWAYS", statements[-1])
         self.assertIn("transcript TEXT", statements[-1])
         self.assertIn("transcript_enriched TEXT", statements[-1])

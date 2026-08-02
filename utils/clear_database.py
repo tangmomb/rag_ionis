@@ -12,6 +12,7 @@ TABLES_BY_SCHEMA = {
         "video_transcripts",
         "video_speakers",
         "speakers",
+        "update_runs",
         "stats",
         "video_stats",
         "video_daily_stats",

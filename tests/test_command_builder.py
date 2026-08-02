@@ -65,5 +65,15 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('flag: "--max-distance"', source)
         self.assertIn('flag: "--dry-run"', source)
 
+    def test_daily_youtube_sync_action_is_available(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+        index = INDEX_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('id: "youtube-daily-sync"', source)
+        self.assertIn('title: "Daily sync YouTube"', source)
+        self.assertIn('module: "pipeline.update_runs"', source)
+        self.assertIn('flag: "--skip-comments"', source)
+        self.assertIn('app.js?v=20260803-youtube-daily-sync', index)
+
 if __name__ == "__main__":
     unittest.main()

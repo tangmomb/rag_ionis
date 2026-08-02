@@ -49,11 +49,11 @@ def ffmpeg_exe():
 
 
 def info_cache_dir(parent_dir):
-    return Path(parent_dir) / "info_videos"
+    return Path(parent_dir) / "init" / "_00_info_videos"
 
 
 def comments_cache_dir(parent_dir):
-    return Path(parent_dir) / "info_comments"
+    return Path(parent_dir) / "init" / "_00_info_comments"
 
 
 def info_candidates(base_dir, youtube_video_id):
@@ -214,13 +214,22 @@ def write_video_info(video_dir, youtube_video_id, payload):
     return target
 
 
-def download_video(video, download_dir, parent_dir, force=False, cookies_from_browser=None):
+def download_video(
+    video,
+    download_dir,
+    parent_dir,
+    force=False,
+    cookies_from_browser=None,
+    *,
+    reuse_previous=True,
+    sync_cached_metadata=True,
+):
     youtube_video_id, title, url, payload = video
     video_dir = download_dir / youtube_video_id
 
     if not force:
         existing = existing_download(video_dir, youtube_video_id)
-        if not existing:
+        if not existing and reuse_previous:
             previous = previous_download(
                 parent_dir,
                 youtube_video_id,
@@ -231,9 +240,10 @@ def download_video(video, download_dir, parent_dir, force=False, cookies_from_br
                 existing = existing_download(video_dir, youtube_video_id)
         if existing:
             print(f"[skip] {youtube_video_id} deja telecharge: {existing}")
-            if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
-                write_video_info(video_dir, youtube_video_id, payload)
-            copy_video_comments(video_dir, youtube_video_id, parent_dir)
+            if sync_cached_metadata:
+                if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
+                    write_video_info(video_dir, youtube_video_id, payload)
+                copy_video_comments(video_dir, youtube_video_id, parent_dir)
             return existing
 
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -258,9 +268,10 @@ def download_video(video, download_dir, parent_dir, force=False, cookies_from_br
     downloaded = existing_download(video_dir, youtube_video_id)
     if not downloaded:
         raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")
-    if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
-        write_video_info(video_dir, youtube_video_id, payload)
-    copy_video_comments(video_dir, youtube_video_id, parent_dir)
+    if sync_cached_metadata:
+        if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
+            write_video_info(video_dir, youtube_video_id, payload)
+        copy_video_comments(video_dir, youtube_video_id, parent_dir)
     return downloaded
 
 

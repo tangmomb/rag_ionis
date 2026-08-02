@@ -31,6 +31,7 @@ from interface.backend.generation import DEFAULT_ANSWER_PROMPT_TEMPLATE
 from interface.backend.llm_providers import (
     LLM_MODEL_CATALOG,
     LLMProviderError,
+    OPENAI_SERVICE_TIER_ENV,
     provider_for_model,
 )
 from interface.backend.planner import (
@@ -43,6 +44,17 @@ from interface.backend.utilities import normalize_model_name
 
 
 DEFAULT_PHOENIX_BASE_URL = "http://127.0.0.1:6006"
+OPENAI_EXPERIMENT_SERVICE_TIERS = ("default", "fast")
+OPENAI_SERVICE_TIER_OPTIONS = (
+    ("Configuration du projet", None),
+    ("Standard", "default"),
+    ("Fast", "fast"),
+)
+OPENAI_SERVICE_TIER_IDS_BY_LABEL = dict(OPENAI_SERVICE_TIER_OPTIONS)
+OPENAI_SERVICE_TIER_LABELS_BY_ID = {
+    service_tier: label
+    for label, service_tier in OPENAI_SERVICE_TIER_OPTIONS
+}
 LLM_MODEL_OPTIONS = tuple(
     (
         f"{provider_config['label']} - {model_label}",
@@ -84,6 +96,7 @@ class RagExperimentSettings:
     use_rerank: bool = True
     top_k: int = DEFAULT_TOP_K
     final_k: int = DEFAULT_FINAL_K
+    openai_service_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +109,7 @@ class ExperimentSelection:
     reformulation_prompt: str = DEFAULT_REFORMULATION_PROMPT
     planner_prompt: str = DEFAULT_PLANNER_PROMPT
     answer_prompt: str = DEFAULT_ANSWER_PROMPT_TEMPLATE
+    openai_service_tier: str | None = None
 
 
 def positive_integer(value: str) -> int:
@@ -159,6 +173,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--answer-model",
         default=DEFAULT_GENERATION_MODEL,
         help="Modele de reponse OpenAI, Mistral ou Google.",
+    )
+    parser.add_argument(
+        "--openai-service-tier",
+        choices=OPENAI_EXPERIMENT_SERVICE_TIERS,
+        default=(
+            os.getenv(OPENAI_SERVICE_TIER_ENV, "").strip().lower() or None
+        ),
+        help=(
+            "Tier des appels OpenAI : default ou fast. "
+            "Si omis, conserve la configuration du projet OpenAI."
+        ),
     )
     parser.add_argument(
         "--reformulation-prompt",
@@ -322,6 +347,13 @@ def model_option_label(value: str, default: str) -> str:
     )
 
 
+def openai_service_tier_option_label(value: str | None) -> str:
+    return OPENAI_SERVICE_TIER_LABELS_BY_ID.get(
+        value,
+        OPENAI_SERVICE_TIER_LABELS_BY_ID[None],
+    )
+
+
 def model_short_name(model_id: str) -> str:
     known_name = LLM_MODEL_SHORT_NAMES.get(model_id)
     if known_name:
@@ -385,6 +417,7 @@ def prompt_experiment_selection(
     initial_reformulation_prompt: str = DEFAULT_REFORMULATION_PROMPT,
     initial_planner_prompt: str = DEFAULT_PLANNER_PROMPT,
     initial_answer_prompt: str = DEFAULT_ANSWER_PROMPT_TEMPLATE,
+    initial_openai_service_tier: str | None = None,
 ) -> ExperimentSelection | None:
     try:
         import tkinter as tk
@@ -435,6 +468,9 @@ def prompt_experiment_selection(
     )
     answer_model_value = tk.StringVar(
         value=model_option_label(initial_answer_model, DEFAULT_GENERATION_MODEL)
+    )
+    openai_service_tier_value = tk.StringVar(
+        value=openai_service_tier_option_label(initial_openai_service_tier)
     )
     selection: ExperimentSelection | None = None
 
@@ -525,8 +561,22 @@ def prompt_experiment_selection(
         width=48,
     ).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 18))
 
-    ttk.Label(frame, text="Prompts systeme (editables)").grid(
+    ttk.Label(frame, text="Tier de service OpenAI").grid(
         row=11,
+        column=0,
+        sticky="w",
+        pady=(0, 5),
+    )
+    ttk.Combobox(
+        frame,
+        textvariable=openai_service_tier_value,
+        values=[label for label, _tier in OPENAI_SERVICE_TIER_OPTIONS],
+        state="readonly",
+        width=48,
+    ).grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+
+    ttk.Label(frame, text="Prompts systeme (editables)").grid(
+        row=13,
         column=0,
         columnspan=2,
         sticky="w",
@@ -534,13 +584,13 @@ def prompt_experiment_selection(
     )
     prompt_notebook = ttk.Notebook(frame)
     prompt_notebook.grid(
-        row=12,
+        row=14,
         column=0,
         columnspan=2,
         sticky="nsew",
         pady=(0, 18),
     )
-    frame.rowconfigure(12, weight=1)
+    frame.rowconfigure(14, weight=1)
 
     def add_prompt_tab(title: str, initial_value: str):
         tab = ttk.Frame(prompt_notebook, padding=6)
@@ -614,6 +664,9 @@ def prompt_experiment_selection(
             reformulation_prompt=prompt_values["reformulation"],
             planner_prompt=prompt_values["planner"],
             answer_prompt=prompt_values["reponse"],
+            openai_service_tier=OPENAI_SERVICE_TIER_IDS_BY_LABEL[
+                openai_service_tier_value.get()
+            ],
         )
         root.destroy()
 
@@ -621,7 +674,7 @@ def prompt_experiment_selection(
         root.destroy()
 
     ttk.Button(frame, text="Annuler", command=cancel).grid(
-        row=13,
+        row=15,
         column=0,
         sticky="e",
         padx=(0, 6),
@@ -630,7 +683,7 @@ def prompt_experiment_selection(
         frame,
         text="Lancer l'experience",
         command=validate_and_close,
-    ).grid(row=13, column=1, sticky="e")
+    ).grid(row=15, column=1, sticky="e")
 
     root.protocol("WM_DELETE_WINDOW", cancel)
     root.bind("<Return>", lambda _event: validate_and_close())
@@ -687,6 +740,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         use_rerank=args.use_rerank,
         top_k=args.top_k,
         final_k=args.final_k,
+        openai_service_tier=args.openai_service_tier,
     )
 
     ensure_chat_schema()
@@ -695,6 +749,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         args.experiment_name or default_experiment_name(),
         settings,
     )
+    previous_openai_service_tier = os.environ.get(OPENAI_SERVICE_TIER_ENV)
+    if settings.openai_service_tier is not None:
+        os.environ[OPENAI_SERVICE_TIER_ENV] = settings.openai_service_tier
     try:
         experiment = client.experiments.run_experiment(
             dataset=dataset,
@@ -729,12 +786,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "use_rerank": settings.use_rerank,
                 "top_k": settings.top_k,
                 "final_k": settings.final_k,
+                "openai_service_tier": settings.openai_service_tier,
             },
             dry_run=args.dry_run or False,
             timeout=args.timeout,
             retries=args.retries,
         )
     finally:
+        if previous_openai_service_tier is None:
+            os.environ.pop(OPENAI_SERVICE_TIER_ENV, None)
+        else:
+            os.environ[OPENAI_SERVICE_TIER_ENV] = (
+                previous_openai_service_tier
+            )
         shutdown_telemetry()
 
     result = dict(experiment)
@@ -760,6 +824,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.reformulation_prompt,
             args.planner_prompt,
             args.answer_prompt,
+            args.openai_service_tier,
         )
         if selection is None:
             print("Lancement annule.")
@@ -772,6 +837,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.reformulation_prompt = selection.reformulation_prompt
         args.planner_prompt = selection.planner_prompt
         args.answer_prompt = selection.answer_prompt
+        args.openai_service_tier = selection.openai_service_tier
     result = run(args)
     if args.dry_run:
         print(f"Dry run termine sur {args.dry_run} exemple(s). Rien n'a ete enregistre.")

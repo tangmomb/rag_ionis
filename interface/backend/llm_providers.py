@@ -14,6 +14,10 @@ from interface.backend.telemetry import TraceOperation, trace_operation
 
 LLMProvider = Literal["openai", "mistral", "google"]
 REQUEST_TIMEOUT_SECONDS = 300
+OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
+OPENAI_SERVICE_TIERS = frozenset(
+    {"auto", "default", "flex", "scale", "priority", "fast"}
+)
 
 LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
     "openai": {
@@ -99,6 +103,22 @@ def provider_api_key(provider: LLMProvider) -> str | None:
         if value:
             return value
     return None
+
+
+def configured_openai_service_tier() -> str | None:
+    service_tier = os.getenv(OPENAI_SERVICE_TIER_ENV, "").strip().lower()
+    if not service_tier:
+        return None
+    if service_tier not in OPENAI_SERVICE_TIERS:
+        choices = ", ".join(sorted(OPENAI_SERVICE_TIERS))
+        raise LLMProviderError(
+            "openai",
+            (
+                f"{OPENAI_SERVICE_TIER_ENV} invalide : {service_tier!r}. "
+                f"Valeurs acceptees : {choices}."
+            ),
+        )
+    return service_tier
 
 
 def configured_llm_provider_exists() -> bool:
@@ -293,6 +313,9 @@ def call_openai(
         "model": model,
         "input": messages,
     }
+    service_tier = configured_openai_service_tier()
+    if service_tier is not None:
+        request["service_tier"] = service_tier
     if max_output_tokens is not None:
         request["max_output_tokens"] = max_output_tokens
     if store is not None:

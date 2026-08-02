@@ -37,6 +37,7 @@ def refresh_environment_defaults():
     global REQUESTED_TRANSCRIBE_DEVICE
     global DEFAULT_TRANSCRIBE_DEVICE
     global DEFAULT_TRANSCRIBE_COMPUTE_TYPE
+    global CUDA_FALLBACK_COMPUTE_TYPE
     global DEFAULT_TRANSCRIBE_BATCH_SIZE
     global STRICT_CUDA
     global DEFAULT_DIARIZATION_MODEL
@@ -57,6 +58,10 @@ def refresh_environment_defaults():
         "WHISPERX_COMPUTE_TYPE",
         "float16" if DEFAULT_TRANSCRIBE_DEVICE == "cuda" else "int8",
     )
+    CUDA_FALLBACK_COMPUTE_TYPE = os.getenv(
+        "WHISPERX_CUDA_FALLBACK_COMPUTE_TYPE",
+        "int8_float16",
+    ).strip()
     DEFAULT_TRANSCRIBE_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "4"))
     if DEFAULT_TRANSCRIBE_BATCH_SIZE < 1:
         raise ValueError("WHISPERX_BATCH_SIZE doit etre un entier positif.")
@@ -161,16 +166,51 @@ def load_whisperx_model():
     if device == "cpu" and compute_type == "float16":
         compute_type = "int8"
 
-    print(
-        f"[whisperx] model={DEFAULT_TRANSCRIBE_MODEL} device={device} "
-        f"compute_type={compute_type} batch_size={DEFAULT_TRANSCRIBE_BATCH_SIZE}"
-    )
-    model = whisperx.load_model(
-        DEFAULT_TRANSCRIBE_MODEL,
-        device,
-        compute_type=compute_type,
-    )
-    return whisperx, model, device
+    attempts = [(device, compute_type)]
+    if (
+        device == "cuda"
+        and CUDA_FALLBACK_COMPUTE_TYPE
+        and CUDA_FALLBACK_COMPUTE_TYPE != compute_type
+    ):
+        attempts.append((device, CUDA_FALLBACK_COMPUTE_TYPE))
+    if device == "cuda" and not STRICT_CUDA:
+        attempts.append(("cpu", "int8"))
+
+    clear_cuda_memory()
+    for attempt_index, (attempt_device, attempt_compute_type) in enumerate(attempts):
+        print(
+            f"[whisperx] model={DEFAULT_TRANSCRIBE_MODEL} "
+            f"device={attempt_device} compute_type={attempt_compute_type} "
+            f"batch_size={DEFAULT_TRANSCRIBE_BATCH_SIZE}"
+        )
+        try:
+            model = whisperx.load_model(
+                DEFAULT_TRANSCRIBE_MODEL,
+                attempt_device,
+                compute_type=attempt_compute_type,
+            )
+            return whisperx, model, attempt_device
+        except RuntimeError as error:
+            has_next_attempt = attempt_index + 1 < len(attempts)
+            if not is_cuda_out_of_memory(error) or not has_next_attempt:
+                if is_cuda_out_of_memory(error):
+                    raise RuntimeError(
+                        "VRAM insuffisante pour charger le modele WhisperX "
+                        f"{DEFAULT_TRANSCRIBE_MODEL!r}. Ferme les applications GPU, "
+                        "choisis un modele plus petit, ou configure "
+                        "WHISPERX_STRICT_CUDA=0 pour autoriser le fallback CPU."
+                    ) from error
+                raise
+            next_device, next_compute_type = attempts[attempt_index + 1]
+            print(
+                "[warn] VRAM insuffisante pendant le chargement WhisperX; "
+                f"nouvelle tentative device={next_device} "
+                f"compute_type={next_compute_type}.",
+                flush=True,
+            )
+            clear_cuda_memory()
+
+    raise RuntimeError("Aucune configuration WhisperX disponible.")
 
 
 def huggingface_token():

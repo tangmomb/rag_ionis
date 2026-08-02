@@ -15,6 +15,87 @@ from pipeline.steps.transcripts import transcribe_with_whisper as transcription
 
 
 class WhisperXDiarizationTests(unittest.TestCase):
+    def test_model_loading_retries_with_lower_vram_compute_type(self) -> None:
+        whisperx_module = ModuleType("whisperx")
+        calls = []
+        expected_model = object()
+
+        def load_model(model_name, device, *, compute_type):
+            calls.append((model_name, device, compute_type))
+            if compute_type == "float16":
+                raise RuntimeError("CUDA failed with error out of memory")
+            return expected_model
+
+        whisperx_module.load_model = load_model
+        with (
+            patch.dict(sys.modules, {"whisperx": whisperx_module}),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_MODEL", "large-v3"),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_DEVICE", "cuda"),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_COMPUTE_TYPE", "float16"),
+            patch.object(
+                transcription,
+                "CUDA_FALLBACK_COMPUTE_TYPE",
+                "int8_float16",
+            ),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_BATCH_SIZE", 4),
+            patch.object(transcription, "STRICT_CUDA", True),
+            patch.object(transcription, "resolved_device", return_value="cuda"),
+            patch.object(transcription, "clear_cuda_memory") as clear_memory,
+        ):
+            whisperx, model, device = transcription.load_whisperx_model()
+
+        self.assertIs(whisperx, whisperx_module)
+        self.assertIs(model, expected_model)
+        self.assertEqual(device, "cuda")
+        self.assertEqual(
+            calls,
+            [
+                ("large-v3", "cuda", "float16"),
+                ("large-v3", "cuda", "int8_float16"),
+            ],
+        )
+        self.assertEqual(clear_memory.call_count, 2)
+
+    def test_model_loading_can_fall_back_to_cpu_after_cuda_oom(self) -> None:
+        whisperx_module = ModuleType("whisperx")
+        calls = []
+        expected_model = object()
+
+        def load_model(model_name, device, *, compute_type):
+            calls.append((model_name, device, compute_type))
+            if device == "cuda":
+                raise RuntimeError("CUDA failed with error out of memory")
+            return expected_model
+
+        whisperx_module.load_model = load_model
+        with (
+            patch.dict(sys.modules, {"whisperx": whisperx_module}),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_MODEL", "large-v3"),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_DEVICE", "cuda"),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_COMPUTE_TYPE", "float16"),
+            patch.object(
+                transcription,
+                "CUDA_FALLBACK_COMPUTE_TYPE",
+                "int8_float16",
+            ),
+            patch.object(transcription, "DEFAULT_TRANSCRIBE_BATCH_SIZE", 4),
+            patch.object(transcription, "STRICT_CUDA", False),
+            patch.object(transcription, "resolved_device", return_value="cuda"),
+            patch.object(transcription, "clear_cuda_memory"),
+        ):
+            _whisperx, model, device = transcription.load_whisperx_model()
+
+        self.assertIs(model, expected_model)
+        self.assertEqual(device, "cpu")
+        self.assertEqual(
+            calls,
+            [
+                ("large-v3", "cuda", "float16"),
+                ("large-v3", "cuda", "int8_float16"),
+                ("large-v3", "cpu", "int8"),
+            ],
+        )
+
     def test_timestamped_transcript_includes_speaker_ids(self) -> None:
         text = transcription.format_timestamped_transcript(
             [

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -117,6 +118,19 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         self.assertEqual(args.dataset, "questions-rag")
         self.assertEqual(args.dry_run, 1)
 
+    def test_parser_accepts_fast_openai_service_tier(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_SERVICE_TIER": ""}, clear=False):
+            args = run_phoenix_experiment.build_parser().parse_args(
+                [
+                    "--dataset",
+                    "questions-rag",
+                    "--openai-service-tier",
+                    "fast",
+                ]
+            )
+
+        self.assertEqual(args.openai_service_tier, "fast")
+
     def test_parser_opens_gui_when_dataset_is_omitted(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args([])
 
@@ -126,6 +140,7 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         selection = run_phoenix_experiment.ExperimentSelection(
             dataset="cases_phoenix",
             experiment_name="rag-gui",
+            openai_service_tier="fast",
         )
         with (
             patch.object(
@@ -149,6 +164,21 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         self.assertEqual(args.reformulation_model, "gpt-5.6-sol")
         self.assertEqual(args.planner_model, "gpt-5.6-sol")
         self.assertEqual(args.answer_model, "gpt-5.6-sol")
+        self.assertEqual(args.openai_service_tier, "fast")
+
+    def test_openai_service_tier_labels_cover_gui_choices(self) -> None:
+        self.assertEqual(
+            run_phoenix_experiment.openai_service_tier_option_label(None),
+            "Configuration du projet",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.openai_service_tier_option_label("default"),
+            "Standard",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.openai_service_tier_option_label("fast"),
+            "Fast",
+        )
 
     def test_model_choices_cover_all_supported_providers(self) -> None:
         self.assertEqual(

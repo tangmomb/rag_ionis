@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Documentation interactive du pipeline qui transforme une vidéo en transcripts, speakers et chunks."
+    >
+    <title>De la vidéo aux données — pipeline détaillé</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <div class="tree-heading">
+        <div>
+          <span class="section-index">Arbre de décision</span>
+          <h2>Chemin d’exécution</h2>
+          <p class="manifest-note">
+            Le manifeste vidéo est mis à jour tout au long du pipeline.
+          </p>
+        </div>
+        <div class="tree-tools">
+          <p>
+            Faites défiler horizontalement sur ordinateur. Sur mobile, seule la
+            route active est affichée.
+          </p>
+          <div class="tree-actions" aria-label="Actions d’affichage">
+            <button id="details-button" type="button" aria-pressed="true">
+              Masquer les détails
+            </button>
+            <button id="reset-button" type="button">Réinitialiser</button>
+          </div>
+        </div>
+      </div>
+      <div id="pipeline-tree" class="tree"></div>
+    </main>
+  </body>
+</html>

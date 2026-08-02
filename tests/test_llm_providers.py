@@ -59,7 +59,14 @@ class LlmProviderTests(unittest.TestCase):
         client = Mock()
         client.responses.create.return_value = sdk_response
         with (
-            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
+            patch.dict(
+                os.environ,
+                {
+                    "OPENAI_API_KEY": "secret",
+                    "OPENAI_SERVICE_TIER": "",
+                },
+                clear=False,
+            ),
             patch.object(llm_providers, "OpenAI", return_value=client),
         ):
             response = llm_providers.create_llm_response(
@@ -79,6 +86,33 @@ class LlmProviderTests(unittest.TestCase):
         )
         self.assertEqual(request["max_output_tokens"], 200)
         self.assertFalse(request["store"])
+        self.assertNotIn("service_tier", request)
+
+    def test_openai_uses_configured_fast_service_tier(self) -> None:
+        sdk_response = SimpleNamespace(
+            output_text="OpenAI",
+            model_dump=lambda mode: {"service_tier": "priority"},
+        )
+        client = Mock()
+        client.responses.create.return_value = sdk_response
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "OPENAI_API_KEY": "secret",
+                    "OPENAI_SERVICE_TIER": "fast",
+                },
+                clear=False,
+            ),
+            patch.object(llm_providers, "OpenAI", return_value=client),
+        ):
+            llm_providers.create_llm_response(
+                model="gpt-5.6-sol",
+                input="Bonjour",
+            )
+
+        request = client.responses.create.call_args.kwargs
+        self.assertEqual(request["service_tier"], "fast")
 
     def test_mistral_translates_normalized_messages_to_chat_completions(self) -> None:
         raw = {

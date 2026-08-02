@@ -13,7 +13,11 @@ from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 from yt_dlp.utils import DownloadError
 
-from pipeline.support.paths import consolidate_init_dir, youtube_api_infos_path
+from pipeline.support.paths import (
+    consolidate_init_dir,
+    youtube_api_infos_path,
+    youtube_comments_path,
+)
 
 
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
@@ -24,6 +28,7 @@ BIN_DIR = Path("downloads/bin")
 DEFAULT_FORMAT = "bestvideo[height=720][ext=mp4]+bestaudio[ext=m4a]/best[height=720][ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best"
 DEFAULT_MERGE_FORMAT = "mp4"
 YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
+YOUTUBE_COMMENTS_SUFFIX = ".youtube_comments.json"
 LEGACY_INFO_SUFFIX = ".info.json"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 
@@ -45,6 +50,10 @@ def ffmpeg_exe():
 
 def info_cache_dir(parent_dir):
     return Path(parent_dir) / "info_videos"
+
+
+def comments_cache_dir(parent_dir):
+    return Path(parent_dir) / "info_comments"
 
 
 def info_candidates(base_dir, youtube_video_id):
@@ -184,6 +193,16 @@ def copy_video_info(video_dir, youtube_video_id, parent_dir):
     return target
 
 
+def copy_video_comments(video_dir, youtube_video_id, parent_dir):
+    source = comments_cache_dir(parent_dir) / f"{youtube_video_id}{YOUTUBE_COMMENTS_SUFFIX}"
+    if not source.exists():
+        return None
+    target = youtube_comments_path(video_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return target
+
+
 def write_video_info(video_dir, youtube_video_id, payload):
     if not payload:
         return None
@@ -214,6 +233,7 @@ def download_video(video, download_dir, parent_dir, force=False, cookies_from_br
             print(f"[skip] {youtube_video_id} deja telecharge: {existing}")
             if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
                 write_video_info(video_dir, youtube_video_id, payload)
+            copy_video_comments(video_dir, youtube_video_id, parent_dir)
             return existing
 
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -240,6 +260,7 @@ def download_video(video, download_dir, parent_dir, force=False, cookies_from_br
         raise FileNotFoundError(f"Video telechargee introuvable pour {youtube_video_id}")
     if copy_video_info(video_dir, youtube_video_id, parent_dir) is None:
         write_video_info(video_dir, youtube_video_id, payload)
+    copy_video_comments(video_dir, youtube_video_id, parent_dir)
     return downloaded
 
 

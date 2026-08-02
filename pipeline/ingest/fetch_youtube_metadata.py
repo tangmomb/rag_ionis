@@ -3,7 +3,7 @@ import json
 import os
 import shutil
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -12,7 +12,11 @@ import yt_dlp
 from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 
-from pipeline.support.paths import init_dir, youtube_api_infos_path
+from pipeline.support.paths import (
+    init_dir,
+    youtube_api_infos_path,
+    youtube_comments_path,
+)
 
 
 API = "https://www.googleapis.com/youtube/v3"
@@ -26,6 +30,7 @@ DEFAULT_YOUTUBE_API_SLEEP_SECONDS = 0.5
 DEFAULT_YTDLP_FORMAT_360P = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best"
 DEFAULT_YTDLP_MERGE_FORMAT = "mp4"
 YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
+YOUTUBE_COMMENTS_SUFFIX = ".youtube_comments.json"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 
 
@@ -249,42 +254,22 @@ def download_video_360p(youtube_video_id):
     return downloaded[0]
 
 
-def upsert_comment(cursor, video_db_id, comment, parent_db_id=None):
+def normalized_comment(comment, parent_youtube_comment_id=None):
     snippet = comment["snippet"]
-    cursor.execute(
-        """
-        INSERT INTO comments (
-            video_id,
-            parent_comment_id,
-            youtube_comment_id,
-            author_name,
-            text,
-            like_count,
-            published_at
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (youtube_comment_id) DO UPDATE SET
-            parent_comment_id = EXCLUDED.parent_comment_id,
-            author_name = EXCLUDED.author_name,
-            text = EXCLUDED.text,
-            like_count = EXCLUDED.like_count,
-            published_at = EXCLUDED.published_at
-        RETURNING id
-        """,
-        (
-            video_db_id,
-            parent_db_id,
-            comment["id"],
-            snippet.get("authorDisplayName"),
-            snippet.get("textOriginal") or snippet.get("textDisplay") or "",
-            snippet.get("likeCount"),
-            parse_datetime(snippet.get("publishedAt")),
-        ),
-    )
-    return cursor.fetchone()[0]
+    return {
+        "youtube_comment_id": comment["id"],
+        "parent_youtube_comment_id": parent_youtube_comment_id,
+        "author_name": snippet.get("authorDisplayName"),
+        "text": snippet.get("textOriginal") or snippet.get("textDisplay") or "",
+        "like_count": snippet.get("likeCount"),
+        "published_at": snippet.get("publishedAt"),
+    }
 
 
-def import_comment_replies(cursor, video_db_id, parent_comment_id, parent_db_id):
+def import_comment_replies(
+    parent_comment_id,
+    comments_by_id,
+):
     page_token = None
     while True:
         page = youtube(
@@ -296,16 +281,20 @@ def import_comment_replies(cursor, video_db_id, parent_comment_id, parent_db_id)
             textFormat="plainText",
         )
 
-        for reply in page["items"]:
-            upsert_comment(cursor, video_db_id, reply, parent_db_id)
+        for reply in page.get("items", []):
+            comments_by_id[reply["id"]] = normalized_comment(
+                reply,
+                parent_youtube_comment_id=parent_comment_id,
+            )
 
         page_token = page.get("nextPageToken")
         if not page_token:
             return
 
 
-def import_comments(cursor, video_db_id, youtube_video_id):
+def fetch_comments(youtube_video_id):
     page_token = None
+    comments_by_id = {}
     while True:
         page = youtube(
             "commentThreads",
@@ -317,25 +306,61 @@ def import_comments(cursor, video_db_id, youtube_video_id):
             textFormat="plainText",
         )
 
-        for thread in page["items"]:
+        for thread in page.get("items", []):
             top_comment = thread["snippet"]["topLevelComment"]
-            top_comment_db_id = upsert_comment(cursor, video_db_id, top_comment)
+            comments_by_id[top_comment["id"]] = normalized_comment(top_comment)
 
             replies = thread.get("replies", {}).get("comments", [])
             for reply in replies:
-                upsert_comment(cursor, video_db_id, reply, top_comment_db_id)
+                comments_by_id[reply["id"]] = normalized_comment(
+                    reply,
+                    parent_youtube_comment_id=top_comment["id"],
+                )
 
             if thread["snippet"].get("totalReplyCount", 0) > len(replies):
-                import_comment_replies(cursor, video_db_id, top_comment["id"], top_comment_db_id)
+                import_comment_replies(
+                    top_comment["id"],
+                    comments_by_id,
+                )
 
         page_token = page.get("nextPageToken")
         if not page_token:
-            return
+            return {
+                "youtube_video_id": youtube_video_id,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "comments": list(comments_by_id.values()),
+            }
+
+
+def write_comments(video_id, payload, comments_dir):
+    target_dir = Path(comments_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{video_id}{YOUTUBE_COMMENTS_SUFFIX}"
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
+def sync_existing_comments(video, cache_path, download_dir):
+    video_dir = init_dir(download_dir) / video["id"]
+    has_local_video = video_dir.is_dir() and any(
+        path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+        for path in video_dir.iterdir()
+    )
+    if not has_local_video:
+        return None
+
+    target = youtube_comments_path(video_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cache_path, target)
+    return target
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Importe les donnees YouTube de la chaine en base SQL."
+        description="Recupere les metadonnees et commentaires YouTube en JSON local."
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
@@ -357,6 +382,11 @@ def parse_args():
         action="store_true",
         help="Conserve l'option de compatibilite; les transcripts ne sont plus importes dans cette step.",
     )
+    parser.add_argument(
+        "--skip-comments",
+        action="store_true",
+        help="Ne recupere pas les commentaires YouTube dans le cache JSON.",
+    )
     return parser.parse_args()
 
 
@@ -367,15 +397,37 @@ def main():
     info_dir = Path(args.download_dir) / "info_videos"
     if info_dir.exists():
         shutil.rmtree(info_dir)
+    comments_count = 0
+    comments_dir = Path(args.download_dir) / "info_comments"
+    if not args.skip_comments and comments_dir.exists():
+        shutil.rmtree(comments_dir)
+
     synced_count = 0
+    comment_files_count = 0
     for video in videos:
         cache_path = write_video_info(video, info_dir)
         if sync_existing_video_info(video, cache_path, args.download_dir) is not None:
             synced_count += 1
+        if not args.skip_comments:
+            comments_payload = fetch_comments(video["id"])
+            comments_path = write_comments(
+                video["id"],
+                comments_payload,
+                comments_dir,
+            )
+            sync_existing_comments(video, comments_path, args.download_dir)
+            imported_count = len(comments_payload["comments"])
+            comments_count += imported_count
+            comment_files_count += 1
+            print(
+                f"[comments] {video['id']}: {imported_count} commentaire(s)",
+                flush=True,
+            )
 
     print(
         f"{len(videos)} videos preparees en cache metadata; "
-        f"{synced_count} dossiers video synchronises"
+        f"{synced_count} dossiers video synchronises; "
+        f"{comments_count} commentaires dans {comment_files_count} fichier(s) JSON"
     )
 
 

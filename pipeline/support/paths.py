@@ -18,6 +18,7 @@ CHUNKS_DIR_NAME = "chunks"
 SPEAKERS_DIR_NAME = "speakers"
 ANALYSED_INFOS_NAME = "pipeline_analysis.json"
 YOUTUBE_API_INFOS_NAME = "youtube_video_metadata.json"
+YOUTUBE_COMMENTS_NAME = "youtube_comments.json"
 LEGACY_ANALYSED_INFOS_NAME = "analysed_infos.json"
 LEGACY_YOUTUBE_API_INFOS_NAME = "youtube_api_infos.json"
 LEGACY_YOUTUBE_API_INFOS_SUFFIX = ".youtube_api_infos.json"
@@ -213,6 +214,10 @@ def analysed_infos_path(video_path):
 
 def youtube_api_infos_path(video_path):
     return metadata_dir(video_path) / YOUTUBE_API_INFOS_NAME
+
+
+def youtube_comments_path(video_path):
+    return metadata_dir(video_path) / YOUTUBE_COMMENTS_NAME
 
 
 def existing_youtube_api_infos_path(video_path):

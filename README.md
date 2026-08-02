@@ -251,10 +251,15 @@ Les informations sont volontairement réparties selon leur nature :
 |---|---|---|
 | `VIDEO_ID.mp4` | Source technique pour les codecs, le FPS, l'audio et la résolution. | Entrée, jamais modifiée. |
 | `metadata/youtube_video_metadata.json` | Métadonnées de l'API YouTube, notamment la durée de référence `duration_seconds`. | Produit par l'ingestion ; obligatoire pour inspecter et router la vidéo. |
+| `metadata/youtube_comments.json` | Commentaires YouTube et réponses, avec leur relation parent-enfant. | Produit par l'ingestion puis importé en SQL par `sync_database`. |
 
 `pipeline.ingest.fetch_youtube_metadata` recrée le cache central et écrase
 également ce fichier dans chaque dossier vidéo local correspondant. Cette
-commande ne retélécharge pas les vidéos.
+commande ne retélécharge pas les vidéos. Par défaut, elle synchronise aussi
+le cache central `info_comments/` et copie tous les commentaires et leurs
+réponses dans `metadata/youtube_comments.json` pour les vidéos déjà locales.
+Elle ne se connecte jamais à PostgreSQL. `--skip-comments` désactive cette
+récupération.
 | `metadata/video_manifest.json` | Faits de routage, plan, exécution courante, historique, artefacts, options et route dérivée. | Source de vérité unique, réécrite atomiquement par l'orchestrateur ; ne pas modifier manuellement. |
 | `outputs/` | Frames, OCR, transcripts, speakers, chunks et embeddings. | Généré par les étapes métier. |
 
@@ -970,11 +975,17 @@ permet de reproduire le plan généré.
 
 ## Ingestion
 
-Charger les métadonnées YouTube dans PostgreSQL :
+Récupérer localement les métadonnées et commentaires YouTube :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline.ingest.fetch_youtube_metadata
 ```
+
+Les commentaires et leurs réponses sont enregistrés dans
+`downloads/youtube/info_comments/VIDEO_ID.youtube_comments.json`, puis copiés
+dans `init/VIDEO_ID/metadata/youtube_comments.json` si la vidéo est locale.
+Cette commande ne touche pas PostgreSQL. `pipeline.publish.sync_database`
+importe ensuite ces fichiers dans la table `comments`.
 
 Télécharger ou compléter les vidéos locales :
 

@@ -302,6 +302,126 @@ class IngestionPublicationTests(unittest.TestCase):
             )
             self.assertEqual(video_path.read_bytes(), b"video")
 
+    def test_youtube_comments_include_all_replies_without_double_counting(self) -> None:
+        top_comment = {
+            "id": "top-1",
+            "snippet": {"textOriginal": "Question"},
+        }
+        first_reply = {
+            "id": "reply-1",
+            "snippet": {"textOriginal": "Premiere reponse"},
+        }
+        second_reply = {
+            "id": "reply-2",
+            "snippet": {"textOriginal": "Deuxieme reponse"},
+        }
+
+        def youtube_page(endpoint, **_params):
+            if endpoint == "commentThreads":
+                return {
+                    "items": [
+                        {
+                            "snippet": {
+                                "topLevelComment": top_comment,
+                                "totalReplyCount": 2,
+                            },
+                            "replies": {"comments": [first_reply]},
+                        }
+                    ]
+                }
+            self.assertEqual(endpoint, "comments")
+            return {"items": [first_reply, second_reply]}
+
+        with patch.object(get_data, "youtube", side_effect=youtube_page):
+            payload = get_data.fetch_comments("abcdefghijk")
+
+        self.assertEqual(payload["youtube_video_id"], "abcdefghijk")
+        self.assertEqual(
+            {item["youtube_comment_id"] for item in payload["comments"]},
+            {"top-1", "reply-1", "reply-2"},
+        )
+        replies = [
+            item
+            for item in payload["comments"]
+            if item["parent_youtube_comment_id"] is not None
+        ]
+        self.assertTrue(
+            all(item["parent_youtube_comment_id"] == "top-1" for item in replies)
+        )
+
+    def test_cached_youtube_comments_are_copied_into_existing_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            download_root = Path(temporary_dir)
+            video_id = "abcdefghijk"
+            video_dir = download_root / "init" / video_id
+            video_dir.mkdir(parents=True)
+            (video_dir / f"{video_id}.mp4").write_bytes(b"video")
+            video = {"id": video_id}
+            payload = {
+                "youtube_video_id": video_id,
+                "comments": [{"youtube_comment_id": "comment-1"}],
+            }
+            cache_path = get_data.write_comments(
+                video_id,
+                payload,
+                download_root / "info_comments",
+            )
+
+            target = get_data.sync_existing_comments(
+                video,
+                cache_path,
+                download_root,
+            )
+
+            self.assertEqual(target, video_dir / "metadata" / "youtube_comments.json")
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                payload,
+            )
+
+    def test_sql_sync_replaces_comments_and_resolves_parent_id(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.calls = []
+                self.ids = iter((100, 101))
+
+            def execute(self, sql, params=None) -> None:
+                self.calls.append((" ".join(sql.split()), params))
+
+            def fetchone(self):
+                return (next(self.ids),)
+
+        cursor = RecordingCursor()
+        imported = update_sql.replace_video_comments(
+            cursor,
+            42,
+            {
+                "comments": [
+                    {
+                        "youtube_comment_id": "top-1",
+                        "parent_youtube_comment_id": None,
+                        "author_name": "Alice",
+                        "text": "Question",
+                        "like_count": 2,
+                        "published_at": "2026-07-14T12:00:00Z",
+                    },
+                    {
+                        "youtube_comment_id": "reply-1",
+                        "parent_youtube_comment_id": "top-1",
+                        "author_name": "Bob",
+                        "text": "Reponse",
+                        "like_count": 1,
+                        "published_at": "2026-07-14T13:00:00Z",
+                    },
+                ]
+            },
+        )
+
+        self.assertEqual(imported, 2)
+        self.assertEqual(cursor.calls[0], ("DELETE FROM comments WHERE video_id = %s", (42,)))
+        self.assertEqual(cursor.calls[1][1][1], None)
+        self.assertEqual(cursor.calls[2][1][1], 100)
+
     def test_existing_video_is_reused_without_youtube_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             download_root = Path(temporary_dir)

@@ -15,6 +15,7 @@ from pipeline.support.paths import (
     existing_speakers_dir,
     existing_transcripts_dir,
     existing_youtube_api_infos_path,
+    youtube_comments_path,
 )
 from pipeline.steps.transcripts.artifacts import (
     LEGACY_TRANSCRIPT_ENRICHED_NAMES,
@@ -139,14 +140,38 @@ def ensure_schema(cursor):
         """
     )
     cursor.execute("ALTER TABLE stats DROP COLUMN IF EXISTS raw_json")
-    if table_exists(cursor, "comments"):
-        cursor.execute("ALTER TABLE comments DROP COLUMN IF EXISTS raw_json")
+    ensure_comments_schema(cursor)
     cursor.execute("DROP TABLE IF EXISTS video_elements CASCADE")
     cursor.execute(f"DROP TABLE IF EXISTS {legacy_video_elements_name()} CASCADE")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date)")
     ensure_chunks_schema(cursor)
     ensure_transcripts_schema(cursor)
+
+
+def ensure_comments_schema(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS comments (
+            id BIGSERIAL PRIMARY KEY,
+            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            parent_comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE,
+            youtube_comment_id TEXT NOT NULL UNIQUE,
+            author_name TEXT,
+            text TEXT NOT NULL,
+            like_count BIGINT,
+            published_at TIMESTAMPTZ
+        )
+        """
+    )
+    cursor.execute("ALTER TABLE comments DROP COLUMN IF EXISTS raw_json")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id "
+        "ON comments(parent_comment_id)"
+    )
 
 
 def table_columns(cursor, table_name):
@@ -727,6 +752,78 @@ def load_video_speakers(video_path):
     return [detail["name"] for detail in load_video_speaker_details(video_path)] or None
 
 
+def load_video_comments(video_path):
+    payload = load_json(youtube_comments_path(video_path))
+    if not isinstance(payload, dict) or not isinstance(payload.get("comments"), list):
+        return None
+    return payload
+
+
+def replace_video_comments(cursor, video_id, payload):
+    comments = []
+    seen_ids = set()
+    for item in payload.get("comments", []):
+        if not isinstance(item, dict):
+            continue
+        youtube_comment_id = str(item.get("youtube_comment_id") or "").strip()
+        if not youtube_comment_id or youtube_comment_id in seen_ids:
+            continue
+        seen_ids.add(youtube_comment_id)
+        comments.append(
+            {
+                "youtube_comment_id": youtube_comment_id,
+                "parent_youtube_comment_id": (
+                    str(item.get("parent_youtube_comment_id") or "").strip()
+                    or None
+                ),
+                "author_name": item.get("author_name"),
+                "text": str(item.get("text") or ""),
+                "like_count": parse_int(item.get("like_count")),
+                "published_at": parse_datetime(item.get("published_at")),
+            }
+        )
+
+    cursor.execute("DELETE FROM comments WHERE video_id = %s", (video_id,))
+    database_ids = {}
+    ordered = sorted(
+        comments,
+        key=lambda item: item["parent_youtube_comment_id"] is not None,
+    )
+    for item in ordered:
+        parent_youtube_id = item["parent_youtube_comment_id"]
+        parent_db_id = database_ids.get(parent_youtube_id)
+        if parent_youtube_id and parent_db_id is None:
+            raise ValueError(
+                f"Commentaire parent {parent_youtube_id!r} absent du cache YouTube."
+            )
+        cursor.execute(
+            """
+            INSERT INTO comments (
+                video_id,
+                parent_comment_id,
+                youtube_comment_id,
+                author_name,
+                text,
+                like_count,
+                published_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                video_id,
+                parent_db_id,
+                item["youtube_comment_id"],
+                item["author_name"],
+                item["text"],
+                item["like_count"],
+                item["published_at"],
+            ),
+        )
+        database_ids[item["youtube_comment_id"]] = cursor.fetchone()[0]
+    return len(database_ids)
+
+
 def replace_video_speakers(cursor, video_id, speaker_details):
     cursor.execute("DELETE FROM video_speakers WHERE video_id = %s", (video_id,))
     for detail in speaker_details:
@@ -1147,6 +1244,11 @@ def parse_args():
         help="N'actualise pas la table transcripts.",
     )
     parser.add_argument(
+        "--skip-comments",
+        action="store_true",
+        help="N'actualise pas la table comments depuis le cache local.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Affiche les changements sans modifier la base.",
@@ -1209,6 +1311,7 @@ def main():
 
             videos_count = 0
             stats_count = 0
+            comments_count = 0
             for current_video_dir in video_dirs:
                 youtube_video_id, video_id, metadata_payload = upsert_video(
                     cursor,
@@ -1221,6 +1324,20 @@ def main():
                 print(f"[video] {youtube_video_id}")
                 if upsert_video_stats(cursor, video_id, metadata_payload):
                     stats_count += 1
+                comments_payload = (
+                    None
+                    if args.skip_comments
+                    else load_video_comments(current_video_dir)
+                )
+                if comments_payload is not None:
+                    if args.dry_run:
+                        comments_count += len(comments_payload.get("comments", []))
+                    else:
+                        comments_count += replace_video_comments(
+                            cursor,
+                            video_id,
+                            comments_payload,
+                        )
 
             ids_by_youtube_id = video_db_ids(cursor)
             assets_count = 0
@@ -1273,6 +1390,7 @@ def main():
                 connection.commit()
 
     print(f"{videos_count} videos synchronisees, {stats_count} snapshots stats synchronises.")
+    print(f"{comments_count} commentaires YouTube synchronises.")
     print(f"{assets_count} assets traites, {transcripts_count} transcripts synchronises, {chunks_count} chunks synchronises.")
     if not_ready_dirs:
         print(f"{len(not_ready_dirs)} videos ignorees sans embedding.")

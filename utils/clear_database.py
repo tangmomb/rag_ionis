@@ -10,6 +10,8 @@ TABLES_BY_SCHEMA = {
         "chunks",
         "transcripts",
         "video_transcripts",
+        "video_speakers",
+        "speakers",
         "stats",
         "video_stats",
         "video_daily_stats",

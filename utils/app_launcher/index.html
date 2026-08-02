@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Portail des applications et outils RAG IONIS">
+    <title>Applications · RAG IONIS</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">RAG IONIS</p>
+        <h1>Applications</h1>
+        <p>Tous les services sont lancés. Choisissez l’outil à ouvrir.</p>
+      </header>
+
+      <section aria-labelledby="local-title">
+        <div class="section-heading">
+          <h2 id="local-title">Applications locales</h2>
+          <span>8 outils</span>
+        </div>
+        <div class="grid">
+          <a class="card" href="http://127.0.0.1:8006/" target="_blank" rel="noopener">
+            <span class="icon icon-main">RI</span>
+            <span><strong>Interface RAG IONIS</strong><small>API et interface principale · port 8006</small></span>
+          </a>
+          <a class="card" href="http://127.0.0.1:8001/videos" target="_blank" rel="noopener">
+            <img src="../app_database_browser/static/favicon.svg" alt="">
+            <span><strong>Database Browser</strong><small>Vidéos et tables PostgreSQL · port 8001</small></span>
+          </a>
+          <a class="card" href="http://127.0.0.1:8002/" target="_blank" rel="noopener">
+            <img src="../app_llm_tester/static/favicon.svg" alt="">
+            <span><strong>LLM Tester</strong><small>Comparer les réponses des modèles · port 8002</small></span>
+          </a>
+          <a class="card" href="../app_api_console/" target="_blank" rel="noopener">
+            <img src="../app_api_console/favicon.svg" alt="">
+            <span><strong>Console API YouTube</strong><small>Construire et tester les requêtes YouTube</small></span>
+          </a>
+          <a class="card" href="../app_command_builder/" target="_blank" rel="noopener">
+            <img src="../app_command_builder/favicon.svg" alt="">
+            <span><strong>Command Builder</strong><small>Générer les commandes du pipeline</small></span>
+          </a>
+          <a class="card" href="../app_pipeline_tree/" target="_blank" rel="noopener">
+            <img src="../app_pipeline_tree/favicon.svg" alt="">
+            <span><strong>Pipeline Tree</strong><small>Explorer les routes et décisions du pipeline</small></span>
+          </a>
+          <a class="card" href="../app_sql_formatter/" target="_blank" rel="noopener">
+            <img src="../app_sql_formatter/favicon.svg" alt="">
+            <span><strong>SQL Formatter</strong><small>Mettre en forme les requêtes SQL</small></span>
+          </a>
+          <a class="card" href="http://127.0.0.1:6006/" target="_blank" rel="noopener">
+            <span class="icon icon-phoenix">PX</span>
+            <span><strong>Phoenix</strong><small>Observabilité des appels LLM · port 6006</small></span>
+          </a>
+        </div>
+      </section>
+
+      <section aria-labelledby="external-title">
+        <div class="section-heading">
+          <h2 id="external-title">Services externes</h2>
+          <span>Raccourcis</span>
+        </div>
+        <div class="link-list">
+          <a href="https://www.youtube.com/@IONIS-STM/videos" target="_blank" rel="noopener">Chaîne YouTube IONIS-STM</a>
+          <a href="https://console.cloud.google.com/apis/dashboard?project=youtube-api-484522" target="_blank" rel="noopener">Google Cloud · API YouTube</a>
+          <a href="https://eu-west-3.console.aws.amazon.com/s3/buckets/rag-ionis-532523613357-eu-west-3-an?region=eu-west-3&amp;tab=objects" target="_blank" rel="noopener">AWS · Bucket S3</a>
+          <a href="https://platform.openai.com/usage" target="_blank" rel="noopener">OpenAI · Usage</a>
+          <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener">OpenAI · Tarifs</a>
+          <a href="https://platform.openai.com/tokenizer" target="_blank" rel="noopener">OpenAI · Tokenizer</a>
+          <a href="https://console.mistral.ai/home" target="_blank" rel="noopener">Mistral Console</a>
+          <a href="https://aistudio.google.com/usage?timeRange=last-1-day" target="_blank" rel="noopener">Google AI Studio · Usage</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

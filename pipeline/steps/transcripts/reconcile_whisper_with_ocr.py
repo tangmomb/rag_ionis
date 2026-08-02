@@ -48,6 +48,7 @@ DEFAULT_CORRECTION_MODEL = os.getenv(
     "TRANSCRIPT_CORRECTION_MODEL",
     "gpt-5.6-luna",
 )
+MAX_LIVE_ATTEMPTS = 3
 WHISPER_LINE = re.compile(
     r"^(?P<prefix>\[(?P<start>(?:\d{2}:)?\d{2}:\d{2})"
     r"(?:-(?P<end>(?:\d{2}:)?\d{2}:\d{2}))?\]\s*)"
@@ -171,9 +172,12 @@ def luna_request(
                 ),
             },
         ],
+        # Le budget de sortie inclut aussi les tokens de raisonnement du modele.
+        # Une marge basee uniquement sur la taille du transcript visible peut donc
+        # tronquer un JSON pourtant court, surtout avec Luna.
         "max_output_tokens": min(
             32768,
-            max(2048, sum(len(str(item["text"])) for item in whisper_segments) // 2),
+            max(8192, sum(len(str(item["text"])) for item in whisper_segments) * 2),
         ),
         "text": {
             "format": {
@@ -249,18 +253,41 @@ def reconcile_transcripts_with_luna(
     if not whisper_segments:
         return whisper_text, []
 
-    response = client.responses.create(
-        **luna_request(model, whisper_segments, ocr_text)
-    )
-    raw_response = _response_text(response)
-    if not raw_response:
-        raise RuntimeError("Luna n'a renvoye aucune correction de transcript.")
-    try:
-        payload = json.loads(raw_response)
-    except json.JSONDecodeError as error:
+    request = luna_request(model, whisper_segments, ocr_text)
+    payload = None
+    last_error = "Luna n'a renvoye aucune correction de transcript."
+    diagnostics: dict[str, object] = {}
+    for attempt in range(1, MAX_LIVE_ATTEMPTS + 1):
+        response = client.responses.create(**request)
+        raw_response = _response_text(response)
+        incomplete_details = getattr(response, "incomplete_details", None)
+        if hasattr(incomplete_details, "model_dump"):
+            incomplete_details = incomplete_details.model_dump()
+        diagnostics = {
+            "status": getattr(response, "status", None),
+            "incomplete_details": incomplete_details,
+        }
+        if diagnostics["status"] == "incomplete" or incomplete_details:
+            last_error = "Reponse Luna tronquee par la limite de sortie."
+        elif not raw_response:
+            last_error = "Luna n'a renvoye aucune correction de transcript."
+        else:
+            try:
+                payload = json.loads(raw_response)
+                break
+            except json.JSONDecodeError:
+                last_error = f"Reponse Luna non JSON: {raw_response[:300]!r}"
+        if attempt < MAX_LIVE_ATTEMPTS:
+            print(
+                f"[warn] {last_error} "
+                f"(tentative {attempt}/{MAX_LIVE_ATTEMPTS}); relance...",
+                flush=True,
+            )
+    if payload is None:
         raise RuntimeError(
-            f"Reponse Luna non JSON: {raw_response[:300]!r}"
-        ) from error
+            f"{last_error} Echec apres {MAX_LIVE_ATTEMPTS} tentatives. "
+            f"Details: {json.dumps(diagnostics, ensure_ascii=False)}"
+        )
     returned_segments = payload.get("segments") if isinstance(payload, dict) else None
     if not isinstance(returned_segments, list):
         raise RuntimeError("Reponse Luna invalide: liste segments absente.")

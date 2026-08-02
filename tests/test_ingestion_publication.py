@@ -164,12 +164,13 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(
             cursor.calls[0],
-            ("DELETE FROM speakers WHERE video_id = %s", (42,)),
+            ("DELETE FROM video_speakers WHERE video_id = %s", (42,)),
         )
         self.assertIn("INSERT INTO speakers", cursor.calls[1][0])
+        self.assertIn("INSERT INTO video_speakers", cursor.calls[1][0])
         self.assertEqual(
             cursor.calls[1][1],
-            (42, "Alice Martin", "Directrice générale"),
+            ("Alice Martin", "Directrice générale", 42),
         )
 
     def test_chunk_upsert_rejects_unknown_level(self) -> None:
@@ -408,8 +409,11 @@ class IngestionPublicationTests(unittest.TestCase):
         self.assertIn("SET search_path TO data, public", statements[-1])
         self.assertIn("CREATE TABLE IF NOT EXISTS videos", statements[-1])
         self.assertIn("CREATE TABLE IF NOT EXISTS speakers", statements[-1])
+        self.assertIn("CREATE TABLE IF NOT EXISTS video_speakers", statements[-1])
         self.assertIn("video_id BIGINT NOT NULL REFERENCES videos(id)", statements[-1])
-        self.assertIn("name TEXT NOT NULL", statements[-1])
+        self.assertIn("speaker_id BIGINT NOT NULL REFERENCES speakers(id)", statements[-1])
+        self.assertIn("name TEXT NOT NULL UNIQUE", statements[-1])
+        self.assertNotIn("UNIQUE (video_id, name)", statements[-1])
         self.assertIn("title TEXT", statements[-1])
         self.assertIn("is_long_video BOOLEAN GENERATED ALWAYS", statements[-1])
         self.assertIn("transcript TEXT", statements[-1])

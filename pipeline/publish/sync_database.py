@@ -178,15 +178,71 @@ def table_exists(cursor, table_name):
 
 
 def ensure_speakers_schema(cursor):
+    if table_exists(cursor, "speakers") and "video_id" in table_columns(cursor, "speakers"):
+        cursor.execute(
+            """
+            CREATE TABLE speakers_global_migration (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                title TEXT,
+                data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO speakers_global_migration (name, title, data_collected_date)
+            SELECT DISTINCT ON (name)
+                name,
+                title,
+                data_collected_date
+            FROM speakers
+            ORDER BY name, title IS NULL, id
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE video_speakers (
+                video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+                speaker_id BIGINT NOT NULL
+                    REFERENCES speakers_global_migration(id) ON DELETE CASCADE,
+                data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (video_id, speaker_id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO video_speakers (video_id, speaker_id, data_collected_date)
+            SELECT DISTINCT
+                legacy.video_id,
+                canonical.id,
+                legacy.data_collected_date
+            FROM speakers legacy
+            JOIN speakers_global_migration canonical ON canonical.name = legacy.name
+            ON CONFLICT (video_id, speaker_id) DO NOTHING
+            """
+        )
+        cursor.execute("DROP TABLE speakers CASCADE")
+        cursor.execute("ALTER TABLE speakers_global_migration RENAME TO speakers")
+
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS speakers (
             id BIGSERIAL PRIMARY KEY,
-            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
+            name TEXT NOT NULL UNIQUE,
             title TEXT,
+            data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS video_speakers (
+            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            speaker_id BIGINT NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
             data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (video_id, name)
+            PRIMARY KEY (video_id, speaker_id)
         )
         """
     )
@@ -194,22 +250,35 @@ def ensure_speakers_schema(cursor):
     if "speakers" in video_columns:
         cursor.execute(
             """
-            INSERT INTO speakers (video_id, name, title)
-            SELECT DISTINCT
-                video.id,
-                btrim(speaker_name),
-                NULL
+            INSERT INTO speakers (name, title)
+            SELECT DISTINCT btrim(speaker_name), NULL
             FROM videos video
             CROSS JOIN LATERAL unnest(coalesce(video.speakers, ARRAY[]::text[]))
                 AS speaker_name
             WHERE speaker_name IS NOT NULL
               AND btrim(speaker_name) <> ''
-            ON CONFLICT (video_id, name) DO NOTHING
+            ON CONFLICT (name) DO NOTHING
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO video_speakers (video_id, speaker_id)
+            SELECT DISTINCT video.id, speaker.id
+            FROM videos video
+            CROSS JOIN LATERAL unnest(coalesce(video.speakers, ARRAY[]::text[]))
+                AS speaker_name
+            JOIN speakers speaker ON speaker.name = btrim(speaker_name)
+            WHERE speaker_name IS NOT NULL
+              AND btrim(speaker_name) <> ''
+            ON CONFLICT (video_id, speaker_id) DO NOTHING
             """
         )
         cursor.execute("ALTER TABLE videos DROP COLUMN speakers")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_speakers_video_id ON speakers(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_speakers_name ON speakers(name)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_video_speakers_speaker_id "
+        "ON video_speakers(speaker_id)"
+    )
 
 
 def reset_data_schema(cursor):
@@ -220,6 +289,7 @@ def reset_data_schema(cursor):
             public.chunks,
             public.transcripts,
             public.video_transcripts,
+            public.video_speakers,
             public.speakers,
             public.stats,
             public.video_stats,
@@ -658,23 +728,36 @@ def load_video_speakers(video_path):
 
 
 def replace_video_speakers(cursor, video_id, speaker_details):
-    cursor.execute("DELETE FROM speakers WHERE video_id = %s", (video_id,))
+    cursor.execute("DELETE FROM video_speakers WHERE video_id = %s", (video_id,))
     for detail in speaker_details:
         cursor.execute(
             """
-            INSERT INTO speakers (
-                video_id,
-                name,
-                title,
-                data_collected_date
+            WITH canonical_speaker AS (
+                INSERT INTO speakers (name, title, data_collected_date)
+                VALUES (%s, %s, now())
+                ON CONFLICT (name) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    data_collected_date = now()
+                RETURNING id
             )
-            VALUES (%s, %s, %s, now())
-            ON CONFLICT (video_id, name) DO UPDATE SET
-                title = EXCLUDED.title,
+            INSERT INTO video_speakers (video_id, speaker_id, data_collected_date)
+            SELECT %s, id, now()
+            FROM canonical_speaker
+            ON CONFLICT (video_id, speaker_id) DO UPDATE SET
                 data_collected_date = now()
             """,
-            (video_id, detail["name"], detail.get("title")),
+            (detail["name"], detail.get("title"), video_id),
         )
+    cursor.execute(
+        """
+        DELETE FROM speakers speaker
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM video_speakers relation
+            WHERE relation.speaker_id = speaker.id
+        )
+        """
+    )
     return len(speaker_details)
 
 

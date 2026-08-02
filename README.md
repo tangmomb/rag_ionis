@@ -503,8 +503,9 @@ Les relations logiques entre ces niveaux sont ensuite converties en
 `chunk_parent_id` pendant la synchronisation PostgreSQL.
 Les chunks ne stockent aucune liste de speakers, ni dans leur JSON ni dans la
 table PostgreSQL `chunks`. Les intervenants restent lus depuis
-`outputs/speakers/speakers_validated.json` et sont publiés dans la table
-`speakers` avec leur `video_id`, leur nom et leur fonction.
+`outputs/speakers/speakers_validated.json`. Chaque personne est publiée une
+seule fois dans `speakers`, avec son nom et sa fonction. La table d'association
+`video_speakers` relie ensuite cette personne à une ou plusieurs vidéos.
 
 ### Matrice synthétique
 
@@ -1013,17 +1014,21 @@ docker compose up -d postgres phoenix
 ```
 
 Rechercher les speakers dont le nom est identique ou ne diffère que d'une ou
-deux lettres, puis choisir interactivement le nom et le poste à conserver :
+deux lettres, puis choisir dans une fenêtre Tkinter le nom et le poste à
+conserver :
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline speakers-merge
 .\.venv\Scripts\python.exe -m pipeline speakers-merge --dry-run
 ```
 
-La commande harmonise toutes les occurrences SQL de la personne. Lorsque deux
-variantes existent pour une même vidéo, elle conserve une seule ligne afin de
-respecter l'unicité `(video_id, name)`. `--max-distance 0`, `1` ou `2` permet de
-régler la tolérance orthographique (deux par défaut).
+La détection des doublons repose uniquement sur les noms. Dans la fenêtre, le
+poste peut être sélectionné parmi les valeurs existantes, remplacé par un
+nouveau texte ou laissé vide. La commande harmonise ensuite toutes les
+occurrences SQL de la personne. La fusion conserve une seule ligne dans
+`speakers` et rattache à celle-ci toutes les vidéos des variantes fusionnées.
+`--max-distance 0`, `1` ou `2` permet de régler la tolérance orthographique
+(deux par défaut).
 
 Vider les tables applicatives en conservant le schéma :
 

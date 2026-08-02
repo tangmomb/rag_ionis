@@ -24,11 +24,16 @@ CREATE TABLE IF NOT EXISTS videos (
 
 CREATE TABLE IF NOT EXISTS speakers (
     id BIGSERIAL PRIMARY KEY,
-    video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     title TEXT,
+    data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS video_speakers (
+    video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    speaker_id BIGINT NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
     data_collected_date TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (video_id, name)
+    PRIMARY KEY (video_id, speaker_id)
 );
 
 CREATE TABLE IF NOT EXISTS stats (
@@ -100,8 +105,8 @@ CREATE TABLE IF NOT EXISTS chat.messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
-CREATE INDEX IF NOT EXISTS idx_speakers_video_id ON speakers(video_id);
 CREATE INDEX IF NOT EXISTS idx_speakers_name ON speakers(name);
+CREATE INDEX IF NOT EXISTS idx_video_speakers_speaker_id ON video_speakers(speaker_id);
 CREATE INDEX IF NOT EXISTS idx_stats_snapshot_date ON stats(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_video_id ON chunks(video_id);

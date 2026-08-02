@@ -311,7 +311,7 @@ const actions = [
     category: "Maintenance",
     title: "Fusionner les speakers en doublon",
     short: "Rapprocher les noms et choisir le poste à conserver",
-    description: "Analyse la table speakers, propose les noms identiques ou très proches, puis permet de choisir interactivement le nom et le poste à conserver.",
+    description: "Analyse uniquement les noms de la table speakers, propose les doublons identiques ou très proches, puis ouvre une fenêtre Tkinter pour choisir le nom et sélectionner ou saisir le poste à conserver.",
     icon: "⇉",
     accent: "#dce8f5",
     fixedArgs: ["-m", "pipeline", "speakers-merge"],

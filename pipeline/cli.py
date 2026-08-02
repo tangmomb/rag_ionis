@@ -147,7 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     merge_speakers_parser = commands.add_parser(
         "speakers-merge",
-        help="Propose et fusionne interactivement les speakers SQL en doublon.",
+        help="Ouvre la revue Tkinter des noms de speakers SQL en doublon.",
     )
     merge_speakers_parser.add_argument(
         "--max-distance",

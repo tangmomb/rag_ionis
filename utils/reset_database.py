@@ -25,6 +25,8 @@ def reset_database(cursor):
             public.chunks,
             public.transcripts,
             public.video_transcripts,
+            public.video_speakers,
+            public.speakers,
             public.stats,
             public.video_stats,
             public.video_daily_stats,

@@ -7,13 +7,18 @@ from typing import Callable, Iterable, Sequence
 
 
 @dataclass(frozen=True)
-class SpeakerRecord:
-    id: int
+class SpeakerVideo:
     video_id: int
-    name: str
-    title: str | None
     video_title: str = ""
     youtube_video_id: str = ""
+
+
+@dataclass(frozen=True)
+class SpeakerRecord:
+    id: int
+    name: str
+    title: str | None
+    videos: tuple[SpeakerVideo, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,12 +103,6 @@ def _preferred_values(values: Iterable[str | None]) -> list[str | None]:
     )
 
 
-def _needs_review(records: Sequence[SpeakerRecord]) -> bool:
-    raw_names = {record.name for record in records}
-    raw_titles = {record.title for record in records}
-    return len(raw_names) > 1 or len(raw_titles) > 1
-
-
 def find_duplicate_groups(
     records: Sequence[SpeakerRecord],
     *,
@@ -153,9 +152,11 @@ def find_duplicate_groups(
                 for index in indexes
                 for record in records_by_name[names[index]]
             ),
-            key=lambda record: (normalize_text(record.name), record.video_id, record.id),
+            key=lambda record: (normalize_text(record.name), record.id),
         )
-        if len(grouped_records) > 1 and _needs_review(grouped_records):
+        # Le poste ne participe jamais à la détection. Il ne sera examiné
+        # qu'au moment de la revue du groupe construit depuis les noms.
+        if len(grouped_records) > 1:
             groups.append(DuplicateGroup(tuple(grouped_records)))
 
     return sorted(
@@ -172,26 +173,48 @@ def fetch_speakers(cursor) -> list[SpeakerRecord]:
         """
         SELECT
             speaker.id,
-            speaker.video_id,
             speaker.name,
             speaker.title,
+            video.id,
             video.title,
             video.youtube_video_id
         FROM speakers speaker
-        JOIN videos video ON video.id = speaker.video_id
-        ORDER BY speaker.id
+        LEFT JOIN video_speakers relation ON relation.speaker_id = speaker.id
+        LEFT JOIN videos video ON video.id = relation.video_id
+        ORDER BY speaker.id, video.id
         """
     )
+    rows_by_speaker: dict[int, dict[str, object]] = {}
+    for row in cursor.fetchall():
+        speaker_id = int(row[0])
+        item = rows_by_speaker.setdefault(
+            speaker_id,
+            {
+                "name": str(row[1]).strip(),
+                "title": (
+                    (str(row[2]).strip() or None)
+                    if row[2] is not None
+                    else None
+                ),
+                "videos": [],
+            },
+        )
+        if row[3] is not None:
+            item["videos"].append(
+                SpeakerVideo(
+                    video_id=int(row[3]),
+                    video_title=str(row[4] or "").strip(),
+                    youtube_video_id=str(row[5] or "").strip(),
+                )
+            )
     return [
         SpeakerRecord(
-            id=int(row[0]),
-            video_id=int(row[1]),
-            name=str(row[2]).strip(),
-            title=(str(row[3]).strip() or None) if row[3] is not None else None,
-            video_title=str(row[4] or "").strip(),
-            youtube_video_id=str(row[5] or "").strip(),
+            id=speaker_id,
+            name=str(item["name"]),
+            title=item["title"] if isinstance(item["title"], str) else None,
+            videos=tuple(item["videos"]),
         )
-        for row in cursor.fetchall()
+        for speaker_id, item in rows_by_speaker.items()
     ]
 
 
@@ -207,36 +230,45 @@ def merge_group(
     if not canonical_name:
         raise ValueError("Le nom canonique ne peut pas etre vide.")
 
-    records_by_video: dict[int, list[SpeakerRecord]] = defaultdict(list)
-    for record in group.records:
-        records_by_video[record.video_id].append(record)
-
-    deleted_rows = 0
-    for video_records in records_by_video.values():
-        survivor = min(
-            video_records,
-            key=lambda record: (
-                record.name != canonical_name,
-                record.id,
-            ),
-        )
-        duplicate_ids = [
-            record.id for record in video_records if record.id != survivor.id
-        ]
-        if duplicate_ids:
-            cursor.execute(
-                "DELETE FROM speakers WHERE id = ANY(%s)",
-                (duplicate_ids,),
-            )
-            deleted_rows += len(duplicate_ids)
+    survivor = min(
+        group.records,
+        key=lambda record: (
+            record.name != canonical_name,
+            record.id,
+        ),
+    )
+    duplicate_ids = [
+        record.id for record in group.records if record.id != survivor.id
+    ]
+    video_ids = {
+        video.video_id
+        for record in group.records
+        for video in record.videos
+    }
+    if duplicate_ids:
         cursor.execute(
-            "UPDATE speakers SET name = %s, title = %s WHERE id = %s",
-            (canonical_name, canonical_title, survivor.id),
+            """
+            INSERT INTO video_speakers (video_id, speaker_id, data_collected_date)
+            SELECT relation.video_id, %s, now()
+            FROM video_speakers relation
+            WHERE relation.speaker_id = ANY(%s)
+            ON CONFLICT (video_id, speaker_id) DO UPDATE SET
+                data_collected_date = now()
+            """,
+            (survivor.id, duplicate_ids),
         )
+        cursor.execute(
+            "DELETE FROM speakers WHERE id = ANY(%s)",
+            (duplicate_ids,),
+        )
+    cursor.execute(
+        "UPDATE speakers SET name = %s, title = %s WHERE id = %s",
+        (canonical_name, canonical_title, survivor.id),
+    )
 
     return MergeResult(
-        updated_videos=len(records_by_video),
-        deleted_rows=deleted_rows,
+        updated_videos=len(video_ids),
+        deleted_rows=len(duplicate_ids),
     )
 
 
@@ -255,8 +287,9 @@ def _display_group(
         label = title or "(aucun poste)"
         output(f"  poste: {label} ({title_counts[title]} occurrence(s))")
     videos = {
-        (record.youtube_video_id, record.video_title)
+        (video.youtube_video_id, video.video_title)
         for record in group.records
+        for video in record.videos
     }
     for youtube_id, video_title in sorted(videos):
         output(f"  video: {youtube_id} — {video_title}")
@@ -349,6 +382,214 @@ def review_groups(
     return merged_groups, updated_videos, deleted_rows
 
 
+def review_groups_tkinter(
+    cursor,
+    groups: Sequence[DuplicateGroup],
+    *,
+    output: Callable[[str], None] = print,
+) -> tuple[int, int, int]:
+    """Affiche les doublons un par un et applique les choix valides."""
+    if not groups:
+        return 0, 0, 0
+
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except ImportError as exc:
+        raise RuntimeError(
+            "Tkinter est requis pour revoir les doublons de speakers."
+        ) from exc
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        raise RuntimeError(
+            "Impossible d'ouvrir la fenêtre Tkinter de revue des speakers."
+        ) from exc
+
+    root.title("Fusion des speakers en doublon")
+    root.geometry("900x620")
+    root.minsize(760, 500)
+
+    current_index = 0
+    merged_groups = 0
+    updated_videos = 0
+    deleted_rows = 0
+
+    progress_var = tk.StringVar()
+    name_var = tk.StringVar()
+    title_var = tk.StringVar()
+    status_var = tk.StringVar(
+        value="Choisis le nom et le poste à appliquer à toutes les occurrences."
+    )
+
+    container = ttk.Frame(root, padding=16)
+    container.pack(fill="both", expand=True)
+    container.columnconfigure(0, weight=1)
+    container.rowconfigure(4, weight=1)
+
+    ttk.Label(
+        container,
+        textvariable=progress_var,
+        font=("Segoe UI", 13, "bold"),
+    ).grid(row=0, column=0, sticky="w", pady=(0, 14))
+
+    choices = ttk.Frame(container)
+    choices.grid(row=1, column=0, sticky="ew")
+    choices.columnconfigure(1, weight=1)
+
+    ttk.Label(choices, text="Orthographe à conserver").grid(
+        row=0, column=0, sticky="w", padx=(0, 12), pady=5
+    )
+    name_box = ttk.Combobox(
+        choices,
+        textvariable=name_var,
+        state="readonly",
+    )
+    name_box.grid(row=0, column=1, sticky="ew", pady=5)
+
+    ttk.Label(choices, text="Poste à conserver").grid(
+        row=1, column=0, sticky="w", padx=(0, 12), pady=5
+    )
+    title_box = ttk.Combobox(choices, textvariable=title_var, state="normal")
+    title_box.grid(row=1, column=1, sticky="ew", pady=5)
+
+    ttk.Label(
+        container,
+        text=(
+            "Le poste est éditable : sélectionne une valeur existante, "
+            "écris-en une nouvelle, ou laisse le champ vide."
+        ),
+        foreground="#555555",
+        wraplength=820,
+    ).grid(row=2, column=0, sticky="w", pady=(6, 14))
+
+    ttk.Label(container, text="Occurrences détectées").grid(
+        row=3, column=0, sticky="w", pady=(0, 5)
+    )
+    occurrences = ttk.Treeview(
+        container,
+        columns=("name", "title", "video"),
+        show="headings",
+        selectmode="none",
+    )
+    occurrences.heading("name", text="Nom")
+    occurrences.heading("title", text="Poste")
+    occurrences.heading("video", text="Vidéo")
+    occurrences.column("name", width=180, anchor="w")
+    occurrences.column("title", width=230, anchor="w")
+    occurrences.column("video", width=360, anchor="w")
+    occurrences.grid(row=4, column=0, sticky="nsew")
+
+    scrollbar = ttk.Scrollbar(
+        container,
+        orient="vertical",
+        command=occurrences.yview,
+    )
+    occurrences.configure(yscrollcommand=scrollbar.set)
+    scrollbar.grid(row=4, column=1, sticky="ns")
+
+    ttk.Label(
+        container,
+        textvariable=status_var,
+        wraplength=820,
+    ).grid(row=5, column=0, sticky="w", pady=(12, 8))
+
+    actions = ttk.Frame(container)
+    actions.grid(row=6, column=0, sticky="e")
+
+    def show_group() -> None:
+        group = groups[current_index]
+        progress_var.set(
+            f"Doublon {current_index + 1} sur {len(groups)} "
+            f"- {len(group.records)} occurrence(s)"
+        )
+
+        names = [str(value) for value in _preferred_values(group.names)]
+        titles = [value or "" for value in _preferred_values(group.titles)]
+        name_box.configure(values=names)
+        title_box.configure(values=titles)
+        name_var.set(names[0])
+        title_var.set(titles[0] if titles else "")
+
+        for item_id in occurrences.get_children():
+            occurrences.delete(item_id)
+        for record in group.records:
+            video_labels = []
+            for video in record.videos:
+                label = video.youtube_video_id
+                if video.video_title:
+                    label = f"{label} - {video.video_title}"
+                video_labels.append(label)
+            occurrences.insert(
+                "",
+                "end",
+                values=(record.name, record.title or "", " ; ".join(video_labels)),
+            )
+
+    def advance() -> None:
+        nonlocal current_index
+        current_index += 1
+        if current_index >= len(groups):
+            root.destroy()
+            return
+        show_group()
+
+    def merge_current_group() -> None:
+        nonlocal merged_groups, updated_videos, deleted_rows
+        chosen_name = " ".join(name_var.get().split())
+        chosen_title = " ".join(title_var.get().split()) or None
+        if not chosen_name:
+            messagebox.showwarning(
+                "Nom obligatoire",
+                "Choisis l'orthographe du nom à conserver.",
+                parent=root,
+            )
+            return
+        if not messagebox.askyesno(
+            "Confirmer la fusion",
+            (
+                f"Appliquer le nom « {chosen_name} » et le poste "
+                f"« {chosen_title or '(aucun poste)'} » à toutes les occurrences ?"
+            ),
+            parent=root,
+        ):
+            return
+
+        result = merge_group(
+            cursor,
+            groups[current_index],
+            canonical_name=chosen_name,
+            canonical_title=chosen_title,
+        )
+        merged_groups += 1
+        updated_videos += result.updated_videos
+        deleted_rows += result.deleted_rows
+        output(
+            f"[merge] {chosen_name}: {result.updated_videos} vidéo(s) harmonisée(s), "
+            f"{result.deleted_rows} ligne(s) supprimée(s)."
+        )
+        status_var.set(f"Fusion de {chosen_name} enregistrée.")
+        advance()
+
+    ttk.Button(actions, text="Terminer", command=root.destroy).pack(
+        side="left", padx=(0, 8)
+    )
+    ttk.Button(actions, text="Passer", command=advance).pack(
+        side="left", padx=(0, 8)
+    )
+    ttk.Button(
+        actions,
+        text="Fusionner et continuer",
+        command=merge_current_group,
+    ).pack(side="left")
+
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    show_group()
+    root.mainloop()
+    return merged_groups, updated_videos, deleted_rows
+
+
 def run(
     database_url: str,
     *,
@@ -364,23 +605,31 @@ def run(
         options="-c search_path=data,public",
     ) as connection:
         with connection.cursor() as cursor:
+            from pipeline.publish.sync_database import ensure_speakers_schema
+
+            ensure_speakers_schema(cursor)
             records = fetch_speakers(cursor)
             groups = find_duplicate_groups(records, max_distance=max_distance)
             output(
                 f"{len(records)} ligne(s) speaker analysee(s), "
                 f"{len(groups)} groupe(s) a verifier."
             )
-            result = review_groups(
-                cursor,
-                groups,
-                dry_run=dry_run,
-                input_func=input_func,
-                output=output,
-            )
             if dry_run:
+                result = review_groups(
+                    cursor,
+                    groups,
+                    dry_run=True,
+                    input_func=input_func,
+                    output=output,
+                )
                 connection.rollback()
                 output("Simulation terminee : aucune modification appliquee.")
             else:
+                result = review_groups_tkinter(
+                    cursor,
+                    groups,
+                    output=output,
+                )
                 connection.commit()
                 output(
                     f"Termine : {result[0]} groupe(s) fusionne(s), "

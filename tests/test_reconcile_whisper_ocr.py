@@ -11,6 +11,49 @@ from pipeline.steps.transcripts import reconcile_whisper_with_ocr as reconciliat
 
 
 class ReconcileWhisperOcrTests(unittest.TestCase):
+    def test_luna_request_keeps_reasoning_margin_for_structured_output(self) -> None:
+        request = reconciliation.luna_request(
+            "gpt-5.6-luna",
+            [{"index": 0, "text": "Un segment court."}],
+            "Reference OCR.",
+        )
+
+        self.assertGreaterEqual(request["max_output_tokens"], 8192)
+
+    def test_luna_retries_a_truncated_response(self) -> None:
+        valid_payload = json.dumps(
+            {"segments": [{"index": 0, "text": "Texte corrige."}]}
+        )
+
+        class Responses:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def create(self, **_request):
+                self.calls += 1
+                if self.calls == 1:
+                    return SimpleNamespace(
+                        output_text='{"segments":[',
+                        status="incomplete",
+                        incomplete_details={"reason": "max_output_tokens"},
+                    )
+                return SimpleNamespace(
+                    output_text=valid_payload,
+                    status="completed",
+                    incomplete_details=None,
+                )
+
+        responses = Responses()
+        corrected, _changes = reconciliation.reconcile_transcripts_with_luna(
+            SimpleNamespace(responses=responses),
+            "gpt-5.6-luna",
+            "[00:00-00:01] Texte brut.\n",
+            "Texte corrige.",
+        )
+
+        self.assertEqual(responses.calls, 2)
+        self.assertIn("Texte corrige.", corrected)
+
     def test_luna_corrects_bodies_while_python_preserves_line_structure(self) -> None:
         class Responses:
             def __init__(self) -> None:

@@ -30,7 +30,11 @@ class EnrichTranscriptsTests(unittest.TestCase):
                 """
                 {
                   "kinds": {
-                    "graphic": {"00:05": "Chapitre", "00:10": "Conclusion"},
+                    "graphic": {
+                      "00:05": "Chapitre",
+                      "00:05#2": "Sous-chapitre",
+                      "00:10": "Conclusion"
+                    },
                     "name": {"00:02": "Alice Martin"},
                     "title": {"00:03": "Texte animé"},
                     "subtitle": {"00:04": "Sous-titre"}
@@ -46,9 +50,14 @@ class EnrichTranscriptsTests(unittest.TestCase):
             items,
             [
                 {"second": 5, "text": "Chapitre"},
+                {"second": 5, "text": "Sous-chapitre"},
                 {"second": 10, "text": "Conclusion"},
             ],
         )
+
+    def test_duplicate_timecode_suffix_is_ignored_when_parsing(self) -> None:
+        self.assertEqual(enrichment.parse_timecode("00:03#2"), 3)
+        self.assertEqual(enrichment.parse_timecode("01:02:03#12"), 3723)
 
     def test_enriched_file_combines_speakers_and_intercalaires(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

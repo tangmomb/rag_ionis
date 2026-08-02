@@ -46,10 +46,15 @@ chaque tâche.
 
 Le seuil est strict : une vidéo de 600 secondes exactement reste courte.
 
+La présence de sous-titres exige des boxes OCR à au moins 90 % de confiance,
+une série stable pendant 10 secondes continues, au moins 3 variantes de texte
+et un centre horizontal situé entre 40 % et 60 % de la largeur de la vidéo.
+
 Pour les vidéos courtes, le type visuel est déterminé dans cet ordre :
 
 1. `interview` si le cluster DINO dominant couvre au moins 50 % des frames
-   `footage` avec une similarité minimale de 0,88 ;
+   `footage`, au moins 30 % de toutes les frames classifiées, avec une
+   similarité minimale de 0,88 ;
 2. sinon `motion_design` si la durée est `< 180 s` et la part de `footage`
    `< 15 %` ;
 3. sinon `video_recording`.
@@ -116,11 +121,21 @@ reste sur une route courte, `transcript_plain.txt` peut être construit depuis
 les catégories OCR `graphic` et `others`, avec un préfixe explicite. Les
 sous-titres OCR restent exclus de ce repli.
 
+La normalisation `Ionis-STM` est partagée par les branches OCR et Whisper via
+`pipeline/support/brand_normalization.py`. Une variante ajoutée à cette règle
+unique est donc appliquée aux deux routes.
+
 ## Après `pipeline run`
 
 Le plan principal se termine aux chunks. Les embeddings sont créés par la tâche
 explicite `embeddings.create`, puis la publication S3 et la synchronisation
 PostgreSQL utilisent leurs commandes séparées.
+
+La commande globale `speakers-merge` est également hors de l’arbre par vidéo :
+elle inspecte uniquement les noms de la table SQL des speakers, propose les
+doublons exacts ou séparés par une à deux lettres, puis ouvre une fenêtre
+Tkinter pour choisir le nom et sélectionner ou saisir le poste à conserver
+avant la fusion.
 
 L’arbre a été vérifié contre :
 

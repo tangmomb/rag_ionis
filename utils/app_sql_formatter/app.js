@@ -1,4 +1,4 @@
-const example = `SELECT c.id, v.title, v.url, c.chunk_index, c.content, ARRAY(SELECT s.name FROM speakers s WHERE s.video_id = v.id ORDER BY s.id) AS speakers, ts_rank_cd( to_tsvector('french', coalesce(c.content, '')), websearch_to_tsquery('french', %s) ) AS score FROM chunks c JOIN videos v ON v.id = c.video_id WHERE to_tsvector('french', coalesce(c.content, '')) @@ websearch_to_tsquery('french', %s) ORDER BY score DESC, c.id ASC LIMIT %s`;
+const example = `SELECT c.id, v.title, v.url, c.chunk_index, c.content, ARRAY(SELECT s.name FROM video_speakers vs JOIN speakers s ON s.id = vs.speaker_id WHERE vs.video_id = v.id ORDER BY s.id) AS speakers, ts_rank_cd( to_tsvector('french', coalesce(c.content, '')), websearch_to_tsquery('french', %s) ) AS score FROM chunks c JOIN videos v ON v.id = c.video_id WHERE to_tsvector('french', coalesce(c.content, '')) @@ websearch_to_tsquery('french', %s) ORDER BY score DESC, c.id ASC LIMIT %s`;
 const input = document.querySelector('#input');
 const output = document.querySelector('#output code');
 const status = document.querySelector('#status');

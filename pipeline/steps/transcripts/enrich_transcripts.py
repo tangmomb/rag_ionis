@@ -31,12 +31,15 @@ TRANSCRIPT_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})-((?:\d{2}:)?\d{2}:\d{
 SUBTITLE_LINE = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})\]\s*(.*)$")
 
 def parse_timecode(value):
-    parts = [int(part) for part in value.split(":")]
+    normalized = re.sub(r"#\d+$", "", str(value).strip())
+    parts = [int(part) for part in normalized.split(":")]
     if len(parts) == 2:
         minutes, seconds = parts
         return minutes * 60 + seconds
-    hours, minutes, seconds = parts
-    return hours * 3600 + minutes * 60 + seconds
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        return hours * 3600 + minutes * 60 + seconds
+    raise ValueError(f"Timecode invalide: {value!r}")
 
 
 def corrected_timecodes_path(video_path, *, transcripts_dir_name=None):

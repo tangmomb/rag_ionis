@@ -242,7 +242,7 @@ class PersonResolutionTests(unittest.TestCase):
 
         self.assertEqual(trace["lookup_strategy"], "transcript_fallback")
         self.assertEqual(sources[0]["video_title"], "Vidéo où Alice est citée")
-        self.assertIn("FROM speakers", executed[0][0])
+        self.assertIn("JOIN speakers", executed[0][0])
         self.assertIn(" OR ", executed[0][0])
         self.assertIn("JOIN transcripts", executed[1][0])
         self.assertIn(" OR ", executed[1][0])

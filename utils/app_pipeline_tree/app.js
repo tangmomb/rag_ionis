@@ -110,6 +110,11 @@ function box(title, options = {}) {
 
   const details = [
     detailSection(
+      "Entrées",
+      renderArtifacts(options.inputs),
+      "inputs-section",
+    ),
+    detailSection(
       options.kind === "decision" ? "Règle" : "Action",
       options.action ? `<p>${options.action}</p>` : "",
       "process-section",
@@ -281,7 +286,7 @@ function shortSpeakerPipeline() {
           ],
           action: "Associe les noms aux voix et ajoute les intercalaires.",
           technical:
-            "Pour chaque nom validé retrouvé dans un OCR de type <code>name</code>, <code>lower_third</code> ou <code>others</code>, Python utilise le timecode de son apparition à l’écran et l’associe au segment <code>SPEAKER_XX</code> qui parle à cet instant. Si aucun segment ne contient exactement ce timecode, le segment le plus proche est accepté jusqu’à 2 secondes. Les correspondances nom–label sont cumulées, classées par score et rendues uniques avant de remplacer les labels <code>SPEAKER_XX</code> dans le transcript. Les auto-présentations comme « je m’appelle » complètent ces indices. Enfin, seuls les textes OCR de type <code>graphic</code> sont ajoutés sous forme d’<code>INTERCALAIRE</code> à leur propre timecode.",
+            "Pour chaque nom validé retrouvé dans un OCR de type <code>name</code>, <code>lower_third</code> ou <code>others</code>, Python utilise le timecode de son apparition à l’écran et l’associe au segment <code>SPEAKER_XX</code> qui parle à cet instant. Si aucun segment ne contient exactement ce timecode, le segment le plus proche est accepté jusqu’à 2 secondes. Les correspondances nom–label sont cumulées, classées par score et rendues uniques avant de remplacer les labels <code>SPEAKER_XX</code> dans le transcript. Les auto-présentations comme « je m’appelle » complètent ces indices. Enfin, seuls les textes OCR de type <code>graphic</code> sont ajoutés sous forme d’<code>INTERCALAIRE</code> à leur propre timecode. Les suffixes de doublon comme <code>00:03#2</code> sont interprétés comme le même instant <code>00:03</code>, ce qui permet de conserver plusieurs intercalaires simultanés sans erreur.",
           outputs: [
             artifact(
               "outputs/transcripts_whisper/transcript_3_enriched.txt",
@@ -325,7 +330,7 @@ function reconcileWithOcrPipeline() {
       inputs: [artifact("outputs/ocr/ocr_subtitles_timecoded.txt")],
       action: "Normalise les variantes de la marque.",
       technical:
-        "Applique dans <code>ocr_subtitles_timecoded.txt</code> des expressions régulières déterministes qui remplacent notamment « ionis stm », « onis-stm » ou « l’onis stm » par <code>Ionis-STM</code>, puis réécrit le même fichier.",
+        "Utilise la règle partagée <code>pipeline/support/brand_normalization.py</code>, commune aux branches OCR et Whisper. Elle remplace notamment « Ionis STM », « Onis-STM », « L’Onis STM », « Lonis STM », « Yonis STM », « Yaunis STM », « Unisystem », « UNISSTM » et « IonisSTM » par <code>Ionis-STM</code>, puis réécrit le même fichier.",
       outputs: [artifact("outputs/ocr/ocr_subtitles_timecoded.txt")],
     }),
     oneChild(
@@ -414,7 +419,7 @@ function noSubtitleCorrectionPipeline() {
       ],
       action: "Corrige WhisperX avec le lexique visuel.",
       technical:
-        "Construit un lexique déterministe depuis les textes OCR visuels, recherche les correspondances fiables dans <code>transcript_1_brut.txt</code> et écrit le transcript corrigé avec son rapport TSV.",
+        "Applique d’abord la normalisation Ionis-STM partagée avec la branche OCR, puis construit un lexique déterministe depuis les textes OCR de type <code>name</code>, <code>lower_third</code>, <code>title</code>, <code>logo</code>, <code>graphic</code> ou <code>outro</code>. En mode balanced, une forme doit apparaître au moins 2 fois. Les noms propres proches sont ensuite corrigés selon leur similarité ; les mots de 4 caractères ou moins demandent au moins 90 %. Le transcript corrigé et le rapport TSV sont écrits séparément.",
       outputs: [
         artifact(
           "outputs/transcripts_whisper/transcript_2_corrected.txt",
@@ -462,7 +467,7 @@ function commonShortProcessing(nextStep, hasSubtitles) {
         inputs: [artifact("outputs/ocr/01_processed_ocr_items.json")],
         action: "Regroupe les overlays OCR utiles.",
         technical:
-          "<strong>Fragments d’un même timecode :</strong> les textes appartenant à la même famille d’overlay sont concaténés dans leur ordre OCR. Les fragments d’un visuel <code>graphic</code> sont séparés par un espace ; ceux des catégories <code>name</code>, <code>lower_third</code> et <code>title</code> sont séparés par <code> / </code>. <strong>Lectures successives :</strong> pour un overlay sur footage vu sur des frames espacées d’au plus 1 seconde, si un texte répète ou prolonge l’autre, seule la lecture la plus complète est conservée. Un fragment court est également supprimé lorsqu’il est inclus dans une version plus longue détectée dans les 4 secondes suivantes. Pour les graphics séparés de moins de 5 secondes, les lectures identiques ou incluses sont regroupées ; à partir de 6 caractères, le regroupement accepte aussi jusqu’à 2 caractères différents ou une similarité d’au moins 0,62. La version la plus complète d’un groupe observé sur au moins 2 images est gardée. Enfin, les doublons exacts normalisés sont retirés. Le résultat est organisé par catégorie et par timecode dans <code>02_filtered_ocr_overlays.json</code>.",
+          "<strong>Fragments d’un même timecode :</strong> les textes appartenant à la même famille d’overlay sont concaténés dans leur ordre OCR. Les fragments d’un visuel <code>graphic</code> sont séparés par un espace ; ceux des catégories <code>name</code>, <code>lower_third</code> et <code>title</code> sont séparés par <code> / </code>. Si plusieurs overlays distincts doivent rester au même instant, les clés suivantes reçoivent un suffixe <code>#2</code>, <code>#3</code>, etc. <strong>Lectures successives :</strong> pour un overlay sur footage vu sur des frames espacées d’au plus 1 seconde, si un texte répète ou prolonge l’autre, seule la lecture la plus complète est conservée. Un fragment court est également supprimé lorsqu’il est inclus dans une version plus longue détectée dans les 4 secondes suivantes. Pour les graphics séparés de moins de 5 secondes, les lectures identiques ou incluses sont regroupées ; à partir de 6 caractères, le regroupement accepte aussi jusqu’à 2 caractères différents ou une similarité d’au moins 0,62. La version la plus complète d’un groupe observé sur au moins 2 images est gardée. Enfin, les doublons exacts normalisés sont retirés. Le résultat est organisé par catégorie et par timecode dans <code>02_filtered_ocr_overlays.json</code>.",
         outputs: [
           artifact("outputs/ocr/02_filtered_ocr_overlays.json"),
         ],
@@ -506,7 +511,7 @@ function subtitleDecision() {
       inputs: [artifact("outputs/ocr/ocr_box_locations.json")],
       action: "Décide si une zone de sous-titres est stable.",
       technical:
-        "Valide la présence de sous-titres lorsqu’une même zone reste stable pendant au moins 10 secondes continues et contient au moins 3 variantes de texte.",
+        "Ne considère que les boxes OCR dont le score est ≥ 0,90. Une série est validée si elle reste stable pendant au moins 10 secondes continues, contient au moins 3 variantes de texte et si son centre horizontal se situe entre 40 % et 60 % de la largeur vidéo, soit à ± 10 % du centre. La position verticale reste libre.",
     },
   );
 }
@@ -559,7 +564,7 @@ function typeResult(type) {
           inputs: [artifact("outputs/ocr/raw/raw_ocr_*_frames.json")],
           action: "Associe chaque OCR à sa position et son timecode.",
           technical:
-            "Normalise les coordonnées des boxes OCR et déduit la seconde correspondante depuis le nom timecodé de chaque frame.",
+            "Normalise les coordonnées des boxes OCR, déduit la seconde correspondante depuis le nom timecodé de chaque frame et conserve l’alignement exact entre chaque box, son texte et son score de confiance. Ces scores alimentent ensuite le seuil de 90 % de la détection des sous-titres.",
           outputs: [artifact("outputs/ocr/ocr_box_locations.json")],
         }),
         subtitleDecision(),
@@ -610,7 +615,7 @@ function interviewDecision() {
       ],
       action: "Détecte un plan filmé dominant.",
       technical:
-        "Les embeddings DINO des frames footage sont normalisés en L2. Le produit scalaire calcule ensuite la similarité cosinus entre chaque paire. Pour chaque frame, on compte les voisines à ≥ 0,88 : celle qui en possède le plus devient le centre du cluster dominant. En cas d’égalité, la meilleure similarité moyenne l’emporte. Interview si ce cluster couvre au moins 50 % des frames footage.",
+        "Les embeddings DINO des frames footage sont normalisés en L2. Le produit scalaire calcule ensuite la similarité cosinus entre chaque paire. Pour chaque frame, on compte les voisines à ≥ 0,88 : celle qui en possède le plus devient le centre du cluster dominant. En cas d’égalité, la meilleure similarité moyenne l’emporte. Interview uniquement si ce cluster couvre au moins 50 % des frames footage et au moins 30 % de toutes les frames classifiées (footage + graphic + mixture).",
       outputs: [
         artifact(
           "outputs/interview/interview_detection_manifest.json",

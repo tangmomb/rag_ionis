@@ -5,6 +5,7 @@ import unittest
 from pipeline.maintenance.merge_speakers import (
     DuplicateGroup,
     SpeakerRecord,
+    SpeakerVideo,
     find_duplicate_groups,
     levenshtein_distance,
     merge_group,
@@ -21,11 +22,15 @@ def speaker(
 ) -> SpeakerRecord:
     return SpeakerRecord(
         id=row_id,
-        video_id=video_id,
         name=name,
         title=title,
-        video_title=f"Video {video_id}",
-        youtube_video_id=f"youtube-{video_id}",
+        videos=(
+            SpeakerVideo(
+                video_id=video_id,
+                video_title=f"Video {video_id}",
+                youtube_video_id=f"youtube-{video_id}",
+            ),
+        ),
     )
 
 
@@ -46,7 +51,7 @@ class MergeSpeakersTests(unittest.TestCase):
         self.assertEqual(levenshtein_distance("alice martin", "alixe marton"), 2)
         self.assertGreater(levenshtein_distance("alice martin", "bob durand"), 2)
 
-    def test_finds_exact_title_conflicts_and_close_name_variants(self) -> None:
+    def test_detection_uses_names_only(self) -> None:
         records = [
             speaker(1, 10, "Alice Martin", "Directrice"),
             speaker(2, 11, "Alice Martin", "Fondatrice"),
@@ -57,8 +62,21 @@ class MergeSpeakersTests(unittest.TestCase):
 
         groups = find_duplicate_groups(records, max_distance=2)
 
-        self.assertEqual(len(groups), 1)
-        self.assertEqual({record.id for record in groups[0].records}, {1, 2, 3})
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(
+            [{record.id for record in group.records} for group in groups],
+            [{1, 2, 3}, {4, 5}],
+        )
+
+    def test_titles_alone_never_create_a_duplicate_group(self) -> None:
+        records = [
+            speaker(1, 10, "Alice Martin", "Directrice"),
+            speaker(2, 11, "Bruno Durand", "Directrice"),
+        ]
+
+        groups = find_duplicate_groups(records, max_distance=2)
+
+        self.assertEqual(groups, [])
 
     def test_distance_option_can_require_exact_normalized_names(self) -> None:
         records = [
@@ -90,18 +108,22 @@ class MergeSpeakersTests(unittest.TestCase):
         )
 
         self.assertEqual(result.updated_videos, 2)
-        self.assertEqual(result.deleted_rows, 1)
+        self.assertEqual(result.deleted_rows, 2)
         self.assertEqual(
             cursor.calls,
             [
-                ("DELETE FROM speakers WHERE id = ANY(%s)", ([1],)),
+                (
+                    "INSERT INTO video_speakers (video_id, speaker_id, "
+                    "data_collected_date) SELECT relation.video_id, %s, now() "
+                    "FROM video_speakers relation WHERE relation.speaker_id = "
+                    "ANY(%s) ON CONFLICT (video_id, speaker_id) DO UPDATE SET "
+                    "data_collected_date = now()",
+                    (2, [1, 3]),
+                ),
+                ("DELETE FROM speakers WHERE id = ANY(%s)", ([1, 3],)),
                 (
                     "UPDATE speakers SET name = %s, title = %s WHERE id = %s",
                     ("Alice Martin", "Fondatrice", 2),
-                ),
-                (
-                    "UPDATE speakers SET name = %s, title = %s WHERE id = %s",
-                    ("Alice Martin", "Fondatrice", 3),
                 ),
             ],
         )
@@ -124,11 +146,32 @@ class MergeSpeakersTests(unittest.TestCase):
             output=output.append,
         )
 
-        self.assertEqual(result, (1, 2, 0))
+        self.assertEqual(result, (1, 2, 1))
         updates = [call for call in cursor.calls if call[0].startswith("UPDATE")]
-        self.assertEqual(len(updates), 2)
+        self.assertEqual(len(updates), 1)
         self.assertTrue(all(call[1][0] == "Alice Martin" for call in updates))
         self.assertTrue(all(call[1][1] == "Fondatrice" for call in updates))
+
+    def test_merge_accepts_a_new_title(self) -> None:
+        group = DuplicateGroup(
+            (
+                speaker(1, 10, "Alice Martin", "Directrice"),
+                speaker(2, 11, "Alise Martin", "Fondatrice"),
+            )
+        )
+        cursor = RecordingCursor()
+
+        merge_group(
+            cursor,
+            group,
+            canonical_name="Alice Martin",
+            canonical_title="Directrice generale",
+        )
+
+        updates = [call for call in cursor.calls if call[0].startswith("UPDATE")]
+        self.assertTrue(
+            all(call[1][1] == "Directrice generale" for call in updates)
+        )
 
     def test_dry_run_only_displays_proposals(self) -> None:
         group = DuplicateGroup(

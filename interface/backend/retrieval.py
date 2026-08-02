@@ -29,8 +29,9 @@ from interface.backend.utilities import (
 VIDEO_PERSON_NAMES_SQL = """
 ARRAY(
     SELECT person_row.name
-    FROM speakers person_row
-    WHERE person_row.video_id = v.id
+    FROM video_speakers video_person
+    JOIN speakers person_row ON person_row.id = video_person.speaker_id
+    WHERE video_person.video_id = v.id
     ORDER BY person_row.id
 )
 """
@@ -45,8 +46,9 @@ COALESCE(
             )
             ORDER BY person_row.id
         )
-        FROM speakers person_row
-        WHERE person_row.video_id = v.id
+        FROM video_speakers video_person
+        JOIN speakers person_row ON person_row.id = video_person.speaker_id
+        WHERE video_person.video_id = v.id
     ),
     '[]'::jsonb
 )
@@ -107,8 +109,9 @@ def append_person_filter_clauses(clauses: list[str], params: list[Any], persons:
         f"""
         EXISTS (
             SELECT 1
-            FROM speakers person_row
-            WHERE person_row.video_id = v.id
+            FROM video_speakers video_person
+            JOIN speakers person_row ON person_row.id = video_person.speaker_id
+            WHERE video_person.video_id = v.id
               AND ({name_conditions})
         )
         """
@@ -134,8 +137,9 @@ def append_company_filter_clauses(
         f"""
         EXISTS (
             SELECT 1
-            FROM speakers person_row
-            WHERE person_row.video_id = v.id
+            FROM video_speakers video_person
+            JOIN speakers person_row ON person_row.id = video_person.speaker_id
+            WHERE video_person.video_id = v.id
               AND person_row.title IS NOT NULL
               AND ({title_conditions})
         )

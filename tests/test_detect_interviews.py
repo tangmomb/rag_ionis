@@ -15,6 +15,7 @@ from pipeline.steps.inspection.detect_interviews import (
     InterviewDetectionOptions,
     bridge_transient_gaps,
     classify_pair,
+    cluster_is_interview,
     dominant_visual_cluster,
 )
 
@@ -126,6 +127,24 @@ class InterviewDetectionTests(unittest.TestCase):
         self.assertEqual(
             InterviewDetectionOptions().cluster_similarity_min,
             0.88,
+        )
+
+    def test_interview_requires_thirty_percent_of_all_frames(self):
+        options = InterviewDetectionOptions()
+        cluster = {"frame_count": 2, "frame_ratio": 0.50}
+        classification_counts = {"total_count": 64}
+
+        self.assertFalse(
+            cluster_is_interview(cluster, classification_counts, options)
+        )
+
+    def test_interview_accepts_exactly_thirty_percent_of_all_frames(self):
+        options = InterviewDetectionOptions()
+        cluster = {"frame_count": 30, "frame_ratio": 0.50}
+        classification_counts = {"total_count": 100}
+
+        self.assertTrue(
+            cluster_is_interview(cluster, classification_counts, options)
         )
 
     def test_ignores_bottom_subtitles_and_interview_motion(self):

@@ -87,12 +87,14 @@ _TASK_SPECS = (
         "inspection",
         "Extraire les positions OCR",
         step_handlers.extract_ocr_boxes,
+        version="2",
     ),
     TaskSpec(
         "video.detect_subtitles",
         "inspection",
         "Detecter les sous-titres incrustes",
         step_handlers.detect_subtitles,
+        version="2",
         postcondition=lambda context: context.has_subtitles is not None,
     ),
     TaskSpec(

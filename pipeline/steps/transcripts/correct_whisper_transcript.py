@@ -4,6 +4,10 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from pipeline.support.brand_normalization import (
+    IONIS_STM_TARGET,
+    normalize_ionis_stm_text,
+)
 from pipeline.support.json_io import read_json
 from pipeline.support.paths import existing_ocr_dir, existing_transcripts_dir
 from pipeline.steps.transcripts.artifacts import (
@@ -25,10 +29,6 @@ LEGACY_CORRECTED_WORDS_SUFFIX = "_corrected_words.txt"
 WORD_PATTERN = re.compile(r"\w+|\W+", re.UNICODE)
 TOKEN_PATTERN = re.compile(r"\b[\w'â€™\-]+\b", re.UNICODE)
 TIMECODE_PREFIX = re.compile(r"^\[((?:\d{2}:)?\d{2}:\d{2})(?:-((?:\d{2}:)?\d{2}:\d{2}))?\]\s*")
-IONIS_STM_PATTERN = re.compile(
-    r"(?<!\w)(?:l['\u2019]\s*)?(?:ionis|yonis|yaunis)[\s-]+stm(?!\w)",
-    re.IGNORECASE,
-)
 COMMON_WORDS = {
     "je", "tu", "il", "elle", "on", "nous", "vous", "ils", "elles",
     "de", "du", "des", "le", "la", "les", "un", "une", "et", "ou",
@@ -389,14 +389,11 @@ def choose_phrase_correction(first_word, second_word, name_phrases):
 
 def normalize_ionis_stm(text, corrections):
     """Apply the known brand correction when subtitles cannot be reconciled."""
-
-    def replace(match):
-        source = match.group(0)
-        if source != "Ionis-STM":
-            corrections[source].add("Ionis-STM")
-        return "Ionis-STM"
-
-    return IONIS_STM_PATTERN.sub(replace, text)
+    updated, matched_sources = normalize_ionis_stm_text(text)
+    for source in matched_sources:
+        if source != IONIS_STM_TARGET:
+            corrections[source].add(IONIS_STM_TARGET)
+    return updated
 
 
 def correct_text(text, lexicon_counts, lexicon_forms, lexicon_by_initial, name_phrases, settings, corrections):

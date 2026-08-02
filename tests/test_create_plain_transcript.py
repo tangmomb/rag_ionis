@@ -207,7 +207,10 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             ocr_dir.mkdir(parents=True)
             raw = ocr_dir / "ocr_subtitles_timecoded.txt"
             obsolete = ocr_dir / "ocr_subtitles_timecoded_corrected.txt"
-            raw.write_text("[00:01] Bonjour Ionis STM.\n", encoding="utf-8")
+            raw.write_text(
+                "[00:01] Bonjour Ionis STM, UNISSTM, Unisystem et IonisSTM.\n",
+                encoding="utf-8",
+            )
             obsolete.write_text("ancien résultat GPT", encoding="utf-8")
 
             result = brand_normalization.process_video(video, force=True)
@@ -215,7 +218,7 @@ class CreatePlainTranscriptTests(unittest.TestCase):
             self.assertTrue(result)
             self.assertEqual(
                 raw.read_text(encoding="utf-8"),
-                "[00:01] Bonjour Ionis-STM.\n",
+                "[00:01] Bonjour Ionis-STM, Ionis-STM, Ionis-STM et Ionis-STM.\n",
             )
             self.assertFalse(obsolete.exists())
 

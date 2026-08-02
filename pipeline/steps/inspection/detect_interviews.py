@@ -31,6 +31,7 @@ class InterviewDetectionOptions:
     analysis_blur_radius: float = 1.0
     cluster_similarity_min: float = 0.88
     dominant_cluster_ratio_min: float = 0.50
+    dominant_cluster_total_ratio_min: float = 0.30
     min_run_frames: int = 6
     max_gap_pairs: int = 1
     max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES
@@ -101,14 +102,20 @@ def load_classification_counts(video_path):
     if isinstance(class_counts, dict):
         footage_count = int(class_counts.get("footage", 0) or 0)
         graphic_count = int(class_counts.get("graphic", 0) or 0)
+        mixture_count = int(class_counts.get("mixture", 0) or 0)
     else:
         footage_count = int(payload.get("footage_count", 0) or 0)
         graphic_count = int(payload.get("graphic_count", 0) or 0)
+        mixture_count = int(payload.get("mixture_count", 0) or 0)
+
+    total_count = footage_count + graphic_count + mixture_count
 
     return {
         "source": relative_to_video_dir(source, video_path),
         "footage_count": footage_count,
         "graphic_count": graphic_count,
+        "mixture_count": mixture_count,
+        "total_count": total_count,
         "graphic_exceeds_footage": graphic_count > footage_count,
     }
 
@@ -407,6 +414,27 @@ def sequence_count_is_interview(sequence_count, max_interview_sequences):
     return 1 <= sequence_count <= max_interview_sequences
 
 
+def dominant_cluster_total_ratio(dominant_cluster, classification_counts):
+    if not isinstance(classification_counts, dict):
+        return None
+    total_count = int(classification_counts.get("total_count", 0) or 0)
+    if total_count <= 0:
+        return None
+    return dominant_cluster["frame_count"] / total_count
+
+
+def cluster_is_interview(dominant_cluster, classification_counts, args):
+    total_ratio = dominant_cluster_total_ratio(
+        dominant_cluster,
+        classification_counts,
+    )
+    return (
+        dominant_cluster["frame_ratio"] >= args.dominant_cluster_ratio_min
+        and total_ratio is not None
+        and total_ratio >= args.dominant_cluster_total_ratio_min
+    )
+
+
 def write_outputs(
     video_path,
     image_paths,
@@ -416,7 +444,15 @@ def write_outputs(
 ):
     output_dir = ensure_clean_dir(interview_dir(video_path))
     cluster_ratio = dominant_cluster["frame_ratio"]
-    is_interview = cluster_ratio >= args.dominant_cluster_ratio_min
+    cluster_total_ratio = dominant_cluster_total_ratio(
+        dominant_cluster,
+        classification_counts,
+    )
+    is_interview = cluster_is_interview(
+        dominant_cluster,
+        classification_counts,
+        args,
+    )
     representative = dominant_cluster["representative"]
     cluster_frames = [
         {
@@ -432,6 +468,11 @@ def write_outputs(
         "frame_count": len(image_paths),
         "selected_frame_count": dominant_cluster["frame_count"],
         "dominant_cluster_ratio": round(cluster_ratio, 6),
+        "dominant_cluster_total_ratio": (
+            round(cluster_total_ratio, 6)
+            if cluster_total_ratio is not None
+            else None
+        ),
         "dominant_cluster": {
             "representative": (
                 {
@@ -462,6 +503,9 @@ def write_outputs(
             "cluster_similarity_min": args.cluster_similarity_min,
             "dominant_cluster_ratio_min": (
                 args.dominant_cluster_ratio_min
+            ),
+            "dominant_cluster_total_ratio_min": (
+                args.dominant_cluster_total_ratio_min
             ),
         },
         "classification_counts": classification_counts,
@@ -506,13 +550,25 @@ def detect_for_video(video_path, args):
         args,
         classification_counts,
     )
+    is_interview = cluster_is_interview(
+        cluster,
+        classification_counts,
+        args,
+    )
+    total_ratio = dominant_cluster_total_ratio(
+        cluster,
+        classification_counts,
+    )
+    total_ratio_label = (
+        f"{total_ratio:.1%}" if total_ratio is not None else "indisponible"
+    )
     print(
         (
             f"[ok] {video_path.name}: cluster="
             f"{cluster['frame_count']}/{len(image_paths)} "
-            f"({cluster['frame_ratio']:.1%}), "
-            f"is_interview="
-            f"{cluster['frame_ratio'] >= args.dominant_cluster_ratio_min} "
+            f"({cluster['frame_ratio']:.1%} des footage, "
+            f"{total_ratio_label} du total), "
+            f"is_interview={is_interview} "
             f"-> {manifest_path}"
         ),
         flush=True,
@@ -532,6 +588,7 @@ def detect_video(
     analysis_blur_radius: float = 1.0,
     cluster_similarity_min: float = 0.88,
     dominant_cluster_ratio_min: float = 0.50,
+    dominant_cluster_total_ratio_min: float = 0.30,
     min_run_frames: int = 6,
     max_gap_pairs: int = 1,
     max_interview_sequences: int = DEFAULT_MAX_INTERVIEW_SEQUENCES,
@@ -551,6 +608,9 @@ def detect_video(
             analysis_blur_radius=analysis_blur_radius,
             cluster_similarity_min=cluster_similarity_min,
             dominant_cluster_ratio_min=dominant_cluster_ratio_min,
+            dominant_cluster_total_ratio_min=(
+                dominant_cluster_total_ratio_min
+            ),
             min_run_frames=min_run_frames,
             max_gap_pairs=max_gap_pairs,
             max_interview_sequences=max_interview_sequences,

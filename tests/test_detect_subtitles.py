@@ -1,14 +1,22 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from pipeline.steps.inspection.detect_subtitles import analyze_subtitle_anchor
-from pipeline.support.paddle_ocr import box_text_pairs_from_raw_result
+from pipeline.steps.inspection.detect_subtitles import (
+    analyze_subtitle_anchor,
+    subtitle_entries_from_boxes,
+)
+from pipeline.support.paddle_ocr import (
+    box_text_pairs_from_raw_result,
+    box_text_score_records_from_raw_result,
+)
 
 
 def subtitle_entry(
     second,
     text,
     *,
-    cx=0.82,
+    cx=0.50,
     cy=0.96,
     relative_width=0.32,
 ):
@@ -26,7 +34,7 @@ def subtitle_entry(
 
 
 class SubtitleDetectionTests(unittest.TestCase):
-    def test_detects_changing_text_at_any_stable_position(self):
+    def test_detects_changing_text_near_horizontal_center(self):
         texts = (
             "Bonjour tout le monde.",
             "Nous découvrons le campus.",
@@ -41,9 +49,34 @@ class SubtitleDetectionTests(unittest.TestCase):
         result = analyze_subtitle_anchor(entries)
 
         self.assertTrue(result["has_subtitles"])
-        self.assertAlmostEqual(result["anchor"]["cx"], 0.82)
+        self.assertAlmostEqual(result["anchor"]["cx"], 0.50)
         self.assertAlmostEqual(result["anchor"]["cy"], 0.96)
         self.assertGreaterEqual(result["text_variant_count"], 3)
+
+    def test_rejects_changing_text_outside_horizontal_center_band(self):
+        texts = (
+            "Gestion produit",
+            "De A a Z",
+            "Conception",
+            "Developpement",
+        )
+        entries = [
+            subtitle_entry(
+                second / 2,
+                texts[min(second // 6, len(texts) - 1)],
+                cx=0.6668,
+            )
+            for second in range(25)
+        ]
+
+        result = analyze_subtitle_anchor(entries)
+
+        self.assertFalse(result["has_subtitles"])
+        self.assertEqual(
+            result["reason"],
+            "anchor_outside_horizontal_center_band",
+        )
+        self.assertAlmostEqual(result["anchor"]["cx"], 0.6668)
 
     def test_rejects_static_text_at_a_stable_position(self):
         entries = [
@@ -137,7 +170,7 @@ class SubtitleDetectionTests(unittest.TestCase):
                 subtitle_entry(second, text, cx=0.05, cy=0.20)
             )
             entries.append(
-                subtitle_entry(second, text, cx=0.35, cy=0.20)
+                subtitle_entry(second, text, cx=0.50, cy=0.20)
             )
             entries.append(
                 subtitle_entry(second, text, cx=0.82, cy=0.96)
@@ -147,10 +180,10 @@ class SubtitleDetectionTests(unittest.TestCase):
 
         self.assertTrue(result["has_subtitles"])
         self.assertGreater(result["candidate_rank"], 1)
-        self.assertAlmostEqual(result["anchor"]["cx"], 0.82)
-        self.assertAlmostEqual(result["anchor"]["cy"], 0.96)
+        self.assertAlmostEqual(result["anchor"]["cx"], 0.50)
+        self.assertAlmostEqual(result["anchor"]["cy"], 0.20)
 
-    def test_prefers_wide_subtitle_signal_over_narrow_valid_overlay(self):
+    def test_prefers_centered_subtitle_over_offcenter_narrow_overlay(self):
         texts = (
             "Bonjour à toutes les personnes.",
             "Nous présentons le nouveau campus.",
@@ -184,7 +217,7 @@ class SubtitleDetectionTests(unittest.TestCase):
         result = analyze_subtitle_anchor(entries)
 
         self.assertTrue(result["has_subtitles"])
-        self.assertEqual(result["valid_candidate_count"], 2)
+        self.assertEqual(result["valid_candidate_count"], 1)
         self.assertAlmostEqual(result["anchor"]["cx"], 0.50)
         self.assertAlmostEqual(
             result["anchor"]["median_relative_width"],
@@ -204,6 +237,95 @@ class SubtitleDetectionTests(unittest.TestCase):
 
         self.assertEqual([text for _box, text in pairs], ["premier", "second"])
         self.assertEqual(len(pairs), 2)
+
+    def test_preserves_confidence_alignment_with_detected_boxes(self):
+        raw = {
+            "rec_polys": [
+                [[0, 0], [10, 0], [10, 5], [0, 5]],
+                [[20, 0], [30, 0], [30, 5], [20, 5]],
+            ],
+            "rec_texts": ["premier", "second"],
+            "rec_scores": [0.42, 0.96],
+        }
+
+        records = box_text_score_records_from_raw_result(raw)
+
+        self.assertEqual([record["score"] for record in records], [0.42, 0.96])
+
+    def test_subtitle_entries_require_ninety_percent_confidence(self):
+        payload = {
+            "items": [
+                {
+                    "image": "footage/00_00.jpg",
+                    "boxes": [
+                        [[0, 0], [300, 0], [300, 40], [0, 40]],
+                        [[0, 50], [300, 50], [300, 90], [0, 90]],
+                        [[0, 100], [300, 100], [300, 140], [0, 140]],
+                    ],
+                    "texts": ["faible", "limite", "fort"],
+                    "scores": [0.8999, 0.9, 0.97],
+                }
+            ]
+        }
+
+        with patch(
+            "pipeline.steps.inspection.detect_subtitles.image_size",
+            return_value=(1000, 1000),
+        ):
+            entries = subtitle_entries_from_boxes(
+                payload,
+                images_dir=Path("images"),
+                min_confidence=0.9,
+            )
+
+        self.assertEqual([entry["key"] for entry in entries], ["limite", "fort"])
+        self.assertEqual([entry["score"] for entry in entries], [0.9, 0.97])
+
+    def test_subtitle_confidence_cannot_be_lowered_below_ninety_percent(self):
+        payload = {
+            "items": [
+                {
+                    "image": "footage/00_00.jpg",
+                    "boxes": [
+                        [[0, 0], [300, 0], [300, 40], [0, 40]],
+                        [[0, 50], [300, 50], [300, 90], [0, 90]],
+                    ],
+                    "texts": ["insuffisant", "accepte"],
+                    "scores": [0.89, 0.91],
+                }
+            ]
+        }
+
+        with patch(
+            "pipeline.steps.inspection.detect_subtitles.image_size",
+            return_value=(1000, 1000),
+        ):
+            entries = subtitle_entries_from_boxes(
+                payload,
+                images_dir=Path("images"),
+                min_confidence=0.5,
+            )
+
+        self.assertEqual([entry["key"] for entry in entries], ["accepte"])
+
+    def test_subtitle_entries_reject_legacy_boxes_without_scores(self):
+        payload = {
+            "items": [
+                {
+                    "image": "footage/00_00.jpg",
+                    "boxes": [[[0, 0], [300, 0], [300, 40], [0, 40]]],
+                    "texts": ["sans confiance"],
+                }
+            ]
+        }
+
+        with patch(
+            "pipeline.steps.inspection.detect_subtitles.image_size",
+            return_value=(1000, 1000),
+        ):
+            entries = subtitle_entries_from_boxes(payload, images_dir=Path("images"))
+
+        self.assertEqual(entries, [])
 
 
 if __name__ == "__main__":

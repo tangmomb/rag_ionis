@@ -54,5 +54,16 @@ class CommandBuilderTests(unittest.TestCase):
             source,
         )
 
+    def test_speakers_merge_action_exposes_database_review_options(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('id: "speakers-merge"', source)
+        self.assertIn(
+            'fixedArgs: ["-m", "pipeline", "speakers-merge"]',
+            source,
+        )
+        self.assertIn('flag: "--max-distance"', source)
+        self.assertIn('flag: "--dry-run"', source)
+
 if __name__ == "__main__":
     unittest.main()

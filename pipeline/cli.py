@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -144,6 +145,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Affiche les identifiants de taches disponibles puis quitte.",
     )
 
+    merge_speakers_parser = commands.add_parser(
+        "speakers-merge",
+        help="Propose et fusionne interactivement les speakers SQL en doublon.",
+    )
+    merge_speakers_parser.add_argument(
+        "--max-distance",
+        type=int,
+        choices=(0, 1, 2),
+        default=2,
+        help="Nombre maximal de lettres differentes dans un nom (defaut: 2).",
+    )
+    merge_speakers_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Affiche les rapprochements proposes sans modifier la base.",
+    )
+
     args = parser.parse_args(argv)
     if (
         args.command == "task"
@@ -176,6 +194,18 @@ def main() -> None:
     args = parse_args()
     if args.command == "task" and args.list_tasks:
         print_task_catalog()
+        return
+    if args.command == "speakers-merge":
+        from .maintenance.merge_speakers import run as merge_speakers
+
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise RuntimeError("DATABASE_URL manquant dans l'environnement.")
+        merge_speakers(
+            database_url,
+            max_distance=args.max_distance,
+            dry_run=args.dry_run,
+        )
         return
 
     options = options_from_args(args)

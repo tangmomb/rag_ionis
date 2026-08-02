@@ -307,6 +307,47 @@ const actions = [
     ],
   },
   {
+    id: "speakers-merge",
+    category: "Maintenance",
+    title: "Fusionner les speakers en doublon",
+    short: "Rapprocher les noms et choisir le poste à conserver",
+    description: "Analyse la table speakers, propose les noms identiques ou très proches, puis permet de choisir interactivement le nom et le poste à conserver.",
+    icon: "⇉",
+    accent: "#dce8f5",
+    fixedArgs: ["-m", "pipeline", "speakers-merge"],
+    sections: [
+      {
+        title: "Détection et exécution",
+        fields: [
+          {
+            id: "maxDistance",
+            label: "Tolérance orthographique",
+            flag: "--max-distance",
+            type: "select",
+            value: "2",
+            defaultValue: "2",
+            options: [
+              ["2", "Jusqu’à 2 lettres (défaut)"],
+              ["1", "Jusqu’à 1 lettre"],
+              ["0", "Noms normalisés identiques"],
+            ],
+            help: "Compte les insertions, suppressions ou substitutions après normalisation de la casse, des accents et de la ponctuation.",
+            full: true,
+          },
+          {
+            id: "dryRun",
+            label: "Afficher seulement les propositions",
+            flag: "--dry-run",
+            type: "boolean",
+            help: "N’ouvre aucun choix interactif et ne modifie pas PostgreSQL.",
+            full: true,
+          },
+        ],
+      },
+    ],
+    warning: "Sans simulation, chaque fusion confirmée harmonise le nom et le poste dans PostgreSQL et peut supprimer une ligne en doublon pour une même vidéo.",
+  },
+  {
     id: "tests",
     category: "Maintenance",
     title: "Lancer les tests",

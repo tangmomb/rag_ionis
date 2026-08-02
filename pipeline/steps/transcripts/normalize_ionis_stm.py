@@ -1,5 +1,4 @@
-import re
-
+from pipeline.support.brand_normalization import normalize_ionis_stm_text
 from pipeline.support.paths import (
     existing_ocr_dir,
 )
@@ -14,25 +13,6 @@ OBSOLETE_SPACING_ARTIFACTS = (
     "ocr_spacing_batch_output.jsonl",
     "ocr_spacing_batch_error.jsonl",
 )
-IONIS_STM_PATTERNS = (
-    re.compile(r"(?i)\bl['’]?\s*ionis\s*-\s*stm\b"),
-    re.compile(r"(?i)\bl['’]?\s*ionis\s+stm\b"),
-    re.compile(r"(?i)\bl['’]?\s*onis\s*-\s*stm\b"),
-    re.compile(r"(?i)\bl['’]?\s*onis\s+stm\b"),
-    re.compile(r"(?i)\bl\s+ionis\s*-\s*stm\b"),
-    re.compile(r"(?i)\bl\s+ionis\s+stm\b"),
-    re.compile(r"(?i)\bl\s+onis\s*-\s*stm\b"),
-    re.compile(r"(?i)\bl\s+onis\s+stm\b"),
-    re.compile(r"(?i)\blonis\s*-\s*stm\b"),
-    re.compile(r"(?i)\blonis\s+stm\b"),
-    re.compile(r"(?i)\bionis\s*-\s*stm\b"),
-    re.compile(r"(?i)\bionis\s+stm\b"),
-    re.compile(r"(?i)\bonis\s*-\s*stm\b"),
-    re.compile(r"(?i)\bonis\s+stm\b"),
-)
-TARGET_TEXT = "Ionis-STM"
-
-
 def transcript_path(video_path):
     transcript_dir = existing_ocr_dir(video_path)
     preferred = transcript_dir / SOURCE_NAME
@@ -43,12 +23,8 @@ def transcript_path(video_path):
 
 
 def normalize_ionis_stm(text):
-    updated = str(text)
-    replacements = 0
-    for pattern in IONIS_STM_PATTERNS:
-        updated, count = pattern.subn(TARGET_TEXT, updated)
-        replacements += count
-    return updated, replacements
+    updated, matched_sources = normalize_ionis_stm_text(text)
+    return updated, len(matched_sources)
 
 
 def process_video(video_path, force=False):

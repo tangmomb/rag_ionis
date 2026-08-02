@@ -326,6 +326,11 @@ sous-titres.
 | 6 | `ocr.extract_boxes` | `steps.inspection.extract_ocr_boxes` | Positions des zones de texte. |
 | 7 | `video.detect_subtitles` | `steps.inspection.detect_subtitles` | `has_subtitles` et ses détails dans `video_manifest.json.routing_facts`. |
 
+`ocr.extract_boxes` conserve le score de reconnaissance associé à chaque zone.
+`video.detect_subtitles` ignore toute zone dont la confiance OCR est inférieure
+à 90 %, ainsi que les anciens enregistrements dépourvus de score. Le manifeste
+indique le seuil et les nombres de zones acceptées et rejetées.
+
 La durée n'est pas une étape d'inspection : elle est obtenue immédiatement par
 `probe.py` à partir du fichier vidéo.
 
@@ -1006,6 +1011,19 @@ Démarrer PostgreSQL et Phoenix :
 ```powershell
 docker compose up -d postgres phoenix
 ```
+
+Rechercher les speakers dont le nom est identique ou ne diffère que d'une ou
+deux lettres, puis choisir interactivement le nom et le poste à conserver :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline speakers-merge
+.\.venv\Scripts\python.exe -m pipeline speakers-merge --dry-run
+```
+
+La commande harmonise toutes les occurrences SQL de la personne. Lorsque deux
+variantes existent pour une même vidéo, elle conserve une seule ligne afin de
+respecter l'unicité `(video_id, name)`. `--max-distance 0`, `1` ou `2` permet de
+régler la tolérance orthographique (deux par défaut).
 
 Vider les tables applicatives en conservant le schéma :
 

@@ -1109,6 +1109,17 @@ class PipelineCliTests(unittest.TestCase):
         self.assertTrue(args.list_tasks)
         self.assertIsNone(args.task_id)
 
+    def test_speakers_merge_is_a_global_database_command(self) -> None:
+        from pipeline.cli import parse_args
+
+        args = parse_args(
+            ["speakers-merge", "--max-distance", "1", "--dry-run"]
+        )
+
+        self.assertEqual(args.command, "speakers-merge")
+        self.assertEqual(args.max_distance, 1)
+        self.assertTrue(args.dry_run)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ LOCATION_NAME = "ocr_box_locations.json"
 LEGACY_LOCATION_NAME = "ocr_location.json"
 BOXES_DIRNAME = "ocr_boxes_images"
 LEGACY_BOXES_DIRNAME = "ocr_boxes"
+DEFAULT_MIN_CONFIDENCE = 0.9
 
 
 def location_path(ocr_dir):
@@ -38,7 +39,13 @@ def load_json(path):
     return read_json(path)
 
 
-def subtitle_entries_from_boxes(payload, images_dir):
+def subtitle_entries_from_boxes(
+    payload,
+    images_dir,
+    *,
+    min_confidence=DEFAULT_MIN_CONFIDENCE,
+):
+    min_confidence = max(DEFAULT_MIN_CONFIDENCE, float(min_confidence))
     entries = []
     sizes = {}
 
@@ -55,7 +62,17 @@ def subtitle_entries_from_boxes(payload, images_dir):
 
         texts = item.get("texts")
         has_text_metadata = isinstance(texts, list)
+        scores = item.get("scores")
+        has_score_metadata = isinstance(scores, list)
         for index, poly in enumerate(item.get("boxes", [])):
+            score = None
+            if has_score_metadata and index < len(scores):
+                try:
+                    score = float(scores[index])
+                except (TypeError, ValueError):
+                    pass
+            if score is None or score < min_confidence:
+                continue
             bounds = box_bounds(poly)
             if not bounds:
                 continue
@@ -64,6 +81,7 @@ def subtitle_entries_from_boxes(payload, images_dir):
                 "image": image_name,
                 "geometry": geometry,
                 "second": second,
+                "score": score,
             }
             if has_text_metadata:
                 text = texts[index] if index < len(texts) else ""
@@ -100,10 +118,29 @@ def detect_for_video(video_path, force=False):
         return None
 
     payload = load_json(source)
-    entries = subtitle_entries_from_boxes(payload, images_dir)
+    try:
+        min_confidence = max(
+            DEFAULT_MIN_CONFIDENCE,
+            float(payload.get("min_confidence", DEFAULT_MIN_CONFIDENCE)),
+        )
+    except (TypeError, ValueError):
+        min_confidence = DEFAULT_MIN_CONFIDENCE
+    entries = subtitle_entries_from_boxes(
+        payload,
+        images_dir,
+        min_confidence=min_confidence,
+    )
     analysis = analyze_subtitle_anchor(entries)
+    source_box_count = sum(
+        len(item.get("boxes", []))
+        for item in payload.get("items", [])
+    )
     details = {
         "source": relative_to_video_dir(source, video_path),
+        "min_confidence": min_confidence,
+        "source_ocr_box_count": source_box_count,
+        "confidence_accepted_ocr_box_count": len(entries),
+        "confidence_rejected_ocr_box_count": source_box_count - len(entries),
         **analysis,
     }
     has_subtitles = analysis["has_subtitles"]

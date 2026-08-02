@@ -58,6 +58,8 @@ PROGRESSIVE_TEXT_MIN_EXTRA_CHARS = 2
 PROGRESSIVE_TEXT_MIN_OVERLAP_RATIO = 0.75
 SUBTITLE_CLUSTER_X_TOLERANCE = 0.16
 SUBTITLE_CLUSTER_Y_TOLERANCE = 0.055
+SUBTITLE_HORIZONTAL_CENTER = 0.50
+SUBTITLE_HORIZONTAL_CENTER_TOLERANCE = 0.10
 
 
 def configure_stdio():
@@ -424,6 +426,13 @@ def analyze_subtitle_anchor_candidate(entries, anchors):
         for anchor in anchors
     )
     anchor_widths = [anchor["relative_width"] for anchor in anchors]
+    horizontal_center_distance = abs(
+        anchor_cx - SUBTITLE_HORIZONTAL_CENTER
+    )
+    is_horizontally_centered = (
+        horizontal_center_distance
+        <= SUBTITLE_HORIZONTAL_CENTER_TOLERANCE
+    )
     x_tolerance = max(
         0.06,
         min(0.16, statistics.median(anchor_widths) * 0.25),
@@ -467,7 +476,8 @@ def analyze_subtitle_anchor_candidate(entries, anchors):
     )
     required_continuous_seconds = float(MIN_SUBTITLE_CLUSTER_SECONDS)
     has_subtitles = (
-        longest_run_duration >= required_continuous_seconds
+        is_horizontally_centered
+        and longest_run_duration >= required_continuous_seconds
         and has_text_variation
     )
     return {
@@ -476,9 +486,13 @@ def analyze_subtitle_anchor_candidate(entries, anchors):
             "stable_anchor_across_continuous_seconds"
             if has_subtitles
             else (
-                "not_enough_text_variation"
-                if longest_run_duration >= required_continuous_seconds
-                else "not_enough_continuous_matching_seconds"
+                "anchor_outside_horizontal_center_band"
+                if not is_horizontally_centered
+                else (
+                    "not_enough_text_variation"
+                    if longest_run_duration >= required_continuous_seconds
+                    else "not_enough_continuous_matching_seconds"
+                )
             )
         ),
         "anchor_count": len(anchors),
@@ -494,6 +508,14 @@ def analyze_subtitle_anchor_candidate(entries, anchors):
         "tolerances": {
             "x": round(x_tolerance, 4),
             "y": round(y_tolerance, 4),
+            "horizontal_center": SUBTITLE_HORIZONTAL_CENTER,
+            "horizontal_center_distance": round(
+                horizontal_center_distance,
+                4,
+            ),
+            "horizontal_center_max_distance": (
+                SUBTITLE_HORIZONTAL_CENTER_TOLERANCE
+            ),
         },
         "required_continuous_seconds": required_continuous_seconds,
         "total_matching_seconds_count": len(matching_seconds),
@@ -1334,24 +1356,37 @@ def boxes_from_raw_result(raw_result):
     return boxes
 
 
-def box_text_pairs_from_raw_result(raw_result):
-    pairs = []
+def box_text_score_records_from_raw_result(raw_result):
+    records = []
 
     if isinstance(raw_result, dict):
         polys = list(raw_result.get("rec_polys") or raw_result.get("dt_polys") or [])
         texts = list(raw_result.get("rec_texts") or [])
+        scores = list(raw_result.get("rec_scores") or [])
         for index, poly in enumerate(polys):
             points = point_list(poly)
             if not points:
                 continue
             text = texts[index] if index < len(texts) else ""
-            pairs.append((points, normalize_detected_text(text)))
-        return pairs
+            score = None
+            if index < len(scores):
+                try:
+                    score = float(scores[index])
+                except (TypeError, ValueError):
+                    pass
+            records.append(
+                {
+                    "box": points,
+                    "text": normalize_detected_text(text),
+                    "score": score,
+                }
+            )
+        return records
 
     if isinstance(raw_result, list):
         for page in raw_result:
             if isinstance(page, dict):
-                pairs.extend(box_text_pairs_from_raw_result(page))
+                records.extend(box_text_score_records_from_raw_result(page))
                 continue
             for line in page or []:
                 if not line:
@@ -1362,10 +1397,29 @@ def box_text_pairs_from_raw_result(raw_result):
                     continue
                 value = line[1] if isinstance(line, (list, tuple)) and len(line) > 1 else None
                 text = value[0] if isinstance(value, (list, tuple)) and value else ""
-                pairs.append((points, normalize_detected_text(text)))
-        return pairs
+                score = None
+                if isinstance(value, (list, tuple)) and len(value) > 1:
+                    try:
+                        score = float(value[1])
+                    except (TypeError, ValueError):
+                        pass
+                records.append(
+                    {
+                        "box": points,
+                        "text": normalize_detected_text(text),
+                        "score": score,
+                    }
+                )
+        return records
 
-    return pairs
+    return records
+
+
+def box_text_pairs_from_raw_result(raw_result):
+    return [
+        (record["box"], record["text"])
+        for record in box_text_score_records_from_raw_result(raw_result)
+    ]
 
 
 def ocr_items_from_raw_result(raw_result, image_name, image_path=None, min_confidence=0.9):

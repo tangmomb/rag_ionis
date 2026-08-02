@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paddle_ocr import (
-    box_text_pairs_from_raw_result,
+    box_text_score_records_from_raw_result,
     seconds_from_image_name,
 )
 from pipeline.support.paths import existing_ocr_dir
@@ -11,6 +11,7 @@ from pipeline.support.paths import existing_ocr_dir
 RAW_GROUPS = ("footage", "graphic", "mixture")
 LOCATION_NAME = "ocr_box_locations.json"
 LEGACY_LOCATION_NAME = "ocr_location.json"
+DEFAULT_MIN_CONFIDENCE = 0.9
 
 
 def raw_paths(ocr_dir):
@@ -81,9 +82,10 @@ def extract_for_video(video_path, *, force=False):
             image_name = raw_item.get("image")
             if not image_name:
                 continue
-            box_text_pairs = box_text_pairs_from_raw_result(raw_item.get("raw"))
-            boxes = [box for box, _text in box_text_pairs]
-            texts = [text for _box, text in box_text_pairs]
+            records = box_text_score_records_from_raw_result(raw_item.get("raw"))
+            boxes = [record["box"] for record in records]
+            texts = [record["text"] for record in records]
+            scores = [record["score"] for record in records]
             total_boxes += len(boxes)
             total_images += 1
             box_items.append(
@@ -91,6 +93,7 @@ def extract_for_video(video_path, *, force=False):
                     "image": image_name,
                     "boxes": boxes,
                     "texts": texts,
+                    "scores": scores,
                 }
             )
             print(
@@ -103,6 +106,7 @@ def extract_for_video(video_path, *, force=False):
         ocr_dir,
         {
             "sources": source_names,
+            "min_confidence": DEFAULT_MIN_CONFIDENCE,
             "items": box_items,
         },
     )

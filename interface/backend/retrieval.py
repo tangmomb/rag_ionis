@@ -449,62 +449,6 @@ def lookup_video_document(
             },
         }
 
-    if intent == "stats":
-        clauses, params = build_video_lookup_conditions(query)
-        clauses.append("s.id IS NOT NULL")
-        where_sql = " AND ".join(clauses)
-        sql = f"""
-            SELECT
-                v.id,
-                v.title,
-                v.url,
-                s.view_count,
-                s.like_count,
-                s.comment_count,
-                s.snapshot_date
-            FROM videos v
-            JOIN LATERAL (
-                SELECT id, view_count, like_count, comment_count, snapshot_date
-                FROM stats
-                WHERE video_id = v.id
-                ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC
-                LIMIT 1
-            ) s ON TRUE
-            WHERE {where_sql}
-            ORDER BY v.published_at DESC NULLS LAST, v.id DESC
-            LIMIT 10
-        """
-        with connect_database() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
-
-        results = [
-            {
-                "chunk_id": int(row[0]),
-                "video_title": row[1],
-                "video_url": row[2],
-                "thumbnail_medium_url": None,
-                "chunk_index": 0,
-                "text": (
-                    f"Titre: {row[1]}\nURL: {row[2]}\n"
-                    f"Vues: {row[3] if row[3] is not None else 'non disponible'}\n"
-                    f"Likes: {row[4] if row[4] is not None else 'non disponible'}\n"
-                    f"Commentaires: {row[5] if row[5] is not None else 'non disponible'}\n"
-                    f"Date du snapshot: {row[6]}"
-                ),
-                "persons": [],
-                "bm25_score": None,
-            }
-            for row in rows
-        ]
-        return results, {
-            "mode": intent,
-            "sql": format_sql_for_trace(sql),
-            "params": params,
-            "result_count": len(results),
-        }
-
     if intent == "description":
         clauses, params = build_video_lookup_conditions(query)
         where_sql = " AND ".join(clauses) if clauses else "TRUE"

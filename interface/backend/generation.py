@@ -4,10 +4,9 @@ import json
 import re
 from typing import Any
 
-from interface.backend.config import SOURCE_RELEVANCE_MIN
 from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import AnswerAction
-from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
+from interface.backend.utilities import safe_json_loads, serialize_openai_response
 
 
 FINAL_ANSWER_STYLE = (
@@ -17,9 +16,10 @@ FINAL_ANSWER_STYLE = (
     "ou « selon les documents ». "
     "Si ta réponse consiste uniquement à présenter des sources ou des vidéos, "
     "place une courte formule de politesse au début. "
-    "Ne termine pas par une phrase indiquant qu'il manque des informations, "
-    "que tu n'en as pas d'autres ou que tu ne peux pas aller plus loin. "
-    "Ne parle pas de tes limites ni de la recherche effectuée."
+    "Quand action vaut answer, ne termine pas par une phrase indiquant qu'il manque "
+    "des informations et ne parle pas de tes limites ni de la recherche effectuée. "
+    "Quand action vaut clarify ou abstain, formule uniquement la précision nécessaire "
+    "ou l'impossibilité factuelle de répondre avec les éléments fournis."
 )
 
 
@@ -31,12 +31,13 @@ SOURCE_MARKER_INSTRUCTION = (
 
 
 ANSWER_ACTION_INSTRUCTION = (
-    "Retourne uniquement un objet JSON valide avec exactement deux cles : "
-    "answer et action. action doit valoir exactement answer, clarify ou abstain. "
-    "Utilise answer si les sources permettent de repondre. "
-    "Utilise clarify si la question n'est pas assez precise pour savoir quelle information ou quelle video est demandee ; dans ce cas, answer doit etre une seule question de precision adressee a l'utilisateur. "
-    "Utilise abstain si la question est claire mais que les sources ne contiennent pas l'information necessaire. "
-    "Le champ answer contient uniquement le message final a afficher a l'utilisateur."
+    "Retourne uniquement un objet JSON valide avec exactement deux clés : answer et action. "
+    "action doit valoir exactement answer, clarify ou abstain. Choisis answer uniquement si "
+    "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
+    "clarify si une ambiguïté empêche de savoir quelle information, personne ou vidéo est "
+    "demandée ; answer contient alors une seule question de précision. Choisis abstain si la "
+    "demande est claire mais que les éléments fournis ne permettent pas d'y répondre "
+    "fidèlement. Le champ answer contient uniquement le message final à afficher."
 )
 
 
@@ -58,12 +59,16 @@ def render_answer_system_prompt(
     replacements = {
         "{route_instructions}": route_instructions.strip(),
         "{source_marker_instruction}": source_marker_instruction.strip(),
+        # Compatibilité avec les templates créés pendant les deux versions du contrat.
+        "{answer_output_instruction}": ANSWER_ACTION_INSTRUCTION.strip(),
         "{answer_action_instruction}": ANSWER_ACTION_INSTRUCTION.strip(),
         "{answer_style}": FINAL_ANSWER_STYLE.strip(),
     }
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
+    if "action doit valoir exactement answer, clarify ou abstain" not in rendered:
+        rendered = f"{rendered}\n\n{ANSWER_ACTION_INSTRUCTION}"
     return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
 
@@ -83,8 +88,8 @@ def record_answer_trace(
 
 
 def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) -> str:
-    """Valide l'enveloppe JSON du modele et conserve l'action choisie."""
-    fallback_action: AnswerAction = "answer"
+    """Extrait la réponse et conserve l'action choisie par le modèle."""
+    fallback_action: AnswerAction = "abstain"
     try:
         payload = safe_json_loads(raw_answer)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -100,9 +105,9 @@ def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) ->
     action = payload.get("action")
     if action not in {"answer", "clarify", "abstain"}:
         action = fallback_action
-    answer = str(payload.get("answer") or "").strip()
     if trace is not None:
         trace["action"] = action
+    answer = str(payload.get("answer") or "").strip()
     return answer or raw_answer
 
 
@@ -118,80 +123,6 @@ def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[s
         source for index, source in enumerate(sources, start=1) if index in marker_indexes
     ]
     return cleaned_answer, selected_sources
-
-
-def evaluate_source_sufficiency(
-    question: str,
-    sources: list[dict[str, Any]],
-    retrieval: dict[str, Any],
-) -> dict[str, Any]:
-    """Calcule une confiance technique avant de demander une réponse au modèle."""
-    source_scores = [
-        {
-            "chunk_id": source.get("chunk_id"),
-            "video_title": source.get("video_title"),
-            "cohere_relevance_score": source.get("cohere_relevance_score"),
-            "rrf_score": source.get("rrf_score"),
-            "bm25_score": source.get("bm25_score"),
-            "vector_score": source.get("vector_score"),
-        }
-        for source in sources
-    ]
-    cohere_scores = [
-        float(source["cohere_relevance_score"])
-        for source in source_scores
-        if source.get("cohere_relevance_score") is not None
-    ]
-    person_resolution = retrieval.get("person_resolution") or {}
-    normalized_question = normalize_text(question)
-    has_unresolved_video_reference = bool(
-        re.search(r"\b(?:la|le|cette|ce|une|un)\s+video\b", normalized_question)
-        or re.search(r"\bvideo\b.*\b(?:sur|de|a propos de)\b", normalized_question)
-    )
-
-    if person_resolution.get("ambiguous"):
-        action_hint: AnswerAction = "clarify"
-        reason = "ambiguous_person"
-    elif not sources:
-        action_hint: AnswerAction = "clarify" if has_unresolved_video_reference else "abstain"
-        reason = "ambiguous_video_reference" if action_hint == "clarify" else "no_sources"
-    elif cohere_scores and max(cohere_scores) < SOURCE_RELEVANCE_MIN:
-        action_hint = "abstain"
-        reason = "low_rerank_relevance"
-    else:
-        action_hint = "answer"
-        reason = "sources_available"
-
-    clarification_message = (
-        "Peux-tu préciser le titre exact de la vidéo ou le sujet dont tu parles ?"
-        if action_hint == "clarify"
-        else None
-    )
-    message_source = (
-        "person_resolution"
-        if reason == "ambiguous_person"
-        else "source_evaluation"
-        if action_hint == "clarify"
-        else None
-    )
-    selected_message = (
-        person_resolution.get("message")
-        if reason == "ambiguous_person"
-        else clarification_message
-    )
-
-    return {
-        "action_hint": action_hint,
-        "reason": reason,
-        "question": question,
-        "source_count": len(sources),
-        "top_cohere_relevance_score": max(cohere_scores) if cohere_scores else None,
-        "source_scores": source_scores,
-        "retrieval_mode": retrieval.get("retrieval_mode"),
-        "message_source": message_source,
-        "selected_message": selected_message,
-        "clarification_message": clarification_message,
-    }
 
 
 def source_context_text(source: dict[str, Any]) -> str:
@@ -213,13 +144,11 @@ def generate_answer(
     trace: dict[str, str] | None = None,
     prompt_template: str | None = None,
 ) -> str:
-    if not sources:
-        if trace is not None:
-            trace["action"] = "abstain"
-        return "Je n'ai trouve aucun chunk pertinent dans la base pour repondre a cette question."
     if client is None or not answer_model:
         if trace is not None:
-            trace["action"] = "answer"
+            trace["action"] = "answer" if sources else "abstain"
+        if not sources:
+            return "Je n'ai trouve aucun chunk pertinent dans la base pour repondre a cette question."
         return "\n\n".join(
             f"[S{index}] {source_context_text(source)}"
             for index, source in enumerate(sources, start=1)
@@ -265,7 +194,10 @@ def generate_answer(
             },
             {
                 "role": "user",
-                "content": f"Question utilisateur: {question}\n\nSources pour répondre :\n\n" + "\n\n".join(context_blocks),
+                "content": (
+                    f"Question utilisateur: {question}\n\nSources pour répondre :\n\n"
+                    + ("\n\n".join(context_blocks) or "Aucune source exploitable.")
+                ),
             },
         ]
     response = client.responses.create(model=answer_model, input=input_messages)
@@ -284,18 +216,18 @@ def generate_memory_answer(
     trace: dict[str, str] | None = None,
     prompt_template: str | None = None,
 ) -> str:
-    if not memory_items:
-        if trace is not None:
-            trace["action"] = "abstain"
-        return "Je n'ai pas trouve d'historique de conversation exploitable pour repondre a cette demande."
-
     if client is None or not answer_model:
         if trace is not None:
-            trace["action"] = "answer"
+            trace["action"] = "answer" if memory_items else "abstain"
+        if not memory_items:
+            return "Je n'ai pas trouve d'historique de conversation exploitable pour repondre a cette demande."
         history = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
         return history
 
-    history = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
+    history = (
+        "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
+        or "Aucun historique exploitable."
+    )
     input_messages = [
             {
                 "role": "system",
@@ -321,10 +253,11 @@ def generate_memory_answer(
 
 
 def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
-    if sql_sub_intent == "stats":
+    if sql_sub_intent == "analytics":
         return (
-            "Tu reponds a une demande de statistiques sur une video. "
-            "Identifie la video correspondante et presente les dernieres statistiques disponibles : vues, likes, commentaires et date du snapshot. "
+            "Tu réponds à une demande analytique à partir du résultat SQL fourni. "
+            "Respecte exactement l'opération demandée : comptage, agrégation, classement, extremum ou statistiques d'une vidéo. "
+            "Présente uniquement les valeurs et entités présentes dans le résultat, sans extrapoler au-delà de son périmètre. "
             "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
         )
     if sql_sub_intent == "description":
@@ -348,11 +281,13 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
             "N'invente aucune information absente du transcript. "
         )
     return (
-        "Tu reponds a une demande de recherche de videos dans les resultats structures fournis. "
-        "Presente chaque video trouvee de maniere claire avec son titre et son lien. "
-        "Si la question porte sur une personne, son poste ou sa fonction, utilise uniquement les informations d'intervenant fournies dans les resultats. "
-        "Si plusieurs videos sont presentes, distingue-les nettement. "
-        "Ne transforme pas une recherche de videos en description ou en resume. "
+        "Tu réponds directement à la question en t'appuyant sur les sources vidéo structurées fournies. "
+        "Utilise les informations pertinentes contenues dans ces sources pour formuler une réponse naturelle et précise. "
+        "Ne réduis pas la réponse à une liste de vidéos et ne commence pas automatiquement par présenter les vidéos trouvées. "
+        "Mentionne le titre ou le lien d'une vidéo seulement si la question le demande ou si cela aide réellement à comprendre ou vérifier la réponse. "
+        "Si la question porte sur une personne, son poste ou sa fonction, utilise uniquement les informations d'intervenant fournies dans les sources. "
+        "Si plusieurs sources sont pertinentes, synthétise-les et distingue-les uniquement lorsque c'est nécessaire. "
+        "Ne produis une description ou un résumé d'une vidéo que si la question le demande. "
     )
 
 
@@ -432,19 +367,16 @@ def generate_sql_answer(
     trace: dict[str, str] | None = None,
     prompt_template: str | None = None,
 ) -> str:
-    if not sources:
-        if trace is not None:
-            trace["action"] = "abstain"
-        if sql_sub_intent == "specific_persons":
-            return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
-        return (
-            "Je n'ai trouve aucun contenu correspondant a cette demande. "
-            "Si tu fais reference a une video precise, indique son titre exact ou un mot-cle du titre."
-        )
-
     if client is None or not answer_model:
         if trace is not None:
-            trace["action"] = "answer"
+            trace["action"] = "answer" if sources else "abstain"
+        if not sources:
+            if sql_sub_intent == "specific_persons":
+                return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
+            return (
+                "Je n'ai trouve aucun contenu correspondant a cette demande. "
+                "Si tu fais reference a une video precise, indique son titre exact ou un mot-cle du titre."
+            )
         if sql_sub_intent == "specific_persons":
             lines = ["Videos trouvees :"]
             for index, item in enumerate(sources, start=1):
@@ -478,7 +410,13 @@ def generate_sql_answer(
     )
     input_messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Question: {question}\n\nSources pour répondre :\n\n" + "\n\n".join(context_blocks)},
+            {
+                "role": "user",
+                "content": (
+                    f"Question: {question}\n\nSources pour répondre :\n\n"
+                    + ("\n\n".join(context_blocks) or "Aucun résultat SQL exploitable.")
+                ),
+            },
         ]
     response = client.responses.create(model=answer_model, input=input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)
@@ -486,6 +424,52 @@ def generate_sql_answer(
     if answer:
         return parse_answer_output(answer, trace)
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable pour la route sql.")
+
+
+def generate_person_clarification_answer(
+    client: LLMClientProtocol | None,
+    question: str,
+    answer_model: str | None,
+    person_resolution: dict[str, Any],
+    trace: dict[str, str] | None = None,
+    prompt_template: str | None = None,
+) -> str:
+    """Laisse le modèle de réponse formuler l'action face à une personne ambiguë."""
+    fallback = (
+        str(person_resolution.get("message") or "").strip()
+        or "Peux-tu préciser le nom de l'intervenant ?"
+    )
+    if client is None or not answer_model:
+        if trace is not None:
+            trace["action"] = "clarify"
+        return fallback
+
+    input_messages = [
+        {
+            "role": "system",
+            "content": render_answer_system_prompt(
+                prompt_template,
+                route_instructions=(
+                    "Tu réponds à une demande dont la personne visée n'a pas été résolue "
+                    "de façon unique. Utilise les candidats fournis pour décider si une "
+                    "question de précision est nécessaire. N'invente aucune identité."
+                ),
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Question: {question}\n\nRésolution des personnes:\n"
+                + json.dumps(person_resolution, ensure_ascii=False)
+            ),
+        },
+    ]
+    response = client.responses.create(model=answer_model, input=input_messages)
+    record_answer_trace(trace, answer_model, input_messages, response)
+    answer = getattr(response, "output_text", "").strip()
+    if answer:
+        return parse_answer_output(answer, trace)
+    raise RuntimeError("Le modele n'a pas renvoye de clarification exploitable.")
 
 
 def generate_final_answer(
@@ -498,24 +482,19 @@ def generate_final_answer(
     prompt_template: str | None = None,
 ) -> str:
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
-    source_evaluation = retrieval.get("source_evaluation") or {}
-    action_hint = source_evaluation.get("action_hint")
-    if route not in {"direct", "memory"} and source_evaluation.get("reason") == "ambiguous_person":
-        if trace is not None:
-            trace["action"] = "clarify"
-        return (
-            (retrieval.get("person_resolution") or {}).get("message")
-            or "Peux-tu préciser le nom de l'intervenant ?"
+    person_resolution = retrieval.get("person_resolution") or {}
+    if route != "direct" and person_resolution.get("ambiguous"):
+        return generate_person_clarification_answer(
+            client,
+            question,
+            answer_model,
+            person_resolution,
+            trace,
+            prompt_template,
         )
-    if route not in {"direct", "memory"} and action_hint == "clarify":
-        if trace is not None:
-            trace["action"] = "clarify"
-        return source_evaluation.get("clarification_message") or "Peux-tu préciser ta question ?"
-    if route not in {"direct", "memory"} and action_hint == "abstain" and source_evaluation.get("reason") == "low_rerank_relevance":
-        if trace is not None:
-            trace["action"] = "abstain"
-        return "Je n'ai pas trouvé de source suffisamment pertinente pour répondre à cette question."
     if route == "direct":
+        if trace is not None:
+            trace["action"] = "answer"
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
     if route == "rag" and retrieval.get("retrieval_mode") == "rag+structured_sql":
         return generate_sql_answer(

@@ -76,6 +76,86 @@ class InterfaceAppTests(unittest.TestCase):
             system_prompt,
         )
 
+    def test_planner_prompt_preserves_utf8_french_text(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt("Question")
+
+        self.assertIn("Première étape", system_prompt)
+        self.assertIn("clés", system_prompt)
+        self.assertNotIn("Ã", system_prompt)
+
+    def test_true_social_message_keeps_direct_route(self) -> None:
+        plan = PlannerPlan(route="direct", query_text="Bonjour")
+
+        correction = planner.apply_deterministic_sql_policy("Bonjour", plan)
+
+        self.assertIsNone(correction)
+        self.assertEqual(plan.route, "direct")
+        self.assertFalse(plan.use_rag)
+
+    def test_non_social_direct_route_is_repaired_to_rag(self) -> None:
+        question = "Explique-moi les RAG."
+        plan = PlannerPlan(route="direct", query_text=question)
+
+        correction = planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertEqual(correction, "direct_non_social_to_rag")
+        self.assertEqual(plan.route, "rag")
+        self.assertTrue(plan.use_rag)
+
+    def test_direct_route_with_company_forces_specific_persons_sql(self) -> None:
+        question = "Trouve une personne qui travaille chez Microsoft."
+        plan = PlannerPlan(
+            route="direct",
+            query_text=question,
+            companies=["Microsoft"],
+        )
+
+        correction = planner.apply_deterministic_sql_policy(question, plan)
+
+        self.assertEqual(correction, "direct_with_entities_to_rag")
+        self.assertEqual(plan.route, "rag")
+        self.assertEqual(plan.sql_sub_intent, "specific_persons")
+        self.assertTrue(plan.sql_main_source)
+
+    def test_greeting_with_information_request_is_not_social(self) -> None:
+        self.assertTrue(planner.is_social_message("Bonjour !"))
+        self.assertFalse(
+            planner.is_social_message("Bonjour, trouve une personne chez Microsoft")
+        )
+
+    def test_obvious_elliptical_message_repairs_follow_up_flag(self) -> None:
+        client = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda **_: SimpleNamespace(
+                    output_text=(
+                        '{"follow_up": false, "reformulated_question": '
+                        '"et une personne qui travaille chez Microsoft"}'
+                    )
+                )
+            )
+        )
+        memory = [
+            {"role": "user", "text": "Je cherche un étudiant qui fait des RAG"},
+            {"role": "assistant", "text": "Tom Baucher fait des RAG."},
+        ]
+        with patch.object(
+            planner,
+            "fetch_conversation_memory",
+            return_value=(memory, {"applied": True, "message_count": 2}),
+        ):
+            reformulated, trace = planner.reformulate_question(
+                "et une qui bosse chez Microsoft",
+                184,
+                client,
+            )
+
+        self.assertEqual(
+            reformulated,
+            "et une personne qui travaille chez Microsoft",
+        )
+        self.assertTrue(trace["follow_up"])
+        self.assertEqual(trace["reason"], "deterministic_follow_up_detected")
+
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
         question = (
             "Que dit Matthieu dans la vidéo « Apporter ma pierre à l’édifice "
@@ -172,6 +252,15 @@ class InterfaceAppTests(unittest.TestCase):
         prompt = generation.build_sql_sub_intent_prompt("transcript_verbatim")
 
         self.assertIn("Restitue le transcript fidelement", prompt)
+
+    def test_specific_persons_prompt_answers_from_video_sources(self) -> None:
+        prompt = generation.build_sql_sub_intent_prompt("specific_persons")
+
+        self.assertIn("réponds directement à la question", prompt)
+        self.assertIn("sources vidéo structurées", prompt)
+        self.assertIn("Ne réduis pas la réponse à une liste de vidéos", prompt)
+        self.assertIn("titre ou le lien", prompt)
+        self.assertNotIn("Présente chaque vidéo trouvée", prompt)
 
     def test_summary_with_explicit_title_uses_transcript_qa(self) -> None:
         question = "Résume la vidéo « Titre exact »."
@@ -420,7 +509,7 @@ class InterfaceAppTests(unittest.TestCase):
             intent: generation.build_sql_sub_intent_prompt(intent)
             for intent in (
                 "specific_persons",
-                "stats",
+                "analytics",
                 "description",
                 "transcript_verbatim",
                 "transcript_qa",
@@ -443,7 +532,7 @@ class InterfaceAppTests(unittest.TestCase):
             SimpleNamespace(responses=Responses()),
             "Donne-moi les chiffres de cette vidéo.",
             "mistral-medium-latest",
-            "stats",
+            "analytics",
             [
                 {
                     "video_title": "Vidéo test",
@@ -454,7 +543,7 @@ class InterfaceAppTests(unittest.TestCase):
         )
 
         messages = calls[0]["input"]
-        self.assertIn("statistiques", messages[0]["content"])
+        self.assertIn("demande analytique", messages[0]["content"])
         self.assertNotIn("Sous-route SQL", messages[1]["content"])
         self.assertNotIn("sql_sub_intent", messages[1]["content"])
         self.assertIn("Sources pour répondre :", messages[1]["content"])
@@ -489,7 +578,7 @@ class InterfaceAppTests(unittest.TestCase):
                 generation.build_sql_sub_intent_prompt(intent)
                 for intent in (
                     "specific_persons",
-                    "stats",
+                    "analytics",
                     "description",
                     "transcript_verbatim",
                     "transcript_qa",

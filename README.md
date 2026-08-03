@@ -1146,6 +1146,23 @@ Le backend combine recherche SQL, BM25, recherche vectorielle pgvector, fusion R
 et reranking. Les traces OpenTelemetry sont envoyées à Phoenix lorsque
 `PHOENIX_ENABLED=true`.
 
+Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
+Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête
+générée doit être un `SELECT` paramétré sur une liste blanche de tables. Les
+privilèges du compte `rag_ionis_analytics` limitent également les tables et
+colonnes accessibles. La requête est passée dans `EXPLAIN`, rejetée si son coût
+dépasse `ANALYTICS_MAX_TOTAL_COST`, puis exécutée avec ce compte read-only, un
+timeout et une limite de lignes. Phoenix expose séparément les spans
+`rag.analytics.sql_generation`, `rag.analytics.sql_validation`,
+`rag.analytics.sql_cost_validation` et `rag.analytics.sql_execution`.
+
+Le modèle de réponse produit en un seul appel un objet JSON contenant le message
+final et l'action `answer`, `clarify` ou `abstain`. Il choisit `answer` seulement
+si les sources permettent de répondre suffisamment, `clarify` si la cible de la
+question est ambiguë et `abstain` si la question est claire mais les preuves
+insuffisantes. Cette décision est enregistrée dans `rag.generation`; aucun appel
+LLM d'évaluation ou de révision supplémentaire n'est effectué.
+
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
 `section` parente puis son résumé `global` lorsqu'ils existent. Ces parents

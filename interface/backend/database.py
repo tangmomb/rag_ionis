@@ -23,9 +23,25 @@ def get_database_url() -> str:
     return database_url
 
 
+def get_analytics_database_url() -> str:
+    database_url = os.getenv("ANALYTICS_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError(
+            "ANALYTICS_DATABASE_URL manquant : le Text-to-SQL exige un compte PostgreSQL read-only."
+        )
+    return database_url
+
+
 def connect_database():
     return psycopg.connect(
         get_database_url(),
+        options="-c search_path=data,public",
+    )
+
+
+def connect_analytics_database():
+    return psycopg.connect(
+        get_analytics_database_url(),
         options="-c search_path=data,public",
     )
 

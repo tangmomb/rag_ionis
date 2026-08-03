@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from interface.backend.analytics_sql import run_analytics_text_to_sql
 from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
@@ -99,12 +100,16 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             contextual_question,
             extract_video_title_hint(contextual_question) or planner_plan.title_hint,
         )
-        apply_deterministic_sql_policy(contextual_question, planner_plan)
+        policy_correction = apply_deterministic_sql_policy(
+            contextual_question,
+            planner_plan,
+        )
         planner_span.set_output(
             {
                 "prompt": planner_prompt,
                 "response_raw": planner_raw,
                 "validated": pydantic_verification,
+                "policy_correction": policy_correction,
                 "plan": planner_plan.model_dump(),
             }
         )
@@ -280,13 +285,22 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                     "sql_sub_intent": sql_sub_intent,
                 },
             ) as sql_span:
-                sources, direct_trace = lookup_video_document(
-                    execution_plan,
-                    sql_sub_intent,
-                    database_persons=database_persons,
-                    database_company=database_company,
-                    transcript_persons=person_resolution.get("matched_in_transcripts", []),
-                )
+                if sql_sub_intent == "analytics":
+                    sources, direct_trace = run_analytics_text_to_sql(
+                        execution_plan,
+                        client,
+                        planner_model,
+                        database_persons=database_persons,
+                        database_companies=database_company,
+                    )
+                else:
+                    sources, direct_trace = lookup_video_document(
+                        execution_plan,
+                        sql_sub_intent,
+                        database_persons=database_persons,
+                        database_company=database_company,
+                        transcript_persons=person_resolution.get("matched_in_transcripts", []),
+                    )
                 sql_span.set_output({**direct_trace, "results": sources})
                 trace_formatted_sql("rag.structured_sql", direct_trace)
             execution_plan_span.set_output(
@@ -381,13 +395,22 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                         "sql_sub_intent": sql_sub_intent,
                     },
                 ) as sql_span:
-                    doc_sources, doc_trace = lookup_video_document(
-                        execution_plan,
-                        sql_sub_intent,
-                        database_persons=database_persons,
-                        database_company=database_company,
-                        transcript_persons=person_resolution.get("matched_in_transcripts", []),
-                    )
+                    if sql_sub_intent == "analytics":
+                        doc_sources, doc_trace = run_analytics_text_to_sql(
+                            execution_plan,
+                            client,
+                            planner_model,
+                            database_persons=database_persons,
+                            database_companies=database_company,
+                        )
+                    else:
+                        doc_sources, doc_trace = lookup_video_document(
+                            execution_plan,
+                            sql_sub_intent,
+                            database_persons=database_persons,
+                            database_company=database_company,
+                            transcript_persons=person_resolution.get("matched_in_transcripts", []),
+                        )
                     sql_span.set_output({**doc_trace, "results": doc_sources})
                     trace_formatted_sql("rag.structured_sql", doc_trace)
                 execution_plan_span.set_output(

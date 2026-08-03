@@ -403,6 +403,7 @@ button {
 .message-content p,
 .message-content ul,
 .message-content pre,
+.message-content .markdown-table-wrap,
 .message-content h1,
 .message-content h2,
 .message-content h3 {
@@ -412,6 +413,7 @@ button {
 .message-content p:last-child,
 .message-content ul:last-child,
 .message-content pre:last-child,
+.message-content .markdown-table-wrap:last-child,
 .message-content h1:last-child,
 .message-content h2:last-child,
 .message-content h3:last-child {
@@ -466,6 +468,60 @@ button {
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.markdown-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overscroll-behavior-inline: contain;
+}
+
+.message-content table {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+  white-space: normal;
+}
+
+.message-content th,
+.message-content td {
+  min-width: 120px;
+  padding: 10px 14px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.message-content th {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.message-content tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.message-content tr > :last-child {
+  border-right: 0;
+}
+
+.message-content tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.message-content .markdown-align-left {
+  text-align: left;
+}
+
+.message-content .markdown-align-center {
+  text-align: center;
+}
+
+.message-content .markdown-align-right {
+  text-align: right;
 }
 
 .message-content a {

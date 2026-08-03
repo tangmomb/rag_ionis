@@ -86,9 +86,9 @@ def build_planner_prompt(
         "Deuxième étape, identifier les dates de publication mentionnées dans la question. Les stocker dans published_after et published_before sous forme de chaînes ISO 8601 (YYYY-MM-DD). "
         "Troisième étape, identifier un titre de video mentionné dans la question. Le stocker dans title_hint. "
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
-        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'stats', 'description', 'transcript_verbatim' ou 'null'."
+        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'analytics', 'description', 'transcript_verbatim' ou 'null'."
         "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='rag' pour toute question qui demande une information. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
-        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question. sql_sub_intent='stats' si la question demande des statistiques sur une video. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
+        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question, sauf si elle demande une analyse structurée. sql_sub_intent='analytics' pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
         "Toutes les valeurs textuelles de l'objet JSON doivent être en texte normal, sans Markdown."
 
     )
@@ -96,15 +96,29 @@ def build_planner_prompt(
     return system_prompt, question
 
 
+def is_social_message(question: str) -> bool:
+    """N'accepte la route directe que pour un message entièrement social."""
+    normalized = normalize_text(question).strip()
+    normalized = re.sub(r"[^a-z0-9' ]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    social_patterns = (
+        r"(?:bonjour|bonsoir|salut|coucou|hello|hey)(?: (?:comment )?ca va)?",
+        r"(?:merci|merci beaucoup|merci bien|je te remercie|je vous remercie)",
+        r"(?:ca va|comment ca va|comment vas tu|tu vas bien|vous allez bien)",
+        r"(?:au revoir|a bientot|bonne journee|bonne soiree|bye)",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in social_patterns)
+
+
 def build_social_answer(question: str) -> str:
     lower = normalize_text(question).strip()
     if any(token in lower for token in ("merci",)):
-        return "Avec plaisir. Si tu veux, je peux aussi t'aider a chercher une video ou repondre a une question sur la base."
+        return "Avec plaisir. Si tu veux, je peux aussi t'aider à chercher une vidéo ou répondre à une question sur la base."
     if any(token in lower for token in ("ca va", "ca roule", "comment ca va")):
-        return "Ca va bien, merci. Je suis pret a t'aider sur la base video si tu veux."
+        return "Ça va bien, merci. Je suis prêt à t'aider sur la base vidéo si tu veux."
     if any(token in lower for token in ("au revoir", "a bientot", "bonne journee", "bonne soiree")):
-        return "A bientot."
-    return "Bonjour. Je peux t'aider a trouver une video, un transcript, un resume ou repondre a une question a partir de la base."
+        return "À bientôt."
+    return "Bonjour. Je peux t'aider à trouver une vidéo, un transcript, un résumé ou répondre à une question à partir de la base."
 
 
 def _normalize_legacy_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
@@ -120,11 +134,12 @@ def _normalize_legacy_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         "lookup": "specific_persons",
         "video_transcript": "transcript_verbatim",
         "video_description": "description",
-        "video_stats": "stats",
+        "video_stats": "analytics",
+        "stats": "analytics",
     }
     sql_intents = {
         "specific_persons",
-        "stats",
+        "analytics",
         "description",
         "transcript_verbatim",
         "transcript_qa",
@@ -193,11 +208,12 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         "lookup": "specific_persons",
         "video_transcript": "transcript_verbatim",
         "video_description": "description",
-        "video_stats": "stats",
+        "video_stats": "analytics",
+        "stats": "analytics",
     }
     sql_intents = {
         "specific_persons",
-        "stats",
+        "analytics",
         "description",
         "transcript_verbatim",
         "transcript_qa",
@@ -363,6 +379,23 @@ def has_explicit_structured_sql_request(question: str) -> bool:
     )
 
 
+def has_analytics_request(question: str) -> bool:
+    normalized = normalize_text(question)
+    return bool(
+        re.search(
+            r"\b(?:statistiques?|stats?|vues?|likes?|commentaires?)\b",
+            normalized,
+        )
+        or re.search(
+            r"\b(?:date de publication|publiee?|publiees?|mise en ligne)\b",
+            normalized,
+        )
+        or re.search(r"\b(?:duree|combien de temps)\b", normalized)
+        or re.search(r"\btype de video\b", normalized)
+        or re.search(r"\b(?:sous titres?|sous-titres?)\b", normalized)
+    )
+
+
 def has_document_content_request(question: str) -> bool:
     """Détecte une demande de synthèse ou d'analyse du contenu vidéo."""
     normalized = normalize_text(question)
@@ -404,27 +437,48 @@ def has_person_title_request(question: str) -> bool:
     )
 
 
-def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> None:
+def apply_deterministic_sql_policy(
+    question: str,
+    planner_plan: PlannerPlan,
+) -> str | None:
     """Empêche le planner de basculer arbitrairement la source SQL principale."""
-    if planner_plan.route in {"direct", "memory"}:
+    policy_correction: str | None = None
+    if planner_plan.route == "memory":
         planner_plan.sql_sub_intent = None
         derive_plan_sources(planner_plan)
-        return
+        return None
+
+    if planner_plan.route == "direct":
+        if planner_plan.persons or planner_plan.companies:
+            planner_plan.route = "rag"
+            policy_correction = "direct_with_entities_to_rag"
+        elif not is_social_message(question):
+            planner_plan.route = "rag"
+            policy_correction = "direct_non_social_to_rag"
+        else:
+            planner_plan.sql_sub_intent = None
+            derive_plan_sources(planner_plan)
+            return None
+
+    if planner_plan.sql_sub_intent == "analytics" or has_analytics_request(question):
+        planner_plan.sql_sub_intent = "analytics"
+        derive_plan_sources(planner_plan)
+        return policy_correction
 
     if planner_plan.persons or planner_plan.companies:
         planner_plan.sql_sub_intent = "specific_persons"
         derive_plan_sources(planner_plan)
-        return
+        return policy_correction
 
     if has_temporal_transcript_request(question):
         planner_plan.sql_sub_intent = "transcript_qa"
         derive_plan_sources(planner_plan)
-        return
+        return policy_correction
 
     if has_person_title_request(question):
         planner_plan.sql_sub_intent = "specific_persons"
         derive_plan_sources(planner_plan)
-        return
+        return policy_correction
 
     if has_document_content_request(question):
         if planner_plan.title_hint:
@@ -432,17 +486,17 @@ def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> 
         else:
             planner_plan.sql_sub_intent = None
         derive_plan_sources(planner_plan)
-        return
+        return policy_correction
 
     if not has_explicit_structured_sql_request(question):
         # Le planner peut conserver SQL pour une question video complexe.
         # Si la recherche structuree echoue, orchestrate_request tentera le RAG.
         derive_plan_sources(planner_plan)
-        return
+        return policy_correction
 
     normalized = normalize_text(question)
-    if re.search(r"\b(?:statistiques?|stats?|vues?|likes?|commentaires?)\b", normalized):
-        planner_plan.sql_sub_intent = "stats"
+    if has_analytics_request(question):
+        planner_plan.sql_sub_intent = "analytics"
     elif re.search(r"\b(?:description|descriptif|decris)\b", normalized):
         planner_plan.sql_sub_intent = "description"
     elif any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
@@ -455,6 +509,7 @@ def apply_deterministic_sql_policy(question: str, planner_plan: PlannerPlan) -> 
     else:
         planner_plan.sql_sub_intent = "specific_persons"
     derive_plan_sources(planner_plan)
+    return policy_correction
 
 
 def has_structured_sql_filters(query: ExecutionPlan) -> bool:
@@ -868,6 +923,27 @@ def repair_video_clarification_follow_up(
     )
 
 
+def is_obvious_follow_up(
+    question: str,
+    memory_items: list[dict[str, str]],
+) -> bool:
+    """Repère les relances elliptiques que le modèle ne doit pas déclarer autonomes."""
+    if not memory_items:
+        return False
+    normalized = normalize_text(question).strip()
+    return bool(
+        re.match(r"^(?:et|aussi|pareil|idem)\b", normalized)
+        or re.match(
+            r"^(?:qui|quel(?:le|s|les)?)\b.*\b(?:son|sa|ses|leur|leurs)\b",
+            normalized,
+        )
+        or re.match(
+            r"^(?:et )?(?:pour|avec|chez) (?:lui|elle|eux|elles|celui|celle)\b",
+            normalized,
+        )
+    )
+
+
 def reformulate_question(
     question: str,
     conversation_id: int | None,
@@ -922,12 +998,15 @@ def reformulate_question(
             trace["reason"] = "invalid_json_response"
             return question, trace
 
-        trace["follow_up"] = follow_up
         repaired = repair_video_clarification_follow_up(question, memory_items)
         if repaired:
             reformulated = repaired
             follow_up = True
             trace["reason"] = "video_followup_intent_preserved"
+        elif not follow_up and is_obvious_follow_up(question, memory_items):
+            follow_up = True
+            trace["reason"] = "deterministic_follow_up_detected"
+        trace["follow_up"] = follow_up
         trace["applied"] = reformulated != question.strip()
         trace["reformulated_question"] = reformulated
         return reformulated or question, trace

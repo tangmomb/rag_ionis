@@ -15,7 +15,6 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
 )
 from interface.backend.generation import (
-    evaluate_source_sufficiency,
     generate_final_answer,
     select_answer_sources,
 )
@@ -87,22 +86,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                 }
             )
 
-        with trace_operation(
-            "rag.source_evaluation",
-            kind="EVALUATOR",
-            input_value={
-                "question": retrieval.get("contextual_question", payload.question),
-                "sources": sources,
-                "retrieval_mode": retrieval.get("retrieval_mode"),
-            },
-        ) as evaluation_span:
-            retrieval["source_evaluation"] = evaluate_source_sufficiency(
-                retrieval.get("contextual_question", payload.question),
-                sources,
-                retrieval,
-            )
-            evaluation_span.set_output(retrieval["source_evaluation"])
-
+        answer_client = get_llm_client()
         answer_trace: dict[str, str] = {}
         if not answer:
             with trace_operation(
@@ -112,11 +96,10 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                     "question": retrieval.get("contextual_question", payload.question),
                     "model": retrieval["answer_model"],
                     "sources": sources,
-                    "source_evaluation": retrieval["source_evaluation"],
                 },
             ) as generation_span:
                 answer = generate_final_answer(
-                    get_llm_client(),
+                    answer_client,
                     retrieval.get("contextual_question", payload.question),
                     retrieval["answer_model"],
                     retrieval,
@@ -130,7 +113,10 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                         "trace": answer_trace,
                     }
                 )
-        answer_action = answer_trace.get("action", "answer")
+        else:
+            answer_trace["action"] = "answer"
+
+        answer_action = answer_trace.get("action", "abstain")
         retrieval["answer_action"] = answer_action
         if answer_action == "answer":
             answer, carousel_sources = select_answer_sources(answer, sources)

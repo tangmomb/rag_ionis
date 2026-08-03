@@ -19,7 +19,7 @@ from interface.backend.config import (
 PlannerRoute = Literal["direct", "rag", "memory", "multi_source"]
 SqlSubIntent = Literal[
     "specific_persons",
-    "stats",
+    "analytics",
     "description",
     "transcript_verbatim",
     "transcript_qa",

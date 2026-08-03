@@ -81,7 +81,7 @@ class RunPhoenixExperimentTests(unittest.TestCase):
                 },
                 "retrieval_mode": "prefilter+bm25+vector+rrf",
                 "used_rerank": True,
-                "source_evaluation": {"reason": "sources_available"},
+                "answer_action": "answer",
                 "telemetry": {"trace_id": "abc123"},
             },
         )

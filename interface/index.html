@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG YouTube IONIS-STM</title>
-    <link rel="stylesheet" href="styles.css?v=6" />
+    <link rel="stylesheet" href="styles.css?v=7" />
   </head>
   <body>
     <main class="app">
@@ -287,6 +287,91 @@
         return html;
       }
 
+      function splitMarkdownTableRow(value) {
+        let row = String(value || "").trim();
+        if (row.startsWith("|")) row = row.slice(1);
+        if (row.endsWith("|")) {
+          let precedingBackslashes = 0;
+          for (
+            let index = row.length - 2;
+            index >= 0 && row[index] === "\\";
+            index -= 1
+          ) {
+            precedingBackslashes += 1;
+          }
+          if (precedingBackslashes % 2 === 0) row = row.slice(0, -1);
+        }
+
+        const cells = [];
+        let cell = "";
+        let inCode = false;
+
+        for (let index = 0; index < row.length; index += 1) {
+          const character = row[index];
+          const nextCharacter = row[index + 1];
+          if (
+            character === "\\" &&
+            !inCode &&
+            (nextCharacter === "|" || nextCharacter === "\\")
+          ) {
+            cell += nextCharacter;
+            index += 1;
+            continue;
+          }
+          if (character === "`") {
+            inCode = !inCode;
+            cell += character;
+            continue;
+          }
+          if (character === "|" && !inCode) {
+            cells.push(cell.trim());
+            cell = "";
+            continue;
+          }
+          cell += character;
+        }
+        cells.push(cell.trim());
+        return cells;
+      }
+
+      function parseMarkdownTableSeparator(value) {
+        const cells = splitMarkdownTableRow(value);
+        if (!cells.length) return null;
+
+        const alignments = [];
+        for (const cell of cells) {
+          const separator = cell.replace(/\s+/g, "");
+          if (!/^:?-{3,}:?$/.test(separator)) return null;
+          alignments.push(
+            separator.startsWith(":") && separator.endsWith(":")
+              ? "center"
+              : separator.endsWith(":")
+                ? "right"
+                : "left",
+          );
+        }
+        return alignments;
+      }
+
+      function renderMarkdownTable(headers, rows, alignments) {
+        const renderCell = (tag, value, columnIndex) => {
+          const alignment = alignments[columnIndex] || "left";
+          const scope = tag === "th" ? ' scope="col"' : "";
+          return `<${tag}${scope} class="markdown-align-${alignment}">${renderInlineMarkdown(value)}</${tag}>`;
+        };
+        const headerHtml = headers
+          .map((header, index) => renderCell("th", header, index))
+          .join("");
+        const bodyHtml = rows
+          .map((row) => {
+            const normalizedRow = headers.map((_, index) => row[index] || "");
+            return `<tr>${normalizedRow.map((cell, index) => renderCell("td", cell, index)).join("")}</tr>`;
+          })
+          .join("");
+
+        return `<div class="markdown-table-wrap"><table><thead><tr>${headerHtml}</tr></thead>${bodyHtml ? `<tbody>${bodyHtml}</tbody>` : ""}</table></div>`;
+      }
+
       function renderMarkdown(value) {
         const lines = String(value || "")
           .replace(/\r\n/g, "\n")
@@ -319,7 +404,8 @@
           codeLines = [];
         }
 
-        for (const rawLine of lines) {
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+          const rawLine = lines[lineIndex];
           const line = rawLine.trimEnd();
 
           if (line.startsWith("```")) {
@@ -342,6 +428,41 @@
           if (!line.trim()) {
             flushParagraph();
             flushList();
+            continue;
+          }
+
+          const nextLine = lines[lineIndex + 1];
+          const tableAlignments =
+            line.includes("|") && nextLine !== undefined
+              ? parseMarkdownTableSeparator(nextLine)
+              : null;
+          const tableHeaders = tableAlignments
+            ? splitMarkdownTableRow(line)
+            : null;
+          if (
+            tableHeaders &&
+            tableHeaders.length === tableAlignments.length
+          ) {
+            flushParagraph();
+            flushList();
+            const tableRows = [];
+            lineIndex += 2;
+            while (
+              lineIndex < lines.length &&
+              lines[lineIndex].trim() &&
+              lines[lineIndex].includes("|")
+            ) {
+              tableRows.push(splitMarkdownTableRow(lines[lineIndex]));
+              lineIndex += 1;
+            }
+            lineIndex -= 1;
+            parts.push(
+              renderMarkdownTable(
+                tableHeaders,
+                tableRows,
+                tableAlignments,
+              ),
+            );
             continue;
           }
 

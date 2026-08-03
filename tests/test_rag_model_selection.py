@@ -148,14 +148,23 @@ class RagModelSelectionTests(unittest.TestCase):
         )
 
         self.assertIn("Instructions RAG", rendered)
-        self.assertIn("answer et action", rendered)
+        self.assertIn("exactement deux clés : answer et action", rendered)
         self.assertNotIn("{route_instructions}", rendered)
 
     def test_default_answer_prompt_displays_real_instructions(self) -> None:
-        self.assertIn("answer et action", DEFAULT_ANSWER_PROMPT_TEMPLATE)
+        self.assertIn("exactement deux clés : answer et action", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("Markdown", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("courte formule de politesse", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("{route_instructions}", DEFAULT_ANSWER_PROMPT_TEMPLATE)
+
+    def test_custom_answer_prompt_cannot_drop_the_action_contract(self) -> None:
+        rendered = render_answer_system_prompt(
+            "Réponds très brièvement.",
+            route_instructions="Instructions RAG",
+        )
+
+        self.assertIn("Réponds très brièvement.", rendered)
+        self.assertIn("exactement deux clés : answer et action", rendered)
 
 
 if __name__ == "__main__":

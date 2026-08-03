@@ -100,28 +100,6 @@
                 </button>
               </div>
             </div>
-            <div class="composer-actions">
-              <div class="model-selectors" aria-label="Modèles du pipeline RAG">
-                <label class="model-selector" for="reformulationModel">
-                  <span>Reformulation</span>
-                  <select id="reformulationModel" name="reformulationModel">
-                    <option value="mistral-medium-latest">Mistral — Medium</option>
-                  </select>
-                </label>
-                <label class="model-selector" for="plannerModel">
-                  <span>Planner</span>
-                  <select id="plannerModel" name="plannerModel">
-                    <option value="mistral-medium-latest">Mistral — Medium</option>
-                  </select>
-                </label>
-                <label class="model-selector" for="answerModel">
-                  <span>Réponse</span>
-                  <select id="answerModel" name="answerModel">
-                    <option value="mistral-medium-latest">Mistral — Medium</option>
-                  </select>
-                </label>
-              </div>
-            </div>
           </div>
         </form>
       </section>
@@ -133,12 +111,12 @@
       const question = document.getElementById("question");
       const suggestedQuestions = document.getElementById("suggestedQuestions");
       const headerThumbnails = document.getElementById("headerThumbnails");
-      const reformulationModel = document.getElementById("reformulationModel");
-      const plannerModel = document.getElementById("plannerModel");
-      const answerModel = document.getElementById("answerModel");
       let conversationId = null;
       const RAG_CONFIG = {
         apiUrl: "/api/rag",
+        reformulationModel: "mistral-medium-latest",
+        plannerModel: "mistral-medium-latest",
+        answerModel: "mistral-medium-latest",
         embeddingModel: "meme modele que la base",
         rerankModel: "cohere rerank",
         topK: 40,
@@ -146,46 +124,6 @@
         useSql: true,
         useRerank: true,
       };
-
-      function populateModelSelect(select, models, selectedModel) {
-        const groups = new Map();
-        select.replaceChildren();
-
-        models.forEach((model) => {
-          let group = groups.get(model.provider);
-          if (!group) {
-            group = document.createElement("optgroup");
-            group.label = model.provider_label;
-            groups.set(model.provider, group);
-            select.appendChild(group);
-          }
-          const option = document.createElement("option");
-          option.value = model.id;
-          option.textContent = model.label;
-          group.appendChild(option);
-        });
-
-        select.value = selectedModel;
-        if (!select.value && models.length) select.value = models[0].id;
-      }
-
-      async function loadLlmModels() {
-        try {
-          const response = await fetch("/api/llm-models");
-          if (!response.ok) return;
-          const data = await response.json();
-          const fields = {
-            reformulationModel,
-            plannerModel,
-            answerModel,
-          };
-          Object.entries(fields).forEach(([field, select]) => {
-            populateModelSelect(select, data.models, data.defaults[field]);
-          });
-        } catch (_error) {
-          // Mistral Medium reste disponible si le catalogue ne peut pas être chargé.
-        }
-      }
 
       async function loadHeaderThumbnails() {
         try {
@@ -222,7 +160,6 @@
       }
 
       loadHeaderThumbnails();
-      loadLlmModels();
 
       function escapeHtml(value) {
         return String(value)
@@ -600,9 +537,9 @@
           question: text,
           conversationId,
           apiUrl: RAG_CONFIG.apiUrl,
-          reformulationModel: reformulationModel.value,
-          plannerModel: plannerModel.value,
-          answerModel: answerModel.value,
+          reformulationModel: RAG_CONFIG.reformulationModel,
+          plannerModel: RAG_CONFIG.plannerModel,
+          answerModel: RAG_CONFIG.answerModel,
           embeddingModel: RAG_CONFIG.embeddingModel,
           rerankModel: RAG_CONFIG.rerankModel,
           useSql: RAG_CONFIG.useSql,

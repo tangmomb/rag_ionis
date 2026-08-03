@@ -734,53 +734,6 @@ button {
   height: 34px;
 }
 
-.composer-actions {
-  margin-top: 10px;
-}
-
-.model-selectors {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.model-selector {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-
-.model-selector span {
-  padding-left: 2px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.model-selector select {
-  width: 100%;
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  outline: none;
-  background: var(--bg-soft);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.model-selector select:hover {
-  border-color: rgba(255, 255, 255, 0.28);
-}
-
-.model-selector select:focus-visible {
-  border-color: #ffffff;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
-}
-
 @media (max-width: 720px) {
   .topbar,
   .chat,
@@ -816,10 +769,6 @@ button {
 
   .suggested-question {
     width: 100%;
-  }
-
-  .model-selectors {
-    grid-template-columns: 1fr;
   }
 
   .message.assistant .message-body {

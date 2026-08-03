@@ -18,6 +18,73 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
 
 
+PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "route": {
+            "type": "string",
+            "enum": ["direct", "rag", "multi_source"],
+        },
+        "sql_sub_intent": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": [
+                        "specific_persons",
+                        "analytics",
+                        "description",
+                        "transcript_verbatim",
+                    ],
+                },
+                {"type": "null"},
+            ],
+        },
+        "query_text": {"type": "string"},
+        "query_text_bm25": {"type": "string"},
+        "title_hint": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+        },
+        "persons": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "companies": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "published_after": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+        },
+        "published_before": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+        },
+    },
+    "required": [
+        "route",
+        "sql_sub_intent",
+        "query_text",
+        "query_text_bm25",
+        "title_hint",
+        "persons",
+        "companies",
+        "published_after",
+        "published_before",
+    ],
+    "additionalProperties": False,
+}
+
+
+REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "follow_up": {"type": "boolean"},
+        "reformulated_question": {"type": "string"},
+    },
+    "required": ["follow_up", "reformulated_question"],
+    "additionalProperties": False,
+}
+
+
 # La correction tolère une faute légère dans un prénom ou un nom, sans faire
 # remonter des noms qui ne partagent qu'une syllabe courte.
 PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
@@ -304,7 +371,11 @@ def run_planner(
         derive_plan_sources(fallback)
         return fallback, raw_prompt, json.dumps(fallback.model_dump(), ensure_ascii=False), False
 
-    response = client.responses.create(model=model, input=planner_input)
+    response = client.responses.create(
+        model=model,
+        input=planner_input,
+        response_schema=PLANNER_RESPONSE_SCHEMA,
+    )
     raw_response = serialize_openai_response(response)
     raw = getattr(response, "output_text", "").strip()
     if not raw:
@@ -983,6 +1054,7 @@ def reformulate_question(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            response_schema=REFORMULATION_RESPONSE_SCHEMA,
         )
         trace["response_raw"] = serialize_openai_response(response)
         raw_output = (getattr(response, "output_text", "") or "").strip()

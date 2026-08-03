@@ -24,6 +24,26 @@ MAX_ANALYTICS_SQL_LENGTH = 20_000
 ANALYTICS_STATEMENT_TIMEOUT_MS = 5_000
 DEFAULT_MAX_ANALYTICS_TOTAL_COST = 100_000.0
 
+ANALYTICS_SQL_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sql": {"type": "string"},
+        "params": {
+            "type": "array",
+            "items": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                    {"type": "null"},
+                ],
+            },
+        },
+    },
+    "required": ["sql", "params"],
+    "additionalProperties": False,
+}
+
 ALLOWED_ANALYTICS_TABLES = {
     "videos",
     "stats",
@@ -391,6 +411,7 @@ def run_analytics_text_to_sql(
                 model=model,
                 input=messages,
                 max_output_tokens=2_000,
+                response_schema=ANALYTICS_SQL_RESPONSE_SCHEMA,
             )
             raw_response = serialize_openai_response(response)
             payload = safe_json_loads(

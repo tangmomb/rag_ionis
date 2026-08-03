@@ -218,6 +218,10 @@ class AnalyticsSqlTests(unittest.TestCase):
             ],
         )
         self.assertEqual(trace["status"], "executed")
+        self.assertEqual(
+            responses.calls[0]["response_schema"],
+            analytics_sql.ANALYTICS_SQL_RESPONSE_SCHEMA,
+        )
         self.assertEqual(sources[0]["chunk_id"], 12)
         self.assertIn("21136", sources[0]["text"])
         self.assertEqual(cursor.executed[0][0], "SET TRANSACTION READ ONLY")

@@ -51,6 +51,10 @@ class RagModelSelectionTests(unittest.TestCase):
             client.responses.calls[0]["model"],
             "gpt-5.6-terra",
         )
+        self.assertEqual(
+            client.responses.calls[0]["response_schema"],
+            planner.PLANNER_RESPONSE_SCHEMA,
+        )
 
     def test_reformulation_uses_requested_model(self) -> None:
         client = _Client(
@@ -73,6 +77,10 @@ class RagModelSelectionTests(unittest.TestCase):
 
         self.assertEqual(reformulated, "Question reformulee")
         self.assertEqual(client.responses.calls[0]["model"], "gpt-5.6-luna")
+        self.assertEqual(
+            client.responses.calls[0]["response_schema"],
+            planner.REFORMULATION_RESPONSE_SCHEMA,
+        )
         self.assertIn('"model": "gpt-5.6-luna"', trace["prompt"])
 
     def test_orchestration_passes_independent_models_to_each_step(self) -> None:

@@ -338,6 +338,7 @@ def call_mistral(
     messages: list[dict[str, str]],
     api_key: str,
     max_output_tokens: int | None,
+    response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
     request: dict[str, Any] = {
         "model": model,
@@ -345,6 +346,15 @@ def call_mistral(
     }
     if max_output_tokens is not None:
         request["max_tokens"] = max_output_tokens
+    if response_schema is not None:
+        request["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "rag_answer",
+                "schema": response_schema,
+                "strict": True,
+            },
+        }
     with trace_operation(
         "MistralChatCompletion",
         kind="LLM",
@@ -481,6 +491,7 @@ def create_llm_response(
     provider: LLMProvider | None = None,
     max_output_tokens: int | None = None,
     store: bool | None = None,
+    response_schema: dict[str, Any] | None = None,
 ) -> LLMResponse:
     selected_provider = provider or provider_for_model(model)
     api_key = provider_api_key(selected_provider)
@@ -508,6 +519,7 @@ def create_llm_response(
                 messages,
                 api_key,
                 max_output_tokens,
+                response_schema,
             )
         return call_google(
             model,

@@ -1146,6 +1146,12 @@ Le backend combine recherche SQL, BM25, recherche vectorielle pgvector, fusion R
 et reranking. Les traces OpenTelemetry sont envoyées à Phoenix lorsque
 `PHOENIX_ENABLED=true`.
 
+L'interface utilisateur ne propose pas de sélecteur de LLM : la reformulation,
+le planner et la génération finale utilisent tous `mistral-medium-latest`.
+Les quatre sorties structurées de ce pipeline — reformulation, planner,
+Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
+niveau de l'API Mistral.
+
 Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
 Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête
 générée doit être un `SELECT` paramétré sur une liste blanche de tables. Les
@@ -1191,7 +1197,9 @@ Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix 
 La fenêtre permet de choisir séparément un modèle OpenAI, Mistral ou Google
 pour la reformulation, le planner et la réponse finale. Les payloads propres à
 chaque API sont traduits vers une réponse commune, tandis que le JSON brut reste
-enregistrable dans les traces Phoenix.
+enregistrable dans les traces Phoenix. Le schéma JSON strict `answer` / `action`
+est imposé au niveau de l'API uniquement pour Mistral ; dans les expériences
+Phoenix, OpenAI et Google conservent le contrat JSON défini dans le prompt.
 
 Les embeddings ne changent pas de fournisseur : ils doivent rester compatibles
 avec les vecteurs déjà présents en base et utilisent donc

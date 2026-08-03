@@ -74,6 +74,7 @@ class LlmProviderTests(unittest.TestCase):
                 input="Bonjour",
                 max_output_tokens=200,
                 store=False,
+                response_schema={"type": "object"},
             )
 
         self.assertEqual(response.output_text, "OpenAI")
@@ -87,6 +88,8 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(request["max_output_tokens"], 200)
         self.assertFalse(request["store"])
         self.assertNotIn("service_tier", request)
+        self.assertNotIn("response_schema", request)
+        self.assertNotIn("text", request)
 
     def test_openai_uses_configured_fast_service_tier(self) -> None:
         sdk_response = SimpleNamespace(
@@ -148,6 +151,12 @@ class LlmProviderTests(unittest.TestCase):
                     {"role": "user", "content": "Bonjour"},
                 ],
                 max_output_tokens=300,
+                response_schema={
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": False,
+                },
             )
 
         self.assertEqual(response.output_text, "Mistral")
@@ -159,6 +168,22 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(request["model"], "mistral-medium-latest")
         self.assertEqual(request["max_tokens"], 300)
         self.assertEqual(request["messages"][0]["role"], "system")
+        self.assertEqual(
+            request["response_format"],
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "rag_answer",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                        "additionalProperties": False,
+                    },
+                    "strict": True,
+                },
+            },
+        )
         self.assertEqual(
             trace_operation.call_args.args[0],
             "MistralChatCompletion",
@@ -222,6 +247,7 @@ class LlmProviderTests(unittest.TestCase):
                     {"role": "user", "content": "Bonjour"},
                 ],
                 max_output_tokens=400,
+                response_schema={"type": "object"},
             )
 
         self.assertEqual(response.output_text, "Google")
@@ -239,6 +265,8 @@ class LlmProviderTests(unittest.TestCase):
             request["generationConfig"]["maxOutputTokens"],
             400,
         )
+        self.assertNotIn("responseMimeType", request["generationConfig"])
+        self.assertNotIn("responseSchema", request["generationConfig"])
         self.assertEqual(
             trace_operation.call_args.args[0],
             "GoogleGenerateContent",

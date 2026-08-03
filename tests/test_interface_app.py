@@ -22,6 +22,34 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(DEFAULT_REFORMULATION_MODEL, "mistral-medium-latest")
         self.assertEqual(DEFAULT_GENERATION_MODEL, "mistral-medium-latest")
 
+    def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
+        from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
+
+        schemas = (
+            planner.REFORMULATION_RESPONSE_SCHEMA,
+            planner.PLANNER_RESPONSE_SCHEMA,
+            ANALYTICS_SQL_RESPONSE_SCHEMA,
+            generation.ANSWER_RESPONSE_SCHEMA,
+        )
+        for schema in schemas:
+            self.assertEqual(schema["type"], "object")
+            self.assertFalse(schema["additionalProperties"])
+            self.assertEqual(
+                set(schema["required"]),
+                set(schema["properties"]),
+            )
+
+    def test_interface_fixes_all_llm_steps_to_mistral_medium(self) -> None:
+        response = TestClient(app).get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.text
+        self.assertNotIn('id="reformulationModel"', html)
+        self.assertNotIn('id="plannerModel"', html)
+        self.assertNotIn('id="answerModel"', html)
+        self.assertNotIn('fetch("/api/llm-models")', html)
+        self.assertEqual(html.count('"mistral-medium-latest"'), 3)
+
     def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
         system_prompt, user_prompt = planner.build_question_reformulation_prompt(
             "Et pour elle ?",

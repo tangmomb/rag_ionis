@@ -41,12 +41,38 @@ ANSWER_ACTION_INSTRUCTION = (
 )
 
 
+ANSWER_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "action": {
+            "type": "string",
+            "enum": ["answer", "clarify", "abstain"],
+        },
+    },
+    "required": ["answer", "action"],
+    "additionalProperties": False,
+}
+
+
 DEFAULT_ANSWER_PROMPT_TEMPLATE = (
     "{route_instructions}\n\n"
     "{source_marker_instruction}\n\n"
     f"{ANSWER_ACTION_INSTRUCTION}\n\n"
     f"{FINAL_ANSWER_STYLE}"
 )
+
+
+def create_answer_response(
+    client: LLMClientProtocol,
+    answer_model: str,
+    input_messages: list[dict[str, str]],
+) -> Any:
+    return client.responses.create(
+        model=answer_model,
+        input=input_messages,
+        response_schema=ANSWER_RESPONSE_SCHEMA,
+    )
 
 
 def render_answer_system_prompt(
@@ -200,7 +226,7 @@ def generate_answer(
                 ),
             },
         ]
-    response = client.responses.create(model=answer_model, input=input_messages)
+    response = create_answer_response(client, answer_model, input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -244,7 +270,7 @@ def generate_memory_answer(
                 "content": f"Question actuelle: {question}\n\nHistorique:\n{history}",
             },
         ]
-    response = client.responses.create(model=answer_model, input=input_messages)
+    response = create_answer_response(client, answer_model, input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -350,7 +376,7 @@ def generate_multi_source_answer(
                 "content": f"Question: {question}\n\nHistorique:\n{memory_block}\n\nSources pour répondre :\n{source_block}",
             },
         ]
-    response = client.responses.create(model=answer_model, input=input_messages)
+    response = create_answer_response(client, answer_model, input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -418,7 +444,7 @@ def generate_sql_answer(
                 ),
             },
         ]
-    response = client.responses.create(model=answer_model, input=input_messages)
+    response = create_answer_response(client, answer_model, input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -464,7 +490,7 @@ def generate_person_clarification_answer(
             ),
         },
     ]
-    response = client.responses.create(model=answer_model, input=input_messages)
+    response = create_answer_response(client, answer_model, input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:

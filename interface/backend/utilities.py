@@ -57,7 +57,7 @@ def normalize_model_name(value: str, default: str) -> str:
     if lower in {"2", "2 terra", "terra", "5.6 terra", "gpt 5.6 terra", "gpt-5.6 terra"}:
         return "gpt-5.6-terra"
     if lower in {"1", "1 sol", "sol", "5.6 sol", "gpt 5.6 sol", "gpt-5.6 sol"}:
-        return DEFAULT_GENERATION_MODEL
+        return "gpt-5.6-sol"
     # Compatibilite avec d'anciens clients : le modele de generation officiel
     # reste toujours celui defini par DEFAULT_GENERATION_MODEL.
     if lower in {"gpt5.4nano", "gpt-5.4-nano"}:

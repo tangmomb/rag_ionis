@@ -16,10 +16,10 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class InterfaceAppTests(unittest.TestCase):
-    def test_planner_uses_sol_by_default(self) -> None:
-        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-sol")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-sol")
-        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-sol")
+    def test_all_llm_steps_use_luna_by_default(self) -> None:
+        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-luna")
 
     def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
         system_prompt, user_prompt = planner.build_question_reformulation_prompt(
@@ -31,6 +31,7 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("besoin de l'historique", system_prompt)
         self.assertIn("follow_up", system_prompt)
         self.assertIn("reformulated_question", system_prompt)
+        self.assertIn("texte normal, sans Markdown", system_prompt)
         self.assertNotIn("point d'interrogation final", system_prompt)
         self.assertIn("Message actuel : Et pour elle ?", user_prompt)
 
@@ -56,6 +57,8 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertIn("transcript_verbatim", system_prompt)
         self.assertIn("transcript complet", system_prompt)
+        self.assertIn("uniquement si le mot exact 'description'", system_prompt)
+        self.assertIn("texte normal, sans Markdown", system_prompt)
 
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
         question = (
@@ -620,12 +623,35 @@ class InterfaceAppTests(unittest.TestCase):
             set(response.json()["paths"]),
             {
                 "/",
+                "/api/llm-models",
                 "/api/rag",
                 "/api/video-thumbnails",
                 "/health",
                 "/styles.css",
                 "/version",
             },
+        )
+
+    def test_llm_model_catalog_exposes_all_pipeline_defaults(self) -> None:
+        response = TestClient(app).get("/api/llm-models")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(
+            data["defaults"],
+            {
+                "reformulationModel": "gpt-5.6-luna",
+                "plannerModel": "gpt-5.6-luna",
+                "answerModel": "gpt-5.6-luna",
+            },
+        )
+        self.assertIn(
+            "mistral-medium-latest",
+            {model["id"] for model in data["models"]},
+        )
+        self.assertIn(
+            "gemini-3.6-flash",
+            {model["id"] for model in data["models"]},
         )
 
     def test_request_schema_remains_available_from_app(self) -> None:

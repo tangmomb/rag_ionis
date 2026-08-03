@@ -9,18 +9,46 @@ from interface.backend.database import (
     connect_database,
     store_chat_message,
 )
+from interface.backend.config import (
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_REFORMULATION_MODEL,
+)
 from interface.backend.generation import (
     evaluate_source_sufficiency,
     generate_final_answer,
     select_answer_sources,
 )
 from interface.backend.orchestration import orchestrate_request
+from interface.backend.llm_providers import LLM_MODEL_CATALOG
 from interface.backend.schemas import ChunkSource, RagRequest, RagResponse
 from interface.backend.telemetry import current_trace_id, telemetry_status, trace_operation
 from interface.backend.utilities import get_llm_client
 
 
 router = APIRouter()
+
+
+@router.get("/llm-models")
+def llm_models() -> dict[str, Any]:
+    models = [
+        {
+            "provider": provider,
+            "provider_label": provider_config["label"],
+            "label": model_label,
+            "id": model_id,
+        }
+        for provider, provider_config in LLM_MODEL_CATALOG.items()
+        for model_label, model_id in provider_config["models"]
+    ]
+    return {
+        "models": models,
+        "defaults": {
+            "reformulationModel": DEFAULT_REFORMULATION_MODEL,
+            "plannerModel": DEFAULT_PLANNER_MODEL,
+            "answerModel": DEFAULT_GENERATION_MODEL,
+        },
+    }
 
 
 @router.get("/video-thumbnails", response_model=list[str])

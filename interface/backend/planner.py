@@ -35,9 +35,10 @@ def build_planner_prompt(
         "Deuxième étape, identifier les dates de publication mentionnées dans la question. Les stocker dans published_after et published_before sous forme de chaînes ISO 8601 (YYYY-MM-DD). "
         "Troisième étape, identifier un titre de video mentionné dans la question. Le stocker dans title_hint. "
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
-        "Cinquième et dernière étatpe, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'stats', 'description', 'transcript_verbatim' ou 'null'."
+        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'stats', 'description', 'transcript_verbatim' ou 'null'."
         "route='direct' si la question ou message ne demande rien à propos de la base de données. route='rag' si la question concerne la base de données. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
-        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question. sql_sub_intent='stats' si la question demande des statistiques sur une video. sql_sub_intent='description' si la question demande explicitement la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées."
+        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question. sql_sub_intent='stats' si la question demande des statistiques sur une video. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
+        "Toutes les valeurs textuelles de l'objet JSON doivent être en texte normal, sans Markdown."
 
     )
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
@@ -728,7 +729,7 @@ def build_question_reformulation_prompt(
         f"{item['role']}: {item['text']}" for item in memory_items
     )
     default_system_prompt = (
-        "Tu reformules le dernier message utilisateur sans y répondre. 1) indiquer si le message a besoin de l'historique de la conversation pour être compris. 2) si oui, reformule le message en incluant les informations pertinentes de l'historique pour que la question soit complètement autonome. Si non, reformule le message de manière propre et bien écrit sans changer son sens. Répond sous la forme d'un objet JSON avec exactement ces clés: follow_up (booléen), reformulated_question (string)."
+        "Tu reformules le dernier message utilisateur sans y répondre. 1) indiquer si le message a besoin de l'historique de la conversation pour être compris. 2) si oui, reformule le message en incluant les informations pertinentes de l'historique pour que la question soit complètement autonome. Si non, reformule le message de manière propre et bien écrit sans changer son sens. Répond sous la forme d'un objet JSON avec exactement ces clés: follow_up (booléen), reformulated_question (string). La valeur reformulated_question doit être du texte normal, sans Markdown."
     )
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     user_prompt = f"Message actuel : {question}\n\nHistorique récent :\n{history or '(vide)'}"

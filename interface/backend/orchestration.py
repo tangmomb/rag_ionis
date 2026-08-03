@@ -285,6 +285,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                     sql_sub_intent,
                     database_persons=database_persons,
                     database_company=database_company,
+                    transcript_persons=person_resolution.get("matched_in_transcripts", []),
                 )
                 sql_span.set_output({**direct_trace, "results": sources})
                 trace_formatted_sql("rag.structured_sql", direct_trace)
@@ -385,6 +386,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                         sql_sub_intent,
                         database_persons=database_persons,
                         database_company=database_company,
+                        transcript_persons=person_resolution.get("matched_in_transcripts", []),
                     )
                     sql_span.set_output({**doc_trace, "results": doc_sources})
                     trace_formatted_sql("rag.structured_sql", doc_trace)

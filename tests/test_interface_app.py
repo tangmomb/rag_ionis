@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -29,6 +30,9 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertLess(len(system_prompt), 700)
         self.assertIn("besoin de l'historique", system_prompt)
+        self.assertIn("peut n'avoir aucun rapport avec l'historique précédent", system_prompt)
+        self.assertIn("changer de sujet", system_prompt)
+        self.assertIn("Sois le plus simple et concis possible", system_prompt)
         self.assertIn("follow_up", system_prompt)
         self.assertIn("reformulated_question", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
@@ -59,6 +63,18 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("transcript complet", system_prompt)
         self.assertIn("uniquement si le mot exact 'description'", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
+
+    def test_planner_prompt_limits_direct_route_to_greetings_and_politeness(self) -> None:
+        system_prompt, _ = planner.build_planner_prompt("Bonjour")
+
+        self.assertIn(
+            "route='direct' si la question ou le message est une salutation ou une formule de politesse",
+            system_prompt,
+        )
+        self.assertNotIn(
+            "ne demande rien à propos de la base de données",
+            system_prompt,
+        )
 
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
         question = (
@@ -412,6 +428,59 @@ class InterfaceAppTests(unittest.TestCase):
         }
 
         self.assertEqual(len(set(prompts.values())), len(prompts))
+
+    def test_sql_sub_intent_name_is_not_exposed_in_final_user_prompt(self) -> None:
+        calls: list[dict] = []
+
+        class Responses:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(
+                    output_text='{"answer":"Réponse","action":"answer"}',
+                )
+
+        generation.generate_sql_answer(
+            SimpleNamespace(responses=Responses()),
+            "Donne-moi les chiffres de cette vidéo.",
+            "mistral-medium-latest",
+            "stats",
+            [
+                {
+                    "video_title": "Vidéo test",
+                    "video_url": "https://example.test/video",
+                    "text": "Vues: 42",
+                }
+            ],
+        )
+
+        messages = calls[0]["input"]
+        self.assertIn("statistiques", messages[0]["content"])
+        self.assertNotIn("Sous-route SQL", messages[1]["content"])
+        self.assertNotIn("sql_sub_intent", messages[1]["content"])
+        self.assertIn("Sources pour répondre :", messages[1]["content"])
+        self.assertIn("Source 1 :", messages[1]["content"])
+        self.assertNotIn("Resultat 1", messages[1]["content"])
+
+        generation.generate_multi_source_answer(
+            SimpleNamespace(responses=Responses()),
+            "Compare ces personnes.",
+            "mistral-medium-latest",
+            "multi_source",
+            [],
+            [
+                {
+                    "video_title": "Vidéo test",
+                    "video_url": "https://example.test/video",
+                    "chunk_index": 1,
+                    "text": "Information comparative",
+                }
+            ],
+        )
+
+        multi_source_user_prompt = calls[1]["input"][1]["content"]
+        self.assertNotIn("Route planifiee", multi_source_user_prompt)
+        self.assertNotIn("multi_source", multi_source_user_prompt)
+        self.assertIn("Sources pour répondre :", multi_source_user_prompt)
 
     def test_answer_prompts_do_not_require_question_reformulation(self) -> None:
         prompts = [

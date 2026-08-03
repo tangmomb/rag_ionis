@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 
+from interface.backend import retrieval
 from interface.backend.telemetry import TraceOperation
 from interface.backend.utilities import format_sql_pretty
 
@@ -55,6 +58,44 @@ class TraceOperationTests(unittest.TestCase):
         self.assertIn("\nWHERE c.id = ANY(%s)", formatted)
         self.assertIn("\nORDER BY c.id ASC", formatted)
         self.assertIn("\nLIMIT %s", formatted)
+
+    def test_structured_lookup_formats_both_sql_queries_in_execution_order(self) -> None:
+        recorded: list[dict[str, Any]] = []
+
+        class FormattedSpan:
+            def __init__(self, record: dict[str, Any]) -> None:
+                self.record = record
+
+            def set_output_text(self, value: str) -> None:
+                self.record["output"] = value
+
+        @contextmanager
+        def record_trace(name: str, **kwargs):
+            record = {"name": name, **kwargs}
+            recorded.append(record)
+            yield FormattedSpan(record)
+
+        trace = {
+            "sql": "SELECT transcript_enriched FROM transcripts WHERE video_id = %s",
+            "params": [7],
+            "persons_table": {
+                "sql": "SELECT name FROM speakers WHERE id = %s",
+                "params": [3],
+            },
+        }
+
+        with patch.object(retrieval, "trace_operation", side_effect=record_trace):
+            retrieval.trace_formatted_sql("rag.structured_sql", trace)
+
+        self.assertEqual(
+            [item["name"] for item in recorded],
+            [
+                "rag.structured_sql.persons_table.sql_formatted",
+                "rag.structured_sql.transcript_enriched.sql_formatted",
+            ],
+        )
+        self.assertEqual(recorded[0]["input_value"]["params"], [3])
+        self.assertEqual(recorded[1]["input_value"]["params"], [7])
 
 
 

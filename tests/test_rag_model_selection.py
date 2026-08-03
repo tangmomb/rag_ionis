@@ -154,6 +154,7 @@ class RagModelSelectionTests(unittest.TestCase):
     def test_default_answer_prompt_displays_real_instructions(self) -> None:
         self.assertIn("answer et action", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("Markdown", DEFAULT_ANSWER_PROMPT_TEMPLATE)
+        self.assertIn("courte formule de politesse", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("{route_instructions}", DEFAULT_ANSWER_PROMPT_TEMPLATE)
 
 

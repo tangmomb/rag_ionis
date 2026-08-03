@@ -86,15 +86,33 @@ TITLE_CONTAINS_SQL = (
 
 
 def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
-    formatted_sql = format_sql_pretty(trace.get("sql"))
-    if formatted_sql is None:
-        return
-    with trace_operation(
-        f"{span_name}.sql_formatted",
-        kind="CHAIN",
-        input_value={"params": trace.get("params", [])},
-    ) as sql_span:
-        sql_span.set_output_text(formatted_sql)
+    persons_table = trace.get("persons_table")
+    sql_entries: list[tuple[str | None, dict[str, Any]]] = []
+    if isinstance(persons_table, dict) and persons_table.get("sql"):
+        sql_entries.append(("persons_table", persons_table))
+    if trace.get("sql"):
+        sql_entries.append(
+            (
+                "transcript_enriched" if sql_entries else None,
+                trace,
+            )
+        )
+
+    for label, sql_trace in sql_entries:
+        formatted_sql = format_sql_pretty(sql_trace.get("sql"))
+        if formatted_sql is None:
+            continue
+        formatted_span_name = (
+            f"{span_name}.{label}.sql_formatted"
+            if label
+            else f"{span_name}.sql_formatted"
+        )
+        with trace_operation(
+            formatted_span_name,
+            kind="CHAIN",
+            input_value={"params": sql_trace.get("params", [])},
+        ) as sql_span:
+            sql_span.set_output_text(formatted_sql)
 
 
 def append_person_filter_clauses(clauses: list[str], params: list[Any], persons: list[str]) -> None:
@@ -102,7 +120,7 @@ def append_person_filter_clauses(clauses: list[str], params: list[Any], persons:
     if not cleaned_persons:
         return
     name_conditions = " OR ".join(
-        "unaccent(lower(person_row.name)) LIKE unaccent(lower(%s))"
+        f"{normalized_sql_text('person_row.name')} = {normalized_sql_text('%s')}"
         for _ in cleaned_persons
     )
     clauses.append(
@@ -116,7 +134,7 @@ def append_person_filter_clauses(clauses: list[str], params: list[Any], persons:
         )
         """
     )
-    params.extend(f"%{person}%" for person in cleaned_persons)
+    params.extend(cleaned_persons)
 
 
 def append_company_filter_clauses(
@@ -130,7 +148,8 @@ def append_company_filter_clauses(
     if not cleaned_companies:
         return
     title_conditions = " OR ".join(
-        "unaccent(lower(person_row.title)) LIKE unaccent(lower(%s))"
+        f"{normalized_sql_text('person_row.title')} LIKE "
+        f"concat(chr(37), {normalized_sql_text('%s')}, chr(37))"
         for _ in cleaned_companies
     )
     clauses.append(
@@ -145,7 +164,7 @@ def append_company_filter_clauses(
         )
         """
     )
-    params.extend(f"%{company}%" for company in cleaned_companies)
+    params.extend(cleaned_companies)
 
 
 def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
@@ -248,6 +267,7 @@ def lookup_video_document(
     *,
     database_persons: list[str] | None = None,
     database_company: list[str] | None = None,
+    transcript_persons: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if intent == "specific_persons":
         def format_lookup_rows(
@@ -334,7 +354,12 @@ def lookup_video_document(
                     cursor.execute(person_sql, person_params)
                     person_rows = cursor.fetchall()
 
-        if person_rows or not query.persons:
+        explicit_transcript_persons = [
+            person.strip()
+            for person in (transcript_persons or [])
+            if person.strip()
+        ]
+        if not query.persons:
             results = format_lookup_rows(person_rows)
             return results, {
                 "mode": intent,
@@ -354,18 +379,25 @@ def lookup_video_document(
         transcript_document = (
             "coalesce(t.transcript_enriched, t.transcript, '')"
         )
-        transcript_persons = [
-            person.strip() for person in query.persons if person.strip()
-        ]
-        if transcript_persons:
+        transcript_search_persons: list[str] = []
+        for person in [
+            *(database_persons or []),
+            *explicit_transcript_persons,
+        ]:
+            if person not in transcript_search_persons:
+                transcript_search_persons.append(person)
+        if not transcript_search_persons:
+            transcript_search_persons = [
+                person.strip() for person in query.persons if person.strip()
+            ]
+        if transcript_search_persons:
             transcript_person_conditions = " OR ".join(
-                f"unaccent(lower({transcript_document})) LIKE unaccent(lower(%s))"
-                for _ in transcript_persons
+                f"concat(' ', {normalized_sql_text(transcript_document)}, ' ') LIKE "
+                f"concat(chr(37), ' ', {normalized_sql_text('%s')}, ' ', chr(37))"
+                for _ in transcript_search_persons
             )
             transcript_clauses.append(f"({transcript_person_conditions})")
-            transcript_params.extend(
-                f"%{person}%" for person in transcript_persons
-            )
+            transcript_params.extend(transcript_search_persons)
         transcript_where = (
             " AND ".join(transcript_clauses) if transcript_clauses else "TRUE"
         )
@@ -389,13 +421,24 @@ def lookup_video_document(
                 cursor.execute(transcript_sql, transcript_params)
                 transcript_rows = cursor.fetchall()
 
-        results = format_lookup_rows(
+        transcript_results = format_lookup_rows(
             transcript_rows,
-            transcript_persons=query.persons,
+            transcript_persons=transcript_search_persons,
         )
+        results_by_video = {
+            result["chunk_id"]: result
+            for result in format_lookup_rows(person_rows)
+        }
+        for result in transcript_results:
+            results_by_video.setdefault(result["chunk_id"], result)
+        results = list(results_by_video.values())
         return results, {
             "mode": intent,
-            "lookup_strategy": "transcript_fallback",
+            "lookup_strategy": (
+                "persons_table+transcript_enriched"
+                if person_rows and explicit_transcript_persons
+                else "transcript_fallback"
+            ),
             "sql": format_sql_for_trace(transcript_sql),
             "params": transcript_params,
             "result_count": len(results),

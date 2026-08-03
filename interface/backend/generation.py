@@ -15,6 +15,8 @@ FINAL_ANSWER_STYLE = (
     "Formate toujours la réponse en Markdown lisible, avec des paragraphes, listes ou tableaux lorsque cela améliore la clarté. "
     "N'introduis pas ta réponse par une formule comme « d'après les sources » "
     "ou « selon les documents ». "
+    "Si ta réponse consiste uniquement à présenter des sources ou des vidéos, "
+    "place une courte formule de politesse au début. "
     "Ne termine pas par une phrase indiquant qu'il manque des informations, "
     "que tu n'en as pas d'autres ou que tu ne peux pas aller plus loin. "
     "Ne parle pas de tes limites ni de la recherche effectuée."
@@ -230,7 +232,7 @@ def generate_answer(
         context_blocks.append(
             "\n".join(
                 [
-                    f"Source {index}",
+                    f"Source {index} :",
                     f"Titre: {source['video_title']}",
                     f"URL: {source['video_url']}",
                     f"Chunk detail: {source['chunk_index']}",
@@ -263,7 +265,7 @@ def generate_answer(
             },
             {
                 "role": "user",
-                "content": f"Question utilisateur: {question}\n\nContexte:\n\n" + "\n\n".join(context_blocks),
+                "content": f"Question utilisateur: {question}\n\nSources pour répondre :\n\n" + "\n\n".join(context_blocks),
             },
         ]
     response = client.responses.create(model=answer_model, input=input_messages)
@@ -381,7 +383,7 @@ def generate_multi_source_answer(
         source_blocks.append(
             "\n".join(
                 [
-                    f"Source {index}",
+                    f"Source {index} :",
                     f"Titre: {source['video_title']}",
                     f"URL: {source['video_url']}",
                     f"Chunk: {source['chunk_index']}",
@@ -410,7 +412,7 @@ def generate_multi_source_answer(
             },
             {
                 "role": "user",
-                "content": f"Route planifiee: {route_name}\n\nQuestion: {question}\n\nHistorique:\n{memory_block}\n\nSources:\n{source_block}",
+                "content": f"Question: {question}\n\nHistorique:\n{memory_block}\n\nSources pour répondre :\n{source_block}",
             },
         ]
     response = client.responses.create(model=answer_model, input=input_messages)
@@ -455,7 +457,7 @@ def generate_sql_answer(
         context_blocks.append(
             "\n".join(
                 [
-                    f"Resultat {index}",
+                    f"Source {index} :",
                     f"Titre: {source['video_title']}",
                     f"URL: {source['video_url']}",
                     f"Texte: {source['text']}",
@@ -476,7 +478,7 @@ def generate_sql_answer(
     )
     input_messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Sous-route SQL: {sql_sub_intent}\n\nQuestion: {question}\n\nResultats:\n\n" + "\n\n".join(context_blocks)},
+            {"role": "user", "content": f"Question: {question}\n\nSources pour répondre :\n\n" + "\n\n".join(context_blocks)},
         ]
     response = client.responses.create(model=answer_model, input=input_messages)
     record_answer_trace(trace, answer_model, input_messages, response)

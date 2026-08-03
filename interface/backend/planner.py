@@ -24,6 +24,57 @@ PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
 COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.90
 
 
+def find_persons_in_enriched_transcripts(
+    requested_persons: list[str],
+) -> list[str]:
+    """Retourne les noms présents comme expressions complètes dans transcript_enriched."""
+    candidates = [
+        str(value).strip()
+        for value in requested_persons
+        if str(value).strip()
+    ]
+    if not candidates:
+        return []
+
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT requested.name
+                FROM unnest(%s::text[]) WITH ORDINALITY AS requested(name, ordinal)
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM transcripts transcript_row
+                    WHERE transcript_row.transcript_enriched IS NOT NULL
+                      AND concat(
+                          ' ',
+                          btrim(regexp_replace(
+                              unaccent(lower(transcript_row.transcript_enriched)),
+                              '[^[:alnum:]]+',
+                              ' ',
+                              'g'
+                          )),
+                          ' '
+                      ) LIKE concat(
+                          chr(37),
+                          ' ',
+                          btrim(regexp_replace(
+                              unaccent(lower(requested.name)),
+                              '[^[:alnum:]]+',
+                              ' ',
+                              'g'
+                          )),
+                          ' ',
+                          chr(37)
+                      )
+                )
+                ORDER BY requested.ordinal
+                """,
+                (candidates,),
+            )
+            return [str(row[0]).strip() for row in cursor.fetchall()]
+
+
 def build_planner_prompt(
     question: str,
     system_prompt_override: str | None = None,
@@ -36,7 +87,7 @@ def build_planner_prompt(
         "Troisième étape, identifier un titre de video mentionné dans la question. Le stocker dans title_hint. "
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
         "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'stats', 'description', 'transcript_verbatim' ou 'null'."
-        "route='direct' si la question ou message ne demande rien à propos de la base de données. route='rag' si la question concerne la base de données. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
+        "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='rag' pour toute question qui demande une information. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
         "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question. sql_sub_intent='stats' si la question demande des statistiques sur une video. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
         "Toutes les valeurs textuelles de l'objet JSON doivent être en texte normal, sans Markdown."
 
@@ -436,12 +487,15 @@ def resolve_person_filters(
             "suggestions": [],
             "suggestion_scores": [],
             "auto_resolved": False,
+            "matched_in_speakers": [],
+            "matched_in_transcripts": [],
         }
 
     resolved: list[str] = []
+    matched_in_speakers: list[str] = []
     suggestions: list[str] = []
     suggestion_scores: dict[str, float] = {}
-    auto_resolved_candidates: list[str] = []
+    auto_resolved = False
     ambiguous_candidates: list[str] = []
     ambiguous_suggestions: list[str] = []
     ambiguous_suggestion_scores: dict[str, float] = {}
@@ -458,6 +512,18 @@ def resolve_person_filters(
             )
             database_persons = [str(row[0]).strip() for row in cursor.fetchall()]
 
+    matched_in_transcripts = find_persons_in_enriched_transcripts(candidates)
+    transcript_match_keys = {
+        normalize_text(person) for person in matched_in_transcripts
+    }
+    database_person_keys = {normalize_text(person) for person in database_persons}
+    unmatched_candidate_count = sum(
+        1
+        for candidate in candidates
+        if normalize_text(candidate) not in database_person_keys
+        and normalize_text(candidate) not in transcript_match_keys
+    )
+
     for candidate in candidates:
         normalized_candidate = normalize_text(candidate)
         exact_matches = [
@@ -468,6 +534,10 @@ def resolve_person_filters(
             for person in exact_matches:
                 if person not in resolved:
                     resolved.append(person)
+                if person not in matched_in_speakers:
+                    matched_in_speakers.append(person)
+            continue
+        if normalized_candidate in transcript_match_keys:
             continue
 
         def person_similarity(person: str) -> float:
@@ -487,13 +557,32 @@ def resolve_person_filters(
                     default=0.0,
                 )
 
-            # Pour un nom complet, on aligne prénom et nom : pas de produit
-            # croisé entre tous les mots (ex. "Ann" ne doit pas matcher
-            # "Yannick" dans un autre nom).
-            return max(
-                SequenceMatcher(None, candidate_parts[0], person_parts[0]).ratio(),
-                SequenceMatcher(None, candidate_parts[-1], person_parts[-1]).ratio(),
-            )
+            # Pour un nom complet, prénom et nom doivent contribuer ensemble
+            # au score. Un nom de famille identique ne suffit donc plus à
+            # produire artificiellement un score de 1 si le prénom diffère.
+            endpoint_score = (
+                SequenceMatcher(None, candidate_parts[0], person_parts[0]).ratio()
+                + SequenceMatcher(None, candidate_parts[-1], person_parts[-1]).ratio()
+            ) / 2
+
+            # Une saisie peut ne contenir qu'un prénom composé ou une portion
+            # exacte du nom complet ("Lou Ann" pour "Lou-Ann Corveddu").
+            partial_scores = [endpoint_score]
+            if len(candidate_parts) < len(person_parts):
+                prefix_parts = person_parts[: len(candidate_parts)]
+                suffix_parts = person_parts[-len(candidate_parts) :]
+                partial_scores.extend(
+                    sum(
+                        SequenceMatcher(None, candidate_part, person_part).ratio()
+                        for candidate_part, person_part in zip(
+                            candidate_parts,
+                            aligned_parts,
+                        )
+                    )
+                    / len(candidate_parts)
+                    for aligned_parts in (prefix_parts, suffix_parts)
+                )
+            return max(partial_scores)
 
         ranked = sorted(
             [
@@ -517,14 +606,16 @@ def resolve_person_filters(
                 for score, person in close_matches
                 if top_score - score <= 0.02
             ]
-            if len(best_matches) == 1:
+            if (
+                unmatched_candidate_count == 1
+                and len(best_matches) == 1
+                and best_matches[0][0] > 0.9
+            ):
                 score, person = best_matches[0]
-                if person not in resolved:
-                    resolved.append(person)
-                if person not in suggestions:
-                    suggestions.append(person)
-                suggestion_scores[person] = max(suggestion_scores.get(person, 0.0), score)
-                auto_resolved_candidates.append(candidate)
+                resolved.append(person)
+                suggestions.append(person)
+                suggestion_scores[person] = score
+                auto_resolved = True
                 continue
 
             ambiguous_candidates.append(candidate)
@@ -553,27 +644,37 @@ def resolve_person_filters(
                 }
                 for person in unique_suggestions
             ],
-            "auto_resolved": bool(auto_resolved_candidates),
+            "auto_resolved": auto_resolved,
+            "matched_in_speakers": matched_in_speakers,
+            "matched_in_transcripts": matched_in_transcripts,
             "message": (
-                "Vous parlez de " + " ou de ".join(unique_suggestions) + " ?"
+                "Vous parlez de " + ", ".join(unique_suggestions) + " ?"
                 if unique_suggestions
                 else "Peux-tu préciser le nom de l'intervenant ?"
             ),
         }
 
     if unresolved_candidates:
+        unique_suggestions = suggestions[:3]
         return resolved, {
             "applied": True,
-            "ambiguous": False,
+            "ambiguous": True,
             "requested": candidates,
+            "ambiguous_requests": unresolved_candidates,
             "unresolved_requests": unresolved_candidates,
-            "suggestions": suggestions,
+            "suggestions": unique_suggestions,
             "suggestion_scores": [
                 {"person": person, "score": round(suggestion_scores[person], 3)}
-                for person in suggestions
+                for person in unique_suggestions
             ],
-            "auto_resolved": bool(auto_resolved_candidates),
-            "fallback_to_transcripts": True,
+            "auto_resolved": auto_resolved,
+            "matched_in_speakers": matched_in_speakers,
+            "matched_in_transcripts": matched_in_transcripts,
+            "message": (
+                "Vous parlez de " + ", ".join(unique_suggestions) + " ?"
+                if unique_suggestions
+                else "Peux-tu préciser le nom de l'intervenant ?"
+            ),
         }
 
     return resolved, {
@@ -585,7 +686,9 @@ def resolve_person_filters(
             {"person": person, "score": round(suggestion_scores[person], 3)}
             for person in suggestions
         ],
-        "auto_resolved": bool(auto_resolved_candidates),
+        "auto_resolved": auto_resolved,
+        "matched_in_speakers": matched_in_speakers,
+        "matched_in_transcripts": matched_in_transcripts,
     }
 
 
@@ -729,7 +832,7 @@ def build_question_reformulation_prompt(
         f"{item['role']}: {item['text']}" for item in memory_items
     )
     default_system_prompt = (
-        "Tu reformules le dernier message utilisateur sans y répondre. 1) indiquer si le message a besoin de l'historique de la conversation pour être compris. 2) si oui, reformule le message en incluant les informations pertinentes de l'historique pour que la question soit complètement autonome. Si non, reformule le message de manière propre et bien écrit sans changer son sens. Répond sous la forme d'un objet JSON avec exactement ces clés: follow_up (booléen), reformulated_question (string). La valeur reformulated_question doit être du texte normal, sans Markdown."
+        "Tu reformules le dernier message utilisateur sans y répondre. 1) Indique s'il a besoin de l'historique pour être compris. Attention : il peut n'avoir aucun rapport avec l'historique précédent si l'utilisateur veut changer de sujet. 2) Si oui, inclus seulement les éléments utiles pour le rendre autonome. Sinon, reformule-le proprement sans changer son sens. Sois le plus simple et concis possible. Retourne uniquement un objet JSON avec exactement ces clés : follow_up (booléen), reformulated_question (string). reformulated_question doit être du texte normal, sans Markdown."
     )
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     user_prompt = f"Message actuel : {question}\n\nHistorique récent :\n{history or '(vide)'}"

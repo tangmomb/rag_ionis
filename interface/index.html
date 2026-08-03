@@ -105,19 +105,19 @@
                 <label class="model-selector" for="reformulationModel">
                   <span>Reformulation</span>
                   <select id="reformulationModel" name="reformulationModel">
-                    <option value="gpt-5.6-luna">OpenAI — Luna</option>
+                    <option value="mistral-medium-latest">Mistral — Medium</option>
                   </select>
                 </label>
                 <label class="model-selector" for="plannerModel">
                   <span>Planner</span>
                   <select id="plannerModel" name="plannerModel">
-                    <option value="gpt-5.6-luna">OpenAI — Luna</option>
+                    <option value="mistral-medium-latest">Mistral — Medium</option>
                   </select>
                 </label>
                 <label class="model-selector" for="answerModel">
                   <span>Réponse</span>
                   <select id="answerModel" name="answerModel">
-                    <option value="gpt-5.6-luna">OpenAI — Luna</option>
+                    <option value="mistral-medium-latest">Mistral — Medium</option>
                   </select>
                 </label>
               </div>
@@ -183,7 +183,7 @@
             populateModelSelect(select, data.models, data.defaults[field]);
           });
         } catch (_error) {
-          // Luna reste disponible si le catalogue ne peut pas être chargé.
+          // Mistral Medium reste disponible si le catalogue ne peut pas être chargé.
         }
       }
 

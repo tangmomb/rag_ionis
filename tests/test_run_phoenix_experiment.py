@@ -161,9 +161,9 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args.dataset, "cases_phoenix")
         self.assertEqual(args.experiment_name, "rag-gui")
-        self.assertEqual(args.reformulation_model, "gpt-5.6-luna")
-        self.assertEqual(args.planner_model, "gpt-5.6-luna")
-        self.assertEqual(args.answer_model, "gpt-5.6-luna")
+        self.assertEqual(args.reformulation_model, "mistral-medium-latest")
+        self.assertEqual(args.planner_model, "mistral-medium-latest")
+        self.assertEqual(args.answer_model, "mistral-medium-latest")
         self.assertEqual(args.openai_service_tier, "fast")
 
     def test_openai_service_tier_labels_cover_gui_choices(self) -> None:
@@ -238,11 +238,14 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         settings = run_phoenix_experiment.RagExperimentSettings()
 
         name = run_phoenix_experiment.experiment_name_with_models(
-            "rag-v1_luna_luna_luna",
+            "rag-v1_mistral-medium_mistral-medium_mistral-medium",
             settings,
         )
 
-        self.assertEqual(name, "rag-v1_luna_luna_luna")
+        self.assertEqual(
+            name,
+            "rag-v1_mistral-medium_mistral-medium_mistral-medium",
+        )
 
     def test_experiment_name_distinguishes_external_providers(self) -> None:
         settings = run_phoenix_experiment.RagExperimentSettings(

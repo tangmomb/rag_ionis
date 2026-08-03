@@ -16,10 +16,10 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class InterfaceAppTests(unittest.TestCase):
-    def test_all_llm_steps_use_luna_by_default(self) -> None:
-        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-luna")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
-        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-luna")
+    def test_all_llm_steps_use_mistral_medium_by_default(self) -> None:
+        self.assertEqual(DEFAULT_PLANNER_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_GENERATION_MODEL, "mistral-medium-latest")
 
     def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
         system_prompt, user_prompt = planner.build_question_reformulation_prompt(
@@ -640,9 +640,9 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(
             data["defaults"],
             {
-                "reformulationModel": "gpt-5.6-luna",
-                "plannerModel": "gpt-5.6-luna",
-                "answerModel": "gpt-5.6-luna",
+                "reformulationModel": "mistral-medium-latest",
+                "plannerModel": "mistral-medium-latest",
+                "answerModel": "mistral-medium-latest",
             },
         )
         self.assertIn(

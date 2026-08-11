@@ -18,18 +18,83 @@ from interface.backend.generation import (
     generate_final_answer,
     select_answer_sources,
 )
+from interface.backend.answer_judge import judge_final_answer
+from interface.backend.analytics_sql import run_analytics_text_to_sql
 from interface.backend.orchestration import orchestrate_request
 from interface.backend.llm_providers import (
     LLM_MODEL_CATALOG,
     LLMProviderError,
     provider_for_model,
 )
-from interface.backend.schemas import ChunkSource, RagRequest, RagResponse
+from interface.backend.schemas import ChunkSource, ExecutionPlan, RagRequest, RagResponse
 from interface.backend.telemetry import current_trace_id, telemetry_status, trace_operation
 from interface.backend.utilities import get_llm_client
 
 
 router = APIRouter()
+
+
+def has_empty_sql_result(retrieval: dict[str, Any]) -> bool:
+    direct_lookup = retrieval.get("direct_lookup") or {}
+    if direct_lookup and direct_lookup.get("result_count") == 0:
+        return True
+    return any(
+        item.get("source") == "sql" and item.get("result_count") == 0
+        for item in retrieval.get("multi_source_actions", [])
+    )
+
+
+def should_run_answer_judge(
+    route: str | None,
+    action: str,
+    retrieval: dict[str, Any],
+) -> bool:
+    if route == "direct":
+        return False
+    if action in {"clarify", "abstain"}:
+        return True
+    return bool(
+        retrieval.get("sql_sub_intent") == "analytics"
+        or route == "multi_source"
+        or has_empty_sql_result(retrieval)
+    )
+
+
+def run_answer_judge(
+    client: Any,
+    model: str | None,
+    question: str,
+    retrieval: dict[str, Any],
+    sources: list[dict[str, Any]],
+    answer: str,
+    action: str,
+    *,
+    pass_name: str,
+) -> dict[str, Any]:
+    with trace_operation(
+        "rag.answer_judge",
+        kind="GUARDRAIL",
+        input_value={
+            "pass": pass_name,
+            "question": question,
+            "route": retrieval.get("route"),
+            "sql_sub_intent": retrieval.get("sql_sub_intent"),
+            "source_count": len(sources),
+            "answer": answer,
+            "action": action,
+        },
+    ) as judge_span:
+        verdict = judge_final_answer(
+            client,
+            model,
+            question,
+            retrieval,
+            sources,
+            answer,
+            action,
+        )
+        judge_span.set_output(verdict)
+    return verdict
 
 
 @router.get("/llm-models")
@@ -122,8 +187,119 @@ def execute_rag(payload: RagRequest) -> RagResponse:
             answer_trace["action"] = "answer"
 
         answer_action = answer_trace.get("action", "abstain")
+        route = retrieval.get("route") or retrieval.get("retrieval_mode")
+        if should_run_answer_judge(route, answer_action, retrieval):
+            initial_verdict = run_answer_judge(
+                answer_client,
+                retrieval.get("answer_model"),
+                payload.question,
+                retrieval,
+                sources,
+                answer,
+                answer_action,
+                pass_name="initial",
+            )
+            judge_trace: dict[str, Any] = {
+                "initial": initial_verdict,
+                "retry_attempted": False,
+                "retry_performed": False,
+            }
+            if not initial_verdict.get("valid", True):
+                retry_stage = initial_verdict.get("retry_stage")
+                judge_feedback = (
+                    str(initial_verdict.get("correction") or "").strip()
+                    or str(initial_verdict.get("reason") or "").strip()
+                )
+                retry_performed = False
+                if retry_stage == "sql" and retrieval.get("sql_sub_intent") == "analytics":
+                    judge_trace["retry_attempted"] = True
+                    execution_plan = ExecutionPlan.model_validate(
+                        retrieval.get("execution_plan") or {}
+                    )
+                    with trace_operation(
+                        "rag.answer_judge.sql_retry",
+                        kind="CHAIN",
+                        input_value={
+                            "execution_plan": execution_plan.model_dump(),
+                            "feedback": judge_feedback,
+                        },
+                    ) as retry_span:
+                        retry_sources, retry_trace = run_analytics_text_to_sql(
+                            execution_plan,
+                            answer_client,
+                            retrieval.get("planner_model"),
+                            database_persons=retrieval.get("resolved_persons", []),
+                            database_companies=retrieval.get("resolved_companies", []),
+                            correction_feedback=judge_feedback,
+                        )
+                        retry_span.set_output({**retry_trace, "results": retry_sources})
+                    judge_trace["sql_retry"] = retry_trace
+                    if retry_trace.get("status") == "executed":
+                        sources = retry_sources
+                        retrieval["sql_query"] = retry_trace.get("sql")
+                        retrieval["final_k"] = len(sources)
+                        retrieval["judge_sql_retry"] = retry_trace
+                        if isinstance(retrieval.get("multi_source_actions"), list):
+                            retrieval["multi_source_actions"].append(
+                                {
+                                    "action": len(retrieval["multi_source_actions"]) + 1,
+                                    "source": "sql",
+                                    "operation": "judge_retry_analytics_sql",
+                                    "status": "completed",
+                                    "request": {
+                                        "sql": retry_trace.get("sql"),
+                                        "params": retry_trace.get("params", []),
+                                    },
+                                    "response": sources,
+                                    "result_count": len(sources),
+                                }
+                            )
+                        retry_performed = True
+                elif retry_stage == "generation":
+                    judge_trace["retry_attempted"] = True
+                    retry_performed = True
+
+                if retry_performed:
+                    judge_trace["retry_performed"] = True
+                    answer_trace = {}
+                    with trace_operation(
+                        "rag.generation.retry",
+                        kind="CHAIN",
+                        input_value={
+                            "question": retrieval.get("contextual_question", payload.question),
+                            "model": retrieval.get("answer_model"),
+                            "sources": sources,
+                            "feedback": judge_feedback,
+                        },
+                    ) as retry_generation_span:
+                        answer = generate_final_answer(
+                            answer_client,
+                            retrieval.get("contextual_question", payload.question),
+                            retrieval.get("answer_model"),
+                            retrieval,
+                            sources,
+                            answer_trace,
+                            payload.answerPrompt,
+                            judge_feedback=judge_feedback,
+                        )
+                        retry_generation_span.set_output(
+                            {"answer": answer, "trace": answer_trace}
+                        )
+                    answer_action = answer_trace.get("action", "abstain")
+                    judge_trace["final"] = run_answer_judge(
+                        answer_client,
+                        retrieval.get("answer_model"),
+                        payload.question,
+                        retrieval,
+                        sources,
+                        answer,
+                        answer_action,
+                        pass_name="final",
+                    )
+            retrieval["answer_judge"] = judge_trace
+
         retrieval["answer_action"] = answer_action
-        if answer_action == "answer":
+        if answer_action in {"answer", "clarify"}:
             answer, carousel_sources = select_answer_sources(answer, sources)
         else:
             carousel_sources = []

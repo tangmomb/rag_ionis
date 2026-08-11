@@ -55,12 +55,14 @@ class InterfaceAppTests(unittest.TestCase):
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
+        from interface.backend.answer_judge import ANSWER_JUDGE_RESPONSE_SCHEMA
 
         schemas = (
             planner.REFORMULATION_RESPONSE_SCHEMA,
             planner.PLANNER_RESPONSE_SCHEMA,
             ANALYTICS_SQL_RESPONSE_SCHEMA,
             generation.ANSWER_RESPONSE_SCHEMA,
+            ANSWER_JUDGE_RESPONSE_SCHEMA,
         )
         for schema in schemas:
             self.assertEqual(schema["type"], "object")
@@ -84,17 +86,39 @@ class InterfaceAppTests(unittest.TestCase):
     def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
         system_prompt, user_prompt = planner.build_question_reformulation_prompt(
             "Et pour elle ?",
-            [{"role": "user", "text": "Que dit Alice Martin ?"}],
+            [
+                {"role": "user", "text": "Que dit Alice Martin ?"},
+                {"role": "assistant", "text": "Alice présente son parcours."},
+            ],
         )
 
-        self.assertLess(len(system_prompt), 700)
+        self.assertLess(len(system_prompt), 1800)
         self.assertIn("besoin de l'historique", system_prompt)
         self.assertIn("peut n'avoir aucun rapport avec l'historique précédent", system_prompt)
         self.assertIn("changer de sujet", system_prompt)
         self.assertIn("Sois le plus simple et concis possible", system_prompt)
         self.assertIn("follow_up", system_prompt)
         self.assertIn("reformulated_question", system_prompt)
+        self.assertIn("échange le plus récent", system_prompt)
+        self.assertIn("conserve-les tous", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
+        self.assertIn("Règle absolue d'autonomie", system_prompt)
+        self.assertIn("entièrement compréhensible", system_prompt)
+        self.assertIn("la première vidéo mentionnée", system_prompt)
+        self.assertIn("copie le titre exact", system_prompt)
+        self.assertIn("Test obligatoire avant de répondre", system_prompt)
+        self.assertIn("Que dit Alice dans la vidéo « Vidéo A » ?", system_prompt)
+        self.assertIn("du plus vieux au plus récent", system_prompt)
+        self.assertIn("dernier bloc user/assistant", system_prompt)
+        self.assertIn(
+            "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
+            "prioritaire) :\n\nuser: Que dit Alice Martin ?",
+            user_prompt,
+        )
+        self.assertIn(
+            "Que dit Alice Martin ?\n\nassistant: Alice présente son parcours.",
+            user_prompt,
+        )
         self.assertNotIn("point d'interrogation final", system_prompt)
         self.assertIn("Message actuel : Et pour elle ?", user_prompt)
 
@@ -214,6 +238,127 @@ class InterfaceAppTests(unittest.TestCase):
         )
         self.assertTrue(trace["follow_up"])
         self.assertEqual(trace["reason"], "deterministic_follow_up_detected")
+
+    def test_reformulation_excludes_old_emric_context_from_yassin_comparison(self) -> None:
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                output_text=(
+                    '{"follow_up": true, "reformulated_question": '
+                    '"Quels sont les points communs entre Yassin, Fadila Ouro Sama et Hugo Gérardin ?"}'
+                )
+            )
+
+        client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        memory = [
+            {"role": "user", "text": "Qui est Emric ?"},
+            {"role": "assistant", "text": "Emric est alternant chez Novares."},
+            {"role": "user", "text": "Elle a fait combien de vues ?"},
+            {"role": "assistant", "text": "La vidéo de Fadila a 552 vues."},
+            {"role": "user", "text": "Quel entretien a le plus de vues ?"},
+            {"role": "assistant", "text": "La vidéo de Hugo Gérardin a 21 136 vues."},
+            {"role": "user", "text": "Compare leurs deux vidéos."},
+            {
+                "role": "assistant",
+                "text": "Comparaison des vidéos de Fadila Ouro Sama et Hugo Gérardin.",
+            },
+        ]
+        with patch.object(
+            planner,
+            "fetch_conversation_memory",
+            return_value=(memory, {"applied": True, "message_count": len(memory)}),
+        ) as fetch_memory:
+            reformulated, trace = planner.reformulate_question(
+                "Des points communs avec Yassin ?",
+                211,
+                client,
+            )
+
+        fetch_memory.assert_called_once_with(
+            211,
+            limit=planner.REFORMULATION_MEMORY_EXCHANGES,
+        )
+        reformulation_prompt = calls[0]["input"][1]["content"]
+        self.assertNotIn("Emric", reformulation_prompt)
+        self.assertIn("Fadila Ouro Sama", reformulation_prompt)
+        self.assertIn("Hugo Gérardin", reformulation_prompt)
+        self.assertEqual(trace["memory_message_count"], 6)
+        self.assertEqual(
+            reformulated,
+            "Quels sont les points communs entre Yassin, Fadila Ouro Sama et Hugo Gérardin ?",
+        )
+
+    def test_video_ranking_follow_up_prioritizes_latest_comparison_exchange(self) -> None:
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                output_text=(
+                    '{"follow_up": true, "reformulated_question": '
+                    '"Laquelle des vidéos de Loucif Ouyahia et Sophie Ollivier a le plus de vues ?"}'
+                )
+            )
+
+        client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        memory = [
+            {"role": "user", "text": "Je cherche la vidéo de Sophie"},
+            {
+                "role": "assistant",
+                "text": "Deux vidéos présentent Sophie Vanderpol.",
+            },
+            {
+                "role": "user",
+                "text": "Des points communs entre Loucif et Sophie Ollivier ?",
+            },
+            {
+                "role": "assistant",
+                "text": "Loucif Ouyahia et Sophie Ollivier travaillent dans la pharmacie.",
+            },
+        ]
+        with patch.object(
+            planner,
+            "fetch_conversation_memory",
+            return_value=(memory, {"applied": True, "message_count": len(memory)}),
+        ):
+            reformulated, trace = planner.reformulate_question(
+                "Laquelle des 2 a le plus de vues ?",
+                212,
+                client,
+            )
+
+        reformulation_prompt = calls[0]["input"][1]["content"]
+        self.assertNotIn("Sophie Vanderpol", reformulation_prompt)
+        self.assertIn("Loucif", reformulation_prompt)
+        self.assertIn("Sophie Ollivier", reformulation_prompt)
+        self.assertEqual(trace["memory"]["prompt_message_count"], 2)
+        self.assertEqual(
+            reformulated,
+            "Laquelle des vidéos de Loucif Ouyahia et Sophie Ollivier a le plus de vues ?",
+        )
+
+    def test_video_comparison_keeps_two_exchanges_when_each_introduces_one_person(self) -> None:
+        memory = [
+            {"role": "user", "text": "Qui est Emric ?"},
+            {"role": "assistant", "text": "Emric est alternant."},
+            {"role": "user", "text": "Elle a combien de vues ?"},
+            {"role": "assistant", "text": "La vidéo de Fadila a 552 vues."},
+            {"role": "user", "text": "Quel entretien a le plus de vues ?"},
+            {"role": "assistant", "text": "La vidéo de Hugo a 21 136 vues."},
+        ]
+
+        selected = planner.select_reformulation_memory(
+            "Compare leurs deux vidéos",
+            memory,
+        )
+
+        selected_text = "\n".join(item["text"] for item in selected)
+        self.assertNotIn("Emric", selected_text)
+        self.assertIn("Fadila", selected_text)
+        self.assertIn("Hugo", selected_text)
+        self.assertEqual(len(selected), 4)
 
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
         question = (

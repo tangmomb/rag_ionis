@@ -89,6 +89,9 @@ REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
 # remonter des noms qui ne partagent qu'une syllabe courte.
 PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
 COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.90
+REFORMULATION_MEMORY_EXCHANGES = 3
+REFORMULATION_MEMORY_MAX_MESSAGES = REFORMULATION_MEMORY_EXCHANGES * 2
+REFORMULATION_MEMORY_MAX_CHARS_PER_MESSAGE = 1_600
 
 
 def find_persons_in_enriched_transcripts(
@@ -147,16 +150,15 @@ def build_planner_prompt(
     system_prompt_override: str | None = None,
 ) -> tuple[str, str]:
     default_system_prompt = (
-        "Tu planifies la requete d'un assistant RAG sans y repondre. Retourne uniquement un objet JSON avec exactement ces cles: "
-        "route, sql_sub_intent, query_text, query_text_bm25, title_hint, persons, companies, published_after, published_before. "
-        "Première étape, identifier les personnes ou entreprises mentionnées dans la question. Les stocker dans les clés persons et companies sous forme de tableaux json."
+        "Tu planifies la requete d'un assistant RAG sans y repondre. "
+        "Première étape, identifier les personnes ou entreprises mentionnées dans la question. Les stocker dans persons et companies. "
         "Deuxième étape, identifier les dates de publication mentionnées dans la question. Les stocker dans published_after et published_before sous forme de chaînes ISO 8601 (YYYY-MM-DD). "
         "Troisième étape, identifier un titre de video mentionné dans la question. Le stocker dans title_hint. "
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
-        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'analytics', 'description', 'transcript_verbatim' ou 'null'."
+        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'analytics', 'description', 'transcript_verbatim' ou 'null'. "
         "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='rag' pour toute question qui demande une information. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
         "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question, sauf si elle demande une analyse structurée. sql_sub_intent='analytics' pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
-        "Toutes les valeurs textuelles de l'objet JSON doivent être en texte normal, sans Markdown."
+        "Toutes les valeurs textuelles doivent être en texte normal, sans Markdown."
 
     )
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
@@ -939,7 +941,7 @@ def sanitize_video_title_hint(question: str, title_hint: str | None) -> str | No
 def is_memory_video_comparison(question: str) -> bool:
     normalized = normalize_text(question)
     has_memory_reference = bool(
-        re.search(r"\b(?:les?|des?)\s+\d+\b", normalized)
+        re.search(r"\b(?:les?|des?|leurs?)\s+(?:\d+|deux|trois)\b", normalized)
         or re.search(r"\b(?:ces|celles|ceux|laquelle|lequel|parmi|entre)\b", normalized)
     )
     has_comparison = bool(
@@ -949,20 +951,102 @@ def is_memory_video_comparison(question: str) -> bool:
     return has_memory_reference and has_comparison
 
 
+def select_reformulation_memory(
+    question: str,
+    memory_items: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Priorise les échanges utiles aux comparaisons elliptiques."""
+    if not is_memory_video_comparison(question):
+        return memory_items
+
+    user_indexes = [
+        index
+        for index, item in enumerate(memory_items)
+        if item.get("role") == "user"
+    ]
+    if not user_indexes:
+        return memory_items
+
+    latest_user_index = user_indexes[-1]
+    latest_user = normalize_text(memory_items[latest_user_index].get("text", ""))
+    latest_exchange_has_comparison_pair = bool(
+        re.search(r"\bentre\b.+\bet\b", latest_user)
+        or re.search(r"\bcompare\b.+\b(?:a|avec|et)\b", latest_user)
+        or re.search(r"\bpoints? communs?\b.+\b(?:avec|entre|et)\b", latest_user)
+    )
+    if latest_exchange_has_comparison_pair:
+        return memory_items[latest_user_index:]
+
+    # Une comparaison comme « compare leurs deux vidéos » peut dépendre des deux
+    # derniers échanges, chacun ayant introduit une personne différente.
+    if len(user_indexes) >= 2:
+        return memory_items[user_indexes[-2]:]
+    return memory_items[latest_user_index:]
+
+
 def build_question_reformulation_prompt(
     question: str,
     memory_items: list[dict[str, str]],
     system_prompt_override: str | None = None,
 ) -> tuple[str, str]:
-    history = "\n".join(
+    history = "\n\n".join(
         f"{item['role']}: {item['text']}" for item in memory_items
     )
-    default_system_prompt = (
-        "Tu reformules le dernier message utilisateur sans y répondre. 1) Indique s'il a besoin de l'historique pour être compris. Attention : il peut n'avoir aucun rapport avec l'historique précédent si l'utilisateur veut changer de sujet. 2) Si oui, inclus seulement les éléments utiles pour le rendre autonome. Sinon, reformule-le proprement sans changer son sens. Sois le plus simple et concis possible. Retourne uniquement un objet JSON avec exactement ces clés : follow_up (booléen), reformulated_question (string). reformulated_question doit être du texte normal, sans Markdown."
-    )
+    default_system_prompt = """Tu reformules le dernier message utilisateur sans y répondre.
+Indique dans follow_up s'il a besoin de l'historique. Le message peut n'avoir aucun rapport avec l'historique précédent si l'utilisateur veut changer de sujet.
+
+Règle absolue d'autonomie : si le message dépend de l'historique,
+reformulated_question doit être entièrement compréhensible par une personne qui ne
+voit ni l'historique ni le message original. Remplace chaque pronom, ordinal et
+référence implicite par le nom, le titre ou l'objet exact trouvé dans l'échange le plus
+récent : il, elle, lui, leur, les deux, la première, la seconde, la dernière, celle-ci,
+dedans, cette vidéo, vidéo mentionnée, etc. Il est interdit de conserver une expression
+comme « la première vidéo mentionnée » : copie le titre exact de cette vidéo et nomme
+aussi la personne concernée si le message y fait référence.
+
+Test obligatoire avant de répondre : en lisant uniquement reformulated_question, on
+doit pouvoir identifier sans ambiguïté chaque personne, vidéo, entreprise ou élément
+demandé. Si ce test échoue, la reformulation est invalide.
+
+Exemple : si la dernière réponse cite d'abord « Vidéo A » avec Alice, puis « Vidéo B »,
+« il/elle dit quoi dans la première ? » devient « Que dit Alice dans la vidéo « Vidéo A » ? ».
+
+Résous les références depuis l'échange le plus récent. S'il contient plusieurs
+référents demandés, conserve-les tous et ignore les personnes plus anciennes non
+reprises. L'historique est présenté du plus vieux au plus récent : commence toujours
+par le dernier bloc user/assistant, qui est prioritaire. Consulte un échange antérieur
+seulement si ce dernier bloc ne suffit pas.
+Sinon, reformule sans changer le sens. Sois le plus simple et concis possible.
+reformulated_question doit être du texte normal, sans Markdown."""
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
-    user_prompt = f"Message actuel : {question}\n\nHistorique récent :\n{history or '(vide)'}"
+    user_prompt = (
+        f"Message actuel : {question}\n\n"
+        "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
+        f"prioritaire) :\n\n{history or '(vide)'}"
+    )
     return system_prompt, user_prompt
+
+
+def compact_reformulation_memory(
+    memory_items: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Conserve un contexte récent et borné pour éviter les anciens référents parasites."""
+    compacted: list[dict[str, str]] = []
+    for item in memory_items[-REFORMULATION_MEMORY_MAX_MESSAGES:]:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > REFORMULATION_MEMORY_MAX_CHARS_PER_MESSAGE:
+            tail_length = 400
+            head_length = REFORMULATION_MEMORY_MAX_CHARS_PER_MESSAGE - tail_length
+            text = f"{text[:head_length].rstrip()}\n[…]\n{text[-tail_length:].lstrip()}"
+        compacted.append(
+            {
+                "role": str(item.get("role") or "user"),
+                "text": text,
+            }
+        )
+    return compacted
 
 
 def repair_video_clarification_follow_up(
@@ -1023,7 +1107,18 @@ def reformulate_question(
     system_prompt_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Rend une relance autonome avant le planner, sans modifier le message stocké."""
-    memory_items, memory_trace = fetch_conversation_memory(conversation_id)
+    source_memory_items, memory_trace = fetch_conversation_memory(
+        conversation_id,
+        limit=REFORMULATION_MEMORY_EXCHANGES,
+    )
+    memory_items = compact_reformulation_memory(source_memory_items)
+    prompt_memory_items = select_reformulation_memory(question, memory_items)
+    memory_trace = {
+        **memory_trace,
+        "source_message_count": len(source_memory_items),
+        "message_count": len(memory_items),
+        "prompt_message_count": len(prompt_memory_items),
+    }
     trace: dict[str, Any] = {
         "applied": False,
         "original_question": question,
@@ -1037,7 +1132,7 @@ def reformulate_question(
 
     system_prompt, user_prompt = build_question_reformulation_prompt(
         question,
-        memory_items,
+        prompt_memory_items,
         system_prompt_override,
     )
     trace["prompt"] = json.dumps(

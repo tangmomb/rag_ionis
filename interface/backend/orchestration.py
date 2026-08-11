@@ -198,6 +198,8 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "validated_query": execution_plan.model_dump(),
         "person_resolution": person_resolution,
         "company_resolution": company_resolution,
+        "resolved_persons": database_persons,
+        "resolved_companies": database_company,
     }
 
     if person_resolution.get("ambiguous"):

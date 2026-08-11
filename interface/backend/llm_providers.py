@@ -309,6 +309,7 @@ def call_openai(
     api_key: str,
     max_output_tokens: int | None,
     store: bool | None,
+    response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
     request: dict[str, Any] = {
         "model": model,
@@ -321,6 +322,15 @@ def call_openai(
         request["max_output_tokens"] = max_output_tokens
     if store is not None:
         request["store"] = store
+    if response_schema is not None:
+        request["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": "rag_answer",
+                "schema": response_schema,
+                "strict": True,
+            }
+        }
     try:
         response = OpenAI(api_key=api_key).responses.create(**request)
     except Exception as exc:
@@ -387,6 +397,7 @@ def call_google(
     messages: list[dict[str, str]],
     api_key: str,
     max_output_tokens: int | None,
+    response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
     system_parts = [
         {"text": message["content"]}
@@ -404,10 +415,18 @@ def call_google(
     request: dict[str, Any] = {"contents": contents}
     if system_parts:
         request["systemInstruction"] = {"parts": system_parts}
+    generation_config: dict[str, Any] = {}
     if max_output_tokens is not None:
-        request["generationConfig"] = {
-            "maxOutputTokens": max_output_tokens,
-        }
+        generation_config["maxOutputTokens"] = max_output_tokens
+    if response_schema is not None:
+        generation_config.update(
+            {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": response_schema,
+            }
+        )
+    if generation_config:
+        request["generationConfig"] = generation_config
     model_id = model.removeprefix("models/")
     invocation_parameters = {
         key: value
@@ -490,6 +509,7 @@ def create_llm_response(
                 api_key,
                 max_output_tokens,
                 store,
+                response_schema,
             )
         if selected_provider == "mistral":
             return call_mistral(
@@ -504,6 +524,7 @@ def create_llm_response(
             messages,
             api_key,
             max_output_tokens,
+            response_schema,
         )
     except requests.RequestException as exc:
         raise LLMProviderError(

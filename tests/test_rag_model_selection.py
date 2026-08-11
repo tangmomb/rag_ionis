@@ -156,11 +156,14 @@ class RagModelSelectionTests(unittest.TestCase):
         )
 
         self.assertIn("Instructions RAG", rendered)
-        self.assertIn("exactement deux clés : answer et action", rendered)
+        self.assertIn("Choisis l'action answer, clarify ou abstain", rendered)
         self.assertNotIn("{route_instructions}", rendered)
 
     def test_default_answer_prompt_displays_real_instructions(self) -> None:
-        self.assertIn("exactement deux clés : answer et action", DEFAULT_ANSWER_PROMPT_TEMPLATE)
+        self.assertIn(
+            "Choisis l'action answer, clarify ou abstain",
+            DEFAULT_ANSWER_PROMPT_TEMPLATE,
+        )
         self.assertIn("Markdown", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("courte formule de politesse", DEFAULT_ANSWER_PROMPT_TEMPLATE)
         self.assertIn("{route_instructions}", DEFAULT_ANSWER_PROMPT_TEMPLATE)
@@ -172,7 +175,7 @@ class RagModelSelectionTests(unittest.TestCase):
         )
 
         self.assertIn("Réponds très brièvement.", rendered)
-        self.assertIn("exactement deux clés : answer et action", rendered)
+        self.assertIn("Choisis l'action answer, clarify ou abstain", rendered)
 
 
 if __name__ == "__main__":

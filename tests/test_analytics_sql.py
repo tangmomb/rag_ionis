@@ -79,11 +79,34 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertIn("videos(", system_prompt)
         self.assertIn("stats(", system_prompt)
         self.assertIn("snapshot le plus récent", system_prompt)
+        self.assertIn("Ne jamais placer un LIMIT 1 global", system_prompt)
+        self.assertIn("classe leur union", system_prompt)
+        self.assertIn("COUNT(*) OVER ()", system_prompt)
+        self.assertIn("SUM(...) OVER (PARTITION BY speaker)", system_prompt)
+        self.assertIn("thumbnail_medium_url AS thumbnail_medium_url", system_prompt)
         self.assertIn("v.title ILIKE %s", system_prompt)
         self.assertIn("v.id AS video_id", system_prompt)
         self.assertIn("SELECT", system_prompt)
         self.assertNotIn("transcripts(", system_prompt)
         self.assertIn("Quelle vidéo a le plus de vues ?", user_prompt)
+
+    def test_analytics_source_keeps_returned_thumbnail(self) -> None:
+        sources = analytics_sql.analytics_rows_to_sources(
+            ["video_id", "video_title", "video_url", "thumbnail_medium_url"],
+            [
+                (
+                    12,
+                    "Vidéo test",
+                    "https://example.test/video",
+                    "https://example.test/thumb.jpg",
+                )
+            ],
+        )
+
+        self.assertEqual(
+            sources[0]["thumbnail_medium_url"],
+            "https://example.test/thumb.jpg",
+        )
 
     def test_validator_accepts_safe_parameterized_ranking(self) -> None:
         sql = (
@@ -97,6 +120,19 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["relations"], ["stats", "videos"])
+
+    def test_validator_rejects_global_latest_stats_cte(self) -> None:
+        sql = (
+            "WITH latest_stats AS (SELECT video_id, view_count FROM stats "
+            "ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) "
+            "SELECT v.id AS video_id, ls.view_count FROM videos v "
+            "JOIN latest_stats ls ON ls.video_id = v.id ORDER BY ls.view_count DESC LIMIT %s"
+        )
+
+        validation = analytics_sql.validate_analytics_sql(sql, [1])
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("stats_latest_snapshot_not_per_video", validation["errors"])
 
     def test_validator_rejects_mutation_unknown_table_and_bad_params(self) -> None:
         mutation = analytics_sql.validate_analytics_sql(
@@ -179,12 +215,15 @@ class AnalyticsSqlTests(unittest.TestCase):
         client = SimpleNamespace(responses=responses)
         cursor = _Cursor()
         recorded_spans: list[str] = []
+        recorded_outputs: dict[str, object] = {}
 
         @contextmanager
         def record_trace(name: str, **kwargs):
             del kwargs
             recorded_spans.append(name)
-            yield SimpleNamespace(set_output=lambda value: None)
+            yield SimpleNamespace(
+                set_output=lambda value: recorded_outputs.__setitem__(name, value)
+            )
 
         query = ExecutionPlan(
             raw_question="Quelle vidéo a le plus de vues ?",
@@ -219,6 +258,18 @@ class AnalyticsSqlTests(unittest.TestCase):
         )
         self.assertEqual(trace["status"], "executed")
         self.assertEqual(
+            trace["cost_validation"],
+            {
+                "valid": True,
+                "total_cost": 12.34,
+                "max_total_cost": analytics_sql.DEFAULT_MAX_ANALYTICS_TOTAL_COST,
+            },
+        )
+        self.assertNotIn(
+            "explain",
+            recorded_outputs["rag.analytics.sql_cost_validation"],
+        )
+        self.assertEqual(
             responses.calls[0]["response_schema"],
             analytics_sql.ANALYTICS_SQL_RESPONSE_SCHEMA,
         )
@@ -228,6 +279,28 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertTrue(cursor.executed[2][0].startswith("EXPLAIN (FORMAT JSON)"))
         self.assertEqual(cursor.executed[3][0], "SET TRANSACTION READ ONLY")
         self.assertTrue(cursor.executed[5][0].startswith("SELECT * FROM"))
+
+    def test_explain_returns_only_cost_summary(self) -> None:
+        cursor = _Cursor()
+
+        with patch.object(
+            analytics_sql,
+            "connect_analytics_database",
+            return_value=_Connection(cursor),
+        ):
+            validation = analytics_sql.explain_analytics_sql(
+                "SELECT COUNT(*) AS video_count FROM videos",
+                [],
+            )
+
+        self.assertEqual(
+            validation,
+            {
+                "valid": True,
+                "total_cost": 12.34,
+                "max_total_cost": analytics_sql.DEFAULT_MAX_ANALYTICS_TOTAL_COST,
+            },
+        )
 
     def test_explain_cost_above_limit_is_rejected_before_execution(self) -> None:
         sql = "SELECT COUNT(*) AS video_count FROM videos"
@@ -262,6 +335,7 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertEqual(sources, [])
         self.assertEqual(trace["status"], "cost_rejected")
+        self.assertNotIn("explain", trace["cost_validation"])
         execute.assert_not_called()
 
 

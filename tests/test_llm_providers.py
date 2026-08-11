@@ -89,7 +89,17 @@ class LlmProviderTests(unittest.TestCase):
         self.assertFalse(request["store"])
         self.assertNotIn("service_tier", request)
         self.assertNotIn("response_schema", request)
-        self.assertNotIn("text", request)
+        self.assertEqual(
+            request["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "rag_answer",
+                    "schema": {"type": "object"},
+                    "strict": True,
+                }
+            },
+        )
 
     def test_openai_uses_configured_fast_service_tier(self) -> None:
         sdk_response = SimpleNamespace(
@@ -246,8 +256,14 @@ class LlmProviderTests(unittest.TestCase):
             request["generationConfig"]["maxOutputTokens"],
             400,
         )
-        self.assertNotIn("responseMimeType", request["generationConfig"])
-        self.assertNotIn("responseSchema", request["generationConfig"])
+        self.assertEqual(
+            request["generationConfig"]["responseMimeType"],
+            "application/json",
+        )
+        self.assertEqual(
+            request["generationConfig"]["responseJsonSchema"],
+            {"type": "object"},
+        )
         self.assertEqual(
             trace_operation.call_args.args[0],
             "GoogleGenerateContent",

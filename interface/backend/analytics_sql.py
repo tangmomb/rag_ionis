@@ -94,6 +94,9 @@ stats(
 Il existe plusieurs snapshots par vidéo. Pour les statistiques actuelles, sélectionner
 exactement le snapshot le plus récent de chaque vidéo avec :
 ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1.
+Ce LIMIT 1 doit être corrélé à la vidéo concernée, par exemple dans un JOIN LATERAL
+avec WHERE stats.video_id = videos.id. Ne jamais placer un LIMIT 1 global dans un CTE
+lisant stats : il ne conserverait qu'un seul snapshot pour l'ensemble des vidéos.
 
 speakers(id bigint primary key, name text, title text, data_collected_date timestamptz)
 video_speakers(video_id bigint, speaker_id bigint, data_collected_date timestamptz)
@@ -108,6 +111,7 @@ def build_analytics_sql_prompt(
     query: ExecutionPlan,
     database_persons: list[str] | None = None,
     database_companies: list[str] | None = None,
+    correction_feedback: str | None = None,
 ) -> tuple[str, str]:
     system_prompt = f"""Tu es un spécialiste Text-to-SQL PostgreSQL. Produis la requête analytique
 qui répond exactement à la question, sans répondre toi-même.
@@ -115,7 +119,6 @@ qui répond exactement à la question, sans répondre toi-même.
 {ANALYTICS_SCHEMA_PROMPT}
 
 Règles obligatoires :
-- Retourne uniquement un objet JSON avec exactement les clés sql et params.
 - sql doit être une unique requête SELECT, éventuellement précédée de CTE WITH.
 - N'utilise que les tables du schéma fourni.
 - N'utilise jamais SELECT *, sauf dans un COUNT(*).
@@ -124,23 +127,30 @@ Règles obligatoires :
 - N'ajoute ni commentaire SQL ni point-virgule.
 - Pour un classement ou un extremum, trie sur la métrique demandée et applique la
   limite utile. Ne trie pas par date de publication sauf demande explicite.
-- Pour compter des vidéos, interroge videos et utilise COUNT(DISTINCT v.id).
+- Pour compter des vidéos, conserve une ligne par vidéo et calcule le total avec
+  COUNT(*) OVER () afin de garder les métadonnées de chaque vidéo.
 - Pour une interview, filtre v.video_type = %s avec la valeur interview dans params.
 - Traite title_hint et les titres mentionnés comme des fragments : utilise v.title ILIKE %s
   avec une valeur entourée de %, sauf si un identifiant vidéo exact est fourni.
-- Pour une métadonnée portant sur une vidéo, retourne toujours aussi v.id AS video_id,
-  v.title AS video_title et v.url AS video_url.
+- Toute analyse portant sur des vidéos doit conserver une ligne concrète par vidéo et
+  retourner v.id AS video_id, v.title AS video_title, v.url AS video_url et
+  v.thumbnail_medium_url AS thumbnail_medium_url.
+- Pour un total ou une comparaison par personne, utilise une fonction fenêtre comme
+  SUM(...) OVER (PARTITION BY speaker) plutôt qu'un GROUP BY qui supprimerait les
+  métadonnées vidéo. Chaque ligne doit rester rattachée à sa vidéo.
 - Pour une statistique YouTube actuelle, utilise uniquement le dernier snapshot de
   chaque vidéo selon la règle du schéma.
-- Quand une ligne correspond à une vidéo, expose si possible les alias video_id,
-  video_title et video_url afin de rendre le résultat lisible.
+- Pour comparer plusieurs personnes, cherche les vidéos associées à au moins une de
+  ces personnes avec OR/IN, puis classe leur union. N'exige leur présence dans la même
+  vidéo que si la question dit explicitement « ensemble », « dans la même vidéo » ou
+  demande une coapparition.
 - Les requêtes non agrégées doivent retourner au maximum {MAX_ANALYTICS_ROWS} lignes.
 
 Exemple « quelle vidéo a le plus de vues ? » :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, s.view_count FROM videos v JOIN LATERAL (SELECT view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE ORDER BY s.view_count DESC NULLS LAST LIMIT %s","params":[1]}}
+{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.view_count FROM videos v JOIN LATERAL (SELECT view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE ORDER BY s.view_count DESC NULLS LAST LIMIT %s","params":[1]}}
 
 Exemple « combien de vidéos interview sur la chaîne ? » :
-{{"sql":"SELECT COUNT(DISTINCT v.id) AS video_count FROM videos v WHERE v.video_type = %s","params":["interview"]}}
+{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, COUNT(*) OVER () AS video_count FROM videos v WHERE v.video_type = %s","params":["interview"]}}
 """
     context = {
         "question": question,
@@ -151,6 +161,7 @@ Exemple « combien de vidéos interview sur la chaîne ? » :
         "companies_resolved": database_companies or [],
         "published_after": query.published_after,
         "published_before": query.published_before,
+        "correction_feedback": (correction_feedback or "").strip() or None,
     }
     return system_prompt, json.dumps(context, ensure_ascii=False)
 
@@ -191,6 +202,54 @@ def _valid_param(value: Any) -> bool:
     return False
 
 
+def _uses_global_stats_limit_one(sql: str) -> bool:
+    """Détecte un LIMIT 1 sur stats qui n'est pas borné à une vidéo."""
+    parentheses: list[tuple[int, int]] = []
+    stack: list[int] = []
+    for index, character in enumerate(sql):
+        if character == "(":
+            stack.append(index)
+        elif character == ")" and stack:
+            parentheses.append((stack.pop(), index))
+
+    for match in re.finditer(
+        r"\bfrom\s+(?:(?:data|public)\.)?stats\b",
+        sql,
+        flags=re.IGNORECASE,
+    ):
+        containing_scopes = [
+            (start, end)
+            for start, end in parentheses
+            if start < match.start() < end
+        ]
+        if containing_scopes:
+            start, end = min(containing_scopes, key=lambda scope: scope[1] - scope[0])
+            scope_sql = sql[start + 1:end]
+        else:
+            scope_sql = sql
+
+        if not re.search(r"\blimit\s+1\b", scope_sql, flags=re.IGNORECASE):
+            continue
+        if re.search(
+            r"\bdistinct\s+on\s*\([^)]*\bvideo_id\b|"
+            r"\bpartition\s+by\b[^)]*\bvideo_id\b",
+            scope_sql,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if re.search(
+            r"(?:\b[a-z_][a-z0-9_]*\.)?video_id\s*=\s*"
+            r"(?:%s|[a-z_][a-z0-9_]*\.id\b)|"
+            r"\b[a-z_][a-z0-9_]*\.id\s*=\s*"
+            r"(?:[a-z_][a-z0-9_]*\.)?video_id\b",
+            scope_sql,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
 def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
     normalized = str(sql or "").strip()
     errors: list[str] = []
@@ -212,6 +271,8 @@ def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
         errors.append("disallowed_keyword")
     if DISALLOWED_SQL_OBJECTS.search(sql_without_literals):
         errors.append("disallowed_object")
+    if _uses_global_stats_limit_one(sql_without_literals):
+        errors.append("stats_latest_snapshot_not_per_video")
 
     relations = _relation_names(sql_without_literals)
     ctes = _cte_names(sql_without_literals)
@@ -267,6 +328,9 @@ def analytics_rows_to_sources(
             or "Résultat analytique"
         )
         video_url = str(record.get("video_url") or record.get("url") or "")
+        thumbnail_medium_url = str(
+            record.get("thumbnail_medium_url") or ""
+        ).strip() or None
         text = "\n".join(
             f"{column}: {json.dumps(value, ensure_ascii=False, default=str)}"
             for column, value in record.items()
@@ -276,7 +340,7 @@ def analytics_rows_to_sources(
                 "chunk_id": chunk_id,
                 "video_title": video_title,
                 "video_url": video_url,
-                "thumbnail_medium_url": None,
+                "thumbnail_medium_url": thumbnail_medium_url,
                 "chunk_index": 0,
                 "text": text,
                 "persons": [],
@@ -323,6 +387,22 @@ def explain_total_cost(explain_plan: Any) -> float | None:
         return None
 
 
+def summarize_cost_validation(cost_validation: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the small, actionable part of an EXPLAIN validation result."""
+    summary_keys = (
+        "valid",
+        "status",
+        "total_cost",
+        "max_total_cost",
+        "error",
+    )
+    return {
+        key: cost_validation[key]
+        for key in summary_keys
+        if key in cost_validation
+    }
+
+
 def explain_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
     bounded_sql = bounded_analytics_sql(sql)
     with connect_analytics_database() as connection:
@@ -340,7 +420,6 @@ def explain_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
         "valid": total_cost is not None and total_cost <= max_total_cost,
         "total_cost": total_cost,
         "max_total_cost": max_total_cost,
-        "explain": explain_plan,
     }
 
 
@@ -378,6 +457,7 @@ def run_analytics_text_to_sql(
     *,
     database_persons: list[str] | None = None,
     database_companies: list[str] | None = None,
+    correction_feedback: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     trace: dict[str, Any] = {
         "mode": "analytics",
@@ -396,6 +476,7 @@ def run_analytics_text_to_sql(
         query,
         database_persons,
         database_companies,
+        correction_feedback,
     )
     messages = [
         {"role": "system", "content": system_prompt},
@@ -471,8 +552,9 @@ def run_analytics_text_to_sql(
                 "status": "explain_error",
                 "error": str(exc),
             }
-        cost_span.set_output(cost_validation)
-    trace["cost_validation"] = cost_validation
+        cost_validation_summary = summarize_cost_validation(cost_validation)
+        cost_span.set_output(cost_validation_summary)
+    trace["cost_validation"] = cost_validation_summary
     if not cost_validation["valid"]:
         trace["status"] = "cost_rejected"
         return [], trace

@@ -31,8 +31,7 @@ SOURCE_MARKER_INSTRUCTION = (
 
 
 ANSWER_ACTION_INSTRUCTION = (
-    "Retourne uniquement un objet JSON valide avec exactement deux clés : answer et action. "
-    "action doit valoir exactement answer, clarify ou abstain. Choisis answer uniquement si "
+    "Choisis l'action answer, clarify ou abstain. Choisis answer uniquement si "
     "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
     "clarify si une ambiguïté empêche de savoir quelle information, personne ou vidéo est "
     "demandée ; answer contient alors une seule question de précision. Choisis abstain si la "
@@ -93,7 +92,7 @@ def render_answer_system_prompt(
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
-    if "action doit valoir exactement answer, clarify ou abstain" not in rendered:
+    if "Choisis l'action answer, clarify ou abstain." not in rendered:
         rendered = f"{rendered}\n\n{ANSWER_ACTION_INSTRUCTION}"
     return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
@@ -512,13 +511,19 @@ def generate_final_answer(
     sources: list[dict[str, Any]],
     trace: dict[str, str] | None = None,
     prompt_template: str | None = None,
+    judge_feedback: str | None = None,
 ) -> str:
+    generation_question = question
+    if judge_feedback:
+        generation_question = (
+            f"{question}\n\nCorrection interne obligatoire : {judge_feedback.strip()}"
+        )
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
     person_resolution = retrieval.get("person_resolution") or {}
     if route != "direct" and person_resolution.get("ambiguous"):
         return generate_person_clarification_answer(
             client,
-            question,
+            generation_question,
             answer_model,
             person_resolution,
             trace,
@@ -531,7 +536,7 @@ def generate_final_answer(
     if route == "rag" and retrieval.get("retrieval_mode") == "rag+structured_sql":
         return generate_sql_answer(
             client,
-            question,
+            generation_question,
             answer_model,
             retrieval.get("sql_sub_intent"),
             sources,
@@ -540,12 +545,12 @@ def generate_final_answer(
         )
     if route == "rag":
         return generate_answer(
-            client, question, answer_model, sources, trace, prompt_template
+            client, generation_question, answer_model, sources, trace, prompt_template
         )
     if route == "sql":
         return generate_sql_answer(
             client,
-            question,
+            generation_question,
             answer_model,
             retrieval.get("sql_sub_intent"),
             sources,
@@ -555,7 +560,7 @@ def generate_final_answer(
     if route == "memory":
         return generate_memory_answer(
             client,
-            question,
+            generation_question,
             answer_model,
             retrieval.get("memory_items", []),
             trace,
@@ -564,7 +569,7 @@ def generate_final_answer(
     if route == "multi_source":
         return generate_multi_source_answer(
             client,
-            question,
+            generation_question,
             answer_model,
             route,
             retrieval.get("memory_items", []),
@@ -574,5 +579,5 @@ def generate_final_answer(
             prompt_template,
         )
     return generate_answer(
-        client, question, answer_model, sources, trace, prompt_template
+        client, generation_question, answer_model, sources, trace, prompt_template
     )

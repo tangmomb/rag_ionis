@@ -46,6 +46,7 @@ def configure_telemetry() -> None:
         project_name = os.getenv("PHOENIX_PROJECT_NAME", "rag-ionis").strip() or "rag-ionis"
 
         try:
+            from openinference.instrumentation.mistralai import MistralAIInstrumentor
             from openinference.instrumentation.openai import OpenAIInstrumentor
             from phoenix.otel import register
 
@@ -58,6 +59,7 @@ def configure_telemetry() -> None:
             )
             _TRACER = _TRACER_PROVIDER.get_tracer("rag_ionis.interface")
             OpenAIInstrumentor().instrument(tracer_provider=_TRACER_PROVIDER)
+            MistralAIInstrumentor().instrument(tracer_provider=_TRACER_PROVIDER)
             _ENABLED = True
             print(
                 f"[telemetry] Phoenix actif: project={project_name} endpoint={endpoint}",

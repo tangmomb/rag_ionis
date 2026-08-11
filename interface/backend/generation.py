@@ -138,15 +138,21 @@ def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) ->
 
 
 def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Retire les marqueurs de citation et conserve les sources utilisées par la réponse."""
-    marker_indexes = {
+    """Retire les marqueurs et conserve les sources citées par marqueur ou URL."""
+    selected_indexes = {
         int(value)
         for value in re.findall(r"\[S(\d+)\]", answer, flags=re.IGNORECASE)
         if 1 <= int(value) <= len(sources)
     }
+    selected_indexes.update(
+        index
+        for index, source in enumerate(sources, start=1)
+        if (video_url := str(source.get("video_url") or "").strip())
+        and video_url in answer
+    )
     cleaned_answer = re.sub(r"\s*\[S\d+\]", "", answer, flags=re.IGNORECASE).strip()
     selected_sources = [
-        source for index, source in enumerate(sources, start=1) if index in marker_indexes
+        source for index, source in enumerate(sources, start=1) if index in selected_indexes
     ]
     return cleaned_answer, selected_sources
 

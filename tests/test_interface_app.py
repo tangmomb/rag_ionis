@@ -17,6 +17,37 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class InterfaceAppTests(unittest.TestCase):
+    def test_answer_video_url_selects_source_without_marker(self) -> None:
+        sources = [
+            {"video_url": "https://www.youtube.com/watch?v=video-1"},
+            {"video_url": "https://www.youtube.com/watch?v=video-2"},
+        ]
+
+        answer, selected_sources = generation.select_answer_sources(
+            "Voir https://www.youtube.com/watch?v=video-2 pour plus de détails.",
+            sources,
+        )
+
+        self.assertEqual(
+            answer,
+            "Voir https://www.youtube.com/watch?v=video-2 pour plus de détails.",
+        )
+        self.assertEqual(selected_sources, [sources[1]])
+
+    def test_answer_marker_and_video_url_select_source_once(self) -> None:
+        source = {"video_url": "https://www.youtube.com/watch?v=video-1"}
+
+        answer, selected_sources = generation.select_answer_sources(
+            "La réponse est ici [S1] : https://www.youtube.com/watch?v=video-1",
+            [source],
+        )
+
+        self.assertEqual(
+            answer,
+            "La réponse est ici : https://www.youtube.com/watch?v=video-1",
+        )
+        self.assertEqual(selected_sources, [source])
+
     def test_all_llm_steps_use_mistral_medium_by_default(self) -> None:
         self.assertEqual(DEFAULT_PLANNER_MODEL, "mistral-medium-latest")
         self.assertEqual(DEFAULT_REFORMULATION_MODEL, "mistral-medium-latest")
@@ -799,6 +830,17 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("Resume de section", text)
         self.assertIn("Resume global", text)
 
+    def test_interface_uses_sanitized_markdown_renderer(self) -> None:
+        response = TestClient(app).get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertIn("markdown-it@15.0.0", response.text)
+        self.assertIn("dompurify@3.4.13", response.text)
+        self.assertIn("html: false", response.text)
+        self.assertIn("window.DOMPurify.sanitize", response.text)
+        self.assertNotIn("function renderInlineMarkdown", response.text)
+
     def test_public_routes_are_preserved(self) -> None:
         client = TestClient(app)
 
@@ -818,7 +860,7 @@ class InterfaceAppTests(unittest.TestCase):
             },
         )
 
-    def test_llm_model_catalog_exposes_all_pipeline_defaults(self) -> None:
+    def test_llm_model_catalog_exposes_only_mistral(self) -> None:
         response = TestClient(app).get("/api/llm-models")
 
         self.assertEqual(response.status_code, 200)
@@ -835,10 +877,25 @@ class InterfaceAppTests(unittest.TestCase):
             "mistral-medium-latest",
             {model["id"] for model in data["models"]},
         )
-        self.assertIn(
-            "gemini-3.6-flash",
-            {model["id"] for model in data["models"]},
+        self.assertEqual(
+            {model["provider"] for model in data["models"]},
+            {"mistral"},
         )
+
+    def test_public_rag_endpoint_rejects_non_mistral_models(self) -> None:
+        response = TestClient(app).post(
+            "/api/rag",
+            json={
+                "question": "Bonjour",
+                "reformulationModel": "gpt-5.6-sol",
+                "plannerModel": "mistral-medium-latest",
+                "answerModel": "mistral-medium-latest",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("uniquement Mistral", response.json()["detail"])
+        self.assertIn("run_phoenix_experiment.py", response.json()["detail"])
 
     def test_request_schema_remains_available_from_app(self) -> None:
         payload = RagRequest(question="Bonjour")

@@ -28,10 +28,7 @@ class LlmTesterTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "OPENAI_API_KEY": "openai-secret",
                 "MISTRAL_API_KEY": "",
-                "GOOGLE_API_KEY": "google-secret",
-                "GEMINI_API_KEY": "",
             },
             clear=False,
         ):
@@ -40,11 +37,8 @@ class LlmTesterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         providers = {item["id"]: item for item in payload["providers"]}
-        self.assertTrue(providers["openai"]["configured"])
+        self.assertEqual(set(providers), {"mistral"})
         self.assertFalse(providers["mistral"]["configured"])
-        self.assertTrue(providers["google"]["configured"])
-        self.assertNotIn("openai-secret", response.text)
-        self.assertNotIn("google-secret", response.text)
 
     def test_missing_key_is_reported_before_network_call(self) -> None:
         with (
@@ -64,50 +58,6 @@ class LlmTesterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("MISTRAL_API_KEY", response.text)
         create.assert_not_called()
-
-    def test_openai_returns_extracted_text_and_raw_payload(self) -> None:
-        raw = {
-            "id": "resp_123",
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "Bonjour OpenAI"}
-                    ],
-                }
-            ],
-        }
-        with (
-            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
-            patch.object(
-                llm_tester,
-                "create_llm_response",
-                return_value=LLMResponse(
-                    provider="openai",
-                    model="gpt-5.6-sol",
-                    output_text="Bonjour OpenAI",
-                    raw_payload=raw,
-                ),
-            ) as create,
-        ):
-            response = self.client.post(
-                "/api/generate",
-                json={
-                    "provider": "openai",
-                    "model": "gpt-5.6-sol",
-                    "message": "Bonjour",
-                    "max_output_tokens": 200,
-                },
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["text"], "Bonjour OpenAI")
-        self.assertEqual(response.json()["response"], raw)
-        self.assertEqual(
-            create.call_args.kwargs["max_output_tokens"],
-            200,
-        )
-        self.assertNotIn("secret", str(create.call_args.kwargs))
 
     def test_mistral_returns_extracted_text_and_raw_payload(self) -> None:
         raw = {
@@ -142,54 +92,18 @@ class LlmTesterTests(unittest.TestCase):
         self.assertEqual(response.json()["text"], "Bonjour Mistral")
         self.assertEqual(response.json()["response"], raw)
 
-    def test_google_returns_extracted_text_and_raw_payload(self) -> None:
-        raw = {
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {"text": "raisonnement", "thought": True},
-                            {"text": "Bonjour Google"},
-                        ]
-                    }
-                }
-            ]
-        }
-        with (
-            patch.dict(
-                os.environ,
-                {"GOOGLE_API_KEY": "secret", "GEMINI_API_KEY": ""},
-                clear=False,
-            ),
-            patch.object(
-                llm_tester,
-                "create_llm_response",
-                return_value=LLMResponse(
-                    provider="google",
-                    model="gemini-3.6-flash",
-                    output_text="Bonjour Google",
-                    raw_payload=raw,
-                ),
-            ) as create,
-        ):
-            response = self.client.post(
-                "/api/generate",
-                json={
-                    "provider": "google",
-                    "model": "models/gemini-3.6-flash",
-                    "message": "Bonjour",
-                    "max_output_tokens": 200,
-                },
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["text"], "Bonjour Google")
-        self.assertEqual(response.json()["response"], raw)
-        self.assertEqual(create.call_args.kwargs["provider"], "google")
-        self.assertEqual(
-            create.call_args.kwargs["model"],
-            "models/gemini-3.6-flash",
+    def test_other_providers_are_rejected(self) -> None:
+        response = self.client.post(
+            "/api/generate",
+            json={
+                "provider": "openai",
+                "model": "gpt-5.6-sol",
+                "message": "Bonjour",
+                "max_output_tokens": 200,
+            },
         )
+
+        self.assertEqual(response.status_code, 422)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # LLM Tester
 
-Application locale pour envoyer un message à OpenAI, Mistral ou Google, puis
+Application locale pour envoyer un message à Mistral, puis
 afficher côte à côte :
 
 - le texte de réponse extrait ;
@@ -12,28 +12,20 @@ Elles ne sont jamais envoyées au navigateur.
 ## Configuration
 
 ```dotenv
-OPENAI_API_KEY=
 MISTRAL_API_KEY=
-GOOGLE_API_KEY=
 ```
-
-`GEMINI_API_KEY` est aussi accepté comme alias de `GOOGLE_API_KEY`.
 
 Les modèles proposés par défaut peuvent être remplacés :
 
 ```dotenv
-OPENAI_LLM_TEST_MODEL=gpt-5.6-sol
 MISTRAL_LLM_TEST_MODEL=mistral-large-latest
-GOOGLE_LLM_TEST_MODEL=gemini-3.6-flash
 ```
 
 Le champ « Modèle » reste éditable, même si l’identifiant n’est pas dans les
 suggestions.
 
-L'application partage son adaptateur de payload avec
-`utils/run_phoenix_experiment.py` et le backend RAG. Un message commun est
-converti vers l'API Responses d'OpenAI, Chat Completions de Mistral ou
-`generateContent` de Google, puis normalisé en texte et JSON brut.
+L'application utilise le même adaptateur Mistral que le backend RAG. Les tests
+OpenAI et Google sont réservés à `utils/run_phoenix_experiment.py`.
 
 ## Lancement
 

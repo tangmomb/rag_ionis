@@ -6,8 +6,11 @@ boto3==1.42.95
 arize-phoenix-otel==0.16.1
 arize-phoenix-client==2.13.0
 openinference-instrumentation-openai==0.1.52
+openinference-instrumentation-mistralai==2.0.5
+opentelemetry-exporter-otlp==1.39.1
 cohere==5.20.0
 openai==2.44.0
+mistralai==2.9.0
 fastapi==0.118.0
 uvicorn[standard]==0.37.0
 openai-whisper==20250625

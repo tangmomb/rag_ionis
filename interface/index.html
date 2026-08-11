@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG YouTube IONIS-STM</title>
-    <link rel="stylesheet" href="styles.css?v=7" />
+    <link rel="stylesheet" href="styles.css?v=8" />
   </head>
   <body>
     <main class="app">
@@ -105,6 +105,16 @@
       </section>
     </main>
 
+    <script
+      src="https://cdn.jsdelivr.net/npm/markdown-it@15.0.0/dist/browser/markdown-it.umd.min.js"
+      integrity="sha384-RFgiWKVXntFwXKC7cM/vTNo+YCPWtoe5WjzaQWX8NMxIt3CnW1Sjhgt6YPVyrGT5"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/dompurify@3.4.13/dist/purify.min.js"
+      integrity="sha384-ZuC+DIACqSIZTsp+7YF57cR5Y+6qXa7YFbEKdA/EHA/R0T+41dtorqucYl71Zp+t"
+      crossorigin="anonymous"
+    ></script>
     <script>
       const messages = document.getElementById("messages");
       const composer = document.getElementById("composer");
@@ -170,267 +180,48 @@
           .replaceAll("'", "&#39;");
       }
 
-      function renderInlineMarkdown(value) {
-        let html = escapeHtml(value);
-        const protectedLinks = [];
+      const markdownRenderer =
+        typeof window.markdownit === "function"
+          ? window.markdownit({
+              html: false,
+              linkify: true,
+              breaks: false,
+            })
+          : null;
 
-        function externalLinkContent(url, fallbackLabel = "Lien") {
-          if (!/(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(url)) {
-            return `${fallbackLabel} ↗`;
+      if (markdownRenderer) {
+        markdownRenderer.renderer.rules.link_open = (
+          tokens,
+          index,
+          options,
+          environment,
+          renderer,
+        ) => {
+          const token = tokens[index];
+          token.attrSet("target", "_blank");
+          token.attrSet("rel", "noreferrer noopener");
+          token.attrJoin("class", "external-link-generic");
+          if (token.info === "auto" && tokens[index + 1]?.type === "text") {
+            tokens[index + 1].content = "Lien";
           }
-
-          return `
-            Voir sur
-            <svg class="youtube-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8Z" />
-              <path class="youtube-play" d="m10 8.6 5.2 3.4-5.2 3.4V8.6Z" />
-            </svg>
-          `
-            .replace(/\s+/g, " ")
-            .trim();
-        }
-
-        html = html.replace(
-          /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-          (match, label, url) => {
-            const token = `@@EXTERNAL_LINK_${protectedLinks.length}@@`;
-            const linkClass = /(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(
-              url,
-            )
-              ? ""
-              : ' class="external-link-generic"';
-            protectedLinks.push(
-              `<a${linkClass} href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, label)}</a>`,
-            );
-            return token;
-          },
-        );
-
-        html = html.replace(/https?:\/\/[^\s<]+/g, (rawUrl) => {
-          const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || "";
-          const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
-          const linkClass = /(youtube\.com|youtu\.be|i\.ytimg\.com)/i.test(url)
-            ? ""
-            : ' class="external-link-generic"';
-          return `<a${linkClass} href="${url}" target="_blank" rel="noreferrer noopener">${externalLinkContent(url, "Lien")}</a>${trailing}`;
-        });
-
-        html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-        html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-        html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-        protectedLinks.forEach((link, index) => {
-          html = html.replaceAll(`@@EXTERNAL_LINK_${index}@@`, link);
-        });
-        return html;
-      }
-
-      function splitMarkdownTableRow(value) {
-        let row = String(value || "").trim();
-        if (row.startsWith("|")) row = row.slice(1);
-        if (row.endsWith("|")) {
-          let precedingBackslashes = 0;
-          for (
-            let index = row.length - 2;
-            index >= 0 && row[index] === "\\";
-            index -= 1
-          ) {
-            precedingBackslashes += 1;
-          }
-          if (precedingBackslashes % 2 === 0) row = row.slice(0, -1);
-        }
-
-        const cells = [];
-        let cell = "";
-        let inCode = false;
-
-        for (let index = 0; index < row.length; index += 1) {
-          const character = row[index];
-          const nextCharacter = row[index + 1];
-          if (
-            character === "\\" &&
-            !inCode &&
-            (nextCharacter === "|" || nextCharacter === "\\")
-          ) {
-            cell += nextCharacter;
-            index += 1;
-            continue;
-          }
-          if (character === "`") {
-            inCode = !inCode;
-            cell += character;
-            continue;
-          }
-          if (character === "|" && !inCode) {
-            cells.push(cell.trim());
-            cell = "";
-            continue;
-          }
-          cell += character;
-        }
-        cells.push(cell.trim());
-        return cells;
-      }
-
-      function parseMarkdownTableSeparator(value) {
-        const cells = splitMarkdownTableRow(value);
-        if (!cells.length) return null;
-
-        const alignments = [];
-        for (const cell of cells) {
-          const separator = cell.replace(/\s+/g, "");
-          if (!/^:?-{3,}:?$/.test(separator)) return null;
-          alignments.push(
-            separator.startsWith(":") && separator.endsWith(":")
-              ? "center"
-              : separator.endsWith(":")
-                ? "right"
-                : "left",
-          );
-        }
-        return alignments;
-      }
-
-      function renderMarkdownTable(headers, rows, alignments) {
-        const renderCell = (tag, value, columnIndex) => {
-          const alignment = alignments[columnIndex] || "left";
-          const scope = tag === "th" ? ' scope="col"' : "";
-          return `<${tag}${scope} class="markdown-align-${alignment}">${renderInlineMarkdown(value)}</${tag}>`;
+          return renderer.renderToken(tokens, index, options, environment);
         };
-        const headerHtml = headers
-          .map((header, index) => renderCell("th", header, index))
-          .join("");
-        const bodyHtml = rows
-          .map((row) => {
-            const normalizedRow = headers.map((_, index) => row[index] || "");
-            return `<tr>${normalizedRow.map((cell, index) => renderCell("td", cell, index)).join("")}</tr>`;
-          })
-          .join("");
-
-        return `<div class="markdown-table-wrap"><table><thead><tr>${headerHtml}</tr></thead>${bodyHtml ? `<tbody>${bodyHtml}</tbody>` : ""}</table></div>`;
+        markdownRenderer.renderer.rules.link_close = () => " ↗</a>";
+        markdownRenderer.renderer.rules.table_open = () =>
+          '<div class="markdown-table-wrap"><table>\n';
+        markdownRenderer.renderer.rules.table_close = () =>
+          "</table></div>\n";
       }
 
       function renderMarkdown(value) {
-        const lines = String(value || "")
-          .replace(/\r\n/g, "\n")
-          .split("\n");
-        const parts = [];
-        let paragraph = [];
-        let listItems = [];
-        let codeLines = [];
-        let inCodeBlock = false;
-
-        function flushParagraph() {
-          if (!paragraph.length) return;
-          parts.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
-          paragraph = [];
+        const markdown = String(value || "");
+        if (!markdownRenderer || !window.DOMPurify) {
+          return `<p>${escapeHtml(markdown).replaceAll("\n", "<br>")}</p>`;
         }
-
-        function flushList() {
-          if (!listItems.length) return;
-          parts.push(
-            `<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`,
-          );
-          listItems = [];
-        }
-
-        function flushCodeBlock() {
-          if (!codeLines.length) return;
-          parts.push(
-            `<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
-          );
-          codeLines = [];
-        }
-
-        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-          const rawLine = lines[lineIndex];
-          const line = rawLine.trimEnd();
-
-          if (line.startsWith("```")) {
-            flushParagraph();
-            flushList();
-            if (inCodeBlock) {
-              flushCodeBlock();
-              inCodeBlock = false;
-            } else {
-              inCodeBlock = true;
-            }
-            continue;
-          }
-
-          if (inCodeBlock) {
-            codeLines.push(rawLine);
-            continue;
-          }
-
-          if (!line.trim()) {
-            flushParagraph();
-            flushList();
-            continue;
-          }
-
-          const nextLine = lines[lineIndex + 1];
-          const tableAlignments =
-            line.includes("|") && nextLine !== undefined
-              ? parseMarkdownTableSeparator(nextLine)
-              : null;
-          const tableHeaders = tableAlignments
-            ? splitMarkdownTableRow(line)
-            : null;
-          if (
-            tableHeaders &&
-            tableHeaders.length === tableAlignments.length
-          ) {
-            flushParagraph();
-            flushList();
-            const tableRows = [];
-            lineIndex += 2;
-            while (
-              lineIndex < lines.length &&
-              lines[lineIndex].trim() &&
-              lines[lineIndex].includes("|")
-            ) {
-              tableRows.push(splitMarkdownTableRow(lines[lineIndex]));
-              lineIndex += 1;
-            }
-            lineIndex -= 1;
-            parts.push(
-              renderMarkdownTable(
-                tableHeaders,
-                tableRows,
-                tableAlignments,
-              ),
-            );
-            continue;
-          }
-
-          const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
-          if (headingMatch) {
-            flushParagraph();
-            flushList();
-            const level = headingMatch[1].length;
-            parts.push(
-              `<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`,
-            );
-            continue;
-          }
-
-          const listMatch = line.match(/^[-*]\s+(.+)$/);
-          if (listMatch) {
-            flushParagraph();
-            listItems.push(listMatch[1]);
-            continue;
-          }
-
-          paragraph.push(line);
-        }
-
-        flushParagraph();
-        flushList();
-        if (inCodeBlock) {
-          flushCodeBlock();
-        }
-
-        return parts.join("");
+        return window.DOMPurify.sanitize(markdownRenderer.render(markdown), {
+          USE_PROFILES: { html: true },
+          ADD_ATTR: ["target"],
+        });
       }
 
       function renderVideoThumbnails(sources) {

@@ -7,6 +7,7 @@ from typing import Any, Literal, Protocol, Sequence
 from urllib.parse import quote
 
 import requests
+from mistralai.client import Mistral
 from openai import OpenAI
 
 from interface.backend.telemetry import TraceOperation, trace_operation
@@ -355,53 +356,30 @@ def call_mistral(
                 "strict": True,
             },
         }
-    with trace_operation(
-        "MistralChatCompletion",
-        kind="LLM",
-        input_value=messages,
-        attributes={
-            "llm.model_name": model,
-            "llm.provider": "mistral",
-            "llm.system": "mistral",
-            "llm.invocation_parameters": {
-                key: value
-                for key, value in request.items()
-                if key != "messages"
-            },
-        },
-    ) as operation:
-        add_llm_message_attributes(operation, "llm.input_messages", messages)
-        response = requests.post(
-            "https://api.mistral.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=request,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        payload = json_response(response, "mistral")
-        output_text = extract_mistral_text(payload)
-        operation.set_output(payload)
-        add_llm_message_attributes(
-            operation,
-            "llm.output_messages",
-            [{"role": "assistant", "content": output_text}],
-        )
-        usage = payload.get("usage", {})
-        if isinstance(usage, dict):
-            add_llm_usage_attributes(
-                operation,
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
-            )
-        return LLMResponse(
-            provider="mistral",
-            model=model,
-            output_text=output_text,
-            raw_payload=payload,
-        )
+    try:
+        response = Mistral(
+            api_key=api_key,
+            timeout_ms=REQUEST_TIMEOUT_SECONDS * 1_000,
+        ).chat.complete(**request)
+    except Exception as exc:
+        raw_response = getattr(exc, "raw_response", None)
+        status_code = getattr(raw_response, "status_code", None)
+        payload = getattr(exc, "body", None)
+        raise LLMProviderError(
+            "mistral",
+            str(exc),
+            status_code=status_code,
+            payload=payload,
+        ) from exc
+
+    payload = response.model_dump(mode="json")
+    output_text = extract_mistral_text(payload)
+    return LLMResponse(
+        provider="mistral",
+        model=model,
+        output_text=output_text,
+        raw_payload=payload,
+    )
 
 
 def call_google(

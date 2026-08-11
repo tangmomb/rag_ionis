@@ -128,21 +128,18 @@ class LlmProviderTests(unittest.TestCase):
                 "total_tokens": 13,
             },
         }
-        trace = MagicMock()
-        trace_context = MagicMock()
-        trace_context.__enter__.return_value = trace
+        sdk_response = SimpleNamespace(
+            model_dump=lambda mode: raw,
+        )
+        client = Mock()
+        client.chat.complete.return_value = sdk_response
         with (
             patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
             patch.object(
-                llm_providers.requests,
-                "post",
-                return_value=self.http_response(raw),
-            ) as post,
-            patch.object(
                 llm_providers,
-                "trace_operation",
-                return_value=trace_context,
-            ) as trace_operation,
+                "Mistral",
+                return_value=client,
+            ) as mistral,
         ):
             response = llm_providers.create_llm_response(
                 model="mistral-medium-latest",
@@ -160,11 +157,11 @@ class LlmProviderTests(unittest.TestCase):
             )
 
         self.assertEqual(response.output_text, "Mistral")
-        self.assertEqual(
-            post.call_args.args[0],
-            "https://api.mistral.ai/v1/chat/completions",
+        mistral.assert_called_once_with(
+            api_key="secret",
+            timeout_ms=llm_providers.REQUEST_TIMEOUT_SECONDS * 1_000,
         )
-        request = post.call_args.kwargs["json"]
+        request = client.chat.complete.call_args.kwargs
         self.assertEqual(request["model"], "mistral-medium-latest")
         self.assertEqual(request["max_tokens"], 300)
         self.assertEqual(request["messages"][0]["role"], "system")
@@ -184,23 +181,7 @@ class LlmProviderTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(
-            trace_operation.call_args.args[0],
-            "MistralChatCompletion",
-        )
-        self.assertEqual(trace_operation.call_args.kwargs["kind"], "LLM")
-        self.assertEqual(
-            trace_operation.call_args.kwargs["attributes"]["llm.provider"],
-            "mistral",
-        )
-        trace.set_output.assert_called_once_with(raw)
-        trace.set_attribute.assert_has_calls(
-            [
-                call("llm.token_count.prompt", 10),
-                call("llm.token_count.completion", 3),
-                call("llm.token_count.total", 13),
-            ]
-        )
+        self.assertEqual(response.raw_payload, raw)
 
     def test_google_separates_system_instruction_from_contents(self) -> None:
         raw = {

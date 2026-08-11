@@ -1,12 +1,10 @@
 const providerColors = {
-  openai: "#10a37f",
   mistral: "#f97316",
-  google: "#4285f4",
 };
 
 const state = {
   providers: [],
-  selectedProvider: "openai",
+  selectedProvider: "mistral",
   loading: false,
 };
 

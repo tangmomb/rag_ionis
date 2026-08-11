@@ -62,7 +62,10 @@ def version() -> dict[str, Any]:
 
 @app.get("/")
 def read_index() -> FileResponse:
-    return FileResponse(INTERFACE_DIR / "index.html")
+    return FileResponse(
+        INTERFACE_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/styles.css")

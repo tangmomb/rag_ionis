@@ -16,7 +16,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from interface.backend.api import rag
+from interface.backend.api import run_rag as rag
 from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_FINAL_K,

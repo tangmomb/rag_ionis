@@ -30,7 +30,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class GenerateRequest(BaseModel):
-    provider: Literal["openai", "mistral", "google"]
+    provider: Literal["mistral"]
     model: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=200_000)
     max_output_tokens: int = Field(default=2048, ge=1, le=32_768)
@@ -44,7 +44,7 @@ class GenerateRequest(BaseModel):
         return cleaned
 
 
-PROVIDERS = LLM_MODEL_CATALOG
+PROVIDERS = {"mistral": LLM_MODEL_CATALOG["mistral"]}
 
 
 def provider_config(provider: str) -> dict[str, Any]:

@@ -395,13 +395,15 @@ button {
 }
 
 .message-content {
-  white-space: pre-wrap;
+  white-space: normal;
   line-height: 1.65;
   font-size: 15px;
 }
 
 .message-content p,
 .message-content ul,
+.message-content ol,
+.message-content blockquote,
 .message-content pre,
 .message-content .markdown-table-wrap,
 .message-content h1,
@@ -412,6 +414,8 @@ button {
 
 .message-content p:last-child,
 .message-content ul:last-child,
+.message-content ol:last-child,
+.message-content blockquote:last-child,
 .message-content pre:last-child,
 .message-content .markdown-table-wrap:last-child,
 .message-content h1:last-child,
@@ -420,12 +424,24 @@ button {
   margin-bottom: 0;
 }
 
-.message-content ul {
+.message-content ul,
+.message-content ol {
   padding-left: 20px;
 }
 
 .message-content li + li {
   margin-top: 4px;
+}
+
+.message-content li > ul,
+.message-content li > ol {
+  margin: 4px 0 0;
+}
+
+.message-content blockquote {
+  padding-left: 14px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted-strong);
 }
 
 .message-content h1,
@@ -540,18 +556,6 @@ button {
 
 .message-content a.external-link-generic:hover {
   color: #80c2ff;
-}
-
-.youtube-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  color: #ff0a0a;
-  fill: currentColor;
-}
-
-.youtube-icon .youtube-play {
-  fill: #ffffff;
 }
 
 .video-carousel {

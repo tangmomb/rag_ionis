@@ -19,7 +19,11 @@ from interface.backend.generation import (
     select_answer_sources,
 )
 from interface.backend.orchestration import orchestrate_request
-from interface.backend.llm_providers import LLM_MODEL_CATALOG
+from interface.backend.llm_providers import (
+    LLM_MODEL_CATALOG,
+    LLMProviderError,
+    provider_for_model,
+)
 from interface.backend.schemas import ChunkSource, RagRequest, RagResponse
 from interface.backend.telemetry import current_trace_id, telemetry_status, trace_operation
 from interface.backend.utilities import get_llm_client
@@ -30,6 +34,8 @@ router = APIRouter()
 
 @router.get("/llm-models")
 def llm_models() -> dict[str, Any]:
+    provider = "mistral"
+    provider_config = LLM_MODEL_CATALOG[provider]
     models = [
         {
             "provider": provider,
@@ -37,7 +43,6 @@ def llm_models() -> dict[str, Any]:
             "label": model_label,
             "id": model_id,
         }
-        for provider, provider_config in LLM_MODEL_CATALOG.items()
         for model_label, model_id in provider_config["models"]
     ]
     return {
@@ -165,8 +170,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
     )
 
 
-@router.post("/rag", response_model=RagResponse)
-def rag(payload: RagRequest) -> RagResponse:
+def run_rag(payload: RagRequest) -> RagResponse:
     with trace_operation(
         "rag.request",
         kind="CHAIN",
@@ -188,3 +192,31 @@ def rag(payload: RagRequest) -> RagResponse:
         request_span.set_attribute("rag.source_count", len(response.sources))
         request_span.set_output(response.model_dump())
         return response
+
+
+def ensure_interface_uses_mistral(payload: RagRequest) -> None:
+    for field_name in (
+        "reformulationModel",
+        "plannerModel",
+        "answerModel",
+    ):
+        model = getattr(payload, field_name)
+        try:
+            provider = provider_for_model(model)
+        except LLMProviderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if provider != "mistral":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "L'interface RAG utilise uniquement Mistral. "
+                    "Les autres fournisseurs sont reserves a "
+                    "utils/run_phoenix_experiment.py."
+                ),
+            )
+
+
+@router.post("/rag", response_model=RagResponse)
+def rag(payload: RagRequest) -> RagResponse:
+    ensure_interface_uses_mistral(payload)
+    return run_rag(payload)

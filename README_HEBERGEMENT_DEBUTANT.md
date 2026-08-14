@@ -93,14 +93,8 @@ tous les autres mots de passe du projet.
 Git conserve l'historique du code. GitHub héberge une copie du dépôt, que le VPS
 peut télécharger.
 
-La version déployée utilise la branche :
-
-```text
-codex/deployment-scaleway
-```
-
-Malgré son ancien nom `scaleway`, cette configuration fonctionne sur le VPS
-Infomaniak : elle dépend de Docker et d'Ubuntu, pas de Scaleway.
+La version déployée utilise une branche Git dédiée au déploiement sur le VPS
+Infomaniak. La configuration repose sur Docker et Ubuntu.
 
 Le dépôt a été rendu public pour simplifier le clonage. Cela ne doit jamais
 rendre publics les secrets décrits plus bas.

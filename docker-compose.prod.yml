@@ -1,0 +1,103 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      ANALYTICS_DATABASE_PASSWORD: ${ANALYTICS_DATABASE_PASSWORD:?ANALYTICS_DATABASE_PASSWORD is required}
+      TZ: Europe/Paris
+    command: ["postgres", "-c", "timezone=Europe/Paris"]
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ANALYTICS_DATABASE_URL: postgresql://rag_ionis_analytics:${ANALYTICS_DATABASE_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ANALYTICS_MAX_TOTAL_COST: ${ANALYTICS_MAX_TOTAL_COST:-100000}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:?MISTRAL_API_KEY is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      COHERE_API_KEY: ${COHERE_API_KEY:?COHERE_API_KEY is required}
+      OPENAI_SERVICE_TIER: ${OPENAI_SERVICE_TIER:-auto}
+      PUBLIC_ORIGINS: https://${APP_DOMAIN}
+      PHOENIX_ENABLED: ${PHOENIX_ENABLED:-false}
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-rag-ionis}
+    expose:
+      - "8006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8006/health', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+      start_period: 20s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
+      APP_BASIC_AUTH_USER: ${APP_BASIC_AUTH_USER:?APP_BASIC_AUTH_USER is required}
+      APP_BASIC_AUTH_HASH: ${APP_BASIC_AUTH_HASH:?APP_BASIC_AUTH_HASH is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  phoenix:
+    image: arizephoenix/phoenix:17.28.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    ports:
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:4317:4317"
+    volumes:
+      - phoenix_data:/mnt/data
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  phoenix_data:
+  caddy_data:
+  caddy_config:

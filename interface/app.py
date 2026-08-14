@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -22,13 +23,19 @@ from interface.backend.telemetry import (
 _STARTED_AT: datetime | None = None
 
 app = FastAPI(title="RAG IONIS API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+public_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("PUBLIC_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if public_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=public_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 app.include_router(router, prefix="/api")
 
 

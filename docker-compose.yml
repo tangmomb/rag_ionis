@@ -7,6 +7,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-rag_ionis}
       POSTGRES_USER: ${POSTGRES_USER:-rag_ionis}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_ionis_dev_password}
+      ANALYTICS_DATABASE_PASSWORD: ${ANALYTICS_DATABASE_PASSWORD:-rag_ionis_analytics_dev_password}
       TZ: Europe/Paris
     command: ["postgres", "-c", "timezone=Europe/Paris"]
     ports:

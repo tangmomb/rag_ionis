@@ -4,10 +4,10 @@ Pipeline local de préparation de vidéos et interface RAG.
 
 ## Déploiement
 
-Le développement Windows reste piloté par `start_app.bat`. Une configuration
-Docker séparée permet de déployer l'interface RAG sur un VPS Scaleway tout en
-conservant Amazon S3 pour les artefacts. Voir
-[`DEPLOYMENT_SCALEWAY.md`](DEPLOYMENT_SCALEWAY.md).
+Le développement Windows reste piloté par `start_app.bat`. En production,
+l'interface RAG est déployée avec Docker sur un VPS Infomaniak, tandis qu'Amazon
+S3 conserve les artefacts. Voir
+[`README_HEBERGEMENT_DEBUTANT.md`](README_HEBERGEMENT_DEBUTANT.md).
 
 ## Principe
 

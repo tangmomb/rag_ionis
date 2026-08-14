@@ -1151,8 +1151,8 @@ Démarrer l'API et l'interface :
 - Phoenix : `http://127.0.0.1:6006/`
 
 Le backend combine recherche SQL, BM25, recherche vectorielle pgvector, fusion RRF
-et reranking. Les traces OpenTelemetry sont envoyées à Phoenix lorsque
-`PHOENIX_ENABLED=true`.
+et reranking. En production, toutes les requêtes RAG sont envoyées à Phoenix sous
+forme de traces OpenTelemetry.
 
 L'interface utilisateur ne propose pas de sélecteur de LLM : la reformulation,
 le planner et la génération finale utilisent tous `mistral-medium-latest`.

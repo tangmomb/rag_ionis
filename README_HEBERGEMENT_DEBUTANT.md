@@ -107,7 +107,7 @@ Docker lance chaque partie de l'application dans un conteneur isolé. Le fichier
 - `postgres` : PostgreSQL avec l'extension pgvector ;
 - `api` : FastAPI et l'interface ;
 - `caddy` : serveur web public et HTTPS ;
-- `phoenix` : observabilité facultative, désactivée par défaut.
+- `phoenix` : enregistre les conversations et les traces du RAG.
 
 Docker Compose démarre et relie ces services avec une seule commande.
 
@@ -138,6 +138,16 @@ nécessaires dans le conteneur de l'API actuelle.
 Le traitement vidéo ou les calculs lourds peuvent continuer sur la machine GPU
 locale. Le VPS n'a donc pas besoin de GPU pour servir l'interface et effectuer
 les recherches déjà préparées.
+
+### Phoenix
+
+Phoenix démarre automatiquement avec les autres services. Chaque requête faite
+à l'interface RAG y enregistre la question, la réponse et les principales étapes
+internes, regroupées par conversation. Ces traces sont conservées dans le volume
+Docker `phoenix_data`, même lorsque le conteneur est recréé.
+
+Le port `6006` reste privé : l'interface Phoenix n'est pas exposée directement à
+Internet. Elle se consulte depuis le PC avec le tunnel SSH expliqué plus bas.
 
 ## 3. Les différents secrets — à ne pas confondre
 
@@ -192,13 +202,13 @@ cd ~/rag_ionis
 docker compose --env-file .env.production -f docker-compose.prod.yml ps
 ```
 
-`postgres` et `api` doivent normalement être indiqués comme `healthy`, et
-`caddy` comme démarré.
+`postgres`, `phoenix` et `api` doivent normalement être indiqués comme `healthy`,
+et `caddy` comme démarré.
 
 ### Voir les journaux
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=100 api caddy postgres
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=100 api caddy postgres phoenix
 ```
 
 Pour suivre les nouveaux messages en direct :
@@ -208,6 +218,18 @@ docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api
 ```
 
 Quitter le suivi avec `Ctrl+C`. Cela n'arrête pas les services.
+
+### Consulter les conversations dans Phoenix
+
+Depuis le PC, ouvrir un tunnel SSH et laisser ce terminal ouvert :
+
+```powershell
+ssh -i C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519 -N -L 6006:127.0.0.1:6006 ubuntu@179.237.98.117
+```
+
+Ouvrir ensuite <http://127.0.0.1:6006> dans le navigateur. Les requêtes de
+l'interface apparaissent dans le projet `rag-ionis` et sont regroupées par
+conversation.
 
 ### Redémarrer les services
 

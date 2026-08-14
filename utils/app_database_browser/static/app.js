@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { tables: [], selected: null, offset: 0, total: 0, limit: 50, query: "", timer: null };
+const state = { tables: [], selected: null, offset: 0, total: 0, limit: 50, query: "", sortBy: null, sortOrder: "asc", timer: null };
 
 async function getJson(url) {
   const response = await fetch(url);
@@ -42,7 +42,7 @@ function renderTables() {
 }
 
 async function selectTable(schema, name) {
-  state.selected = { schema, name }; state.offset = 0; state.query = ""; $("#search").value = ""; $("#title").textContent = name; $("#empty").classList.add("hidden"); $("#content").classList.remove("hidden"); renderTables(); await loadRows();
+  state.selected = { schema, name }; state.offset = 0; state.query = ""; state.sortBy = null; state.sortOrder = "asc"; $("#search").value = ""; $("#title").textContent = name; $("#empty").classList.add("hidden"); $("#content").classList.remove("hidden"); renderTables(); await loadRows();
 }
 
 async function clearSelectedTable() {
@@ -68,14 +68,31 @@ async function clearSelectedTable() {
 async function loadRows() {
   if (!state.selected) return; $("#loading").classList.remove("hidden"); $("#noRows").classList.add("hidden");
   const params = new URLSearchParams({ limit: state.limit, offset: state.offset, q: state.query });
+  if (state.sortBy) { params.set("sort_by", state.sortBy); params.set("sort_order", state.sortOrder); }
   try { const data = await getJson(`/api/tables/${encodeURIComponent(state.selected.schema)}/${encodeURIComponent(state.selected.name)}?${params}`); state.total = Number(data.total); renderData(data); }
   catch (error) { $("#tbody").innerHTML = `<tr><td class="error" colspan="99">${escapeHtml(error.message)}</td></tr>`; }
   finally { $("#loading").classList.add("hidden"); }
 }
 
 function renderData(data) {
-  $("#thead").innerHTML = `<tr>${data.columns.map((column) => `<th title="${escapeHtml(column.type)}">${escapeHtml(column.name)}</th>`).join("")}</tr>`;
+  state.sortBy = data.sort_by;
+  state.sortOrder = data.sort_order;
+  $("#thead").innerHTML = `<tr>${data.columns.map((column) => {
+    const active = column.name === state.sortBy;
+    const ariaSort = active ? (state.sortOrder === "asc" ? "ascending" : "descending") : "none";
+    const indicator = active ? (state.sortOrder === "asc" ? "▲" : "▼") : "↕";
+    const nextOrder = active && state.sortOrder === "asc" ? "desc" : "asc";
+    const label = `Trier ${column.name} par ordre ${nextOrder === "asc" ? "croissant" : "décroissant"}`;
+    return `<th aria-sort="${ariaSort}" title="${escapeHtml(column.type)}"><button class="sort-button ${active ? "active" : ""}" type="button" data-column="${escapeHtml(column.name)}" aria-label="${escapeHtml(label)}"><span>${escapeHtml(column.name)}</span><span class="sort-indicator" aria-hidden="true">${indicator}</span></button></th>`;
+  }).join("")}</tr>`;
   $("#tbody").innerHTML = data.rows.map((row, rowIndex) => `<tr>${data.columns.map((column, columnIndex) => `<td data-row="${rowIndex}" data-column="${columnIndex}">${formatValue(row[column.name])}</td>`).join("")}</tr>`).join("");
+  document.querySelectorAll("#thead .sort-button").forEach((button) => button.addEventListener("click", () => {
+    const column = button.dataset.column;
+    state.sortOrder = state.sortBy === column && state.sortOrder === "asc" ? "desc" : "asc";
+    state.sortBy = column;
+    state.offset = 0;
+    loadRows();
+  }));
   document.querySelectorAll("#tbody td").forEach((cell) => cell.addEventListener("click", () => {
     const row = data.rows[Number(cell.dataset.row)];
     const column = data.columns[Number(cell.dataset.column)];

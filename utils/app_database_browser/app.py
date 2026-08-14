@@ -4,7 +4,7 @@ import os
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import psycopg
 from dotenv import load_dotenv
@@ -605,6 +605,8 @@ def table_data(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     q: str = Query(default="", max_length=200),
+    sort_by: str | None = Query(default=None, max_length=200),
+    sort_order: Literal["asc", "desc"] = Query(default="asc"),
 ) -> dict[str, Any]:
     if not allowed_table(schema, table):
         raise HTTPException(status_code=404, detail="Table introuvable")
@@ -662,11 +664,42 @@ def table_data(
             (schema, table),
         )
         primary_key = cur.fetchone()
-        order_column = primary_key["column_name"] if primary_key else names[0]
+        primary_key_name = (
+            primary_key["column_name"] if primary_key else names[0]
+        )
+        if sort_by is not None and sort_by not in names:
+            raise HTTPException(
+                status_code=400,
+                detail="Colonne de tri introuvable",
+            )
+        order_column = sort_by or primary_key_name
+        order_direction = (
+            sql.SQL("DESC") if sort_order == "desc" else sql.SQL("ASC")
+        )
+        order_column_type = next(
+            column["type"]
+            for column in columns
+            if column["name"] == order_column
+        ).lower()
+        order_value = sql.Identifier(order_column)
+        if order_column_type in {"json", "xml", "user-defined"}:
+            order_value = sql.SQL("CAST({} AS text)").format(order_value)
+        order_expressions = [
+            sql.SQL("{} {} NULLS LAST").format(
+                order_value,
+                order_direction,
+            )
+        ]
+        if order_column != primary_key_name:
+            order_expressions.append(
+                sql.SQL("{} ASC").format(sql.Identifier(primary_key_name))
+            )
 
         cur.execute(
             sql.SQL("SELECT * FROM {}{} ORDER BY {} LIMIT %s OFFSET %s").format(
-                quote_table(schema, table), where, sql.Identifier(order_column)
+                quote_table(schema, table),
+                where,
+                sql.SQL(", ").join(order_expressions),
             ),
             [*params, limit, offset],
         )
@@ -680,7 +713,9 @@ def table_data(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "primary_key": order_column,
+        "primary_key": primary_key_name,
+        "sort_by": order_column,
+        "sort_order": sort_order,
         "searchable": bool(text_columns),
     }
 

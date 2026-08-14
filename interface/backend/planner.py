@@ -12,7 +12,7 @@ from interface.backend.config import (
     DEFAULT_PLANNER_MODEL,
     DEFAULT_REFORMULATION_MODEL,
 )
-from interface.backend.database import connect_database, fetch_conversation_memory
+from interface.backend.database import connect_database, fetch_conversation_history
 from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_text, safe_json_loads, serialize_openai_response
@@ -89,9 +89,9 @@ REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
 # remonter des noms qui ne partagent qu'une syllabe courte.
 PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
 COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.90
-REFORMULATION_MEMORY_EXCHANGES = 3
-REFORMULATION_MEMORY_MAX_MESSAGES = REFORMULATION_MEMORY_EXCHANGES * 2
-REFORMULATION_MEMORY_MAX_CHARS_PER_MESSAGE = 1_600
+REFORMULATION_HISTORY_EXCHANGES = 3
+REFORMULATION_HISTORY_MAX_MESSAGES = REFORMULATION_HISTORY_EXCHANGES * 2
+REFORMULATION_HISTORY_MAX_CHARS_PER_MESSAGE = 1_600
 
 
 def find_persons_in_enriched_transcripts(
@@ -190,81 +190,6 @@ def build_social_answer(question: str) -> str:
     return "Bonjour. Je peux t'aider à trouver une vidéo, un transcript, un résumé ou répondre à une question à partir de la base."
 
 
-def _normalize_legacy_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
-    route = str(payload.get("route") or "").strip()
-    sql_sub_intent = str(payload.get("sql_sub_intent") or "").strip() or None
-
-    if "sql_main_source" not in payload and "use_sql" in payload:
-        payload["sql_main_source"] = bool(payload.get("use_sql"))
-    payload.pop("use_sql", None)
-
-    legacy_intent_map = {
-        "video_lookup": "specific_persons",
-        "lookup": "specific_persons",
-        "video_transcript": "transcript_verbatim",
-        "video_description": "description",
-        "video_stats": "analytics",
-        "stats": "analytics",
-    }
-    sql_intents = {
-        "specific_persons",
-        "analytics",
-        "description",
-        "transcript_verbatim",
-        "transcript_qa",
-    }
-    legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
-
-    if route in legacy_intent_map or route in sql_intents:
-        payload["route"] = "rag"
-        payload["sql_sub_intent"] = legacy_intent_map.get(route, route)
-        payload["sql_main_source"] = True
-        payload["use_rag"] = True
-        payload["use_memory"] = False
-        return payload
-
-    if sql_sub_intent in legacy_intent_map:
-        payload["sql_sub_intent"] = legacy_intent_map[sql_sub_intent]
-        sql_sub_intent = payload["sql_sub_intent"]
-
-    if route in legacy_routes:
-        payload["route"] = legacy_routes[route]
-        route = payload["route"]
-
-    if route == "sql":
-        payload["route"] = "rag"
-        payload["sql_main_source"] = True
-        payload["use_rag"] = True
-        payload["use_memory"] = False
-        route = "rag"
-
-    if route != "multi_source" and not payload.get("sql_main_source"):
-        payload["sql_sub_intent"] = None
-    elif sql_sub_intent not in sql_intents:
-        payload["sql_sub_intent"] = "specific_persons"
-
-    if route == "memory":
-        payload["use_memory"] = True
-        payload["use_rag"] = False
-        payload["sql_main_source"] = False
-    elif route == "rag":
-        payload["use_memory"] = False
-        payload["use_rag"] = True
-        payload["sql_main_source"] = bool(payload.get("sql_main_source"))
-    elif route == "direct":
-        payload["use_memory"] = False
-        payload["use_rag"] = False
-        payload["sql_main_source"] = False
-
-    if route not in {"direct", "rag", "memory", "multi_source"}:
-        payload["route"] = "rag"
-        payload["use_memory"] = False
-        payload["use_rag"] = True
-        payload["sql_main_source"] = False
-        return payload
-    return payload
-
-
 def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalise uniquement les choix sémantiques; les sources sont dérivées ensuite."""
     normalized = dict(payload)
@@ -302,16 +227,16 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
         route = legacy_routes.get(route, route)
         sql_sub_intent = legacy_intent_map.get(sql_sub_intent, sql_sub_intent)
 
-    if route not in {"direct", "rag", "memory", "multi_source"}:
+    if route not in {"direct", "rag", "multi_source"}:
         route = "rag"
-    if route in {"direct", "memory"}:
+    if route == "direct":
         sql_sub_intent = None
     elif sql_sub_intent not in sql_intents:
         sql_sub_intent = None
 
     normalized["route"] = route
     normalized["sql_sub_intent"] = sql_sub_intent
-    for derived_key in ("use_sql", "use_memory", "use_rag", "sql_main_source"):
+    for derived_key in ("use_sql", "use_rag", "sql_main_source"):
         normalized.pop(derived_key, None)
     return normalized
 
@@ -328,20 +253,12 @@ def derive_plan_sources(planner_plan: PlannerPlan) -> None:
 
     if planner_plan.route == "direct":
         planner_plan.sql_sub_intent = None
-        planner_plan.use_memory = False
-        planner_plan.use_rag = False
-        planner_plan.sql_main_source = False
-    elif planner_plan.route == "memory":
-        planner_plan.sql_sub_intent = None
-        planner_plan.use_memory = True
         planner_plan.use_rag = False
         planner_plan.sql_main_source = False
     elif planner_plan.route == "multi_source":
-        planner_plan.use_memory = True
         planner_plan.use_rag = not has_sql_intent
         planner_plan.sql_main_source = has_sql_intent
     else:
-        planner_plan.use_memory = False
         planner_plan.use_rag = True
         planner_plan.sql_main_source = has_sql_intent
 
@@ -427,7 +344,6 @@ def build_execution_plan(
         companies=planner_plan.companies,
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
-        use_memory=planner_plan.use_memory,
         use_rag=planner_plan.use_rag,
         sql_main_source=sql_main_source,
         top_k=None if sql_main_source else DEFAULT_BM25_LIMIT,
@@ -516,11 +432,6 @@ def apply_deterministic_sql_policy(
 ) -> str | None:
     """Empêche le planner de basculer arbitrairement la source SQL principale."""
     policy_correction: str | None = None
-    if planner_plan.route == "memory":
-        planner_plan.sql_sub_intent = None
-        derive_plan_sources(planner_plan)
-        return None
-
     if planner_plan.route == "direct":
         if planner_plan.persons or planner_plan.companies:
             planner_plan.route = "rag"
@@ -938,9 +849,9 @@ def sanitize_video_title_hint(question: str, title_hint: str | None) -> str | No
     return title_hint.strip() or None
 
 
-def is_memory_video_comparison(question: str) -> bool:
+def is_prior_video_comparison(question: str) -> bool:
     normalized = normalize_text(question)
-    has_memory_reference = bool(
+    has_history_reference = bool(
         re.search(r"\b(?:les?|des?|leurs?)\s+(?:\d+|deux|trois)\b", normalized)
         or re.search(r"\b(?:ces|celles|ceux|laquelle|lequel|parmi|entre)\b", normalized)
     )
@@ -948,49 +859,49 @@ def is_memory_video_comparison(question: str) -> bool:
         re.search(r"\b(?:plus|moins|meilleur|meilleure|compare|comparatif|laquelle|lequel)\b", normalized)
         or re.search(r"\b(?:vues?|likes?|commentaires?|statistiques?|stats?)\b", normalized)
     )
-    return has_memory_reference and has_comparison
+    return has_history_reference and has_comparison
 
 
-def select_reformulation_memory(
+def select_reformulation_history(
     question: str,
-    memory_items: list[dict[str, str]],
+    history_items: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     """Priorise les échanges utiles aux comparaisons elliptiques."""
-    if not is_memory_video_comparison(question):
-        return memory_items
+    if not is_prior_video_comparison(question):
+        return history_items
 
     user_indexes = [
         index
-        for index, item in enumerate(memory_items)
+        for index, item in enumerate(history_items)
         if item.get("role") == "user"
     ]
     if not user_indexes:
-        return memory_items
+        return history_items
 
     latest_user_index = user_indexes[-1]
-    latest_user = normalize_text(memory_items[latest_user_index].get("text", ""))
+    latest_user = normalize_text(history_items[latest_user_index].get("text", ""))
     latest_exchange_has_comparison_pair = bool(
         re.search(r"\bentre\b.+\bet\b", latest_user)
         or re.search(r"\bcompare\b.+\b(?:a|avec|et)\b", latest_user)
         or re.search(r"\bpoints? communs?\b.+\b(?:avec|entre|et)\b", latest_user)
     )
     if latest_exchange_has_comparison_pair:
-        return memory_items[latest_user_index:]
+        return history_items[latest_user_index:]
 
     # Une comparaison comme « compare leurs deux vidéos » peut dépendre des deux
     # derniers échanges, chacun ayant introduit une personne différente.
     if len(user_indexes) >= 2:
-        return memory_items[user_indexes[-2]:]
-    return memory_items[latest_user_index:]
+        return history_items[user_indexes[-2]:]
+    return history_items[latest_user_index:]
 
 
 def build_question_reformulation_prompt(
     question: str,
-    memory_items: list[dict[str, str]],
+    history_items: list[dict[str, str]],
     system_prompt_override: str | None = None,
 ) -> tuple[str, str]:
     history = "\n\n".join(
-        f"{item['role']}: {item['text']}" for item in memory_items
+        f"{item['role']}: {item['text']}" for item in history_items
     )
     default_system_prompt = """Tu reformules le dernier message utilisateur sans y répondre.
 Indique dans follow_up s'il a besoin de l'historique. Le message peut n'avoir aucun rapport avec l'historique précédent si l'utilisateur veut changer de sujet.
@@ -1027,18 +938,18 @@ reformulated_question doit être du texte normal, sans Markdown."""
     return system_prompt, user_prompt
 
 
-def compact_reformulation_memory(
-    memory_items: list[dict[str, str]],
+def compact_reformulation_history(
+    history_items: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     """Conserve un contexte récent et borné pour éviter les anciens référents parasites."""
     compacted: list[dict[str, str]] = []
-    for item in memory_items[-REFORMULATION_MEMORY_MAX_MESSAGES:]:
+    for item in history_items[-REFORMULATION_HISTORY_MAX_MESSAGES:]:
         text = str(item.get("text") or "").strip()
         if not text:
             continue
-        if len(text) > REFORMULATION_MEMORY_MAX_CHARS_PER_MESSAGE:
+        if len(text) > REFORMULATION_HISTORY_MAX_CHARS_PER_MESSAGE:
             tail_length = 400
-            head_length = REFORMULATION_MEMORY_MAX_CHARS_PER_MESSAGE - tail_length
+            head_length = REFORMULATION_HISTORY_MAX_CHARS_PER_MESSAGE - tail_length
             text = f"{text[:head_length].rstrip()}\n[…]\n{text[-tail_length:].lstrip()}"
         compacted.append(
             {
@@ -1051,7 +962,7 @@ def compact_reformulation_memory(
 
 def repair_video_clarification_follow_up(
     question: str,
-    memory_items: list[dict[str, str]],
+    history_items: list[dict[str, str]],
 ) -> str | None:
     """Preserve l'intention initiale quand l'utilisateur identifie une vidéo demandée."""
     normalized_question = normalize_text(question).strip()
@@ -1059,14 +970,14 @@ def repair_video_clarification_follow_up(
         return None
 
     last_assistant = next(
-        (item["text"] for item in reversed(memory_items) if item.get("role") == "assistant"),
+        (item["text"] for item in reversed(history_items) if item.get("role") == "assistant"),
         "",
     )
     if "de quelle video" not in normalize_text(last_assistant):
         return None
 
     previous_user = next(
-        (item["text"] for item in reversed(memory_items) if item.get("role") == "user"),
+        (item["text"] for item in reversed(history_items) if item.get("role") == "user"),
         "",
     ).strip()
     if not previous_user:
@@ -1080,10 +991,10 @@ def repair_video_clarification_follow_up(
 
 def is_obvious_follow_up(
     question: str,
-    memory_items: list[dict[str, str]],
+    history_items: list[dict[str, str]],
 ) -> bool:
     """Repère les relances elliptiques que le modèle ne doit pas déclarer autonomes."""
-    if not memory_items:
+    if not history_items:
         return False
     normalized = normalize_text(question).strip()
     return bool(
@@ -1107,24 +1018,24 @@ def reformulate_question(
     system_prompt_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Rend une relance autonome avant le planner, sans modifier le message stocké."""
-    source_memory_items, memory_trace = fetch_conversation_memory(
+    source_history_items, history_trace = fetch_conversation_history(
         conversation_id,
-        limit=REFORMULATION_MEMORY_EXCHANGES,
+        limit=REFORMULATION_HISTORY_EXCHANGES,
     )
-    memory_items = compact_reformulation_memory(source_memory_items)
-    prompt_memory_items = select_reformulation_memory(question, memory_items)
-    memory_trace = {
-        **memory_trace,
-        "source_message_count": len(source_memory_items),
-        "message_count": len(memory_items),
-        "prompt_message_count": len(prompt_memory_items),
+    history_items = compact_reformulation_history(source_history_items)
+    prompt_history_items = select_reformulation_history(question, history_items)
+    history_trace = {
+        **history_trace,
+        "source_message_count": len(source_history_items),
+        "message_count": len(history_items),
+        "prompt_message_count": len(prompt_history_items),
     }
     trace: dict[str, Any] = {
         "applied": False,
         "original_question": question,
         "reformulated_question": question,
-        "memory_message_count": len(memory_items),
-        "memory": memory_trace,
+        "history_message_count": len(history_items),
+        "history": history_trace,
     }
     if client is None:
         trace["reason"] = "no_openai_client"
@@ -1132,7 +1043,7 @@ def reformulate_question(
 
     system_prompt, user_prompt = build_question_reformulation_prompt(
         question,
-        prompt_memory_items,
+        prompt_history_items,
         system_prompt_override,
     )
     trace["prompt"] = json.dumps(
@@ -1165,12 +1076,12 @@ def reformulate_question(
             trace["reason"] = "invalid_json_response"
             return question, trace
 
-        repaired = repair_video_clarification_follow_up(question, memory_items)
+        repaired = repair_video_clarification_follow_up(question, history_items)
         if repaired:
             reformulated = repaired
             follow_up = True
             trace["reason"] = "video_followup_intent_preserved"
-        elif not follow_up and is_obvious_follow_up(question, memory_items):
+        elif not follow_up and is_obvious_follow_up(question, history_items):
             follow_up = True
             trace["reason"] = "deterministic_follow_up_detected"
         trace["follow_up"] = follow_up

@@ -74,7 +74,7 @@ class AnswerActionTests(unittest.TestCase):
                 {"sql_sub_intent": "analytics"},
             )
         )
-        self.assertTrue(api.should_run_answer_judge("multi_source", "answer", {}))
+        self.assertFalse(api.should_run_answer_judge("multi_source", "answer", {}))
         self.assertTrue(
             api.should_run_answer_judge(
                 "rag",
@@ -269,7 +269,6 @@ class AnswerActionTests(unittest.TestCase):
             query_text="Quelle vidéo entre Loucif et Sophie Ollivier a le plus de vues ?",
             query_text_bm25="Loucif Sophie vues",
             persons=["Loucif", "Sophie Ollivier"],
-            use_memory=True,
             sql_main_source=True,
             top_k=None,
             final_k=None,
@@ -284,7 +283,6 @@ class AnswerActionTests(unittest.TestCase):
             "execution_plan": execution_plan.model_dump(),
             "resolved_persons": ["Loucif Ouyahia", "Sophie Ollivier"],
             "resolved_companies": [],
-            "memory_items": [],
             "multi_source_actions": [],
         }
         corrected_source = _source()

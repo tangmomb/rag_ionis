@@ -22,6 +22,11 @@ GRAPHIC_COUSIN_MIN_TEXT_LENGTH = 6
 ON_FOOTAGE_SEQUENCE_GAP_SECONDS = 1
 OTHERS_PROGRESSION_IMAGE_GAP = 10
 OVERLAY_KINDS = {"name", "lower_third", "title"}
+IONIS_SCHOOL_TEXT = "IONIS SCHOOL OF TECHNOLOGY AND MANAGEMENT"
+PLANETE_METIERS_TEXT = "PLANÈTE MÉTIERS"
+LONG_BINARY_TOKEN = re.compile(r"\b[01]{10,}[A-Z]?\b")
+DECIMAL_NOISE_TOKEN = re.compile(r"(?<!\w)\d+\.\.?\d+(?!\w)")
+ALPHA_WORD = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
 
 def normalize_text(text):
@@ -110,6 +115,36 @@ def is_overlay_kind(kind):
 def is_graphic_kind(kind):
     normalized = normalize_kind(kind)
     return normalized == "graphic"
+
+
+def sanitize_graphic_overlay_text(text):
+    normalized = " ".join(str(text or "").split())
+    folded = fold_text(normalized)
+    if fold_text(IONIS_SCHOOL_TEXT) in folded:
+        if fold_text(PLANETE_METIERS_TEXT) not in folded:
+            return None
+        return f"{IONIS_SCHOOL_TEXT} — {PLANETE_METIERS_TEXT}"
+
+    decimal_tokens = DECIMAL_NOISE_TOKEN.findall(normalized)
+    meaningful_words = [
+        word
+        for word in ALPHA_WORD.findall(normalized)
+        if word.casefold() != "psi"
+    ]
+    if (
+        LONG_BINARY_TOKEN.search(normalized)
+        or "\u25b2" in normalized
+        or len(decimal_tokens) >= 3
+        or (decimal_tokens and not meaningful_words)
+    ):
+        return None
+
+    return re.sub(
+        r"\blonis-STM\b",
+        "Ionis-STM",
+        normalized,
+        flags=re.IGNORECASE,
+    )
 
 
 def overlay_label_key(item):
@@ -536,9 +571,16 @@ def filter_overlay_items(items):
     filtered_items = collapse_on_footage_progressions(filtered_items)
     filtered_items = remove_overlay_fragments(filtered_items)
     filtered_items = collapse_graphic_time_groups(filtered_items)
-    filtered_items = remove_exact_overlay_duplicates(
-        merge_same_second_overlays(filtered_items)
-    )
+    filtered_items = merge_same_second_overlays(filtered_items)
+    sanitized_items = []
+    for item in filtered_items:
+        if is_graphic_kind(item.get("kind")):
+            sanitized_text = sanitize_graphic_overlay_text(item.get("text"))
+            if sanitized_text is None:
+                continue
+            item = {**item, "text": sanitized_text}
+        sanitized_items.append(item)
+    filtered_items = remove_exact_overlay_duplicates(sanitized_items)
     return [
         item
         for item in filtered_items

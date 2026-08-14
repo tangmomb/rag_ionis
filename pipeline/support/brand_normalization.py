@@ -4,8 +4,9 @@ import re
 IONIS_STM_TARGET = "Ionis-STM"
 IONIS_STM_PATTERN = re.compile(
     r"(?<!\w)(?:(?:l['\u2019]?\s*)?(?:ionis|onis)[\s-]+stm|"
+    r"ionis[\s-]+astm|"
     r"(?:l['\u2019]\s*)?(?:yonis|yaunis)[\s-]+stm|"
-    r"unisystem|unisstm|ionisstm)"
+    r"unisystem|unisstm|ionisstm|unicef-cm|unicef-tm)"
     r"(?!\w)",
     re.IGNORECASE,
 )

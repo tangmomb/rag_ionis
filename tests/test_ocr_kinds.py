@@ -1,9 +1,12 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from pipeline.steps.ocr.build_processed_ocr import normalize_output_kinds
 from pipeline.support.paddle_ocr import (
     classify_text,
     compact_text_key,
+    filter_decor_items,
     records_from_raw_result,
     static_decor_keys,
     text_key,
@@ -106,6 +109,46 @@ class OcrKindTests(unittest.TestCase):
         ]
 
         self.assertEqual(len(static_decor_keys(entries)), 27)
+
+    @patch("pipeline.support.paddle_ocr.image_size", return_value=(1280, 720))
+    def test_small_text_grouped_with_readable_overlay_is_kept(self, _image_size) -> None:
+        items = [
+            {
+                "image": "footage/00_17_500.jpg",
+                "text": "THIERRY VOISIN",
+                "kind": "others",
+                "second": 17.5,
+                "box": [[93, 565], [372, 565], [372, 595], [93, 595]],
+            },
+            {
+                "image": "footage/00_17_500.jpg",
+                "text": "Senior Vice-President",
+                "kind": "others",
+                "second": 17.5,
+                "box": [[94, 605], [308, 605], [308, 626], [94, 626]],
+            },
+        ]
+
+        filtered = filter_decor_items(items, Path("images"))
+
+        self.assertEqual(
+            [item["text"] for item in filtered],
+            ["THIERRY VOISIN", "Senior Vice-President"],
+        )
+
+    @patch("pipeline.support.paddle_ocr.image_size", return_value=(1280, 720))
+    def test_small_isolated_text_is_still_removed(self, _image_size) -> None:
+        items = [
+            {
+                "image": "footage/00_17_500.jpg",
+                "text": "Senior Vice-President",
+                "kind": "others",
+                "second": 17.5,
+                "box": [[94, 605], [308, 605], [308, 626], [94, 626]],
+            },
+        ]
+
+        self.assertEqual(filter_decor_items(items, Path("images")), [])
 
 
 if __name__ == "__main__":

@@ -82,6 +82,69 @@ class YoutubeDailySyncTests(unittest.TestCase):
             )
             self.assertFalse((download_dir / "init").exists())
 
+    def test_archive_log_records_detection_pipeline_and_video_statistics(self) -> None:
+        started_at = datetime(2026, 8, 13, 3, 0, tzinfo=timezone.utc)
+        videos = [
+            {
+                "id": "new-video-1",
+                "snippet": {"title": "Nouvelle vidéo"},
+                "statistics": {
+                    "viewCount": "123",
+                    "likeCount": "17",
+                    "commentCount": "4",
+                },
+            },
+            {
+                "id": "existing-video",
+                "snippet": {"title": "Vidéo existante"},
+                "statistics": {
+                    "viewCount": "456",
+                    "likeCount": "31",
+                    "commentCount": "8",
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            archive_dir = Path(temporary_dir) / "20260813_0300"
+            archive_dir.mkdir()
+
+            log_path = update_runs.write_archive_log(
+                archive_dir,
+                started_at=started_at,
+                finished_at=started_at,
+                status="completed",
+                videos=videos,
+                new_video_ids=["new-video-1"],
+                pipeline_results={
+                    "new-video-1": {
+                        "status": "completed",
+                        "succeeded": True,
+                        "error": None,
+                    }
+                },
+                comparison_directory=Path("downloads/youtube/20260812_0300"),
+                errors=[],
+            )
+
+            payload = json.loads(log_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(log_path.name, "daily_sync_log.json")
+        self.assertEqual(payload["snapshot_date"], "2026-08-13")
+        self.assertEqual(payload["new_videos_detected"], 1)
+        self.assertEqual(payload["new_video_ids"], ["new-video-1"])
+        self.assertTrue(payload["pipelines"][0]["succeeded"])
+        self.assertEqual(payload["pipelines"][0]["status"], "completed")
+        self.assertEqual(
+            payload["videos"][0],
+            {
+                "youtube_video_id": "new-video-1",
+                "title": "Nouvelle vidéo",
+                "view_count": 123,
+                "like_count": 17,
+                "comment_count": 4,
+            },
+        )
+
     def test_new_videos_are_compared_with_init_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             download_dir = Path(temporary_dir)
@@ -124,6 +187,21 @@ class YoutubeDailySyncTests(unittest.TestCase):
 
             self.assertEqual(selected, previous)
             self.assertEqual(new_ids, ["new-1"])
+
+    def test_pipeline_selection_only_uses_archive_comparison(self) -> None:
+        first_run_ids = update_runs.pipeline_video_ids_from_archives(
+            ["new-versus-init"],
+            [],
+            has_previous_archive=False,
+        )
+        later_run_ids = update_runs.pipeline_video_ids_from_archives(
+            ["new-versus-init", "missing-from-sql"],
+            ["new-versus-previous"],
+            has_previous_archive=True,
+        )
+
+        self.assertEqual(first_run_ids, ["new-versus-init"])
+        self.assertEqual(later_run_ids, ["new-versus-previous"])
 
     def test_new_comment_ids_are_compared_with_previous_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -262,29 +340,29 @@ class YoutubeDailySyncTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         succeeded.raise_for_status.assert_called_once_with()
 
-    def test_parse_args_selects_one_youtube_video(self) -> None:
-        args = update_runs.parse_args(
-            ["--video-url", "https://youtu.be/abcdefghijk", "--skip-comments"]
+    def test_daily_sync_rejects_selection_options(self) -> None:
+        rejected_options = (
+            ["--limit", "12"],
+            ["--video-url", "https://youtu.be/abcdefghijk"],
+            ["--download-dir", "other"],
+            ["--skip-comments"],
         )
-
-        self.assertEqual(args.video_url, "https://youtu.be/abcdefghijk")
-        self.assertTrue(args.skip_comments)
+        for argv in rejected_options:
+            with self.subTest(argv=argv), patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    update_runs.parse_args(argv)
 
     def test_collection_uses_the_same_channel_request_as_initial_ingestion(self) -> None:
-        args = update_runs.parse_args(["--limit", "12"])
         expected = [{"id": "video-1"}]
         with patch.object(
             update_runs,
             "fetch_videos",
             return_value=expected,
         ) as fetch_videos:
-            videos = update_runs.collect_videos(args)
+            videos = update_runs.collect_videos()
 
         self.assertEqual(videos, expected)
-        fetch_videos.assert_called_once_with(
-            update_runs.CHANNEL,
-            limit=12,
-        )
+        fetch_videos.assert_called_once_with(update_runs.CHANNEL)
 
     def test_incremental_comments_keep_existing_rows_and_soft_delete_missing(self) -> None:
         class RecordingCursor:

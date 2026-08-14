@@ -3,6 +3,7 @@ import unittest
 from pipeline.support.ocr_filtering import (
     collapse_graphic_time_groups,
     filter_overlay_items,
+    sanitize_graphic_overlay_text,
 )
 
 
@@ -19,6 +20,37 @@ def graphic_items(second, image, *texts):
 
 
 class OcrFilteringTests(unittest.TestCase):
+    def test_removes_planete_metiers_animation_noise(self):
+        self.assertIsNone(
+            sanitize_graphic_overlay_text(
+                "3.03 19.73 45.65 \u25b29.73 \u25b254.31"
+            )
+        )
+        self.assertIsNone(
+            sanitize_graphic_overlay_text("454.31 49.73")
+        )
+        self.assertEqual(
+            sanitize_graphic_overlay_text(
+                "000101001010001 011010101010100 454.31 "
+                "IONIS SCHOOL OF TECHNOLOGY AND MANAGEMENT "
+                "PLANÈTE MÉTIERS"
+            ),
+            "IONIS SCHOOL OF TECHNOLOGY AND MANAGEMENT — PLANÈTE MÉTIERS",
+        )
+        self.assertIsNone(
+            sanitize_graphic_overlay_text(
+                "IONIS SCHOOL OF TECHNOLOGY AND MANAGEMENT"
+            )
+        )
+
+    def test_normalizes_lonis_stm_in_graphic_questions(self):
+        self.assertEqual(
+            sanitize_graphic_overlay_text(
+                "Quel a été votre parcours après lonis-STM ?"
+            ),
+            "Quel a été votre parcours après Ionis-STM ?",
+        )
+
     def test_prefers_repeated_graphic_text_over_longer_orphan(self):
         items = [
             *graphic_items(

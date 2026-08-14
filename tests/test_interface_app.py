@@ -217,14 +217,14 @@ class InterfaceAppTests(unittest.TestCase):
                 )
             )
         )
-        memory = [
+        history = [
             {"role": "user", "text": "Je cherche un étudiant qui fait des RAG"},
             {"role": "assistant", "text": "Tom Baucher fait des RAG."},
         ]
         with patch.object(
             planner,
-            "fetch_conversation_memory",
-            return_value=(memory, {"applied": True, "message_count": 2}),
+            "fetch_conversation_history",
+            return_value=(history, {"applied": True, "message_count": 2}),
         ):
             reformulated, trace = planner.reformulate_question(
                 "et une qui bosse chez Microsoft",
@@ -252,7 +252,7 @@ class InterfaceAppTests(unittest.TestCase):
             )
 
         client = SimpleNamespace(responses=SimpleNamespace(create=create))
-        memory = [
+        history = [
             {"role": "user", "text": "Qui est Emric ?"},
             {"role": "assistant", "text": "Emric est alternant chez Novares."},
             {"role": "user", "text": "Elle a fait combien de vues ?"},
@@ -267,24 +267,24 @@ class InterfaceAppTests(unittest.TestCase):
         ]
         with patch.object(
             planner,
-            "fetch_conversation_memory",
-            return_value=(memory, {"applied": True, "message_count": len(memory)}),
-        ) as fetch_memory:
+            "fetch_conversation_history",
+            return_value=(history, {"applied": True, "message_count": len(history)}),
+        ) as fetch_history:
             reformulated, trace = planner.reformulate_question(
                 "Des points communs avec Yassin ?",
                 211,
                 client,
             )
 
-        fetch_memory.assert_called_once_with(
+        fetch_history.assert_called_once_with(
             211,
-            limit=planner.REFORMULATION_MEMORY_EXCHANGES,
+            limit=planner.REFORMULATION_HISTORY_EXCHANGES,
         )
         reformulation_prompt = calls[0]["input"][1]["content"]
         self.assertNotIn("Emric", reformulation_prompt)
         self.assertIn("Fadila Ouro Sama", reformulation_prompt)
         self.assertIn("Hugo Gérardin", reformulation_prompt)
-        self.assertEqual(trace["memory_message_count"], 6)
+        self.assertEqual(trace["history_message_count"], 6)
         self.assertEqual(
             reformulated,
             "Quels sont les points communs entre Yassin, Fadila Ouro Sama et Hugo Gérardin ?",
@@ -303,7 +303,7 @@ class InterfaceAppTests(unittest.TestCase):
             )
 
         client = SimpleNamespace(responses=SimpleNamespace(create=create))
-        memory = [
+        history = [
             {"role": "user", "text": "Je cherche la vidéo de Sophie"},
             {
                 "role": "assistant",
@@ -320,8 +320,8 @@ class InterfaceAppTests(unittest.TestCase):
         ]
         with patch.object(
             planner,
-            "fetch_conversation_memory",
-            return_value=(memory, {"applied": True, "message_count": len(memory)}),
+            "fetch_conversation_history",
+            return_value=(history, {"applied": True, "message_count": len(history)}),
         ):
             reformulated, trace = planner.reformulate_question(
                 "Laquelle des 2 a le plus de vues ?",
@@ -333,14 +333,14 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("Sophie Vanderpol", reformulation_prompt)
         self.assertIn("Loucif", reformulation_prompt)
         self.assertIn("Sophie Ollivier", reformulation_prompt)
-        self.assertEqual(trace["memory"]["prompt_message_count"], 2)
+        self.assertEqual(trace["history"]["prompt_message_count"], 2)
         self.assertEqual(
             reformulated,
             "Laquelle des vidéos de Loucif Ouyahia et Sophie Ollivier a le plus de vues ?",
         )
 
     def test_video_comparison_keeps_two_exchanges_when_each_introduces_one_person(self) -> None:
-        memory = [
+        history = [
             {"role": "user", "text": "Qui est Emric ?"},
             {"role": "assistant", "text": "Emric est alternant."},
             {"role": "user", "text": "Elle a combien de vues ?"},
@@ -349,9 +349,9 @@ class InterfaceAppTests(unittest.TestCase):
             {"role": "assistant", "text": "La vidéo de Hugo a 21 136 vues."},
         ]
 
-        selected = planner.select_reformulation_memory(
+        selected = planner.select_reformulation_history(
             "Compare leurs deux vidéos",
-            memory,
+            history,
         )
 
         selected_text = "\n".join(item["text"] for item in selected)
@@ -616,7 +616,6 @@ class InterfaceAppTests(unittest.TestCase):
     def test_planner_prompt_omits_derived_source_flags(self) -> None:
         system_prompt, _ = planner.build_planner_prompt("Question")
 
-        self.assertNotIn("use_memory", system_prompt)
         self.assertNotIn("use_rag", system_prompt)
         self.assertNotIn("sql_main_source", system_prompt)
 
@@ -631,7 +630,6 @@ class InterfaceAppTests(unittest.TestCase):
                 "persons": ["Gabriel Dumy"],
                 "published_after": None,
                 "published_before": None,
-                "use_memory": True,
                 "use_rag": False,
                 "sql_main_source": False,
             }
@@ -640,7 +638,6 @@ class InterfaceAppTests(unittest.TestCase):
 
         planner.derive_plan_sources(plan)
 
-        self.assertFalse(plan.use_memory)
         self.assertTrue(plan.use_rag)
         self.assertTrue(plan.sql_main_source)
 
@@ -759,7 +756,6 @@ class InterfaceAppTests(unittest.TestCase):
             "Compare ces personnes.",
             "mistral-medium-latest",
             "multi_source",
-            [],
             [
                 {
                     "video_title": "Vidéo test",
@@ -774,6 +770,7 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("Route planifiee", multi_source_user_prompt)
         self.assertNotIn("multi_source", multi_source_user_prompt)
         self.assertIn("Sources pour répondre :", multi_source_user_prompt)
+        self.assertNotIn("Historique", multi_source_user_prompt)
 
     def test_answer_prompts_do_not_require_question_reformulation(self) -> None:
         prompts = [
@@ -806,7 +803,6 @@ class InterfaceAppTests(unittest.TestCase):
                 "persons": [],
                 "published_after": None,
                 "published_before": None,
-                "use_memory": False,
                 "use_rag": True,
                 "sql_main_source": True,
             }

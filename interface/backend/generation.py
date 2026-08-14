@@ -239,50 +239,6 @@ def generate_answer(
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable.")
 
 
-def generate_memory_answer(
-    client: LLMClientProtocol | None,
-    question: str,
-    answer_model: str | None,
-    memory_items: list[dict[str, str]],
-    trace: dict[str, str] | None = None,
-    prompt_template: str | None = None,
-) -> str:
-    if client is None or not answer_model:
-        if trace is not None:
-            trace["action"] = "answer" if memory_items else "abstain"
-        if not memory_items:
-            return "Je n'ai pas trouve d'historique de conversation exploitable pour repondre a cette demande."
-        history = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
-        return history
-
-    history = (
-        "\n".join(f"{item['role']}: {item['text']}" for item in memory_items)
-        or "Aucun historique exploitable."
-    )
-    input_messages = [
-            {
-                "role": "system",
-                "content": render_answer_system_prompt(
-                    prompt_template,
-                    route_instructions=(
-                        "Tu réponds uniquement à partir de l'historique "
-                        "de conversation fourni."
-                    ),
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Question actuelle: {question}\n\nHistorique:\n{history}",
-            },
-        ]
-    response = create_answer_response(client, answer_model, input_messages)
-    record_answer_trace(trace, answer_model, input_messages, response)
-    answer = getattr(response, "output_text", "").strip()
-    if answer:
-        return parse_answer_output(answer, trace)
-    raise RuntimeError("Le modele n'a pas renvoye de texte exploitable pour la route memory.")
-
-
 def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
     if sql_sub_intent == "analytics":
         return (
@@ -327,7 +283,6 @@ def generate_multi_source_answer(
     question: str,
     answer_model: str | None,
     route_name: str,
-    memory_items: list[dict[str, str]],
     sources: list[dict[str, Any]],
     sql_sub_intent: str | None = None,
     trace: dict[str, str] | None = None,
@@ -335,15 +290,13 @@ def generate_multi_source_answer(
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
-            trace["action"] = "answer" if (memory_items or sources) else "abstain"
-        memory_text = "\n".join(item["text"] for item in memory_items)
+            trace["action"] = "answer" if sources else "abstain"
         source_text = "\n\n".join(
             f"[S{index}] {source['text']}"
             for index, source in enumerate(sources, start=1)
         )
-        return "\n\n".join(part for part in (memory_text, source_text) if part)
+        return source_text
 
-    memory_block = "\n".join(f"{item['role']}: {item['text']}" for item in memory_items) or "Aucun historique exploitable."
     source_blocks = []
     for index, source in enumerate(sources, start=1):
         source_blocks.append(
@@ -368,9 +321,7 @@ def generate_multi_source_answer(
                 "content": render_answer_system_prompt(
                     prompt_template,
                     route_instructions=(
-                        "Tu synthétises plusieurs sources pour répondre en français. "
-                        "Distingue clairement ce qui vient de l'historique conversationnel "
-                        "et ce qui vient de la base si utile. "
+                        "Tu synthétises plusieurs sources documentaires pour répondre en français. "
                         + build_sql_sub_intent_prompt(sql_sub_intent)
                     ),
                     source_marker_instruction=source_marker_instruction,
@@ -378,7 +329,7 @@ def generate_multi_source_answer(
             },
             {
                 "role": "user",
-                "content": f"Question: {question}\n\nHistorique:\n{memory_block}\n\nSources pour répondre :\n{source_block}",
+                "content": f"Question: {question}\n\nSources pour répondre :\n{source_block}",
             },
         ]
     response = create_answer_response(client, answer_model, input_messages)
@@ -557,22 +508,12 @@ def generate_final_answer(
             trace,
             prompt_template,
         )
-    if route == "memory":
-        return generate_memory_answer(
-            client,
-            generation_question,
-            answer_model,
-            retrieval.get("memory_items", []),
-            trace,
-            prompt_template,
-        )
     if route == "multi_source":
         return generate_multi_source_answer(
             client,
             generation_question,
             answer_model,
             route,
-            retrieval.get("memory_items", []),
             sources,
             retrieval.get("sql_sub_intent"),
             trace,

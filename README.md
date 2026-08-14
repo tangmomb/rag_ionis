@@ -1002,6 +1002,7 @@ sous-dossier par vidéo :
 ```text
 downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_video_metadata.json
 downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_comments.json
+downloads/youtube/20260802_1437/daily_sync_log.json
 ```
 
 Ces archives ne sont jamais remplacées. Si deux lancements ont lieu dans la même
@@ -1016,8 +1017,7 @@ données collectées pour :
   au JSON de l’archive précédente (ou de `init/` lors du premier lancement) ;
 - compare à la fin les dossiers vidéo de l’archive avec ceux de `init/`, affiche
   le nombre de nouvelles vidéos et conserve leurs identifiants dans
-  `update_runs.new_video_ids` ; une vidéo absente de SQL est archivée mais
-  n’est pas insérée avant son passage dans le pipeline complet ;
+  `update_runs.new_video_ids` ;
 - compare ensuite l’archive actuelle à l’archive horodatée précédente et
   journalise les nouveautés dans `new_since_previous` et
   `new_since_previous_ids` ;
@@ -1026,18 +1026,19 @@ données collectées pour :
   vidéo directement dans son dossier horodaté et lance
   `pipeline run`, puis `embeddings.create` et enfin `sync_database` sur cette
   seule vidéo ; la vidéo, le manifeste et tous les résultats restent dans cette
-  archive, et une publication SQL échouée est retentée au lancement suivant ;
+  archive ;
 - marque `is_deleted = TRUE` les commentaires qui ne sont plus renvoyés par
   YouTube ;
 - journalise le résultat et le chemin de l’archive dans `update_runs` ;
+- écrit `daily_sync_log.json` à la racine de l’archive avec le nombre et les
+  identifiants des nouvelles vidéos, le succès ou l’échec du pipeline pour
+  chacune, ainsi que les vues, likes et commentaires de chaque vidéo à la date
+  du snapshot ;
 - refuse un deuxième lancement simultané grâce à un verrou PostgreSQL.
 
-Pour tester une seule vidéo ou ignorer temporairement les commentaires :
-
-```powershell
-.\.venv\Scripts\python.exe -m pipeline.update_runs --video-url "https://www.youtube.com/watch?v=VIDEO_ID"
-.\.venv\Scripts\python.exe -m pipeline.update_runs --skip-comments
-```
+Cette commande n'accepte aucune option métier : elle parcourt toujours toute la
+chaîne IONIS-STM, récupère les commentaires et écrit ses archives sous
+`downloads/youtube/`.
 
 Sur un serveur Linux, la commande équivalente est
 `./.venv/bin/python -m pipeline.update_runs`. Par exemple, une entrée
@@ -1193,6 +1194,21 @@ Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix 
 ```powershell
 .\.venv\Scripts\python.exe utils/run_phoenix_experiment.py
 ```
+
+Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
+questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :
+
+```powershell
+.\.venv\Scripts\python.exe utils/replay_phoenix_conversation.py `
+  --trace-id c4667ce228864d1ee8f3b8016205b236 `
+  --mode exact-context
+```
+
+L'outil retrouve la session via Phoenix, clone dans PostgreSQL tous les messages
+antérieurs à la question cible, puis rejoue uniquement cette question dans une
+nouvelle conversation. Le résultat apparaît dans le projet Phoenix comme une trace
+`rag.replay`, avec un span `rag.replay.seed_history` et tous les spans RAG habituels.
+Ajouter `--dry-run` pour contrôler le contexte sans écrire en base ni appeler les LLM.
 
 La fenêtre permet de choisir séparément un modèle OpenAI, Mistral ou Google
 pour la reformulation, le planner et la réponse finale. Les payloads propres à

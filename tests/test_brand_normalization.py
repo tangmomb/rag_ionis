@@ -19,6 +19,9 @@ class BrandNormalizationTests(unittest.TestCase):
             "Unisystem",
             "UNISSTM",
             "IonisSTM",
+            "UNICEF-CM",
+            "UNICEF-TM",
+            "IONIS ASTM",
         )
 
         normalized, matched_sources = normalize_ionis_stm_text(

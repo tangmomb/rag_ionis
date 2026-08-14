@@ -72,8 +72,15 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('id: "youtube-daily-sync"', source)
         self.assertIn('title: "Daily sync YouTube"', source)
         self.assertIn('module: "pipeline.update_runs"', source)
-        self.assertIn('flag: "--skip-comments"', source)
-        self.assertIn('app.js?v=20260803-youtube-daily-sync', index)
+        daily_sync = source.split('id: "youtube-daily-sync"', 1)[1].split(
+            'id: "download"', 1
+        )[0]
+        self.assertIn("sections: []", daily_sync)
+        self.assertNotIn('flag: "--', daily_sync)
+        self.assertIn("archive horodatée précédente", daily_sync)
+        self.assertIn("dossier était absent", daily_sync)
+        self.assertIn("daily_sync_log.json", daily_sync)
+        self.assertIn('app.js?v=20260813-daily-sync-log', index)
 
 if __name__ == "__main__":
     unittest.main()

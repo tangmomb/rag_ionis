@@ -953,15 +953,22 @@ def filter_decor_items(items, images_dir):
             geometry["relative_height"] >= MIN_OVERLAY_RELATIVE_HEIGHT
             or geometry["relative_width"] >= MIN_OVERLAY_RELATIVE_WIDTH
         )
-        if not is_readable_overlay:
-            continue
-
-        grouped = any(
-            other is not entry
+        grouped_entries = [
+            other
+            for other in by_image.get(item.get("image"), [])
+            if other is not entry
             and other["item"].get("kind") != "subtitle"
             and boxes_are_grouped(entry["box"], other["box"])
-            for other in by_image.get(item.get("image"), [])
+        ]
+        grouped_with_readable_overlay = any(
+            other["geometry"]["relative_height"] >= MIN_OVERLAY_RELATIVE_HEIGHT
+            or other["geometry"]["relative_width"] >= MIN_OVERLAY_RELATIVE_WIDTH
+            for other in grouped_entries
         )
+        if not is_readable_overlay and not grouped_with_readable_overlay:
+            continue
+
+        grouped = bool(grouped_entries)
         compact_isolated_text = entry["word_count"] <= 1 and len(key) <= 4 and not grouped
         if compact_isolated_text and geometry["relative_height"] < 0.07 and geometry["relative_width"] < 0.35:
             continue

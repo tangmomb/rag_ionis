@@ -117,26 +117,11 @@ const actions = [
     category: "YouTube",
     title: "Daily sync YouTube",
     short: "Stats, commentaires et pipeline des nouvelles vidéos",
-    description: "Parcourt la chaîne avec la même requête API que l’ingestion initiale, archive les JSON et écrit le snapshot SQL du jour même sans changement de compteurs. Chaque nouveauté est téléchargée, traitée, vectorisée et publiée en SQL depuis le dossier horodaté. Ne modifie pas init/_00_info_videos, init/_00_info_comments ni les dossiers vidéo de init.",
+    description: "Sans option : parcourt systématiquement toute la chaîne IONIS-STM et crée dans une nouvelle archive horodatée un sous-dossier par vidéo contenant au minimum ses métadonnées et ses commentaires. Pour détecter les nouveautés, les identifiants de cette archive sont comparés aux dossiers de downloads/youtube/init/ lors du premier Daily Sync, puis uniquement aux dossiers de l’archive horodatée précédente. Le pipeline complet — téléchargement, metadata/, outputs/, chunks, embeddings et publication SQL — démarre seulement pour une vidéo dont le dossier était absent de cette référence. Les vidéos déjà présentes reçoivent uniquement leur nouvelle archive JSON et l’actualisation SQL des statistiques et commentaires. Un fichier daily_sync_log.json récapitule le nombre de nouveautés, le succès du pipeline pour chacune et les vues, likes et commentaires de chaque vidéo à cette date. Le dossier init/ n’est jamais modifié ; le journal SQL de l’exécution est enregistré dans update_runs.",
     icon: "↻",
     accent: "#d9eee8",
     module: "pipeline.update_runs",
-    sections: [
-      {
-        title: "Sélection",
-        fields: [
-          { id: "videoUrl", label: "URL d’une vidéo YouTube", flag: "--video-url", type: "url", placeholder: "https://www.youtube.com/watch?v=…", help: "Laisse vide pour parcourir la chaîne IONIS-STM.", full: true, exclusive: "youtubeDailySelection" },
-          { id: "limit", label: "Limiter les vidéos de la chaîne", flag: "--limit", type: "number", min: "1", step: "1", placeholder: "Toutes", exclusive: "youtubeDailySelection" },
-        ],
-      },
-      {
-        title: "Actualisation",
-        fields: [
-          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube", full: true },
-          { id: "skipComments", label: "Actualiser uniquement les stats", flag: "--skip-comments", type: "boolean" },
-        ],
-      },
-    ],
+    sections: [],
   },
   {
     id: "download",

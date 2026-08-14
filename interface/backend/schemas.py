@@ -16,7 +16,7 @@ from interface.backend.config import (
 )
 
 
-PlannerRoute = Literal["direct", "rag", "memory", "multi_source"]
+PlannerRoute = Literal["direct", "rag", "multi_source"]
 SqlSubIntent = Literal[
     "specific_persons",
     "analytics",
@@ -57,7 +57,6 @@ class PlannerPlan(BaseModel):
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
-    use_memory: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
 
@@ -75,7 +74,6 @@ class ExecutionPlan(BaseModel):
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
-    use_memory: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
     top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Inspecter et rejouer le dernier tour d’une conversation Phoenix."
+    >
+    <title>Phoenix Replay · RAG IONIS</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="back-link" href="http://127.0.0.1:8003/app_launcher/">← Applications</a>
+        <a class="phoenix-link" href="http://127.0.0.1:6006/projects" target="_blank" rel="noopener">Ouvrir Phoenix</a>
+      </header>
+
+      <section class="hero">
+        <div class="brand-mark" aria-hidden="true">PR</div>
+        <div>
+          <p class="eyebrow">UTILITAIRE LOCAL</p>
+          <h1>Phoenix Replay</h1>
+          <p class="hero-copy">
+            Clone le contexte exact d’une conversation, puis rejoue uniquement
+            le dernier message dans le pipeline RAG actuel.
+          </p>
+        </div>
+      </section>
+
+      <section class="workspace" aria-label="Configuration du rejeu">
+        <form id="replay-form" class="control-panel">
+          <label for="trace-id">Identifiant de la trace</label>
+          <div class="trace-row">
+            <input
+              id="trace-id"
+              name="traceId"
+              type="text"
+              minlength="32"
+              maxlength="32"
+              pattern="[0-9a-fA-F]{32}"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="c4667ce228864d1ee8f3b8016205b236"
+              required
+            >
+            <button id="inspect-button" class="button secondary" type="submit">
+              Inspecter
+            </button>
+          </div>
+          <p class="field-help">
+            L’inspection consulte Phoenix et PostgreSQL, sans écrire en base ni appeler Mistral.
+          </p>
+
+          <div class="mode-card">
+            <div>
+              <strong>Contexte exact</strong>
+              <span>Les anciennes questions et réponses sont copiées à l’identique.</span>
+            </div>
+            <span class="mode-badge">exact-context</span>
+          </div>
+
+          <button id="replay-button" class="button primary" type="button" disabled>
+            Rejouer le dernier tour
+          </button>
+          <p class="replay-help">
+            Cette action crée une conversation, appelle les LLM et produit une nouvelle trace.
+          </p>
+        </form>
+
+        <section class="result-panel" aria-live="polite" aria-busy="false">
+          <div id="empty-state" class="empty-state">
+            <span class="empty-icon">⌁</span>
+            <h2>Prêt à inspecter</h2>
+            <p>Collez une trace racine Phoenix pour afficher son contexte avant le rejeu.</p>
+          </div>
+
+          <div id="loading-state" class="loading-state" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <strong id="loading-title">Inspection du contexte…</strong>
+            <p id="loading-copy">Lecture de la trace et de la conversation associée.</p>
+          </div>
+
+          <div id="error-state" class="error-state" hidden>
+            <span>Erreur</span>
+            <p id="error-message"></p>
+          </div>
+
+          <div id="inspection-state" hidden>
+            <div class="result-heading">
+              <div>
+                <p class="eyebrow">CONTEXTE RETROUVÉ</p>
+                <h2 id="target-question"></h2>
+              </div>
+              <span id="history-count" class="count-badge"></span>
+            </div>
+            <dl class="metadata-grid">
+              <div><dt>Conversation originale</dt><dd id="original-conversation"></dd></div>
+              <div><dt>Message cible</dt><dd id="target-message"></dd></div>
+            </dl>
+            <ol id="history-list" class="timeline"></ol>
+          </div>
+
+          <div id="success-state" class="success-state" hidden>
+            <span class="success-mark">✓</span>
+            <p class="eyebrow">REJEU TERMINÉ</p>
+            <h2>Nouvelle trace créée</h2>
+            <dl class="metadata-grid">
+              <div><dt>Conversation</dt><dd id="replay-conversation"></dd></div>
+              <div><dt>Trace</dt><dd id="replay-trace"></dd></div>
+            </dl>
+            <p id="replay-answer" class="answer-preview"></p>
+            <a id="open-phoenix" class="button primary" href="http://127.0.0.1:6006/projects" target="_blank" rel="noopener">Voir dans Phoenix</a>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

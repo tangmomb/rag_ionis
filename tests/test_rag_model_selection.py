@@ -65,7 +65,7 @@ class RagModelSelectionTests(unittest.TestCase):
         )
         with patch.object(
             planner,
-            "fetch_conversation_memory",
+            "fetch_conversation_history",
             return_value=([], {"conversation_id": None}),
         ):
             reformulated, trace = planner.reformulate_question(
@@ -93,8 +93,8 @@ class RagModelSelectionTests(unittest.TestCase):
             reformulationPrompt="Prompt reformulation personnalise",
             plannerPrompt="Prompt planner personnalise",
         )
-        memory_plan = PlannerPlan(
-            route="memory",
+        multi_source_plan = PlannerPlan(
+            route="multi_source",
             query_text="Question reformulee",
         )
 
@@ -108,12 +108,12 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(
                 orchestration,
                 "run_planner",
-                return_value=(memory_plan, "prompt", "raw", True),
+                return_value=(multi_source_plan, "prompt", "raw", True),
             ) as run_planner,
             patch.object(
                 orchestration,
-                "fetch_conversation_memory",
-                return_value=([], {"conversation_id": None}),
+                "retrieve_chunks",
+                return_value=([], {}),
             ),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)

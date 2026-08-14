@@ -15,7 +15,6 @@ from dotenv import load_dotenv
 from pipeline.ingest.fetch_youtube_metadata import (
     CHANNEL,
     fetch_comments,
-    fetch_video,
     fetch_videos,
     video_info_payload,
 )
@@ -31,6 +30,7 @@ from pipeline.support.paths import youtube_api_infos_path, youtube_comments_path
 
 LOCK_NAME = "rag_ionis.update_runs"
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
+DAILY_SYNC_LOG_NAME = "daily_sync_log.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE_DIRECTORY_PATTERN = re.compile(r"^\d{8}_\d{4}(?:_\d{2})?$")
 NON_VIDEO_DIRECTORY_NAMES = {"_00_info_videos", "_00_info_comments"}
@@ -39,37 +39,15 @@ NON_VIDEO_DIRECTORY_NAMES = {"_00_info_videos", "_00_info_comments"}
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collecte quotidiennement la chaine YouTube, archive les JSON, "
-            "detecte les nouvelles videos et actualise celles deja publiees en SQL."
+            "Collecte toute la chaine YouTube, archive les JSON, detecte les "
+            "nouvelles videos et actualise celles deja publiees en SQL."
         )
-    )
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument(
-        "--limit",
-        type=int,
-        help="Nombre maximum de videos de la chaine a collecter.",
-    )
-    selection.add_argument(
-        "--video-url",
-        help="Limite la collecte a une video YouTube precise.",
-    )
-    parser.add_argument(
-        "--download-dir",
-        default=str(DEFAULT_DOWNLOAD_DIR),
-        help="Dossier parent des archives datees. Defaut: downloads/youtube",
-    )
-    parser.add_argument(
-        "--skip-comments",
-        action="store_true",
-        help="Actualise uniquement les snapshots de statistiques.",
     )
     return parser.parse_args(argv)
 
 
-def collect_videos(args: argparse.Namespace) -> list[dict]:
-    if args.video_url:
-        return fetch_video(args.video_url)
-    return fetch_videos(CHANNEL, limit=args.limit)
+def collect_videos() -> list[dict]:
+    return fetch_videos(CHANNEL)
 
 
 def database_videos(cursor) -> dict[str, int]:
@@ -208,6 +186,16 @@ def new_video_ids_since_previous(
     return sorted(current_ids - previous_ids)
 
 
+def pipeline_video_ids_from_archives(
+    new_video_ids: list[str],
+    new_since_previous_ids: list[str],
+    *,
+    has_previous_archive: bool,
+) -> list[str]:
+    detected_ids = new_since_previous_ids if has_previous_archive else new_video_ids
+    return sorted(set(detected_ids))
+
+
 def comment_ids_from_json(path: Path) -> set[str]:
     payload = read_json(path, default={})
     if not isinstance(payload, dict):
@@ -265,6 +253,76 @@ def write_archive(
             youtube_comments_path(archive_video_dir),
             comments_payload,
         )
+
+
+def optional_count(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def archive_log_payload(
+    *,
+    started_at: datetime,
+    status: str,
+    videos: list[dict],
+    new_video_ids: list[str],
+    pipeline_results: dict[str, dict],
+    comparison_directory: Path,
+    errors: list[dict],
+    finished_at: datetime | None = None,
+) -> dict:
+    videos_by_id = {str(video.get("id") or ""): video for video in videos}
+    pipelines = []
+    for youtube_video_id in new_video_ids:
+        video = videos_by_id.get(youtube_video_id, {})
+        result = pipeline_results.get(youtube_video_id, {})
+        pipelines.append(
+            {
+                "youtube_video_id": youtube_video_id,
+                "title": (video.get("snippet") or {}).get("title"),
+                "status": result.get("status", "pending"),
+                "succeeded": result.get("succeeded"),
+                "error": result.get("error"),
+            }
+        )
+
+    video_snapshots = []
+    for video in videos:
+        statistics = video.get("statistics") or {}
+        video_snapshots.append(
+            {
+                "youtube_video_id": video.get("id"),
+                "title": (video.get("snippet") or {}).get("title"),
+                "view_count": optional_count(statistics.get("viewCount")),
+                "like_count": optional_count(statistics.get("likeCount")),
+                "comment_count": optional_count(statistics.get("commentCount")),
+            }
+        )
+
+    return {
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "snapshot_date": started_at.date().isoformat(),
+        "status": status,
+        "comparison_directory": str(comparison_directory),
+        "new_videos_detected": len(new_video_ids),
+        "new_video_ids": new_video_ids,
+        "pipelines": pipelines,
+        "videos": video_snapshots,
+        "errors": errors,
+    }
+
+
+def write_archive_log(
+    archive_dir: Path,
+    **payload_kwargs,
+) -> Path:
+    return write_json(
+        archive_dir / DAILY_SYNC_LOG_NAME,
+        archive_log_payload(**payload_kwargs),
+    )
 
 
 def download_and_run_pipeline(
@@ -354,7 +412,7 @@ def empty_metrics() -> dict:
     }
 
 
-def run(args: argparse.Namespace) -> dict:
+def run() -> dict:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL manquant dans l'environnement.")
@@ -363,9 +421,28 @@ def run(args: argparse.Namespace) -> dict:
     errors: list[dict] = []
     run_id = None
     lock_acquired = False
-    download_dir = Path(args.download_dir)
+    download_dir = DEFAULT_DOWNLOAD_DIR
     started_at = datetime.now().astimezone()
     archive_dir = None
+    api_videos: list[dict] = []
+    pipeline_video_ids: list[str] = []
+    pipeline_results: dict[str, dict] = {}
+    comparison_directory = download_dir / "init"
+
+    def update_archive_log(status: str, *, finished: bool = False) -> None:
+        if archive_dir is None:
+            return
+        write_archive_log(
+            archive_dir,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc) if finished else None,
+            status=status,
+            videos=api_videos,
+            new_video_ids=pipeline_video_ids,
+            pipeline_results=pipeline_results,
+            comparison_directory=comparison_directory,
+            errors=errors,
+        )
 
     with psycopg.connect(
         database_url,
@@ -385,31 +462,30 @@ def run(args: argparse.Namespace) -> dict:
                 videos_by_youtube_id = database_videos(cursor)
             connection.rollback()
 
-            api_videos = collect_videos(args)
+            api_videos = collect_videos()
             metrics["videos_discovered"] = len(api_videos)
-            sql_skipped_ids = [
+            sql_missing_ids = [
                 video["id"]
                 for video in api_videos
                 if video["id"] not in videos_by_youtube_id
             ]
-            metrics["videos_skipped"] = len(sql_skipped_ids)
+            metrics["videos_skipped"] = len(sql_missing_ids)
 
             collected = []
             for video in api_videos:
                 youtube_video_id = video["id"]
                 comments_payload = None
-                if not args.skip_comments:
-                    try:
-                        comments_payload = fetch_comments(youtube_video_id)
-                    except Exception as error:
-                        errors.append(
-                            {
-                                "video_id": youtube_video_id,
-                                "phase": "comments_api",
-                                "type": type(error).__name__,
-                                "message": str(error),
-                            }
-                        )
+                try:
+                    comments_payload = fetch_comments(youtube_video_id)
+                except Exception as error:
+                    errors.append(
+                        {
+                            "video_id": youtube_video_id,
+                            "phase": "comments_api",
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    )
                 collected.append((video, comments_payload))
 
             # La phase de collecte se termine avant toute publication locale ou SQL.
@@ -446,6 +522,7 @@ def run(args: argparse.Namespace) -> dict:
                 print("[daily-sync] aucune archive horodatee precedente a comparer.")
                 comments_baseline_dir = download_dir / "init"
             else:
+                comparison_directory = previous_archive
                 new_since_previous_ids = new_video_ids_since_previous(
                     archive_dir,
                     previous_archive,
@@ -524,22 +601,36 @@ def run(args: argparse.Namespace) -> dict:
                     metrics["comments_deleted"] += comment_result.deleted
                 metrics["videos_updated"] += 1
 
-            detected_video_ids = (
-                set(new_video_ids)
-                if previous_archive is None
-                else set(metrics["new_since_previous_ids"])
+            pipeline_video_ids = pipeline_video_ids_from_archives(
+                new_video_ids,
+                metrics["new_since_previous_ids"],
+                has_previous_archive=previous_archive is not None,
             )
-            # Une publication SQL ratee lors d'un lancement precedent doit etre
-            # retentee, meme si la video figurait deja dans l'archive precedente.
-            pipeline_video_ids = sorted(detected_video_ids | set(sql_skipped_ids))
+            pipeline_results = {
+                youtube_video_id: {
+                    "status": "pending",
+                    "succeeded": None,
+                    "error": None,
+                }
+                for youtube_video_id in pipeline_video_ids
+            }
+            update_archive_log("running")
             archived_videos_by_id = {
                 video["id"]: video for video, _comments in cache_ready
             }
             for youtube_video_id in pipeline_video_ids:
                 video = archived_videos_by_id.get(youtube_video_id)
                 if video is None:
+                    pipeline_results[youtube_video_id] = {
+                        "status": "failed",
+                        "succeeded": False,
+                        "error": "Archive locale indisponible pour cette vidéo.",
+                    }
+                    update_archive_log("running")
                     continue
                 metrics["pipeline_videos_started"] += 1
+                pipeline_results[youtube_video_id]["status"] = "running"
+                update_archive_log("running")
                 print(f"[daily-sync] lancement du pipeline pour {youtube_video_id}.")
                 try:
                     download_and_run_pipeline(
@@ -557,9 +648,21 @@ def run(args: argparse.Namespace) -> dict:
                             "message": str(error),
                         }
                     )
+                    pipeline_results[youtube_video_id] = {
+                        "status": "failed",
+                        "succeeded": False,
+                        "error": str(error),
+                    }
+                    update_archive_log("running")
                     continue
                 metrics["pipeline_videos_completed"] += 1
-                if youtube_video_id in sql_skipped_ids:
+                pipeline_results[youtube_video_id] = {
+                    "status": "completed",
+                    "succeeded": True,
+                    "error": None,
+                }
+                update_archive_log("running")
+                if youtube_video_id in sql_missing_ids:
                     metrics["videos_updated"] += 1
                     metrics["stats_snapshots"] += 1
 
@@ -568,6 +671,7 @@ def run(args: argparse.Namespace) -> dict:
                 finish_run(cursor, run_id, status, metrics, errors)
             connection.commit()
             metrics["errors_count"] = len(errors)
+            update_archive_log(status, finished=True)
             return metrics
         except Exception as error:
             connection.rollback()
@@ -576,6 +680,15 @@ def run(args: argparse.Namespace) -> dict:
                 with connection.cursor() as cursor:
                     finish_run(cursor, run_id, "failed", metrics, errors)
                 connection.commit()
+            if archive_dir is not None:
+                try:
+                    update_archive_log("failed", finished=True)
+                except Exception as log_error:
+                    print(
+                        f"[daily-sync] impossible d'ecrire {DAILY_SYNC_LOG_NAME}: "
+                        f"{log_error}",
+                        flush=True,
+                    )
             raise
         finally:
             if lock_acquired:
@@ -587,8 +700,8 @@ def run(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     load_dotenv(override=True)
-    args = parse_args()
-    metrics = run(args)
+    parse_args()
+    metrics = run()
     print(
         "Synchronisation YouTube terminee: "
         f"{metrics['videos_updated']} video(s), "

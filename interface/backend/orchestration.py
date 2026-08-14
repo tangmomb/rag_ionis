@@ -10,7 +10,6 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
-from interface.backend.database import fetch_conversation_memory
 from interface.backend.planner import (
     apply_deterministic_sql_policy,
     build_execution_plan,
@@ -225,47 +224,11 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "rrf": {},
             "rerank": {},
             "direct_lookup": {},
-            "memory": {},
         }
         return "", [], clarification_retrieval
 
     if execution_plan.route == "direct":
         return build_direct_retrieval(base_retrieval, build_social_answer(contextual_question), "direct")
-
-    if execution_plan.route == "memory":
-        with trace_operation(
-            "rag.memory",
-            kind="CHAIN",
-            input_value={"conversation_id": payload.conversationId},
-        ) as memory_span:
-            memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
-            memory_span.set_output({**memory_trace, "results": memory_items})
-        answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
-        retrieval = {
-            **base_retrieval,
-            "answer_model": answer_model,
-            "embedding_model": None,
-            "rerank_model": None,
-            "retrieval_mode": "memory",
-            "sql_main_source": False,
-            "sql_prefilters": False,
-            "bm25_top_k": 0,
-            "vector_top_k": 0,
-            "rrf_top_n": 0,
-            "final_k": 0,
-            "used_rerank": False,
-            "general_question_only": True,
-            "sql_query": None,
-            "prefilter": {},
-            "sql_prefilters_trace": {},
-            "bm25": {},
-            "vector": {},
-            "rrf": {},
-            "rerank": {},
-            "memory": memory_trace,
-            "memory_items": memory_items,
-        }
-        return "", [], retrieval
 
     if execution_plan.route == "rag" and execution_plan.sql_main_source:
         sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
@@ -345,40 +308,14 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "rrf": fallback_trace.get("rrf", {}),
             "rerank": fallback_trace.get("rerank", {}),
             "direct_lookup": {**direct_trace, "rag_fallback": fallback_trace},
-            "memory": {},
             "sql_sub_intent": sql_sub_intent,
         }
         return "", sources, retrieval
 
     if execution_plan.route == "multi_source":
-        memory_items: list[dict[str, str]] = []
-        memory_trace: dict[str, Any] = {}
         doc_sources: list[dict[str, Any]] = []
         doc_trace: dict[str, Any] = {}
         multi_source_actions: list[dict[str, Any]] = []
-
-        if execution_plan.use_memory:
-            with trace_operation(
-                "rag.memory",
-                kind="CHAIN",
-                input_value={"conversation_id": payload.conversationId},
-            ) as memory_span:
-                memory_items, memory_trace = fetch_conversation_memory(payload.conversationId)
-                memory_span.set_output({**memory_trace, "results": memory_items})
-            multi_source_actions.append(
-                {
-                    "action": len(multi_source_actions) + 1,
-                    "source": "memory",
-                    "operation": "fetch_conversation_memory",
-                    "status": "completed",
-                    "request": {
-                        "sql": memory_trace.get("sql"),
-                        "params": memory_trace.get("params", []),
-                    },
-                    "response": memory_items,
-                    "result_count": len(memory_items),
-                }
-            )
 
         if execution_plan.sql_main_source:
             sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
@@ -473,8 +410,6 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "rrf": doc_trace.get("rrf", {}),
             "rerank": doc_trace.get("rerank", {}),
             "direct_lookup": doc_trace.get("direct_lookup", {}),
-            "memory": memory_trace,
-            "memory_items": memory_items,
             "multi_source_actions": multi_source_actions,
         }
         return "", doc_sources, retrieval

@@ -55,7 +55,6 @@ def should_run_answer_judge(
         return True
     return bool(
         retrieval.get("sql_sub_intent") == "analytics"
-        or route == "multi_source"
         or has_empty_sql_result(retrieval)
     )
 
@@ -359,6 +358,7 @@ def run_rag(payload: RagRequest) -> RagResponse:
             "embedding_model": payload.embeddingModel,
             "rerank_model": payload.rerankModel,
             "use_rerank": payload.useRerank,
+            "request": payload.model_dump(),
         },
     ) as request_span:
         request_span.set_session_id(payload.conversationId)

@@ -134,7 +134,7 @@ def ensure_conversation(connection: psycopg.Connection[Any], conversation_id: in
         return int(cursor.fetchone()[0])
 
 
-def fetch_conversation_memory(
+def fetch_conversation_history(
     conversation_id: int | None,
     limit: int = 8,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:

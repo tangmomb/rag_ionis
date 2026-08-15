@@ -285,6 +285,9 @@ def archive_log_payload(
                 "status": result.get("status", "pending"),
                 "succeeded": result.get("succeeded"),
                 "error": result.get("error"),
+                "backend": result.get("backend"),
+                "job_id": result.get("job_id"),
+                "s3_uri": result.get("s3_uri"),
             }
         )
 
@@ -330,7 +333,15 @@ def download_and_run_pipeline(
     archive_dir: Path,
     download_dir: Path,
     snapshot_date: date,
-) -> None:
+) -> dict:
+    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "local").strip().lower()
+    if backend == "runpod":
+        return run_pipeline_on_runpod(video, archive_dir, snapshot_date)
+    if backend != "local":
+        raise RuntimeError(
+            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'runpod'."
+        )
+
     youtube_video_id = video["id"]
     payload = video_info_payload(video)
     download_video(
@@ -372,6 +383,15 @@ def download_and_run_pipeline(
         cwd=PROJECT_ROOT,
         check=True,
     )
+    sync_processed_video(youtube_video_id, archive_dir, snapshot_date)
+    return {"backend": "local"}
+
+
+def sync_processed_video(
+    youtube_video_id: str,
+    archive_dir: Path,
+    snapshot_date: date,
+) -> None:
     subprocess.run(
         [
             sys.executable,
@@ -387,6 +407,66 @@ def download_and_run_pipeline(
         cwd=PROJECT_ROOT,
         check=True,
     )
+
+
+def run_pipeline_on_runpod(
+    video: dict,
+    archive_dir: Path,
+    snapshot_date: date,
+) -> dict:
+    from pipeline.support.runpod_jobs import (
+        RunpodClient,
+        RunpodConfig,
+        RunpodJobError,
+        download_s3_prefix,
+        s3_client,
+    )
+
+    youtube_video_id = str(video["id"])
+    video_dir = archive_dir / youtube_video_id
+    job_input = {
+        "video": video,
+        "archive_name": archive_dir.name,
+        "snapshot_date": snapshot_date.isoformat(),
+    }
+
+    client = RunpodClient(RunpodConfig.from_env())
+    job_id, output = client.run(job_input)
+    if str(output.get("video_id") or "") != youtube_video_id:
+        raise RunpodJobError(
+            f"Le job Runpod {job_id} a renvoye un autre identifiant video."
+        )
+    bucket = str(output.get("bucket") or "").strip()
+    prefix = str(output.get("prefix") or "").strip().strip("/")
+    expected_prefix = f"youtube/{archive_dir.name}/{youtube_video_id}"
+    configured_bucket = os.getenv("S3_BUCKET_NAME", "").strip()
+    if (
+        not bucket
+        or (configured_bucket and bucket != configured_bucket)
+        or prefix != expected_prefix
+    ):
+        raise RunpodJobError(
+            f"Le job Runpod {job_id} a renvoye une destination S3 invalide."
+        )
+
+    region = os.getenv("S3_REGION", "").strip()
+    downloaded = download_s3_prefix(
+        s3_client(region),
+        bucket,
+        prefix,
+        video_dir,
+    )
+    print(
+        f"[runpod] {downloaded} artefact(s) rapatrie(s) depuis "
+        f"s3://{bucket}/{prefix}/",
+        flush=True,
+    )
+    sync_processed_video(youtube_video_id, archive_dir, snapshot_date)
+    return {
+        "backend": "runpod",
+        "job_id": job_id,
+        "s3_uri": f"s3://{bucket}/{prefix}",
+    }
 
 
 def empty_metrics() -> dict:
@@ -633,7 +713,7 @@ def run() -> dict:
                 update_archive_log("running")
                 print(f"[daily-sync] lancement du pipeline pour {youtube_video_id}.")
                 try:
-                    download_and_run_pipeline(
+                    execution_result = download_and_run_pipeline(
                         video,
                         archive_dir,
                         download_dir,
@@ -660,6 +740,7 @@ def run() -> dict:
                     "status": "completed",
                     "succeeded": True,
                     "error": None,
+                    **execution_result,
                 }
                 update_archive_log("running")
                 if youtube_video_id in sql_missing_ids:

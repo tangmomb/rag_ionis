@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 
@@ -12,6 +13,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="gpu:0")
     parser.add_argument("--lang", default="fr")
     parser.add_argument("--min-confidence", type=float, default=0.9)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=int(os.getenv("PADDLEOCR_BATCH_SIZE", "8")),
+    )
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -28,6 +34,7 @@ def main() -> None:
         device=args.device,
         lang=args.lang,
         min_confidence=args.min_confidence,
+        batch_size=args.batch_size,
         force=args.force,
     )
 

@@ -1153,10 +1153,13 @@ def install_torch_import_stub():
 
 
 class LocalPaddleOCR:
-    def __init__(self, device="gpu:0", lang="fr", min_confidence=0.9):
+    def __init__(self, device="gpu:0", lang="fr", min_confidence=0.9, batch_size=8):
         self.device = device
         self.lang = lang
         self.min_confidence = min_confidence
+        self.batch_size = int(batch_size)
+        if self.batch_size < 1:
+            raise ValueError("Le batch_size PaddleOCR doit etre positif.")
         self.backend = None
         self.engine = None
         self._init_engine()
@@ -1175,9 +1178,16 @@ class LocalPaddleOCR:
                 "use_doc_unwarping": False,
                 "use_angle_cls": False,
                 "use_gpu": self.device.startswith("gpu"),
+                "text_recognition_batch_size": self.batch_size,
                 "show_log": False,
             }
             kwargs = {key: value for key, value in requested.items() if key in accepted}
+            accepts_extra_options = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if "device" in accepted or accepts_extra_options:
+                kwargs["device"] = self.device
             self.engine = PaddleOCR(**kwargs)
             self.backend = "paddleocr"
             return
@@ -1203,6 +1213,38 @@ class LocalPaddleOCR:
         if self.backend == "paddlex":
             return self._recognize_paddlex_raw(image_path)
         return self._recognize_paddleocr_raw(image_path)
+
+    def recognize_raw_batch(self, image_paths):
+        paths = [Path(path) for path in image_paths]
+        if not paths:
+            return []
+        if not hasattr(self.engine, "predict"):
+            return [self.recognize_raw(path) for path in paths]
+
+        try:
+            output = self.engine.predict(
+                input=[str(path) for path in paths],
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                text_rec_score_thresh=self.min_confidence,
+            )
+            results = []
+            for result in output:
+                payload = getattr(result, "json", result)
+                if isinstance(payload, dict) and "res" in payload:
+                    payload = payload["res"]
+                # Keep the same per-image shape as recognize_raw(), which returns
+                # a list because an input may contain several pages.
+                results.append([payload])
+            if len(results) == len(paths):
+                return results
+        except (AttributeError, NotImplementedError, TypeError):
+            pass
+
+        # Compatibility fallback for older PaddleOCR/PaddleX versions that only
+        # accept one image at a time.
+        return [self.recognize_raw(path) for path in paths]
 
     def _recognize_paddlex(self, image_path):
         records = []

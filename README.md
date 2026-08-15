@@ -349,6 +349,9 @@ La durée n'est pas une étape d'inspection : elle est obtenue immédiatement pa
 Sous Windows, `ocr.extract_raw` lance PaddleOCR dans un processus Python dédié.
 Cette isolation évite les conflits de DLL CUDA/cuDNN lorsque la classification
 des frames a déjà chargé PyTorch dans le processus principal.
+La classification prépare le prochain lot de frames sur CPU pendant l'inférence
+GPU. PaddleOCR reçoit les images par lots et utilise `PADDLEOCR_BATCH_SIZE=8` par
+défaut ; réduire cette valeur si la VRAM est insuffisante.
 
 ### Traitements communs
 
@@ -682,6 +685,7 @@ WHISPERX_COMPUTE_TYPE=float16
 WHISPERX_CUDA_FALLBACK_COMPUTE_TYPE=int8_float16
 WHISPERX_STRICT_CUDA=1
 WHISPERX_BATCH_SIZE=4
+PADDLEOCR_BATCH_SIZE=8
 
 S3_BUCKET_NAME=...
 S3_REGION=...
@@ -1056,8 +1060,76 @@ cron quotidienne à 03:00 peut être installée avec le bon utilisateur de servi
 0 3 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_runs 2>&1 | logger -t rag-ionis-youtube
 ```
 
-Le planificateur n’a besoin que de `DATABASE_URL` et `YOUTUBE_API_KEY` dans le
-fichier `.env` du projet. Une erreur limitée à une vidéo n’empêche pas les autres
+#### Traitement GPU avec Runpod Serverless
+
+`pipeline.update_runs` conserve le mode local par défaut. Pour déléguer le
+téléchargement et tout le pipeline d'ingestion à un worker Runpod, configurer le
+VPS ainsi :
+
+```dotenv
+PIPELINE_EXECUTION_BACKEND=runpod
+RUNPOD_API_KEY=...
+RUNPOD_ENDPOINT_ID=...
+RUNPOD_POLL_SECONDS=5
+RUNPOD_JOB_TIMEOUT_SECONDS=21600
+
+S3_BUCKET_NAME=...
+S3_REGION=eu-west-3
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+```
+
+Le VPS soumet un job asynchrone avec seulement les métadonnées de la vidéo,
+attend son résultat, télécharge depuis S3 le dossier produit puis exécute
+`sync_database` localement. PostgreSQL n'a donc pas besoin d'être exposé au
+worker GPU. Le journal `daily_sync_log.json` conserve le backend, l'identifiant
+du job Runpod et l'URI S3 terminée.
+
+Construire puis publier l'image du worker :
+
+```bash
+docker build --platform linux/amd64 -f Dockerfile.runpod \
+  -t REGISTRY/rag-ionis-runpod:VERSION .
+docker push REGISTRY/rag-ionis-runpod:VERSION
+```
+
+Créer ensuite un endpoint Runpod **Queue** avec cette image et les réglages
+suivants :
+
+- GPU : `4090 PRO` 24 Go ;
+- Flex workers : minimum `0`, maximum `1` ;
+- idle timeout : `5` secondes ;
+- execution timeout : `21600` secondes, à augmenter pour les vidéos très longues ;
+- FlashBoot activé ;
+- volume réseau monté dans `/runpod-volume` pour mettre en cache les modèles.
+
+Les secrets suivants appartiennent à l'environnement du template Runpod et ne
+doivent jamais être inclus dans le JSON du job :
+
+```dotenv
+OPENAI_API_KEY=...
+OPENAI_SERVICE_TIER=auto
+HUGGINGFACE_TOKEN=...
+S3_BUCKET_NAME=...
+S3_REGION=eu-west-3
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+WHISPERX_MODEL=large-v3
+WHISPERX_DEVICE=cuda
+WHISPERX_COMPUTE_TYPE=float16
+WHISPERX_STRICT_CUDA=1
+WHISPERX_DIARIZATION_DEVICE=cuda
+PADDLEOCR_BATCH_SIZE=8
+```
+
+Le worker efface uniquement le préfixe S3 exact de la vidéo et de l'archive en
+cas de nouvelle tentative, puis y charge la vidéo, les métadonnées et tous les
+artefacts. L'archive horodatée empêche qu'un job quotidien touche les résultats
+d'un autre lancement.
+
+En mode local, le planificateur utilise `DATABASE_URL`, `YOUTUBE_API_KEY` et les
+variables des étapes métier. En mode Runpod, le VPS requiert en plus les
+variables `RUNPOD_*` et les accès S3 décrits ci-dessus. Une erreur limitée à une vidéo n’empêche pas les autres
 d’être actualisées et produit le statut `completed_with_errors`. Un échec global
 produit le statut `failed`. Les détails sont conservés dans `update_runs`.
 

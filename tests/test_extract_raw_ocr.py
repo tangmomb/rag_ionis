@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import tempfile
+import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pipeline.steps.inspection import extract_raw_ocr
 from pipeline.support.json_io import read_json
+from pipeline.support.paddle_ocr import LocalPaddleOCR
 
 
 class RecordingRawOcr:
@@ -16,6 +18,17 @@ class RecordingRawOcr:
     def recognize_raw(self, image_path: Path) -> object:
         self.images.append(image_path)
         return {"recognized": image_path.stem}
+
+
+class RecordingBatchRawOcr(RecordingRawOcr):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[list[Path]] = []
+
+    def recognize_raw_batch(self, image_paths: list[Path]) -> list[object]:
+        paths = list(image_paths)
+        self.batches.append(paths)
+        return [{"recognized": path.stem} for path in paths]
 
 
 class ExtractRawOcrTests(unittest.TestCase):
@@ -97,6 +110,70 @@ class ExtractRawOcrTests(unittest.TestCase):
                         }
                     ],
                 )
+
+    def test_extract_for_video_batches_images_when_recognizer_supports_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            images_dir = root / "images"
+            output_dir = root / "ocr" / "raw"
+            for index in range(5):
+                image_path = images_dir / "footage" / f"{index}.png"
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                image_path.write_bytes(b"raw")
+
+            recognizer = RecordingBatchRawOcr()
+            with (
+                patch.object(extract_raw_ocr, "existing_images_dir", return_value=images_dir),
+                patch.object(extract_raw_ocr, "output_ocr_raw_dir", return_value=output_dir),
+            ):
+                extract_raw_ocr.extract_for_video(
+                    root / "video",
+                    batch_size=2,
+                    force=True,
+                    ocr=recognizer,
+                )
+
+            self.assertEqual([len(batch) for batch in recognizer.batches], [2, 2, 1])
+            self.assertEqual(recognizer.images, [])
+
+    def test_local_paddle_ocr_passes_device_and_recognition_batch_size(self) -> None:
+        captured = {}
+
+        class FakePaddleOCR:
+            def __init__(self, lang=None, text_recognition_batch_size=None, **kwargs):
+                captured.update(
+                    lang=lang,
+                    text_recognition_batch_size=text_recognition_batch_size,
+                    **kwargs,
+                )
+
+        fake_module = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
+        with (
+            patch("pipeline.support.paddle_ocr.install_torch_import_stub"),
+            patch.dict("sys.modules", {"paddleocr": fake_module}),
+        ):
+            recognizer = LocalPaddleOCR(device="gpu:1", lang="en", batch_size=12)
+
+        self.assertEqual(recognizer.backend, "paddleocr")
+        self.assertEqual(captured["device"], "gpu:1")
+        self.assertEqual(captured["text_recognition_batch_size"], 12)
+
+    def test_local_paddle_ocr_maps_batch_results_to_each_image(self) -> None:
+        payloads = [{"rec_texts": ["one"]}, {"rec_texts": ["two"]}]
+        engine = Mock()
+        engine.predict.return_value = [{"res": payload} for payload in payloads]
+        recognizer = LocalPaddleOCR.__new__(LocalPaddleOCR)
+        recognizer.engine = engine
+        recognizer.backend = "paddleocr"
+        recognizer.min_confidence = 0.9
+
+        results = recognizer.recognize_raw_batch([Path("one.png"), Path("two.png")])
+
+        self.assertEqual(results, [[payloads[0]], [payloads[1]]])
+        self.assertEqual(
+            engine.predict.call_args.kwargs["input"],
+            ["one.png", "two.png"],
+        )
 
 
 if __name__ == "__main__":

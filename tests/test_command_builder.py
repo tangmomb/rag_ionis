@@ -80,7 +80,23 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn("archive horodatée précédente", daily_sync)
         self.assertIn("dossier était absent", daily_sync)
         self.assertIn("daily_sync_log.json", daily_sync)
-        self.assertIn('app.js?v=20260813-daily-sync-log', index)
+        self.assertIn('app.js?v=20260815-vps-tools', index)
+
+    def test_vps_actions_include_combined_tunnels_and_safe_sql_sync(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('category: "VPS"', source)
+        self.assertIn('id: "vps-tunnels"', source)
+        self.assertIn(
+            '-L 127.0.0.1:15432:127.0.0.1:5432 -L 127.0.0.1:16006:127.0.0.1:6006',
+            source,
+        )
+        self.assertIn('id: "vps-phoenix"', source)
+        self.assertIn('http://127.0.0.1:16006', source)
+        self.assertIn('id: "vps-sync-db"', source)
+        self.assertIn('PYTHON_DOTENV_DISABLED', source)
+        self.assertIn('pipeline.publish.sync_database', source)
+        self.assertIn('if (mode === "dry-run") syncArgs.push("--dry-run");', source)
 
 if __name__ == "__main__":
     unittest.main()

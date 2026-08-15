@@ -461,9 +461,84 @@ const actions = [
       },
     ],
   },
+  {
+    id: "vps-tunnels",
+    category: "VPS",
+    title: "Ouvrir les tunnels VPS",
+    short: "PostgreSQL et Phoenix dans une seule session SSH",
+    description: "Ouvre une connexion SSH qui redirige PostgreSQL vers le port local 15432 et Phoenix vers le port local 16006. Laisse le terminal ouvert pendant leur utilisation.",
+    icon: "⇆",
+    accent: "#d9f36d",
+    shellCommand: String.raw`ssh -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" -o ExitOnForwardFailure=yes -N -L 127.0.0.1:15432:127.0.0.1:5432 -L 127.0.0.1:16006:127.0.0.1:6006 ubuntu@179.237.98.117`,
+    sections: [],
+  },
+  {
+    id: "vps-phoenix",
+    category: "VPS",
+    title: "Consulter Phoenix du VPS",
+    short: "Ouvrir l’interface via le tunnel SSH",
+    description: "Ouvre Phoenix dans le navigateur. Le tunnel VPS doit déjà être actif dans un autre terminal.",
+    icon: "◉",
+    accent: "#dce8f5",
+    shellCommand: "Start-Process http://127.0.0.1:16006",
+    sections: [],
+  },
+  {
+    id: "vps-sync-db",
+    category: "VPS",
+    title: "Synchroniser SQL du VPS",
+    short: "Tester, simuler ou publier via le tunnel PostgreSQL",
+    description: "Configure temporairement ce terminal PowerShell pour cibler PostgreSQL du VPS, puis teste la connexion ou synchronise les fichiers locaux.",
+    icon: "⇄",
+    accent: "#e7e1f4",
+    commandBuilder: buildVpsDatabaseCommand,
+    sections: [
+      {
+        title: "Connexion PostgreSQL du VPS",
+        fields: [
+          { id: "vpsDatabaseUser", label: "Utilisateur SQL", type: "text", value: "rag_ionis", required: true },
+          { id: "vpsDatabaseName", label: "Nom de la base", type: "text", value: "rag_ionis", required: true },
+          { id: "vpsDatabasePassword", label: "Mot de passe SQL", type: "password", placeholder: "POSTGRES_PASSWORD du VPS", required: true, help: "La valeur reste dans ce navigateur et sera copiée dans la commande PowerShell.", full: true },
+          {
+            id: "vpsDatabaseMode",
+            label: "Opération",
+            type: "select",
+            value: "dry-run",
+            defaultValue: "dry-run",
+            options: [
+              ["test", "Tester la connexion"],
+              ["dry-run", "Simuler la synchronisation"],
+              ["sync", "Synchroniser réellement"],
+            ],
+            full: true,
+          },
+        ],
+      },
+      {
+        title: "Source locale de la synchronisation",
+        fields: [
+          { id: "videoDir", label: "Dossier traité", flag: "--video-dir", type: "text", placeholder: "Défaut : dernier dossier", full: true },
+          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube" },
+          { id: "videoIds", label: "Limiter à des IDs vidéo", flag: "--video-id", type: "textarea", placeholder: "Un ID par ligne", repeatable: true, full: true },
+        ],
+      },
+    ],
+    warning: "Le mode « Synchroniser réellement » écrit dans la base de production. Lance d’abord la simulation et n’utilise pas --reset-database.",
+  },
+  {
+    id: "vps-clean-session",
+    category: "VPS",
+    title: "Nettoyer la session VPS",
+    short: "Retirer les variables PostgreSQL de production",
+    description: "Supprime DATABASE_URL et le verrouillage du fichier .env dans le terminal PowerShell courant. Ferme séparément le tunnel avec Ctrl+C.",
+    icon: "×",
+    accent: "#f5ddd5",
+    shellCommand: "Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue; Remove-Item Env:PYTHON_DOTENV_DISABLED -ErrorAction SilentlyContinue",
+    sections: [],
+  },
 ];
 
-const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance"];
+const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance", "VPS"];
 const launchers = {
   venv: String.raw`.\.venv\Scripts\python.exe`,
   python: "python",
@@ -482,6 +557,7 @@ const elements = {
   categoryTabs: document.querySelector("#category-tabs"),
   search: document.querySelector("#action-search"),
   form: document.querySelector("#options-form"),
+  launcherRow: document.querySelector("#launcher-row"),
   launcher: document.querySelector("#launcher"),
   title: document.querySelector("#selected-title"),
   description: document.querySelector("#selected-description"),
@@ -590,7 +666,7 @@ function renderField(field) {
   } else if (field.type === "textarea") {
     control = `<textarea id="${field.id}" name="${field.id}" placeholder="${field.placeholder || ""}" data-flag="${field.flag || ""}" data-repeatable="${Boolean(field.repeatable)}" data-exclusive="${field.exclusive || ""}">${field.value || ""}</textarea>`;
   } else {
-    const inputType = ["url", "number"].includes(field.type) ? field.type : "text";
+    const inputType = ["url", "number", "password"].includes(field.type) ? field.type : "text";
     control = `<input id="${field.id}" name="${field.id}" type="${inputType}" value="${field.value ?? ""}" placeholder="${field.placeholder || ""}" ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step !== undefined ? `step="${field.step}"` : ""} ${field.required ? "required" : ""} data-flag="${field.flag || ""}" data-positional="${Boolean(field.positional)}" data-default="${field.defaultValue ?? ""}" data-exclusive="${field.exclusive || ""}">`;
   }
 
@@ -610,6 +686,7 @@ function renderForm() {
   elements.icon.textContent = action.icon;
   elements.icon.style.background = action.accent;
   elements.badge.textContent = action.category;
+  elements.launcherRow.hidden = Boolean(action.shellCommand || action.commandBuilder);
   elements.form.innerHTML = sections.map((section) => `
     <section class="form-section">
       <h4 class="form-section-title">${section.title}</h4>
@@ -675,8 +752,55 @@ function baseArgs(action) {
   return args;
 }
 
+function formValue(id, fallback = "") {
+  const control = elements.form.elements.namedItem(id);
+  return control ? control.value.trim() : fallback;
+}
+
+function powerShellString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function buildVpsDatabaseCommand() {
+  const user = formValue("vpsDatabaseUser", "rag_ionis") || "rag_ionis";
+  const password = formValue("vpsDatabasePassword") || "REMPLACER_PAR_POSTGRES_PASSWORD";
+  const database = formValue("vpsDatabaseName", "rag_ionis") || "rag_ionis";
+  const mode = formValue("vpsDatabaseMode", "dry-run");
+  const databaseUrl = `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@127.0.0.1:15432/${encodeURIComponent(database)}`;
+  const setup = [
+    `$env:PYTHON_DOTENV_DISABLED = "1"`,
+    `$env:DATABASE_URL = ${powerShellString(databaseUrl)}`,
+  ];
+
+  if (mode === "test") {
+    return {
+      command: `${setup.join("\n")}\n${launchers.venv} -c "import os, psycopg; c=psycopg.connect(os.environ['DATABASE_URL']); print(c.execute('SELECT current_database(), current_user').fetchone()); c.close()"`,
+      summary: "Test de connexion au VPS",
+    };
+  }
+
+  const { args } = collectArgs();
+  const syncArgs = [launchers.venv, "-m", "pipeline.publish.sync_database", ...args];
+  if (mode === "dry-run") syncArgs.push("--dry-run");
+  return {
+    command: `${setup.join("\n")}\n${syncArgs.join(" ")}`,
+    summary: mode === "dry-run" ? "Simulation sur la base du VPS" : "Synchronisation réelle de la base du VPS",
+  };
+}
+
 function updateCommand() {
   const action = currentAction();
+  if (action.shellCommand) {
+    elements.output.textContent = action.shellCommand;
+    elements.summary.textContent = "Commande PowerShell VPS";
+    return;
+  }
+  if (action.commandBuilder) {
+    const result = action.commandBuilder();
+    elements.output.textContent = result.command;
+    elements.summary.textContent = result.summary;
+    return;
+  }
   const { args, activeOptions } = collectArgs();
   const command = [launchers[elements.launcher.value], ...baseArgs(action), ...args].join(" ");
   elements.output.textContent = command;

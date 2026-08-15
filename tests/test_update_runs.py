@@ -256,6 +256,7 @@ class YoutubeDailySyncTests(unittest.TestCase):
         download_dir = Path("downloads/youtube")
 
         with (
+            patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "local"}),
             patch.object(update_runs, "download_video") as download,
             patch.object(update_runs.subprocess, "run") as pipeline_run,
         ):
@@ -292,6 +293,33 @@ class YoutubeDailySyncTests(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs["check"] for call in pipeline_run.call_args_list)
         )
+
+    def test_runpod_backend_delegates_without_local_download(self) -> None:
+        video = {"id": "new-video-1"}
+        expected = {
+            "backend": "runpod",
+            "job_id": "job-123",
+            "s3_uri": "s3://bucket/youtube/archive/new-video-1",
+        }
+        with (
+            patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "runpod"}),
+            patch.object(
+                update_runs,
+                "run_pipeline_on_runpod",
+                return_value=expected,
+            ) as remote,
+            patch.object(update_runs, "download_video") as local_download,
+        ):
+            result = update_runs.download_and_run_pipeline(
+                video,
+                Path("downloads/youtube/20260815_0300"),
+                Path("downloads/youtube"),
+                datetime(2026, 8, 15).date(),
+            )
+
+        self.assertEqual(result, expected)
+        remote.assert_called_once()
+        local_download.assert_not_called()
 
     def test_stats_snapshot_is_written_even_when_counts_are_unchanged(self) -> None:
         class RecordingCursor:

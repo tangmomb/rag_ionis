@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -129,7 +130,9 @@ def classify_frames(context: PipelineContext) -> TaskResult:
     result = classify_video(
         context.video_path,
         model=DEFAULT_MODEL_PATH,
-        batch_size=DEFAULT_BATCH_SIZE,
+        batch_size=int(
+            os.getenv("FRAME_CLASSIFICATION_BATCH_SIZE", str(DEFAULT_BATCH_SIZE))
+        ),
         device=None,
         cache_dir=image_directory / DEFAULT_EMBEDDING_CACHE_DIRNAME,
         force=context.force_rebuild,

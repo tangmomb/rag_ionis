@@ -29,6 +29,7 @@ class TaskSpec:
     handler: StepHandler
     version: str = "1"
     postcondition: TaskPostcondition | None = None
+    requires_gpu: bool = False
 
     @property
     def entrypoint(self) -> str:
@@ -61,6 +62,7 @@ _TASK_SPECS = (
         "inspection",
         "Classifier les frames",
         step_handlers.classify_frames,
+        requires_gpu=True,
     ),
     TaskSpec(
         "video.detect_interview",
@@ -81,6 +83,7 @@ _TASK_SPECS = (
         "inspection",
         "Extraire l'OCR brut",
         step_handlers.extract_raw_ocr,
+        requires_gpu=True,
     ),
     TaskSpec(
         "ocr.extract_boxes",
@@ -126,6 +129,7 @@ _TASK_SPECS = (
         "processing",
         "Transcrire l'audio avec WhisperX",
         step_handlers.transcribe_whisper,
+        requires_gpu=True,
     ),
     TaskSpec(
         "speakers.propose",

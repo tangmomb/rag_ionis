@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -334,7 +335,7 @@ def download_and_run_pipeline(
     download_dir: Path,
     snapshot_date: date,
 ) -> dict:
-    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "local").strip().lower()
+    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "runpod").strip().lower()
     if backend == "runpod":
         return run_pipeline_on_runpod(video, archive_dir, snapshot_date)
     if backend != "local":
@@ -425,9 +426,32 @@ def run_pipeline_on_runpod(
     youtube_video_id = str(video["id"])
     video_dir = archive_dir / youtube_video_id
     job_input = {
-        "video": video,
+        "schema_version": 2,
+        "operation": "pipeline_command",
+        "command": "run",
+        "include_embeddings": True,
+        "video_id": youtube_video_id,
         "archive_name": archive_dir.name,
         "snapshot_date": snapshot_date.isoformat(),
+        "options": {
+            "force": False,
+            "openai_mode": os.getenv("DAILY_SYNC_OPENAI_MODE", "normal"),
+            "correction_mode": os.getenv("DAILY_SYNC_CORRECTION_MODE", "balanced"),
+            "frame_interval_seconds": float(
+                os.getenv("DAILY_SYNC_FRAME_INTERVAL_SECONDS", "0.5")
+            ),
+            "details_per_section": int(
+                os.getenv("DAILY_SYNC_DETAILS_PER_SECTION", "6")
+            ),
+        },
+        "source": {
+            "type": "youtube",
+            "video": video,
+        },
+        "result": {
+            "bucket": os.getenv("S3_BUCKET_NAME", "").strip(),
+            "prefix": f"youtube/{archive_dir.name}/{youtube_video_id}",
+        },
     }
 
     client = RunpodClient(RunpodConfig.from_env())
@@ -698,6 +722,7 @@ def run() -> dict:
             archived_videos_by_id = {
                 video["id"]: video for video, _comments in cache_ready
             }
+            runnable_videos = []
             for youtube_video_id in pipeline_video_ids:
                 video = archived_videos_by_id.get(youtube_video_id)
                 if video is None:
@@ -710,16 +735,54 @@ def run() -> dict:
                     continue
                 metrics["pipeline_videos_started"] += 1
                 pipeline_results[youtube_video_id]["status"] = "running"
-                update_archive_log("running")
-                print(f"[daily-sync] lancement du pipeline pour {youtube_video_id}.")
+                runnable_videos.append((youtube_video_id, video))
+
+            update_archive_log("running")
+
+            def execute_remote_video(item):
+                youtube_video_id, video = item
+                print(
+                    f"[daily-sync] lancement du pipeline pour {youtube_video_id}."
+                )
                 try:
-                    execution_result = download_and_run_pipeline(
+                    result = download_and_run_pipeline(
                         video,
                         archive_dir,
                         download_dir,
                         snapshot_date,
                     )
+                    return youtube_video_id, result, None
                 except Exception as error:
+                    return youtube_video_id, None, error
+
+            backend = os.getenv(
+                "PIPELINE_EXECUTION_BACKEND",
+                "runpod",
+            ).strip().lower()
+            max_concurrent = (
+                max(1, int(os.getenv("RUNPOD_MAX_CONCURRENT_JOBS", "4")))
+                if backend == "runpod"
+                else 1
+            )
+            completed_runs = []
+            if max_concurrent > 1 and len(runnable_videos) > 1:
+                with ThreadPoolExecutor(
+                    max_workers=min(max_concurrent, len(runnable_videos)),
+                    thread_name_prefix="daily-runpod",
+                ) as executor:
+                    futures = [
+                        executor.submit(execute_remote_video, item)
+                        for item in runnable_videos
+                    ]
+                    for future in as_completed(futures):
+                        completed_runs.append(future.result())
+            else:
+                completed_runs = [
+                    execute_remote_video(item) for item in runnable_videos
+                ]
+
+            for youtube_video_id, execution_result, error in completed_runs:
+                if error is not None:
                     errors.append(
                         {
                             "video_id": youtube_video_id,

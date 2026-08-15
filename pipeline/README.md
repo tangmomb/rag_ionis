@@ -588,6 +588,13 @@ Préparer effectivement la vidéo jusqu'aux chunks :
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
 ```
 
+Avec `PIPELINE_EXECUTION_BACKEND=runpod` (valeur par défaut), cette commande
+envoie le dossier de la vidéo sur S3, exécute tout le plan dans un unique job
+Runpod 4090, puis remplace localement `outputs/` et actualise `metadata/`. Les
+tâches `frames.classify`, `ocr.extract_raw` et `transcript.whisper` lancées seules
+suivent le même chemin. Utiliser `PIPELINE_EXECUTION_BACKEND=local` uniquement
+pour un dépannage local explicite.
+
 Lister le registre ou relancer une seule tâche :
 
 ```powershell

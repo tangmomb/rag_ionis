@@ -1062,9 +1062,14 @@ cron quotidienne à 03:00 peut être installée avec le bon utilisateur de servi
 
 #### Traitement GPU avec Runpod Serverless
 
-`pipeline.update_runs` conserve le mode local par défaut. Pour déléguer le
-téléchargement et tout le pipeline d'ingestion à un worker Runpod, configurer le
-VPS ainsi :
+Runpod est le backend par défaut de `pipeline run`, des tâches GPU lancées seules
+et de `pipeline.update_runs`. La commande locale sélectionne toujours les vidéos,
+mais l'exécution lourde est soumise à un worker 4090 Serverless. Pour une vidéo
+locale, son dossier transite par un préfixe S3 temporaire, puis `outputs/` et
+`metadata/` sont rapatriés à leur emplacement d'origine. La daily sync envoie
+seulement les métadonnées : le worker télécharge directement la vidéo YouTube.
+
+Configurer la machine qui soumet les jobs ainsi :
 
 ```dotenv
 PIPELINE_EXECUTION_BACKEND=runpod
@@ -1072,6 +1077,9 @@ RUNPOD_API_KEY=...
 RUNPOD_ENDPOINT_ID=...
 RUNPOD_POLL_SECONDS=5
 RUNPOD_JOB_TIMEOUT_SECONDS=21600
+RUNPOD_MAX_CONCURRENT_JOBS=4
+RUNPOD_S3_JOB_PREFIX=runpod/jobs
+RUNPOD_KEEP_JOB_ARTIFACTS=0
 
 S3_BUCKET_NAME=...
 S3_REGION=eu-west-3
@@ -1079,11 +1087,20 @@ S3_ACCESS_KEY_ID=...
 S3_SECRET_ACCESS_KEY=...
 ```
 
-Le VPS soumet un job asynchrone avec seulement les métadonnées de la vidéo,
-attend son résultat, télécharge depuis S3 le dossier produit puis exécute
-`sync_database` localement. PostgreSQL n'a donc pas besoin d'être exposé au
-worker GPU. Le journal `daily_sync_log.json` conserve le backend, l'identifiant
-du job Runpod et l'URI S3 terminée.
+Les commandes restent inchangées :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
+.\.venv\Scripts\python.exe -m pipeline task transcript.whisper VIDEO_ID
+.\.venv\Scripts\python.exe -m pipeline.update_runs
+```
+
+`plan`, `--dry-run`, `inspect --probe-only` et les tâches strictement CPU restent
+locaux. `PIPELINE_EXECUTION_BACKEND=local` permet un dépannage explicite sans
+Runpod. La daily sync exécute jusqu'à `RUNPOD_MAX_CONCURRENT_JOBS` vidéos en
+parallèle, télécharge les dossiers produits puis lance `sync_database` localement.
+PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
+`daily_sync_log.json` conserve le backend, l'identifiant du job et l'URI S3.
 
 Construire puis publier l'image du worker :
 
@@ -1097,7 +1114,8 @@ Créer ensuite un endpoint Runpod **Queue** avec cette image et les réglages
 suivants :
 
 - GPU : `4090 PRO` 24 Go ;
-- Flex workers : minimum `0`, maximum `1` ;
+- Flex workers : minimum `0`, maximum `4` (aligné avec
+  `RUNPOD_MAX_CONCURRENT_JOBS`) ;
 - idle timeout : `5` secondes ;
 - execution timeout : `21600` secondes, à augmenter pour les vidéos très longues ;
 - FlashBoot activé ;
@@ -1118,14 +1136,21 @@ WHISPERX_MODEL=large-v3
 WHISPERX_DEVICE=cuda
 WHISPERX_COMPUTE_TYPE=float16
 WHISPERX_STRICT_CUDA=1
+WHISPERX_BATCH_SIZE=16
 WHISPERX_DIARIZATION_DEVICE=cuda
-PADDLEOCR_BATCH_SIZE=8
+WHISPERX_KEEP_MODEL=1
+FRAME_CLASSIFICATION_BATCH_SIZE=64
+FRAME_CLASSIFICATION_DTYPE=float16
+FRAME_CLASSIFICATION_KEEP_MODEL=1
+PADDLEOCR_BATCH_SIZE=32
 ```
 
-Le worker efface uniquement le préfixe S3 exact de la vidéo et de l'archive en
-cas de nouvelle tentative, puis y charge la vidéo, les métadonnées et tous les
-artefacts. L'archive horodatée empêche qu'un job quotidien touche les résultats
-d'un autre lancement.
+L'image Docker fournit déjà ces valeurs optimisées. Le volume réseau monté dans
+`/runpod-volume` conserve les modèles Hugging Face, Torch et Paddle entre les
+démarrages. Un worker chaud garde aussi DINO, CLIP, WhisperX et la diarisation en
+mémoire. Les préfixes temporaires des commandes CLI sont supprimés après un
+rapatriement réussi ; mettre `RUNPOD_KEEP_JOB_ARTIFACTS=1` pour les conserver à
+des fins de diagnostic.
 
 En mode local, le planificateur utilise `DATABASE_URL`, `YOUTUBE_API_KEY` et les
 variables des étapes métier. En mode Runpod, le VPS requiert en plus les

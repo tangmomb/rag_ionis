@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import warnings
@@ -15,6 +16,7 @@ DINO_EMBEDDING_DIMENSIONS = {
     "facebook/dinov2-base": 768,
 }
 DEFAULT_BATCH_SIZE = 16
+_EMBEDDER_CACHE = {}
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 FOOTAGE_DIR_NAME = "footage"
 GRAPHIC_DIR_NAME = "graphic"
@@ -190,6 +192,14 @@ class FrozenBackboneEmbedder:
         self.config = config
         self.torch = torch
         self.device = torch.device(device)
+        self.inference_dtype = os.getenv(
+            "FRAME_CLASSIFICATION_DTYPE",
+            "float32",
+        ).strip().lower()
+        if self.inference_dtype not in {"float32", "float16", "bfloat16"}:
+            raise ValueError(
+                "FRAME_CLASSIFICATION_DTYPE doit valoir float32, float16 ou bfloat16."
+            )
         self.dino_processor = AutoImageProcessor.from_pretrained(self.config.dino_model, use_fast=False)
         self.dino_model = AutoModel.from_pretrained(self.config.dino_model).to(self.device)
         self.dino_model.eval()
@@ -225,7 +235,18 @@ class FrozenBackboneEmbedder:
         torch = self.torch
         dino_inputs, clip_inputs = prepared
 
-        with torch.inference_mode():
+        autocast_enabled = (
+            self.device.type == "cuda" and self.inference_dtype != "float32"
+        )
+        autocast_dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }.get(self.inference_dtype, torch.float32)
+        with torch.inference_mode(), torch.autocast(
+            device_type=self.device.type,
+            dtype=autocast_dtype,
+            enabled=autocast_enabled,
+        ):
             dino_inputs = self._to_device(dino_inputs)
             dino_outputs = self.dino_model(**dino_inputs)
             dino_vec = dino_outputs.last_hidden_state[:, 0, :]
@@ -256,6 +277,27 @@ class FrozenBackboneEmbedder:
         if not images:
             return np.empty((0, 0), dtype=np.float32)
         return self.embed_prepared(self.prepare_images(images))
+
+
+def get_frozen_backbone_embedder(config, device):
+    keep_model = os.getenv(
+        "FRAME_CLASSIFICATION_KEEP_MODEL",
+        "0",
+    ).strip().lower() in {"1", "true", "yes"}
+    if not keep_model:
+        return FrozenBackboneEmbedder(config=config, device=device)
+    key = (
+        config.dino_model,
+        config.clip_model,
+        config.crop_bottom,
+        str(device),
+        os.getenv("FRAME_CLASSIFICATION_DTYPE", "float32").strip().lower(),
+    )
+    embedder = _EMBEDDER_CACHE.get(key)
+    if embedder is None:
+        embedder = FrozenBackboneEmbedder(config=config, device=device)
+        _EMBEDDER_CACHE[key] = embedder
+    return embedder
 
 
 def cache_path_for_image(
@@ -560,7 +602,7 @@ def classify_paths(image_paths, args):
     print(f"[model] {args.model}", flush=True)
     print(f"[device] {device}", flush=True)
     config = EmbeddingConfig(dino_model=dino_model, clip_model=clip_model, crop_bottom=crop_bottom)
-    embedder = FrozenBackboneEmbedder(config=config, device=device)
+    embedder = get_frozen_backbone_embedder(config=config, device=device)
     embeddings = embed_image_paths(
         image_paths,
         embedder,

@@ -214,13 +214,13 @@ def main() -> None:
         raise RuntimeError(f"Aucune video trouvee dans {args.root}")
 
     print(f"{len(videos)} video(s) selectionnee(s)", flush=True)
-    from .support.runpod_execution import (
+    from .support.scaleway_execution import (
         RemoteCommand,
-        run_videos_on_runpod,
-        should_delegate_to_runpod,
+        run_videos_on_scaleway,
+        should_delegate_to_scaleway,
     )
 
-    if should_delegate_to_runpod(
+    if should_delegate_to_scaleway(
         args.command,
         task_id=getattr(args, "task_id", None),
         dry_run=getattr(args, "dry_run", False),
@@ -231,10 +231,10 @@ def main() -> None:
             task_id=getattr(args, "task_id", None),
             skip_inspection=getattr(args, "skip_inspection", False),
         )
-        results = run_videos_on_runpod(videos, options, remote_command)
+        results = run_videos_on_scaleway(videos, options, remote_command)
         for result in results:
             print(
-                f"[runpod] termine job={result['job_id']} video={result['video']}",
+                f"[scaleway] termine instance={result['job_id']} video={result['video']}",
                 flush=True,
             )
         return

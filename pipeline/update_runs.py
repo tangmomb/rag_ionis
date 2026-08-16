@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -335,12 +336,12 @@ def download_and_run_pipeline(
     download_dir: Path,
     snapshot_date: date,
 ) -> dict:
-    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "runpod").strip().lower()
-    if backend == "runpod":
-        return run_pipeline_on_runpod(video, archive_dir, snapshot_date)
+    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "scaleway").strip().lower()
+    if backend == "scaleway":
+        return run_pipeline_on_scaleway(video, archive_dir, snapshot_date)
     if backend != "local":
         raise RuntimeError(
-            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'runpod'."
+            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'scaleway'."
         )
 
     youtube_video_id = video["id"]
@@ -410,21 +411,30 @@ def sync_processed_video(
     )
 
 
-def run_pipeline_on_runpod(
+def run_pipeline_on_scaleway(
     video: dict,
     archive_dir: Path,
     snapshot_date: date,
 ) -> dict:
-    from pipeline.support.runpod_jobs import (
-        RunpodClient,
-        RunpodConfig,
-        RunpodJobError,
+    from pipeline.support.scaleway_jobs import (
+        ScalewayClient,
+        ScalewayConfig,
+        ScalewayJobError,
         download_s3_prefix,
         s3_client,
     )
 
     youtube_video_id = str(video["id"])
     video_dir = archive_dir / youtube_video_id
+    bucket = os.getenv("S3_BUCKET_NAME", "").strip()
+    if not bucket:
+        raise RuntimeError("S3_BUCKET_NAME est requis pour la daily sync Scaleway.")
+    control_root = os.getenv(
+        "SCALEWAY_S3_JOB_PREFIX", "scaleway/jobs"
+    ).strip().strip("/")
+    if not control_root:
+        raise RuntimeError("SCALEWAY_S3_JOB_PREFIX ne peut pas etre vide.")
+    control_prefix = f"{control_root}/{uuid.uuid4().hex}"
     job_input = {
         "schema_version": 2,
         "operation": "pipeline_command",
@@ -449,16 +459,22 @@ def run_pipeline_on_runpod(
             "video": video,
         },
         "result": {
-            "bucket": os.getenv("S3_BUCKET_NAME", "").strip(),
+            "bucket": bucket,
             "prefix": f"youtube/{archive_dir.name}/{youtube_video_id}",
+        },
+        "control": {
+            "bucket": bucket,
+            "status_key": f"{control_prefix}/status.json",
         },
     }
 
-    client = RunpodClient(RunpodConfig.from_env())
-    job_id, output = client.run(job_input)
+    region = os.getenv("S3_REGION", "").strip()
+    object_store = s3_client(region)
+    client = ScalewayClient(ScalewayConfig.from_env())
+    job_id, output = client.run(job_input, object_store=object_store, bucket=bucket)
     if str(output.get("video_id") or "") != youtube_video_id:
-        raise RunpodJobError(
-            f"Le job Runpod {job_id} a renvoye un autre identifiant video."
+        raise ScalewayJobError(
+            f"Le job Scaleway {job_id} a renvoye un autre identifiant video."
         )
     bucket = str(output.get("bucket") or "").strip()
     prefix = str(output.get("prefix") or "").strip().strip("/")
@@ -469,25 +485,31 @@ def run_pipeline_on_runpod(
         or (configured_bucket and bucket != configured_bucket)
         or prefix != expected_prefix
     ):
-        raise RunpodJobError(
-            f"Le job Runpod {job_id} a renvoye une destination S3 invalide."
+        raise ScalewayJobError(
+            f"Le job Scaleway {job_id} a renvoye une destination S3 invalide."
         )
 
-    region = os.getenv("S3_REGION", "").strip()
     downloaded = download_s3_prefix(
-        s3_client(region),
+        object_store,
         bucket,
         prefix,
         video_dir,
     )
     print(
-        f"[runpod] {downloaded} artefact(s) rapatrie(s) depuis "
+        f"[scaleway] {downloaded} artefact(s) rapatrie(s) depuis "
         f"s3://{bucket}/{prefix}/",
         flush=True,
     )
     sync_processed_video(youtube_video_id, archive_dir, snapshot_date)
+    keep_job_artifacts = os.getenv(
+        "SCALEWAY_KEEP_JOB_ARTIFACTS", "0"
+    ).strip().lower() in {"1", "true", "yes"}
+    if not keep_job_artifacts:
+        from pipeline.publish.upload_outputs_to_s3 import delete_prefix
+
+        delete_prefix(object_store, bucket, control_prefix)
     return {
-        "backend": "runpod",
+        "backend": "scaleway",
         "job_id": job_id,
         "s3_uri": f"s3://{bucket}/{prefix}",
     }
@@ -757,18 +779,18 @@ def run() -> dict:
 
             backend = os.getenv(
                 "PIPELINE_EXECUTION_BACKEND",
-                "runpod",
+                "scaleway",
             ).strip().lower()
             max_concurrent = (
-                max(1, int(os.getenv("RUNPOD_MAX_CONCURRENT_JOBS", "4")))
-                if backend == "runpod"
+                max(1, int(os.getenv("SCALEWAY_MAX_CONCURRENT_JOBS", "1")))
+                if backend == "scaleway"
                 else 1
             )
             completed_runs = []
             if max_concurrent > 1 and len(runnable_videos) > 1:
                 with ThreadPoolExecutor(
                     max_workers=min(max_concurrent, len(runnable_videos)),
-                    thread_name_prefix="daily-runpod",
+                    thread_name_prefix="daily-scaleway",
                 ) as executor:
                     futures = [
                         executor.submit(execute_remote_video, item)

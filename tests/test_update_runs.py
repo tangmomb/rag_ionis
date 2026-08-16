@@ -294,18 +294,18 @@ class YoutubeDailySyncTests(unittest.TestCase):
             all(call.kwargs["check"] for call in pipeline_run.call_args_list)
         )
 
-    def test_runpod_backend_delegates_without_local_download(self) -> None:
+    def test_scaleway_backend_delegates_without_local_download(self) -> None:
         video = {"id": "new-video-1"}
         expected = {
-            "backend": "runpod",
+            "backend": "scaleway",
             "job_id": "job-123",
             "s3_uri": "s3://bucket/youtube/archive/new-video-1",
         }
         with (
-            patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "runpod"}),
+            patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "scaleway"}),
             patch.object(
                 update_runs,
-                "run_pipeline_on_runpod",
+                "run_pipeline_on_scaleway",
                 return_value=expected,
             ) as remote,
             patch.object(update_runs, "download_video") as local_download,

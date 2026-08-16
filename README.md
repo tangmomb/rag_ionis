@@ -1060,26 +1060,33 @@ cron quotidienne à 03:00 peut être installée avec le bon utilisateur de servi
 0 3 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_runs 2>&1 | logger -t rag-ionis-youtube
 ```
 
-#### Traitement GPU avec Runpod Serverless
+#### Traitement GPU avec une L40S Scaleway à la demande
 
-Runpod est le backend par défaut de `pipeline run`, des tâches GPU lancées seules
-et de `pipeline.update_runs`. La commande locale sélectionne toujours les vidéos,
-mais l'exécution lourde est soumise à un worker 4090 Serverless. Pour une vidéo
-locale, son dossier transite par un préfixe S3 temporaire, puis `outputs/` et
-`metadata/` sont rapatriés à leur emplacement d'origine. La daily sync envoie
-seulement les métadonnées : le worker télécharge directement la vidéo YouTube.
+Scaleway est le backend par défaut de `pipeline run`, des tâches GPU lancées
+seules et de `pipeline.update_runs`. Pour chaque job, l'orchestrateur crée une
+instance éphémère `L40S-1-48G` en `fr-par-2`, lui injecte un cloud-init, démarre
+le conteneur GPU puis supprime automatiquement l'instance, son volume et son IP.
+Pour une vidéo locale, son dossier transite par un préfixe S3 temporaire, puis
+`outputs/` et `metadata/` sont rapatriés. La daily sync transmet les métadonnées
+et le worker télécharge directement la vidéo YouTube.
 
 Configurer la machine qui soumet les jobs ainsi :
 
 ```dotenv
-PIPELINE_EXECUTION_BACKEND=runpod
-RUNPOD_API_KEY=...
-RUNPOD_ENDPOINT_ID=...
-RUNPOD_POLL_SECONDS=5
-RUNPOD_JOB_TIMEOUT_SECONDS=21600
-RUNPOD_MAX_CONCURRENT_JOBS=4
-RUNPOD_S3_JOB_PREFIX=runpod/jobs
-RUNPOD_KEEP_JOB_ARTIFACTS=0
+PIPELINE_EXECUTION_BACKEND=scaleway
+SCW_SECRET_KEY=...
+SCW_DEFAULT_PROJECT_ID=...
+SCW_DEFAULT_ZONE=fr-par-2
+SCALEWAY_INSTANCE_TYPE=L40S-1-48G
+SCALEWAY_IMAGE_LABEL=ubuntu_noble_gpu_os_13_nvidia
+SCALEWAY_ROOT_VOLUME_GB=125
+SCALEWAY_CONTAINER_IMAGE=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION
+SCALEWAY_POLL_SECONDS=10
+SCALEWAY_JOB_TIMEOUT_SECONDS=21600
+SCALEWAY_MAX_CONCURRENT_JOBS=1
+SCALEWAY_S3_JOB_PREFIX=scaleway/jobs
+SCALEWAY_KEEP_INSTANCE=0
+SCALEWAY_KEEP_JOB_ARTIFACTS=0
 
 S3_BUCKET_NAME=...
 S3_REGION=eu-west-3
@@ -1097,32 +1104,32 @@ Les commandes restent inchangées :
 
 `plan`, `--dry-run`, `inspect --probe-only` et les tâches strictement CPU restent
 locaux. `PIPELINE_EXECUTION_BACKEND=local` permet un dépannage explicite sans
-Runpod. La daily sync exécute jusqu'à `RUNPOD_MAX_CONCURRENT_JOBS` vidéos en
-parallèle, télécharge les dossiers produits puis lance `sync_database` localement.
+Scaleway. La daily sync exécute jusqu'à `SCALEWAY_MAX_CONCURRENT_JOBS` vidéos en
+parallèle — une instance L40S par vidéo — puis lance `sync_database` localement.
 PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
 `daily_sync_log.json` conserve le backend, l'identifiant du job et l'URI S3.
 
 Construire puis publier l'image du worker :
 
 ```bash
-docker build --platform linux/amd64 -f Dockerfile.runpod \
-  -t REGISTRY/rag-ionis-runpod:VERSION .
-docker push REGISTRY/rag-ionis-runpod:VERSION
+docker build --platform linux/amd64 -f Dockerfile.scaleway \
+  -t rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION .
+docker push rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION
 ```
 
-Créer ensuite un endpoint Runpod **Queue** avec cette image et les réglages
-suivants :
+Le namespace Container Registry peut rester privé. Le cloud-init écrit la clé
+Scaleway dans un fichier root-only séparé, l'utilise avec `docker login`, puis
+supprime ce fichier et ferme la session Registry avant de lancer le worker. La
+clé API doit autoriser le pull de l'image ainsi que la création, le démarrage et
+la suppression des Instances, volumes et IP du projet. La L40S est disponible
+en `fr-par-2` et `pl-waw-2`; la configuration par défaut utilise Paris.
+Le quota `L40S-1-48G` doit également être supérieur à zéro. Scaleway demande
+une identité vérifiée pour l'activer ; à défaut, la création échoue avant toute
+facturation avec `quotas_exceeded`.
 
-- GPU : `4090 PRO` 24 Go ;
-- Flex workers : minimum `0`, maximum `4` (aligné avec
-  `RUNPOD_MAX_CONCURRENT_JOBS`) ;
-- idle timeout : `5` secondes ;
-- execution timeout : `21600` secondes, à augmenter pour les vidéos très longues ;
-- FlashBoot activé ;
-- volume réseau monté dans `/runpod-volume` pour mettre en cache les modèles.
-
-Les secrets suivants appartiennent à l'environnement du template Runpod et ne
-doivent jamais être inclus dans le JSON du job :
+Les secrets métier ci-dessous sont transmis au conteneur dans un fichier
+d'environnement temporaire, accessible uniquement à root et supprimé en fin de
+job. `SCALEWAY_FORWARD_ENV` permet d'ajouter d'autres noms de variables :
 
 ```dotenv
 OPENAI_API_KEY=...
@@ -1136,25 +1143,25 @@ WHISPERX_MODEL=large-v3
 WHISPERX_DEVICE=cuda
 WHISPERX_COMPUTE_TYPE=float16
 WHISPERX_STRICT_CUDA=1
-WHISPERX_BATCH_SIZE=16
+WHISPERX_BATCH_SIZE=32
 WHISPERX_DIARIZATION_DEVICE=cuda
 WHISPERX_KEEP_MODEL=1
-FRAME_CLASSIFICATION_BATCH_SIZE=64
+FRAME_CLASSIFICATION_BATCH_SIZE=128
 FRAME_CLASSIFICATION_DTYPE=float16
 FRAME_CLASSIFICATION_KEEP_MODEL=1
-PADDLEOCR_BATCH_SIZE=32
+PADDLEOCR_BATCH_SIZE=64
 ```
 
-L'image Docker fournit déjà ces valeurs optimisées. Le volume réseau monté dans
-`/runpod-volume` conserve les modèles Hugging Face, Torch et Paddle entre les
-démarrages. Un worker chaud garde aussi DINO, CLIP, WhisperX et la diarisation en
-mémoire. Les préfixes temporaires des commandes CLI sont supprimés après un
-rapatriement réussi ; mettre `RUNPOD_KEEP_JOB_ARTIFACTS=1` pour les conserver à
-des fins de diagnostic.
+L'image Docker fournit déjà ces valeurs adaptées aux 48 Go de VRAM. Les préfixes
+temporaires sont supprimés après rapatriement réussi. Mettre
+`SCALEWAY_KEEP_JOB_ARTIFACTS=1` pour les conserver, ou
+`SCALEWAY_KEEP_INSTANCE=1` uniquement pour diagnostiquer une instance (elle
+continue alors d'être facturée).
 
 En mode local, le planificateur utilise `DATABASE_URL`, `YOUTUBE_API_KEY` et les
-variables des étapes métier. En mode Runpod, le VPS requiert en plus les
-variables `RUNPOD_*` et les accès S3 décrits ci-dessus. Une erreur limitée à une vidéo n’empêche pas les autres
+variables des étapes métier. En mode Scaleway, la machine de soumission requiert
+en plus les variables `SCW_*`, `SCALEWAY_*` et les accès S3 décrits ci-dessus.
+Une erreur limitée à une vidéo n’empêche pas les autres
 d’être actualisées et produit le statut `completed_with_errors`. Un échec global
 produit le statut `failed`. Les détails sont conservés dans `update_runs`.
 

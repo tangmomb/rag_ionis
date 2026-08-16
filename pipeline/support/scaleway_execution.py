@@ -13,10 +13,10 @@ from pathlib import Path
 from pipeline.catalog import TASKS
 from pipeline.options import PipelineOptions
 from pipeline.publish.upload_outputs_to_s3 import delete_prefix
-from pipeline.support.runpod_jobs import (
-    RunpodClient,
-    RunpodConfig,
-    RunpodJobError,
+from pipeline.support.scaleway_jobs import (
+    ScalewayClient,
+    ScalewayConfig,
+    ScalewayJobError,
     download_s3_prefix,
     s3_client,
     upload_s3_directory,
@@ -38,24 +38,24 @@ class RemoteCommand:
 
 
 def execution_backend() -> str:
-    if os.getenv("RUNPOD_WORKER", "").strip().lower() in {"1", "true", "yes"}:
+    if os.getenv("SCALEWAY_WORKER", "").strip().lower() in {"1", "true", "yes"}:
         return "local"
-    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "runpod").strip().lower()
-    if backend not in {"local", "runpod"}:
+    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "scaleway").strip().lower()
+    if backend not in {"local", "scaleway"}:
         raise RuntimeError(
-            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'runpod'."
+            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'scaleway'."
         )
     return backend
 
 
-def should_delegate_to_runpod(
+def should_delegate_to_scaleway(
     command: str,
     *,
     task_id: str | None = None,
     dry_run: bool = False,
     probe_only: bool = False,
 ) -> bool:
-    if execution_backend() != "runpod" or dry_run:
+    if execution_backend() != "scaleway" or dry_run:
         return False
     if command == "run":
         return True
@@ -95,7 +95,7 @@ def _copy_remote_artifacts(downloaded_dir: Path, local_video_dir: Path) -> None:
         shutil.copytree(remote_metadata, local_metadata, dirs_exist_ok=True)
 
 
-def run_video_on_runpod(
+def run_video_on_scaleway(
     video_path: Path,
     options: PipelineOptions,
     remote_command: RemoteCommand,
@@ -105,14 +105,16 @@ def run_video_on_runpod(
     bucket = os.getenv("S3_BUCKET_NAME", "").strip()
     region = os.getenv("S3_REGION", "").strip()
     if not bucket:
-        raise RuntimeError("S3_BUCKET_NAME est requis pour executer le pipeline sur Runpod.")
+        raise RuntimeError("S3_BUCKET_NAME est requis pour executer le pipeline sur Scaleway.")
 
     request_id = uuid.uuid4().hex
-    root_prefix = os.getenv("RUNPOD_S3_JOB_PREFIX", "runpod/jobs").strip("/")
+    root_prefix = os.getenv("SCALEWAY_S3_JOB_PREFIX", "scaleway/jobs").strip("/")
     if not root_prefix:
-        raise RuntimeError("RUNPOD_S3_JOB_PREFIX ne peut pas etre vide.")
-    input_prefix = f"{root_prefix}/{request_id}/input"
-    result_prefix = f"{root_prefix}/{request_id}/result"
+        raise RuntimeError("SCALEWAY_S3_JOB_PREFIX ne peut pas etre vide.")
+    control_prefix = f"{root_prefix}/{request_id}"
+    input_prefix = f"{control_prefix}/input"
+    result_prefix = f"{control_prefix}/result"
+    status_key = f"{control_prefix}/status.json"
     selected_video_id = remote_video_id(video_path)
     object_store = s3_client(region)
 
@@ -124,7 +126,7 @@ def run_video_on_runpod(
         included_roots={video_path.name, "metadata", "outputs"},
     )
     print(
-        f"[runpod] {uploaded} fichier(s) source envoye(s) pour {video_path.name}",
+        f"[scaleway] {uploaded} fichier(s) source envoye(s) pour {video_path.name}",
         flush=True,
     )
     job_input = {
@@ -146,20 +148,27 @@ def run_video_on_runpod(
             "bucket": bucket,
             "prefix": result_prefix,
         },
+        "control": {
+            "bucket": bucket,
+            "status_key": status_key,
+        },
     }
 
-    succeeded = False
     try:
-        client = RunpodClient(RunpodConfig.from_env())
-        job_id, output = client.run(job_input)
+        client = ScalewayClient(ScalewayConfig.from_env())
+        job_id, output = client.run(
+            job_input,
+            object_store=object_store,
+            bucket=bucket,
+        )
         if str(output.get("video_id") or "") != selected_video_id:
-            raise RunpodJobError(
-                f"Le job Runpod {job_id} a renvoye un autre identifiant video."
+            raise ScalewayJobError(
+                f"Le job Scaleway {job_id} a renvoye un autre identifiant video."
             )
         if str(output.get("bucket") or "") != bucket:
-            raise RunpodJobError(f"Le job Runpod {job_id} a renvoye un bucket invalide.")
+            raise ScalewayJobError(f"Le job Scaleway {job_id} a renvoye un bucket invalide.")
         if str(output.get("prefix") or "").strip("/") != result_prefix:
-            raise RunpodJobError(f"Le job Runpod {job_id} a renvoye un prefixe invalide.")
+            raise ScalewayJobError(f"Le job Scaleway {job_id} a renvoye un prefixe invalide.")
 
         with tempfile.TemporaryDirectory(prefix="rag-ionis-result-") as temporary_dir:
             downloaded_dir = Path(temporary_dir)
@@ -170,29 +179,27 @@ def run_video_on_runpod(
                 downloaded_dir,
             )
             _copy_remote_artifacts(downloaded_dir, video_dir)
-        succeeded = True
         print(
-            f"[runpod] {downloaded} artefact(s) rapatrie(s) pour {video_path.name}",
+            f"[scaleway] {downloaded} artefact(s) rapatrie(s) pour {video_path.name}",
             flush=True,
         )
         return {
-            "backend": "runpod",
+            "backend": "scaleway",
             "job_id": job_id,
             "video": str(video_path),
             "s3_uri": f"s3://{bucket}/{result_prefix}",
         }
     finally:
-        keep = os.getenv("RUNPOD_KEEP_JOB_ARTIFACTS", "0").strip().lower() in {
+        keep = os.getenv("SCALEWAY_KEEP_JOB_ARTIFACTS", "0").strip().lower() in {
             "1",
             "true",
             "yes",
         }
-        if succeeded and not keep:
-            delete_prefix(object_store, bucket, input_prefix)
-            delete_prefix(object_store, bucket, result_prefix)
+        if not keep:
+            delete_prefix(object_store, bucket, control_prefix)
 
 
-def run_videos_on_runpod(
+def run_videos_on_scaleway(
     videos: list[Path],
     options: PipelineOptions,
     remote_command: RemoteCommand,
@@ -201,15 +208,18 @@ def run_videos_on_runpod(
         return []
     max_workers = min(
         len(videos),
-        positive_int_env("RUNPOD_MAX_CONCURRENT_JOBS", 4),
+        positive_int_env("SCALEWAY_MAX_CONCURRENT_JOBS", 1),
     )
     if max_workers == 1:
-        return [run_video_on_runpod(videos[0], options, remote_command)]
+        return [
+            run_video_on_scaleway(video, options, remote_command)
+            for video in videos
+        ]
 
     results: list[dict[str, object] | None] = [None] * len(videos)
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="runpod-job") as pool:
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scaleway-job") as pool:
         futures = {
-            pool.submit(run_video_on_runpod, video, options, remote_command): index
+            pool.submit(run_video_on_scaleway, video, options, remote_command): index
             for index, video in enumerate(videos)
         }
         for future in as_completed(futures):

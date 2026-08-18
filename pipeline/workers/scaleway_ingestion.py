@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,7 @@ from pipeline.support.scaleway_jobs import (
     s3_client,
     upload_s3_directory,
 )
+from botocore.exceptions import ClientError
 
 
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -285,10 +287,120 @@ def write_job_status(job_input: dict, payload: dict, *, object_store_client=None
     )
 
 
+def _read_job_status(client, bucket: str, status_key: str) -> dict | None:
+    try:
+        response = client.get_object(Bucket=bucket, Key=status_key)
+    except ClientError as error:
+        code = str(error.response.get("Error", {}).get("Code") or "")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        raise
+    payload = json.loads(response["Body"].read().decode("utf-8"))
+    return payload if isinstance(payload, dict) else None
+
+
+def find_pending_job(client, bucket: str, root_prefix: str) -> dict | None:
+    """Return the oldest queued job found below the worker queue prefix."""
+    normalized_root = safe_s3_prefix(root_prefix, "file d'attente")
+    paginator = client.get_paginator("list_objects_v2")
+    candidates: list[str] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{normalized_root}/"):
+        for item in page.get("Contents", []):
+            key = str(item.get("Key") or "")
+            if key.endswith("/job.json"):
+                candidates.append(key)
+
+    for job_key in sorted(candidates):
+        response = client.get_object(Bucket=bucket, Key=job_key)
+        payload = json.loads(response["Body"].read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        control = payload.get("control")
+        if not isinstance(control, dict):
+            continue
+        status_key = safe_s3_prefix(control.get("status_key"), "statut")
+        status = _read_job_status(client, bucket, status_key)
+        status_name = str((status or {}).get("status") or "queued").lower()
+        if status_name in {"completed", "failed"}:
+            continue
+        return payload
+    return None
+
+
+def poll_jobs() -> None:
+    """Process S3 jobs until the dedicated VM has been idle long enough."""
+    validate_worker_gpu()
+    bucket = os.getenv("S3_BUCKET_NAME", "").strip()
+    if not bucket:
+        raise RuntimeError("S3_BUCKET_NAME manquant sur le worker Scaleway.")
+    root_prefix = os.getenv("SCALEWAY_S3_JOB_PREFIX", "scaleway/jobs").strip()
+    poll_seconds = max(
+        0.5, float(os.getenv("SCALEWAY_WORKER_POLL_SECONDS", "5"))
+    )
+    idle_seconds = max(
+        poll_seconds, float(os.getenv("SCALEWAY_WORKER_IDLE_SECONDS", "30"))
+    )
+    client = s3_client(os.getenv("S3_REGION", "").strip())
+    last_activity = time.monotonic()
+
+    print(
+        f"[scaleway] worker persistant en attente dans s3://{bucket}/{root_prefix}/",
+        flush=True,
+    )
+    while True:
+        job_input = find_pending_job(client, bucket, root_prefix)
+        if job_input is not None:
+            control = job_input.get("control")
+            job_id = str((control or {}).get("job_id") or "inconnu")
+            write_job_status(
+                job_input,
+                {"status": "running", "job_id": job_id},
+                object_store_client=client,
+            )
+            try:
+                output = process_job(job_input, object_store_client=client)
+            except Exception as error:
+                write_job_status(
+                    job_input,
+                    {
+                        "status": "failed",
+                        "job_id": job_id,
+                        "error": f"{type(error).__name__}: {error}",
+                        "traceback": traceback.format_exc(),
+                    },
+                    object_store_client=client,
+                )
+                print(f"[scaleway] job en echec: {job_id}", flush=True)
+            else:
+                write_job_status(
+                    job_input,
+                    {"status": "completed", "job_id": job_id, "output": output},
+                    object_store_client=client,
+                )
+                print(f"[scaleway] job termine: {job_id}", flush=True)
+            last_activity = time.monotonic()
+            continue
+
+        if time.monotonic() - last_activity >= idle_seconds:
+            print("[scaleway] file d'attente vide, arret du worker", flush=True)
+            return
+        time.sleep(poll_seconds)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Worker GPU Scaleway one-shot")
-    parser.add_argument("--job-file", type=Path, required=True)
+    parser = argparse.ArgumentParser(description="Worker GPU Scaleway")
+    parser.add_argument("--job-file", type=Path)
+    parser.add_argument(
+        "--poll",
+        action="store_true",
+        help="Surveille la file S3 et traite les jobs de la VM dediee.",
+    )
     args = parser.parse_args()
+    if args.poll:
+        poll_jobs()
+        return
+    if args.job_file is None:
+        parser.error("--job-file est requis sauf avec --poll")
     job_input = json.loads(args.job_file.read_text(encoding="utf-8"))
     if not isinstance(job_input, dict):
         raise ValueError("Entree de job Scaleway invalide.")

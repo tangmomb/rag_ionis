@@ -7,7 +7,6 @@ import re
 import subprocess
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -435,6 +434,7 @@ def run_pipeline_on_scaleway(
     if not control_root:
         raise RuntimeError("SCALEWAY_S3_JOB_PREFIX ne peut pas etre vide.")
     control_prefix = f"{control_root}/{uuid.uuid4().hex}"
+    job_id = control_prefix.rsplit("/", 1)[-1]
     job_input = {
         "schema_version": 2,
         "operation": "pipeline_command",
@@ -464,6 +464,8 @@ def run_pipeline_on_scaleway(
         },
         "control": {
             "bucket": bucket,
+            "job_id": job_id,
+            "job_key": f"{control_prefix}/job.json",
             "status_key": f"{control_prefix}/status.json",
         },
     }
@@ -777,31 +779,9 @@ def run() -> dict:
                 except Exception as error:
                     return youtube_video_id, None, error
 
-            backend = os.getenv(
-                "PIPELINE_EXECUTION_BACKEND",
-                "scaleway",
-            ).strip().lower()
-            max_concurrent = (
-                max(1, int(os.getenv("SCALEWAY_MAX_CONCURRENT_JOBS", "1")))
-                if backend == "scaleway"
-                else 1
-            )
-            completed_runs = []
-            if max_concurrent > 1 and len(runnable_videos) > 1:
-                with ThreadPoolExecutor(
-                    max_workers=min(max_concurrent, len(runnable_videos)),
-                    thread_name_prefix="daily-scaleway",
-                ) as executor:
-                    futures = [
-                        executor.submit(execute_remote_video, item)
-                        for item in runnable_videos
-                    ]
-                    for future in as_completed(futures):
-                        completed_runs.append(future.result())
-            else:
-                completed_runs = [
-                    execute_remote_video(item) for item in runnable_videos
-                ]
+            completed_runs = [
+                execute_remote_video(item) for item in runnable_videos
+            ]
 
             for youtube_video_id, execution_result, error in completed_runs:
                 if error is not None:

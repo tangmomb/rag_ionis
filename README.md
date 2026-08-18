@@ -1060,12 +1060,15 @@ cron quotidienne à 03:00 peut être installée avec le bon utilisateur de servi
 0 3 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_runs 2>&1 | logger -t rag-ionis-youtube
 ```
 
-#### Traitement GPU avec une L40S Scaleway à la demande
+#### Traitement GPU avec une VM Scaleway dédiée
 
 Scaleway est le backend par défaut de `pipeline run`, des tâches GPU lancées
-seules et de `pipeline.update_runs`. Pour chaque job, l'orchestrateur crée une
-instance éphémère `L40S-1-48G` en `fr-par-2`, lui injecte un cloud-init, démarre
-le conteneur GPU puis supprime automatiquement l'instance, son volume et son IP.
+seules et de `pipeline.update_runs`. Une VM GPU `L40S-1-48G` est provisionnée
+et configurée une seule fois. Elle reste arrêtée hors traitement. Pour chaque
+job, l'orchestrateur écrit un payload dans S3, démarre la VM, attend le worker
+Docker persistant puis arrête la VM après traitement. L'instance, son volume et
+son IP ne sont donc plus recréés à chaque job.
+
 Pour une vidéo locale, son dossier transite par un préfixe S3 temporaire, puis
 `outputs/` et `metadata/` sont rapatriés. La daily sync transmet les métadonnées
 et le worker télécharge directement la vidéo YouTube.
@@ -1077,15 +1080,13 @@ PIPELINE_EXECUTION_BACKEND=scaleway
 SCW_SECRET_KEY=...
 SCW_DEFAULT_PROJECT_ID=...
 SCW_DEFAULT_ZONE=fr-par-2
+SCALEWAY_SERVER_ID=...
 SCALEWAY_INSTANCE_TYPE=L40S-1-48G
-SCALEWAY_IMAGE_LABEL=ubuntu_noble_gpu_os_13_nvidia
-SCALEWAY_ROOT_VOLUME_GB=125
-SCALEWAY_CONTAINER_IMAGE=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION
 SCALEWAY_POLL_SECONDS=10
 SCALEWAY_JOB_TIMEOUT_SECONDS=21600
 SCALEWAY_MAX_CONCURRENT_JOBS=1
 SCALEWAY_S3_JOB_PREFIX=scaleway/jobs
-SCALEWAY_KEEP_INSTANCE=0
+SCALEWAY_STOP_AFTER_JOB=1
 SCALEWAY_KEEP_JOB_ARTIFACTS=0
 
 S3_BUCKET_NAME=...
@@ -1104,8 +1105,9 @@ Les commandes restent inchangées :
 
 `plan`, `--dry-run`, `inspect --probe-only` et les tâches strictement CPU restent
 locaux. `PIPELINE_EXECUTION_BACKEND=local` permet un dépannage explicite sans
-Scaleway. La daily sync exécute jusqu'à `SCALEWAY_MAX_CONCURRENT_JOBS` vidéos en
-parallèle — une instance L40S par vidéo — puis lance `sync_database` localement.
+Scaleway. La VM dédiée traite les jobs séquentiellement puis s'arrête ;
+`SCALEWAY_MAX_CONCURRENT_JOBS` doit donc rester à `1`. `sync_database` est lancé
+localement.
 PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
 `daily_sync_log.json` conserve le backend, l'identifiant du job et l'URI S3.
 
@@ -1117,19 +1119,36 @@ docker build --platform linux/amd64 -f Dockerfile.scaleway \
 docker push rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION
 ```
 
-Le namespace Container Registry peut rester privé. Le cloud-init écrit la clé
-Scaleway dans un fichier root-only séparé, l'utilise avec `docker login`, puis
-supprime ce fichier et ferme la session Registry avant de lancer le worker. La
-clé API doit autoriser le pull de l'image ainsi que la création, le démarrage et
-la suppression des Instances, volumes et IP du projet. La L40S est disponible
-en `fr-par-2` et `pl-waw-2`; la configuration par défaut utilise Paris.
-Le quota `L40S-1-48G` doit également être supérieur à zéro. Scaleway demande
-une identité vérifiée pour l'activer ; à défaut, la création échoue avant toute
-facturation avec `quotas_exceeded`.
+Le namespace Container Registry peut rester privé. L'image est installée sur la
+VM par l'administrateur et le worker peut la mettre à jour au démarrage avec
+`SCALEWAY_WORKER_PULL_IMAGE=1`. La clé API de la machine de soumission doit
+autoriser le démarrage et l'arrêt de l'instance ainsi que l'accès S3. La L40S
+doit être provisionnée une seule fois dans la zone choisie.
 
-Les secrets métier ci-dessous sont transmis au conteneur dans un fichier
-d'environnement temporaire, accessible uniquement à root et supprimé en fin de
-job. `SCALEWAY_FORWARD_ENV` permet d'ajouter d'autres noms de variables :
+Installer le worker persistant sur la VM GPU :
+
+```bash
+sudo install -d -m 0750 /etc/rag-ionis /usr/local/bin
+sudo install -m 0755 deploy/rag-ionis-scaleway-worker.sh \
+  /usr/local/bin/rag-ionis-scaleway-worker.sh
+sudo install -m 0644 deploy/rag-ionis-scaleway-worker.service \
+  /etc/systemd/system/rag-ionis-scaleway-worker.service
+sudo install -m 0600 deploy/scaleway-worker.env.example \
+  /etc/rag-ionis/scaleway-worker.env
+# Editer ensuite /etc/rag-ionis/scaleway-worker.env.
+sudo systemctl daemon-reload
+sudo systemctl enable rag-ionis-scaleway-worker.service
+```
+
+Le service démarre au boot et surveille les jobs S3. Le worker quitte lorsque la
+file est vide depuis `SCALEWAY_WORKER_IDLE_SECONDS` secondes ; l'orchestrateur
+arrête ensuite la VM après avoir reçu le statut du job. Le premier boot doit
+être testé manuellement avec `systemctl start`.
+
+Les secrets métier sont conservés dans le fichier root-only
+`/etc/rag-ionis/scaleway-worker.env` sur la VM et transmis au conteneur à chaque
+boot. `SCALEWAY_FORWARD_ENV` permet d'ajouter d'autres noms de variables côté
+machine de soumission :
 
 ```dotenv
 OPENAI_API_KEY=...
@@ -1154,9 +1173,8 @@ PADDLEOCR_BATCH_SIZE=64
 
 L'image Docker fournit déjà ces valeurs adaptées aux 48 Go de VRAM. Les préfixes
 temporaires sont supprimés après rapatriement réussi. Mettre
-`SCALEWAY_KEEP_JOB_ARTIFACTS=1` pour les conserver, ou
-`SCALEWAY_KEEP_INSTANCE=1` uniquement pour diagnostiquer une instance (elle
-continue alors d'être facturée).
+`SCALEWAY_KEEP_JOB_ARTIFACTS=1` pour les conserver. Pour laisser la VM démarrée
+pendant un diagnostic, utiliser temporairement `SCALEWAY_STOP_AFTER_JOB=0`.
 
 En mode local, le planificateur utilise `DATABASE_URL`, `YOUTUBE_API_KEY` et les
 variables des étapes métier. En mode Scaleway, la machine de soumission requiert

@@ -1,0 +1,16 @@
+[Unit]
+Description=RAG Ionis persistent Scaleway GPU worker
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/rag-ionis/scaleway-worker.env
+Environment=SCALEWAY_WORKER_ENV_FILE=/etc/rag-ionis/scaleway-worker.env
+ExecStartPre=-/usr/bin/docker rm -f rag-ionis-scaleway-worker
+ExecStart=/usr/local/bin/rag-ionis-scaleway-worker.sh
+TimeoutStartSec=infinity
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

@@ -33,7 +33,7 @@ SAFE_IMAGE_PATTERN = re.compile(r"^[A-Za-z0-9._:/@-]+$")
 
 
 class ScalewayJobError(RuntimeError):
-    """Raised when an ephemeral Scaleway GPU job cannot complete."""
+    """Raised when a Scaleway GPU job cannot complete."""
 
 
 def scaleway_registry_endpoint(container_image: str) -> str:
@@ -52,7 +52,7 @@ def scaleway_registry_endpoint(container_image: str) -> str:
 class ScalewayConfig:
     secret_key: str
     project_id: str
-    container_image: str
+    container_image: str = ""
     zone: str = "fr-par-2"
     instance_type: str = "L40S-1-48G"
     image_label: str = "ubuntu_noble_gpu_os_13_nvidia"
@@ -60,6 +60,8 @@ class ScalewayConfig:
     poll_seconds: float = 10.0
     timeout_seconds: float = 21600.0
     keep_instance: bool = False
+    server_id: str = ""
+    stop_after_job: bool = True
 
     @classmethod
     def from_env(cls) -> "ScalewayConfig":
@@ -74,10 +76,11 @@ class ScalewayConfig:
             raise RuntimeError("SCW_SECRET_KEY manquant dans l'environnement.")
         if not project_id:
             raise RuntimeError("SCW_DEFAULT_PROJECT_ID manquant dans l'environnement.")
-        if not container_image:
-            raise RuntimeError("SCALEWAY_CONTAINER_IMAGE manquant dans l'environnement.")
-        if not SAFE_IMAGE_PATTERN.fullmatch(container_image):
+        if container_image and not SAFE_IMAGE_PATTERN.fullmatch(container_image):
             raise RuntimeError("SCALEWAY_CONTAINER_IMAGE contient des caracteres invalides.")
+        server_id = os.getenv("SCALEWAY_SERVER_ID", "").strip()
+        if not server_id:
+            raise RuntimeError("SCALEWAY_SERVER_ID manquant dans l'environnement.")
         return cls(
             secret_key=secret_key,
             project_id=project_id,
@@ -91,6 +94,9 @@ class ScalewayConfig:
             poll_seconds=float(os.getenv("SCALEWAY_POLL_SECONDS", "10")),
             timeout_seconds=float(os.getenv("SCALEWAY_JOB_TIMEOUT_SECONDS", "21600")),
             keep_instance=os.getenv("SCALEWAY_KEEP_INSTANCE", "0").strip().lower()
+            in {"1", "true", "yes"},
+            server_id=server_id,
+            stop_after_job=os.getenv("SCALEWAY_STOP_AFTER_JOB", "1").strip().lower()
             in {"1", "true", "yes"},
         )
 
@@ -144,7 +150,7 @@ class ScalewayClient:
         payload = {
             "project_id": self.config.project_id,
             "name": name,
-            "tags": ["rag-ionis", "ephemeral-gpu"],
+            "tags": ["rag-ionis", "dedicated-gpu"],
             "server_type": self.config.instance_type,
             "volumes": [
                 {
@@ -197,6 +203,70 @@ class ScalewayClient:
             if time.monotonic() >= deadline:
                 raise ScalewayJobError(
                     f"L'instance Scaleway {server_id} n'est pas devenue disponible."
+                )
+            self.sleep(max(0.1, self.config.poll_seconds))
+
+    def wait_until_started(self, server_id: str) -> None:
+        deadline = time.monotonic() + min(self.config.timeout_seconds, 900.0)
+        while True:
+            status = self.server_status(server_id)
+            if status == "started":
+                return
+            if status in {"stopped", "paused"}:
+                raise ScalewayJobError(
+                    f"L'instance Scaleway {server_id} s'est arretee avant le demarrage "
+                    "du worker."
+                )
+            if status not in {"starting", "stopping", "pausing", "locked"}:
+                raise ScalewayJobError(
+                    f"Etat inattendu de l'instance Scaleway {server_id}: {status}."
+                )
+            if time.monotonic() >= deadline:
+                raise ScalewayJobError(
+                    f"L'instance Scaleway {server_id} n'est pas devenue disponible."
+                )
+            self.sleep(max(0.1, self.config.poll_seconds))
+
+    def ensure_started(self, server_id: str) -> None:
+        deadline = time.monotonic() + min(self.config.timeout_seconds, 900.0)
+        while True:
+            status = self.server_status(server_id)
+            if status == "started":
+                return
+            if status in {"stopped", "paused"}:
+                self.start_server(server_id)
+                self.wait_until_started(server_id)
+                return
+            if status == "starting":
+                self.wait_until_started(server_id)
+                return
+            if status not in {"stopping", "pausing", "locked"}:
+                raise ScalewayJobError(
+                    f"Etat inattendu avant demarrage de l'instance {server_id}: {status}."
+                )
+            if time.monotonic() >= deadline:
+                raise ScalewayJobError(
+                    f"Impossible de demarrer l'instance {server_id} dans le delai imparti."
+                )
+            self.sleep(max(0.1, self.config.poll_seconds))
+
+    def stop_server(self, server_id: str) -> None:
+        deadline = time.monotonic() + 300.0
+        stop_requested = False
+        while True:
+            status = self.server_status(server_id)
+            if status == "stopped":
+                return
+            if status in {"started", "paused"} and not stop_requested:
+                self._request("POST", f"/servers/{server_id}/stop", json={})
+                stop_requested = True
+            elif status not in {"starting", "stopping", "pausing", "locked", "started", "paused"}:
+                raise ScalewayJobError(
+                    f"Etat inattendu pendant l'arret de l'instance {server_id}: {status}."
+                )
+            if time.monotonic() >= deadline:
+                raise ScalewayJobError(
+                    f"Impossible d'arreter l'instance {server_id} dans le delai imparti."
                 )
             self.sleep(max(0.1, self.config.poll_seconds))
 
@@ -281,43 +351,50 @@ class ScalewayClient:
         status_key = str(control.get("status_key") or "").strip().strip("/")
         if not status_key:
             raise ValueError("Cle de statut S3 Scaleway manquante.")
+        job_key = str(control.get("job_key") or "").strip().strip("/")
+        if not job_key:
+            job_key = f"{status_key.removesuffix('/status.json')}/job.json"
+        job_id = str(control.get("job_id") or "").strip()
+        if not job_id:
+            job_id = status_key.removesuffix("/status.json").rsplit("/", 1)[-1]
+        server_id = self.config.server_id.strip()
+        if not server_id:
+            raise RuntimeError("SCALEWAY_SERVER_ID manquant dans la configuration.")
         try:
             object_store.delete_object(Bucket=bucket, Key=status_key)
         except ClientError:
             pass
-
-        server_id = ""
-        server_name = f"rag-ionis-{uuid.uuid4().hex[:12]}"
+        object_store.put_object(
+            Bucket=bucket,
+            Key=job_key,
+            Body=json.dumps(job_input, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
         try:
-            server_id = self.create_server(server_name)
-            self.wait_until_ready(server_id)
-            self.set_cloud_init(server_id, build_cloud_init(job_input, self.config))
-            self.start_server(server_id)
+            self.ensure_started(server_id)
             print(
-                f"[scaleway] job soumis: instance={server_id} "
+                f"[scaleway] job soumis: job={job_id} instance={server_id} "
                 f"type={self.config.instance_type} zone={self.config.zone}",
                 flush=True,
             )
-            return server_id, self.wait_for_job(
+            return job_id, self.wait_for_job(
                 server_id, object_store, bucket, status_key
             )
         finally:
-            if server_id and not self.config.keep_instance:
+            if self.config.stop_after_job:
                 active_error = sys.exc_info()[1]
                 try:
-                    self.destroy_server(server_id)
+                    self.stop_server(server_id)
                 except Exception as cleanup_error:
                     if active_error is None:
                         raise
                     print(
-                        f"[scaleway] avertissement nettoyage instance={server_id}: "
+                        f"[scaleway] avertissement arret instance={server_id}: "
                         f"{cleanup_error}",
                         flush=True,
                     )
                 else:
-                    print(f"[scaleway] instance supprimee: {server_id}", flush=True)
-            elif server_id:
-                print(f"[scaleway] instance conservee: {server_id}", flush=True)
+                    print(f"[scaleway] instance arretee: {server_id}", flush=True)
 
 
 def forwarded_environment() -> dict[str, str]:

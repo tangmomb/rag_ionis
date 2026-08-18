@@ -589,9 +589,9 @@ Préparer effectivement la vidéo jusqu'aux chunks :
 ```
 
 Avec `PIPELINE_EXECUTION_BACKEND=scaleway` (valeur par défaut), cette commande
-envoie le dossier de la vidéo sur S3, crée une instance éphémère L40S 48 Go,
-exécute tout le plan dans son conteneur puis supprime l'instance et remplace
-localement `outputs/` tout en actualisant `metadata/`. Les
+envoie le dossier de la vidéo sur S3, démarre la VM GPU dédiée L40S 48 Go,
+dépose le job dans sa file S3, exécute tout le plan dans son conteneur puis
+arrête la VM et remplace localement `outputs/` tout en actualisant `metadata/`. Les
 tâches `frames.classify`, `ocr.extract_raw` et `transcript.whisper` lancées seules
 suivent le même chemin. Utiliser `PIPELINE_EXECUTION_BACKEND=local` uniquement
 pour un dépannage local explicite.

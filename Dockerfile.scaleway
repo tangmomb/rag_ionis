@@ -104,4 +104,4 @@ COPY --from=paddle-builder /paddle-parts/libphi_gpu.so /usr/local/lib/python3.10
 COPY pipeline ./pipeline
 COPY models/frame_filter_2026-07-02_21-30-31.joblib ./models/frame_filter_2026-07-02_21-30-31.joblib
 
-CMD ["python3", "-u", "-m", "pipeline.workers.scaleway_ingestion", "--help"]
+CMD ["python3", "-u", "-m", "pipeline.workers.scaleway_ingestion", "--poll"]

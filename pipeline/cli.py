@@ -234,7 +234,7 @@ def main() -> None:
         results = run_videos_on_scaleway(videos, options, remote_command)
         for result in results:
             print(
-                f"[scaleway] termine instance={result['job_id']} video={result['video']}",
+                f"[scaleway] termine job={result['job_id']} video={result['video']}",
                 flush=True,
             )
         return

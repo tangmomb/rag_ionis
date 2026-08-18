@@ -107,18 +107,16 @@ class ScalewayClientTests(unittest.TestCase):
             "zonal_ipv4",
         )
 
-    def test_completed_job_always_deletes_ephemeral_instance(self) -> None:
+    def test_completed_job_starts_and_stops_dedicated_instance(self) -> None:
         config = ScalewayConfig(
             "secret",
             "project",
             "rg.fr-par.scw.cloud/rag-ionis/worker:latest",
+            server_id="server-123",
         )
         client = ScalewayClient(config)
-        client.create_server = Mock(return_value="server-123")
-        client.wait_until_ready = Mock()
-        client.set_cloud_init = Mock()
-        client.start_server = Mock()
-        client.destroy_server = Mock()
+        client.ensure_started = Mock()
+        client.stop_server = Mock()
         object_store = Mock()
         object_store.get_object.return_value = {
             "Body": io.BytesIO(
@@ -133,12 +131,11 @@ class ScalewayClientTests(unittest.TestCase):
 
         server_id, output = client.run(payload, object_store=object_store, bucket="bucket")
 
-        self.assertEqual(server_id, "server-123")
+        self.assertEqual(server_id, "1")
         self.assertEqual(output["video_id"], "video-1")
-        client.set_cloud_init.assert_called_once()
-        client.wait_until_ready.assert_called_once_with("server-123")
-        client.start_server.assert_called_once_with("server-123")
-        client.destroy_server.assert_called_once_with("server-123")
+        client.ensure_started.assert_called_once_with("server-123")
+        client.stop_server.assert_called_once_with("server-123")
+        self.assertTrue(object_store.put_object.called)
 
     def test_destroy_paused_server_stops_then_deletes_ephemeral_resources(self) -> None:
         session = Mock()
@@ -177,12 +174,11 @@ class ScalewayClientTests(unittest.TestCase):
             "secret",
             "project",
             "rg.fr-par.scw.cloud/rag-ionis/worker:latest",
+            server_id="server-123",
         )
         client = ScalewayClient(config)
-        client.create_server = Mock(return_value="server-123")
-        client.wait_until_ready = Mock()
-        client.set_cloud_init = Mock(side_effect=RuntimeError("original failure"))
-        client.destroy_server = Mock(side_effect=RuntimeError("cleanup failure"))
+        client.ensure_started = Mock(side_effect=RuntimeError("original failure"))
+        client.stop_server = Mock(side_effect=RuntimeError("cleanup failure"))
         object_store = Mock()
 
         with self.assertRaisesRegex(RuntimeError, "original failure"):
@@ -403,6 +399,7 @@ class ScalewayExecutionTests(unittest.TestCase):
                         "S3_BUCKET_NAME": "bucket",
                         "SCW_SECRET_KEY": "secret",
                         "SCW_DEFAULT_PROJECT_ID": "project",
+                        "SCALEWAY_SERVER_ID": "server-1",
                         "SCALEWAY_CONTAINER_IMAGE": (
                             "rg.fr-par.scw.cloud/rag-ionis/worker:latest"
                         ),

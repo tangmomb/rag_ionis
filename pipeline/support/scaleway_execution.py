@@ -6,7 +6,6 @@ import re
 import shutil
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -150,6 +149,8 @@ def run_video_on_scaleway(
         },
         "control": {
             "bucket": bucket,
+            "job_id": request_id,
+            "job_key": f"{control_prefix}/job.json",
             "status_key": status_key,
         },
     }
@@ -206,22 +207,12 @@ def run_videos_on_scaleway(
 ) -> list[dict[str, object]]:
     if not videos:
         return []
-    max_workers = min(
-        len(videos),
-        positive_int_env("SCALEWAY_MAX_CONCURRENT_JOBS", 1),
-    )
-    if max_workers == 1:
-        return [
-            run_video_on_scaleway(video, options, remote_command)
-            for video in videos
-        ]
-
-    results: list[dict[str, object] | None] = [None] * len(videos)
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scaleway-job") as pool:
-        futures = {
-            pool.submit(run_video_on_scaleway, video, options, remote_command): index
-            for index, video in enumerate(videos)
-        }
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
-    return [result for result in results if result is not None]
+    configured_workers = positive_int_env("SCALEWAY_MAX_CONCURRENT_JOBS", 1)
+    if configured_workers != 1:
+        raise RuntimeError(
+            "SCALEWAY_MAX_CONCURRENT_JOBS doit valoir 1 avec la VM GPU dediee."
+        )
+    return [
+        run_video_on_scaleway(video, options, remote_command)
+        for video in videos
+    ]

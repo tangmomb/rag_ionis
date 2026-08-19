@@ -1098,9 +1098,12 @@ S3_SECRET_ACCESS_KEY=...
 Pour vérifier les GPU disponibles dans toutes les zones Scaleway :
 
 ```powershell
-.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py --gpu L40S
+.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py
 ```
 
+Le script demande la ressource (`gpu` ou `cpu`) et le type d'instance. Les
+valeurs par défaut sont `gpu` et `L40S`. Les options `--resource`, `--model` et
+`--zone` permettent une utilisation non interactive.
 Une zone `available` peut toutefois passer en `low_stock` ou `out_of_stock`
 entre la vérification et la création de l'instance.
 

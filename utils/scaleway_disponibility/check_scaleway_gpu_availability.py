@@ -1,11 +1,11 @@
 """Display GPU Instance availability across Scaleway zones.
 
 Usage:
-    python utils/check_scaleway_gpu_availability.py
-    python utils/check_scaleway_gpu_availability.py --resource gpu --model L40S
-    python utils/check_scaleway_gpu_availability.py --gpu L40S --zone pl-waw-2
-    python utils/check_scaleway_gpu_availability.py --record --resource gpu --model L40S
-    python utils/check_scaleway_gpu_availability.py --summary --resource gpu --model L40S
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --resource gpu --model L40S
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --gpu L40S --zone pl-waw-2
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --record --resource gpu --model L40S
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --summary --resource gpu --model L40S
 
 The Scaleway API token is read from SCW_SECRET_KEY in the environment or .env.
 It is never printed.
@@ -25,8 +25,10 @@ import requests
 from dotenv import load_dotenv
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_HISTORY_FILE = PROJECT_ROOT / "utils" / "data" / "scaleway_gpu_availability.csv"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_HISTORY_FILE = Path(__file__).resolve().with_name(
+    "scaleway_gpu_availability.csv"
+)
 HISTORY_FIELDS = (
     "timestamp_utc",
     "resource",

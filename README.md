@@ -1098,7 +1098,7 @@ S3_SECRET_ACCESS_KEY=...
 Pour vérifier les GPU disponibles dans toutes les zones Scaleway :
 
 ```powershell
-.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py
+.\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py
 ```
 
 Le script demande la ressource (`gpu` ou `cpu`) et le type d'instance. Les
@@ -1110,19 +1110,20 @@ entre la vérification et la création de l'instance.
 Pour construire un historique, exécuter périodiquement :
 
 ```powershell
-.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py `
+.\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py `
   --record --resource gpu --model L40S
 ```
 
 Puis afficher la moyenne sur les sept derniers jours :
 
 ```powershell
-.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py `
+.\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py `
   --summary --resource gpu --model L40S --days 7
 ```
 
 Les relevés sont conservés localement dans
-`utils/data/scaleway_gpu_availability.csv`, un fichier ignoré par Git.
+`utils/scaleway_disponibility/scaleway_gpu_availability.csv`, un fichier ignoré
+par Git.
 
 Les commandes restent inchangées :
 

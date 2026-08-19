@@ -8,11 +8,34 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from pipeline import update_runs
+from pipeline import update_stats, update_videos
 from pipeline.ingest import fetch_youtube_metadata
 from pipeline.publish import sync_database
 
 
 class YoutubeDailySyncTests(unittest.TestCase):
+    def test_named_update_entrypoints_expose_the_split_modes(self) -> None:
+        self.assertTrue(callable(update_stats.main))
+        self.assertTrue(callable(update_videos.main))
+
+    def test_parse_args_supports_separate_stats_and_videos_modes(self) -> None:
+        self.assertEqual(update_runs.parse_args(["stats"]).mode, "stats")
+        self.assertEqual(update_runs.parse_args(["videos"]).mode, "videos")
+        self.assertEqual(update_runs.parse_args([]).mode, "all")
+
+    def test_video_mode_compares_api_ids_directly_with_sql_ids(self) -> None:
+        api_videos = [
+            {"id": "already-in-sql"},
+            {"id": "new-video"},
+        ]
+
+        missing = update_runs.videos_missing_from_database(
+            api_videos,
+            {"already-in-sql": 42},
+        )
+
+        self.assertEqual(missing, [{"id": "new-video"}])
+
     def test_archive_directory_uses_start_minute_and_never_overwrites(self) -> None:
         started_at = datetime.now().astimezone().replace(
             year=2026,
@@ -37,6 +60,18 @@ class YoutubeDailySyncTests(unittest.TestCase):
 
             self.assertEqual(first.name, "20260802_1437")
             self.assertEqual(second.name, "20260802_1437_02")
+
+    def test_update_archive_directory_uses_named_suffix(self) -> None:
+        started_at = datetime(2026, 8, 2, 14, 37, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            archive_dir = update_runs.create_archive_directory(
+                Path(temporary_dir),
+                started_at,
+                suffix="update_videos",
+            )
+
+        expected = started_at.astimezone().strftime("%Y%m%d_%H%M_update_videos")
+        self.assertEqual(archive_dir.name, expected)
 
     def test_daily_json_is_only_saved_in_the_dated_video_directory(self) -> None:
         video = {
@@ -144,6 +179,32 @@ class YoutubeDailySyncTests(unittest.TestCase):
                 "comment_count": 4,
             },
         )
+
+    def test_new_videos_manifest_lists_videos_absent_from_sql(self) -> None:
+        video = {
+            "id": "new-video-1",
+            "snippet": {
+                "title": "Nouvelle vidéo",
+                "description": "Description",
+                "publishedAt": "2026-08-01T10:00:00Z",
+                "thumbnails": {},
+            },
+            "contentDetails": {"duration": "PT42S"},
+            "statistics": {"viewCount": "12"},
+        }
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            archive_dir = Path(temporary_dir)
+            path = update_runs.write_new_videos_manifest(
+                archive_dir,
+                [video],
+                generated_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(path.name, "new_videos.json")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["videos"][0]["youtube_video_id"], "new-video-1")
+        self.assertEqual(payload["videos"][0]["title"], "Nouvelle vidéo")
 
     def test_new_videos_are_compared_with_init_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

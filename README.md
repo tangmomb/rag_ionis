@@ -998,67 +998,50 @@ dans `init/VIDEO_ID/metadata/youtube_comments.json` si la vidéo est locale.
 Cette commande ne touche pas PostgreSQL. `pipeline.publish.sync_database`
 importe ensuite ces fichiers dans la table `comments`.
 
-### Actualisation YouTube quotidienne
+### Updates YouTube
 
-La commande dédiée au serveur parcourt la chaîne IONIS-STM avec la même collecte
-API que `pipeline.ingest.fetch_youtube_metadata` :
+L’update YouTube est séparé en deux commandes indépendantes.
+
+Le sync des statistiques ne touche qu’aux vidéos déjà présentes dans PostgreSQL.
+Il appelle l’API YouTube, écrit un snapshot quotidien dans `stats` et ne
+nécessite ni téléchargement, ni S3, ni GPU :
 
 ```powershell
-.\.venv\Scripts\python.exe -m pipeline.update_runs
+.\.venv\Scripts\python.exe -m pipeline.update_stats
 ```
 
-Elle crée d’abord un dossier correspondant à la minute de lancement, avec un
-sous-dossier par vidéo :
+Le sync des vidéos compare directement les IDs renvoyés par l’API YouTube avec
+les IDs de `data.videos`. Toute vidéo absente de SQL est traitée ; les vidéos
+déjà présentes sont ignorées :
 
-```text
-downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_video_metadata.json
-downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_comments.json
-downloads/youtube/20260802_1437/daily_sync_log.json
+```powershell
+.\.venv\Scripts\python.exe -m pipeline.update_videos
 ```
 
-Ces archives ne sont jamais remplacées. Si deux lancements ont lieu dans la même
-minute, le second utilise par exemple `20260802_1437_02`. La commande ne modifie
-jamais `init/_00_info_videos/`, `init/_00_info_comments/` ni les dossiers vidéo de
-`init/`. Elle utilise directement les
-données collectées pour :
+Pour chaque nouvelle vidéo, cette seconde commande récupère les commentaires,
+lance le pipeline local ou Scaleway, crée les embeddings puis synchronise la
+vidéo complète en SQL. Une vidéo en échec reste absente de la table `videos` et
+sera donc retentée au prochain lancement. Les exécutions sont journalisées dans
+`update_runs` et une archive horodatée est créée sous `downloads/youtube/`.
+Les dossiers sont nommés `YYYYMMDD_HHMM_update_stats` et
+`YYYYMMDD_HHMM_update_videos`. L’update vidéos contient `new_videos.json`, qui
+liste les vidéos absentes de SQL, ainsi que `daily_sync_log.json`, qui conserve
+le détail de l’exécution. L’update stats écrit `update_stats_log.json`. Ces
+fichiers sont stockés sous `s3://<bucket>/youtube/<nom_update>/`; aucun dossier
+d’archive permanent n’est conservé localement.
 
-- crée ou actualise le snapshot du jour dans `stats` ;
-- ajoute les nouveaux commentaires et actualise ceux déjà connus sans changer
-  leur `id` SQL, uniquement lorsqu’au moins un nouvel ID est présent par rapport
-  au JSON de l’archive précédente (ou de `init/` lors du premier lancement) ;
-- compare à la fin les dossiers vidéo de l’archive avec ceux de `init/`, affiche
-  le nombre de nouvelles vidéos et conserve leurs identifiants dans
-  `update_runs.new_video_ids` ;
-- compare ensuite l’archive actuelle à l’archive horodatée précédente et
-  journalise les nouveautés dans `new_since_previous` et
-  `new_since_previous_ids` ;
-- pour chaque vidéo nouvelle depuis l’archive précédente — ou absente de
-  `init/` lorsqu’il n’existe pas encore d’archive précédente — télécharge la
-  vidéo directement dans son dossier horodaté et lance
-  `pipeline run`, puis `embeddings.create` et enfin `sync_database` sur cette
-  seule vidéo ; la vidéo, le manifeste et tous les résultats restent dans cette
-  archive ;
-- marque `is_deleted = TRUE` les commentaires qui ne sont plus renvoyés par
-  YouTube ;
-- journalise le résultat et le chemin de l’archive dans `update_runs` ;
-- écrit `daily_sync_log.json` à la racine de l’archive avec le nombre et les
-  identifiants des nouvelles vidéos, le succès ou l’échec du pipeline pour
-  chacune, ainsi que les vues, likes et commentaires de chaque vidéo à la date
-  du snapshot ;
-- refuse un deuxième lancement simultané grâce à un verrou PostgreSQL.
-
-Cette commande n'accepte aucune option métier : elle parcourt toujours toute la
-chaîne IONIS-STM, récupère les commentaires et écrit ses archives sous
-`downloads/youtube/`.
-
-Sur un serveur Linux, la commande équivalente est
-`./.venv/bin/python -m pipeline.update_runs`. Par exemple, une entrée
-cron quotidienne à 03:00 peut être installée avec le bon utilisateur de service
-(en adaptant `/srv/rag_ionis`) :
+Les deux commandes utilisent le même verrou PostgreSQL et peuvent être
+programmées séparément. Sur un serveur Linux, par exemple :
 
 ```cron
-0 3 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_runs 2>&1 | logger -t rag-ionis-youtube
+0 2 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_stats 2>&1 | logger -t rag-ionis-youtube-stats
+30 2 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_videos 2>&1 | logger -t rag-ionis-youtube-videos
 ```
+
+Sans argument, `python -m pipeline.update_runs` exécute les deux updates dans
+l’ordre stats puis vidéos. Les archives et journaux persistants sont stockés
+dans S3 ; les dossiers locaux utilisés pendant le traitement sont temporaires
+et supprimés à la fin.
 
 #### Traitement GPU avec une VM Scaleway dédiée
 
@@ -1070,7 +1053,7 @@ Docker persistant puis arrête la VM après traitement. L'instance, son volume e
 son IP restent associés à cette VM dédiée.
 
 Pour une vidéo locale, son dossier transite par un préfixe S3 temporaire, puis
-`outputs/` et `metadata/` sont rapatriés. La daily sync transmet les métadonnées
+`outputs/` et `metadata/` sont rapatriés. L’update vidéo transmet les métadonnées
 et le worker télécharge directement la vidéo YouTube.
 
 Configurer la machine qui soumet les jobs ainsi :
@@ -1130,7 +1113,8 @@ Les commandes restent inchangées :
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
 .\.venv\Scripts\python.exe -m pipeline task transcript.whisper VIDEO_ID
-.\.venv\Scripts\python.exe -m pipeline.update_runs
+.\.venv\Scripts\python.exe -m pipeline.update_stats
+.\.venv\Scripts\python.exe -m pipeline.update_videos
 ```
 
 `plan`, `--dry-run`, `inspect --probe-only` et les tâches strictement CPU restent

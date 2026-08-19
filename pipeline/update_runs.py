@@ -4,8 +4,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -27,6 +29,7 @@ from pipeline.publish.sync_database import (
 )
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.paths import youtube_api_infos_path, youtube_comments_path
+from pipeline.support.scaleway_jobs import s3_client, upload_s3_directory
 
 
 LOCK_NAME = "rag_ionis.update_runs"
@@ -35,14 +38,59 @@ DAILY_SYNC_LOG_NAME = "daily_sync_log.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE_DIRECTORY_PATTERN = re.compile(r"^\d{8}_\d{4}(?:_\d{2})?$")
 NON_VIDEO_DIRECTORY_NAMES = {"_00_info_videos", "_00_info_comments"}
+UPDATE_S3_ROOT_PREFIX = "youtube"
+
+
+def update_s3_archive_prefix(archive_name: str) -> str:
+    return f"{UPDATE_S3_ROOT_PREFIX}/{archive_name}"
+
+
+def required_update_s3() -> tuple[object, str]:
+    bucket = os.getenv("S3_BUCKET_NAME", "").strip()
+    if not bucket:
+        raise RuntimeError("S3_BUCKET_NAME est requis pour les updates YouTube.")
+    return s3_client(os.getenv("S3_REGION", "").strip()), bucket
+
+
+def s3_prefix_exists(client, bucket: str, prefix: str) -> bool:
+    response = client.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}/", MaxKeys=1)
+    return bool(response.get("Contents"))
+
+
+def update_archive_name(client, bucket: str, started_at: datetime, suffix: str) -> str:
+    base_name = f"{started_at.astimezone().strftime('%Y%m%d_%H%M')}_{suffix}"
+    candidate = base_name
+    counter = 2
+    while s3_prefix_exists(client, bucket, update_s3_archive_prefix(candidate)):
+        candidate = f"{base_name}_{counter:02d}"
+        counter += 1
+    return candidate
+
+
+def upload_archive_file(client, bucket: str, archive_name: str, path: Path) -> None:
+    client.upload_file(
+        str(path),
+        bucket,
+        f"{update_s3_archive_prefix(archive_name)}/{path.name}",
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collecte toute la chaine YouTube, archive les JSON, detecte les "
-            "nouvelles videos et actualise celles deja publiees en SQL."
+            "Synchronise les statistiques ou traite les nouvelles videos "
+            "de la chaine YouTube."
         )
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=("all", "stats", "videos"),
+        default="all",
+        help=(
+            "stats: statistiques uniquement; videos: nouvelles videos absentes "
+            "de SQL; all: execute les deux updates (defaut)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -64,6 +112,18 @@ def database_videos(cursor) -> dict[str, int]:
     return {str(row[0]): int(row[1]) for row in cursor.fetchall()}
 
 
+def videos_missing_from_database(
+    api_videos: list[dict],
+    existing_videos: dict[str, int] | set[str],
+) -> list[dict]:
+    existing_ids = set(existing_videos)
+    return [
+        video
+        for video in api_videos
+        if str(video.get("id") or "").strip() not in existing_ids
+    ]
+
+
 def acquire_lock(cursor) -> bool:
     cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (LOCK_NAME,))
     return bool(cursor.fetchone()[0])
@@ -73,7 +133,7 @@ def release_lock(cursor) -> None:
     cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", (LOCK_NAME,))
 
 
-def create_run(cursor, archive_path: Path) -> int:
+def create_run(cursor, archive_path: str | Path | None) -> int:
     cursor.execute(
         """
         INSERT INTO update_runs (status, archive_path)
@@ -136,8 +196,14 @@ def finish_run(cursor, run_id: int, status: str, metrics: dict, errors: list[dic
     )
 
 
-def create_archive_directory(download_dir: Path, started_at: datetime) -> Path:
+def create_archive_directory(
+    download_dir: Path,
+    started_at: datetime,
+    suffix: str | None = None,
+) -> Path:
     base_name = started_at.astimezone().strftime("%Y%m%d_%H%M")
+    if suffix:
+        base_name = f"{base_name}_{suffix}"
     archive_dir = download_dir / base_name
     suffix = 2
     while archive_dir.exists():
@@ -334,10 +400,16 @@ def download_and_run_pipeline(
     archive_dir: Path,
     download_dir: Path,
     snapshot_date: date,
+    comments_payload: dict | None = None,
 ) -> dict:
     backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "scaleway").strip().lower()
     if backend == "scaleway":
-        return run_pipeline_on_scaleway(video, archive_dir, snapshot_date)
+        return run_pipeline_on_scaleway(
+            video,
+            archive_dir,
+            snapshot_date,
+            comments_payload=comments_payload,
+        )
     if backend != "local":
         raise RuntimeError(
             "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'scaleway'."
@@ -414,6 +486,8 @@ def run_pipeline_on_scaleway(
     video: dict,
     archive_dir: Path,
     snapshot_date: date,
+    *,
+    comments_payload: dict | None = None,
 ) -> dict:
     from pipeline.support.scaleway_jobs import (
         ScalewayClient,
@@ -469,6 +543,8 @@ def run_pipeline_on_scaleway(
             "status_key": f"{control_prefix}/status.json",
         },
     }
+    if comments_payload is not None:
+        job_input["source"]["comments"] = comments_payload
 
     region = os.getenv("S3_REGION", "").strip()
     object_store = s3_client(region)
@@ -515,6 +591,379 @@ def run_pipeline_on_scaleway(
         "job_id": job_id,
         "s3_uri": f"s3://{bucket}/{prefix}",
     }
+
+
+def write_new_videos_manifest(
+    archive_dir: Path,
+    videos: list[dict],
+    *,
+    generated_at: datetime | None = None,
+) -> Path:
+    payload = {
+        "generated_at": (
+            generated_at or datetime.now(timezone.utc)
+        ).isoformat(),
+        "count": len(videos),
+        "videos": [video_info_payload(video) for video in videos],
+    }
+    return write_json(archive_dir / "new_videos.json", payload)
+
+
+def write_stats_update_log(
+    archive_dir: Path,
+    metrics: dict,
+    errors: list[dict],
+    *,
+    status: str,
+    generated_at: datetime,
+) -> Path:
+    return write_json(
+        archive_dir / "update_stats_log.json",
+        {
+            "generated_at": generated_at.isoformat(),
+            "status": status,
+            "videos_discovered": metrics["videos_discovered"],
+            "videos_updated": metrics["videos_updated"],
+            "videos_skipped": metrics["videos_skipped"],
+            "stats_snapshots": metrics["stats_snapshots"],
+            "errors": errors,
+        },
+    )
+
+
+def run_stats_only() -> dict:
+    """Refresh SQL stats for videos already present in the database."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL manquant dans l'environnement.")
+
+    metrics = empty_metrics()
+    errors: list[dict] = []
+    run_id = None
+    lock_acquired = False
+    started_at = datetime.now().astimezone()
+    archive_dir: Path | None = None
+    temp_dir: Path | None = None
+    object_store, bucket = required_update_s3()
+
+    with psycopg.connect(
+        database_url,
+        options="-c search_path=data,public",
+    ) as connection:
+        try:
+            with connection.cursor() as cursor:
+                ensure_schema(cursor)
+                lock_acquired = acquire_lock(cursor)
+                if not lock_acquired:
+                    raise RuntimeError(
+                        "Une synchronisation YouTube est deja en cours."
+                    )
+                archive_name = update_archive_name(
+                    object_store,
+                    bucket,
+                    started_at,
+                    "update_stats",
+                )
+                temp_dir = Path(tempfile.mkdtemp(prefix="rag-ionis-update-stats-"))
+                archive_dir = temp_dir / archive_name
+                archive_dir.mkdir()
+                run_id = create_run(
+                    cursor,
+                    f"s3://{bucket}/{update_s3_archive_prefix(archive_name)}",
+                )
+            connection.commit()
+
+            api_videos = collect_videos()
+            metrics["videos_discovered"] = len(api_videos)
+            with connection.cursor() as cursor:
+                existing_videos = database_videos(cursor)
+            connection.rollback()
+
+            metrics["videos_skipped"] = sum(
+                1 for video in api_videos if video["id"] not in existing_videos
+            )
+            for video in api_videos:
+                youtube_video_id = str(video.get("id") or "")
+                video_db_id = existing_videos.get(youtube_video_id)
+                if video_db_id is None:
+                    continue
+                try:
+                    with connection.transaction():
+                        with connection.cursor() as cursor:
+                            if upsert_video_stats(
+                                cursor,
+                                video_db_id,
+                                video_info_payload(video),
+                                snapshot_date=started_at.date(),
+                            ):
+                                metrics["stats_snapshots"] += 1
+                    metrics["videos_updated"] += 1
+                except Exception as error:
+                    errors.append(
+                        {
+                            "video_id": youtube_video_id,
+                            "phase": "stats_sql",
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    )
+
+            status = "completed_with_errors" if errors else "completed"
+            with connection.cursor() as cursor:
+                finish_run(cursor, run_id, status, metrics, errors)
+            connection.commit()
+            metrics["errors_count"] = len(errors)
+            write_stats_update_log(
+                archive_dir,
+                metrics,
+                errors,
+                status=status,
+                generated_at=started_at,
+            )
+            upload_archive_file(
+                object_store,
+                bucket,
+                archive_dir.name,
+                archive_dir / "update_stats_log.json",
+            )
+            return metrics
+        except Exception as error:
+            connection.rollback()
+            errors.append({"type": type(error).__name__, "message": str(error)})
+            if run_id is not None:
+                with connection.cursor() as cursor:
+                    finish_run(cursor, run_id, "failed", metrics, errors)
+                connection.commit()
+            if archive_dir is not None:
+                try:
+                    metrics["errors_count"] = len(errors)
+                    write_stats_update_log(
+                        archive_dir,
+                        metrics,
+                        errors,
+                        status="failed",
+                        generated_at=started_at,
+                    )
+                    upload_archive_file(
+                        object_store,
+                        bucket,
+                        archive_dir.name,
+                        archive_dir / "update_stats_log.json",
+                    )
+                except Exception:
+                    pass
+            raise
+        finally:
+            if lock_acquired:
+                connection.rollback()
+                with connection.cursor() as cursor:
+                    release_lock(cursor)
+                connection.commit()
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def run_videos_only() -> dict:
+    """Process YouTube videos whose IDs are absent from SQL."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL manquant dans l'environnement.")
+
+    metrics = empty_metrics()
+    errors: list[dict] = []
+    run_id = None
+    lock_acquired = False
+    download_dir = DEFAULT_DOWNLOAD_DIR
+    started_at = datetime.now().astimezone()
+    object_store, bucket = required_update_s3()
+    archive_dir: Path | None = None
+    temp_dir: Path | None = None
+    archive_name: str | None = None
+    pipeline_results: dict[str, dict] = {}
+    api_videos: list[dict] = []
+    new_video_ids: list[str] = []
+
+    def update_archive_log(status: str, *, finished: bool = False) -> None:
+        write_archive_log(
+            archive_dir,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc) if finished else None,
+            status=status,
+            videos=api_videos,
+            new_video_ids=new_video_ids,
+            pipeline_results=pipeline_results,
+            comparison_directory=Path("data.videos"),
+            errors=errors,
+        )
+        upload_archive_file(
+            object_store,
+            bucket,
+            archive_name,
+            archive_dir / DAILY_SYNC_LOG_NAME,
+        )
+
+    with psycopg.connect(
+        database_url,
+        options="-c search_path=data,public",
+    ) as connection:
+        try:
+            with connection.cursor() as cursor:
+                ensure_schema(cursor)
+                lock_acquired = acquire_lock(cursor)
+                if not lock_acquired:
+                    raise RuntimeError(
+                        "Une synchronisation YouTube est deja en cours."
+                    )
+                archive_name = update_archive_name(
+                    object_store,
+                    bucket,
+                    started_at,
+                    "update_videos",
+                )
+                temp_dir = Path(tempfile.mkdtemp(prefix="rag-ionis-update-videos-"))
+                archive_dir = temp_dir / archive_name
+                archive_dir.mkdir()
+                run_id = create_run(
+                    cursor,
+                    f"s3://{bucket}/{update_s3_archive_prefix(archive_name)}",
+                )
+            connection.commit()
+
+            api_videos = collect_videos()
+            metrics["videos_discovered"] = len(api_videos)
+            with connection.cursor() as cursor:
+                existing_videos = database_videos(cursor)
+            connection.rollback()
+
+            new_videos = videos_missing_from_database(api_videos, existing_videos)
+            new_video_ids = [str(video["id"]) for video in new_videos]
+            metrics["new_videos"] = len(new_videos)
+            metrics["new_video_ids"] = new_video_ids
+            metrics["videos_skipped"] = len(api_videos) - len(new_videos)
+            write_new_videos_manifest(
+                archive_dir,
+                new_videos,
+                generated_at=started_at,
+            )
+            upload_archive_file(
+                object_store,
+                bucket,
+                archive_name,
+                archive_dir / "new_videos.json",
+            )
+            update_archive_log("running")
+
+            for video in new_videos:
+                youtube_video_id = str(video["id"])
+                comments_payload = None
+                try:
+                    comments_payload = fetch_comments(youtube_video_id)
+                except Exception as error:
+                    errors.append(
+                        {
+                            "video_id": youtube_video_id,
+                            "phase": "comments_api",
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    )
+                try:
+                    write_archive(video, comments_payload, archive_dir)
+                except Exception as error:
+                    errors.append(
+                        {
+                            "video_id": youtube_video_id,
+                            "phase": "cache",
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    )
+                    pipeline_results[youtube_video_id] = {
+                        "status": "failed",
+                        "succeeded": False,
+                        "error": str(error),
+                    }
+                    update_archive_log("running")
+                    continue
+
+                metrics["pipeline_videos_started"] += 1
+                pipeline_results[youtube_video_id] = {
+                    "status": "running",
+                    "succeeded": None,
+                    "error": None,
+                }
+                update_archive_log("running")
+                try:
+                    result = download_and_run_pipeline(
+                        video,
+                        archive_dir,
+                        download_dir,
+                        started_at.date(),
+                        comments_payload=comments_payload,
+                    )
+                    if result.get("backend") == "local":
+                        upload_s3_directory(
+                            object_store,
+                            bucket,
+                            archive_dir / youtube_video_id,
+                            f"{update_s3_archive_prefix(archive_name)}/{youtube_video_id}",
+                            excluded_suffixes={".mp4", ".mkv", ".webm", ".mov", ".m4v"},
+                        )
+                except Exception as error:
+                    errors.append(
+                        {
+                            "video_id": youtube_video_id,
+                            "phase": "pipeline_run",
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    )
+                    pipeline_results[youtube_video_id] = {
+                        "status": "failed",
+                        "succeeded": False,
+                        "error": str(error),
+                    }
+                    update_archive_log("running")
+                    continue
+
+                metrics["pipeline_videos_completed"] += 1
+                metrics["videos_updated"] += 1
+                metrics["stats_snapshots"] += 1
+                pipeline_results[youtube_video_id] = {
+                    "status": "completed",
+                    "succeeded": True,
+                    "error": None,
+                    **result,
+                }
+                update_archive_log("running")
+
+            status = "completed_with_errors" if errors else "completed"
+            with connection.cursor() as cursor:
+                finish_run(cursor, run_id, status, metrics, errors)
+            connection.commit()
+            metrics["errors_count"] = len(errors)
+            update_archive_log(status, finished=True)
+            return metrics
+        except Exception as error:
+            connection.rollback()
+            errors.append({"type": type(error).__name__, "message": str(error)})
+            if run_id is not None:
+                with connection.cursor() as cursor:
+                    finish_run(cursor, run_id, "failed", metrics, errors)
+                connection.commit()
+            try:
+                update_archive_log("failed", finished=True)
+            except Exception:
+                pass
+            raise
+        finally:
+            if lock_acquired:
+                connection.rollback()
+                with connection.cursor() as cursor:
+                    release_lock(cursor)
+                connection.commit()
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def empty_metrics() -> dict:
@@ -846,8 +1295,21 @@ def run() -> dict:
 
 def main() -> None:
     load_dotenv(override=True)
-    parse_args()
-    metrics = run()
+    args = parse_args()
+    if args.mode == "stats":
+        metrics = run_stats_only()
+    elif args.mode == "videos":
+        metrics = run_videos_only()
+    else:
+        stats_metrics = run_stats_only()
+        metrics = run_videos_only()
+        print(
+            "Updates YouTube termines: "
+            f"{stats_metrics['stats_snapshots']} snapshot(s) stats, "
+            f"{metrics['pipeline_videos_completed']} pipeline(s) videos, "
+            f"{stats_metrics['errors_count'] + metrics['errors_count']} erreur(s)."
+        )
+        return
     print(
         "Synchronisation YouTube terminee: "
         f"{metrics['videos_updated']} video(s), "

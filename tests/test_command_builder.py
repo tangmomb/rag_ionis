@@ -65,22 +65,28 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('flag: "--max-distance"', source)
         self.assertIn('flag: "--dry-run"', source)
 
-    def test_daily_youtube_sync_action_is_available(self) -> None:
+    def test_daily_youtube_sync_actions_are_available(self) -> None:
         source = APP_PATH.read_text(encoding="utf-8")
         index = INDEX_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('id: "youtube-daily-sync"', source)
-        self.assertIn('title: "Daily sync YouTube"', source)
-        self.assertIn('module: "pipeline.update_runs"', source)
-        daily_sync = source.split('id: "youtube-daily-sync"', 1)[1].split(
+        self.assertIn('id: "youtube-update-stats"', source)
+        self.assertIn('id: "youtube-update-videos"', source)
+        self.assertIn(
+            'fixedArgs: ["-m", "pipeline.update_stats"]',
+            source,
+        )
+        self.assertIn(
+            'fixedArgs: ["-m", "pipeline.update_videos"]',
+            source,
+        )
+        daily_sync = source.split('id: "youtube-update-stats"', 1)[1].split(
             'id: "download"', 1
         )[0]
         self.assertIn("sections: []", daily_sync)
         self.assertNotIn('flag: "--', daily_sync)
-        self.assertIn("archive horodatée précédente", daily_sync)
-        self.assertIn("dossier était absent", daily_sync)
-        self.assertIn("daily_sync_log.json", daily_sync)
-        self.assertIn('app.js?v=20260815-vps-tools', index)
+        self.assertIn("API YouTube", daily_sync)
+        self.assertIn("table stats", daily_sync)
+        self.assertIn('app.js?v=20260819-daily-sync-split', index)
 
     def test_vps_actions_include_combined_tunnels_and_safe_sql_sync(self) -> None:
         source = APP_PATH.read_text(encoding="utf-8")

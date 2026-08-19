@@ -1107,6 +1107,23 @@ valeurs par défaut sont `gpu` et `L40S`. Les options `--resource`, `--model` et
 Une zone `available` peut toutefois passer en `low_stock` ou `out_of_stock`
 entre la vérification et la création de l'instance.
 
+Pour construire un historique, exécuter périodiquement :
+
+```powershell
+.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py `
+  --record --resource gpu --model L40S
+```
+
+Puis afficher la moyenne sur les sept derniers jours :
+
+```powershell
+.\.venv\Scripts\python.exe utils/check_scaleway_gpu_availability.py `
+  --summary --resource gpu --model L40S --days 7
+```
+
+Les relevés sont conservés localement dans
+`utils/data/scaleway_gpu_availability.csv`, un fichier ignoré par Git.
+
 Les commandes restent inchangées :
 
 ```powershell

@@ -13,8 +13,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
-
 from pipeline.ingest.fetch_youtube_metadata import (
     CHANNEL,
     fetch_comments,
@@ -28,6 +26,7 @@ from pipeline.publish.sync_database import (
     upsert_video_stats,
 )
 from pipeline.support.json_io import read_json, write_json
+from pipeline.support.environment import load_project_env
 from pipeline.support.paths import youtube_api_infos_path, youtube_comments_path
 from pipeline.support.scaleway_jobs import s3_client, upload_s3_directory
 
@@ -1294,7 +1293,7 @@ def run() -> dict:
 
 
 def main() -> None:
-    load_dotenv(override=True)
+    load_project_env(PROJECT_ROOT)
     args = parse_args()
     if args.mode == "stats":
         metrics = run_stats_only()

@@ -9,10 +9,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
-from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 from yt_dlp.utils import DownloadError
 
+from pipeline.support.environment import load_project_env
 from pipeline.support.paths import (
     consolidate_init_dir,
     youtube_api_infos_path,
@@ -325,7 +325,7 @@ def parse_args():
 
 
 def main():
-    load_dotenv(override=True)
+    load_project_env(Path(__file__).resolve().parents[2])
     args = parse_args()
     if args.min_delay < 0 or args.max_delay < args.min_delay:
         raise ValueError("Les delais doivent respecter 0 <= min-delay <= max-delay.")

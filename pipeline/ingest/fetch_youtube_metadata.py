@@ -8,9 +8,9 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 import yt_dlp
-from dotenv import load_dotenv
 from imageio_ffmpeg import get_ffmpeg_exe
 
+from pipeline.support.environment import load_project_env
 from pipeline.support.json_io import write_json
 from pipeline.support.paths import (
     init_dir,
@@ -411,7 +411,7 @@ def parse_args():
 
 
 def main():
-    load_dotenv(override=True)
+    load_project_env(Path(__file__).resolve().parents[2])
     args = parse_args()
     videos = fetch_video(args.video_url) if args.video_url else fetch_videos(CHANNEL, limit=args.limit)
     info_dir = Path(args.download_dir) / "init" / "_00_info_videos"

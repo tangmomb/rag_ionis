@@ -7,13 +7,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 import psycopg
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from psycopg import sql
 from psycopg.rows import dict_row
+from pipeline.support.environment import load_project_env
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -22,7 +22,7 @@ DOWNLOAD_ROOT = PROJECT_DIR / "downloads" / "youtube"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_TEXT_CHARS = 250_000
-load_dotenv(PROJECT_DIR / ".env", override=True)
+load_project_env(PROJECT_DIR)
 
 app = FastAPI(title="RAG IONIS — Database browser")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")

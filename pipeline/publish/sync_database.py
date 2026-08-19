@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
+from pipeline.support.environment import load_project_env
 from pipeline.support.analysis import load_routing_facts
 from pipeline.support.paths import (
     CANONICAL_TRANSCRIPTS_DIR_NAME,
@@ -1459,7 +1459,7 @@ def parse_args():
 
 
 def main():
-    load_dotenv(override=True)
+    load_project_env(ROOT_DIR)
     args = parse_args()
     if not args.bucket:
         args.bucket = os.environ.get("S3_BUCKET_NAME", "")

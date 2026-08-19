@@ -5,7 +5,7 @@ Interface locale pour explorer les sorties vidéo du pipeline et consulter Postg
 Depuis la racine du projet :
 
 ```powershell
-.\start_app.bat
+.\start_app_local.bat
 ```
 
 Puis ouvrir <http://127.0.0.1:8001/videos>.

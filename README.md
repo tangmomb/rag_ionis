@@ -4,7 +4,8 @@ Pipeline local de préparation de vidéos et interface RAG.
 
 ## Déploiement
 
-Le développement Windows reste piloté par `start_app.bat`. En production,
+Le développement Windows reste piloté par `start_app_local.bat`, qui charge
+`.env.local` et démarre les services Docker locaux. En production,
 l'interface RAG est déployée avec Docker sur un VPS Infomaniak, tandis qu'Amazon
 S3 conserve les artefacts. Voir
 [`README_HEBERGEMENT_DEBUTANT.md`](README_HEBERGEMENT_DEBUTANT.md).
@@ -668,8 +669,14 @@ Le projet utilise un environnement Python unique :
 py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
+Copy-Item .env.local.example .env.local
 ```
+
+Le projet utilise deux environnements avec les memes cles : `.env.local` pour
+les tests sur le poste de developpement et `.env.production` pour le VPS.
+Copier `.env.production.example` vers `.env.production`, puis renseigner les
+secrets de production. Le choix est explicite via `RAG_IONIS_ENV` ; sans cette
+variable, le projet charge l'environnement local.
 
 Variables principales :
 
@@ -1034,8 +1041,8 @@ Les deux commandes utilisent le même verrou PostgreSQL et peuvent être
 programmées séparément. Sur un serveur Linux, par exemple :
 
 ```cron
-0 2 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_stats 2>&1 | logger -t rag-ionis-youtube-stats
-30 2 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_videos 2>&1 | logger -t rag-ionis-youtube-videos
+0 2 * * * cd /srv/rag_ionis && RAG_IONIS_ENV=production ./.venv/bin/python -m pipeline.update_stats 2>&1 | logger -t rag-ionis-youtube-stats
+30 2 * * * cd /srv/rag_ionis && RAG_IONIS_ENV=production ./.venv/bin/python -m pipeline.update_videos 2>&1 | logger -t rag-ionis-youtube-videos
 ```
 
 Sans argument, `python -m pipeline.update_runs` exécute les deux updates dans
@@ -1116,6 +1123,11 @@ Les commandes restent inchangées :
 .\.venv\Scripts\python.exe -m pipeline.update_stats
 .\.venv\Scripts\python.exe -m pipeline.update_videos
 ```
+
+Sur le VPS, prefixer les commandes par `RAG_IONIS_ENV=production` (ou exporter
+cette variable dans l'environnement systemd) afin de charger `.env.production`.
+En local, `RAG_IONIS_ENV=local` est la valeur par défaut et le backend doit
+rester `PIPELINE_EXECUTION_BACKEND=local`.
 
 `plan`, `--dry-run`, `inspect --probe-only` et les tâches strictement CPU restent
 locaux. `PIPELINE_EXECUTION_BACKEND=local` permet un dépannage explicite sans
@@ -1232,11 +1244,25 @@ Les embeddings utilisent `text-embedding-3-large` en 2000 dimensions.
 
 ## Base de données
 
-Démarrer PostgreSQL et Phoenix :
+En local, démarrer PostgreSQL et Phoenix avec l'environnement local :
 
 ```powershell
-docker compose up -d postgres phoenix
+docker compose --env-file .env.local up -d
 ```
+
+Sur le VPS, utiliser le fichier Compose de production et l'environnement de
+production :
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  --env-file .env.production \
+  up -d
+```
+
+Le premier fichier contient l'infrastructure commune. Le second surcharge les
+réglages de production et ajoute l'API ainsi que Caddy.
 
 Le serveur PostgreSQL est configuré avec `timezone=Europe/Paris`. Les colonnes
 `TIMESTAMPTZ` restent des instants normalisés, mais toutes les sessions Docker
@@ -1322,14 +1348,15 @@ une place supplémentaire dans les résultats.
 
 L'utilitaire `utils/app_llm_tester` envoie un message à OpenAI, Mistral ou
 Google et affiche côte à côte le texte extrait et le payload JSON complet.
-Les clés restent côté serveur et sont lues depuis `.env`.
+Les clés restent côté serveur et sont lues depuis l'environnement sélectionné
+(`.env.local` ou `.env.production`).
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester
 ```
 
 Ouvrir ensuite `http://127.0.0.1:8002/`. L'application est également démarrée
-par `start_app.bat`.
+par `start_app_local.bat`.
 
 Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix :
 

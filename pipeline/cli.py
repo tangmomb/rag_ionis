@@ -4,8 +4,6 @@ import argparse
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from .catalog import TASKS
 from .context import PipelineContext
 from .contracts import PlannedTask
@@ -14,6 +12,7 @@ from .executor import execute_tasks
 from .manifest import write_manifest
 from .options import PipelineOptions
 from .orchestrator import inspect_video, plan_video, run_video
+from .support.environment import load_project_env
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -190,7 +189,7 @@ def options_from_args(args: argparse.Namespace) -> PipelineOptions:
 
 
 def main() -> None:
-    load_dotenv(PROJECT_ROOT / ".env", override=True)
+    load_project_env(PROJECT_ROOT)
     args = parse_args()
     if args.command == "task" and args.list_tasks:
         print_task_catalog()

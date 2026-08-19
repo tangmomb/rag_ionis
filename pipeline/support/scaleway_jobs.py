@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -15,37 +14,11 @@ import requests
 from botocore.exceptions import ClientError
 
 
-DEFAULT_FORWARDED_ENV = frozenset(
-    {
-        "S3_BUCKET_NAME", "S3_REGION", "S3_ENDPOINT_URL",
-        "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY",
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-        "YOUTUBE_API_KEY", "OPENAI_API_KEY", "OPENAI_SERVICE_TIER",
-        "MISTRAL_API_KEY", "GOOGLE_API_KEY", "COHERE_API_KEY",
-        "HUGGINGFACE_TOKEN", "HF_TOKEN", "WHISPERX_MODEL",
-        "WHISPERX_LANGUAGE", "WHISPERX_MIN_SPEAKERS",
-        "WHISPERX_MAX_SPEAKERS", "WHISPERX_DIARIZATION_MODEL",
-        "TRANSCRIPT_RETRIES", "TRANSCRIPT_RETRY_SECONDS",
-        "TRANSCRIPT_SLEEP_SECONDS",
-    }
-)
 SAFE_IMAGE_PATTERN = re.compile(r"^[A-Za-z0-9._:/@-]+$")
 
 
 class ScalewayJobError(RuntimeError):
     """Raised when a Scaleway GPU job cannot complete."""
-
-
-def scaleway_registry_endpoint(container_image: str) -> str:
-    parts = container_image.split("/")
-    if len(parts) < 3 or not parts[0].startswith("rg.") or not parts[0].endswith(
-        ".scw.cloud"
-    ):
-        raise ValueError(
-            "SCALEWAY_CONTAINER_IMAGE doit pointer vers un namespace "
-            "Container Registry Scaleway."
-        )
-    return "/".join(parts[:2])
 
 
 @dataclass(frozen=True)
@@ -55,11 +28,8 @@ class ScalewayConfig:
     container_image: str = ""
     zone: str = "fr-par-2"
     instance_type: str = "L40S-1-48G"
-    image_label: str = "ubuntu_noble_gpu_os_13_nvidia"
-    root_volume_gb: int = 125
     poll_seconds: float = 10.0
     timeout_seconds: float = 21600.0
-    keep_instance: bool = False
     server_id: str = ""
     stop_after_job: bool = True
 
@@ -87,14 +57,8 @@ class ScalewayConfig:
             container_image=container_image,
             zone=os.getenv("SCW_DEFAULT_ZONE", "fr-par-2").strip(),
             instance_type=os.getenv("SCALEWAY_INSTANCE_TYPE", "L40S-1-48G").strip(),
-            image_label=os.getenv(
-                "SCALEWAY_IMAGE_LABEL", "ubuntu_noble_gpu_os_13_nvidia"
-            ).strip(),
-            root_volume_gb=int(os.getenv("SCALEWAY_ROOT_VOLUME_GB", "125")),
             poll_seconds=float(os.getenv("SCALEWAY_POLL_SECONDS", "10")),
             timeout_seconds=float(os.getenv("SCALEWAY_JOB_TIMEOUT_SECONDS", "21600")),
-            keep_instance=os.getenv("SCALEWAY_KEEP_INSTANCE", "0").strip().lower()
-            in {"1", "true", "yes"},
             server_id=server_id,
             stop_after_job=os.getenv("SCALEWAY_STOP_AFTER_JOB", "1").strip().lower()
             in {"1", "true", "yes"},
@@ -139,49 +103,12 @@ class ScalewayClient:
             status_code = getattr(response, "status_code", "inconnu")
             request_id = str(getattr(response, "headers", {}).get("x-request-id") or "")
             request_suffix = f", requete {request_id}" if request_id else ""
-            # Scaleway can echo the submitted cloud-init in an error body. Never
-            # include it here because it contains the worker's forwarded secrets.
+            # Scaleway can echo submitted payloads in an error body. Never include
+            # them here because they may contain worker secrets.
             raise ScalewayJobError(
                 f"API Scaleway: HTTP {status_code}{request_suffix}."
             ) from error
         return response
-
-    def create_server(self, name: str) -> str:
-        payload = {
-            "project_id": self.config.project_id,
-            "name": name,
-            "tags": ["rag-ionis", "dedicated-gpu"],
-            "server_type": self.config.instance_type,
-            "volumes": [
-                {
-                    "volume_type": "sbs",
-                    "new_volume": {
-                        "name": f"{name}-root",
-                        "size": self.config.root_volume_gb * 1_000_000_000,
-                        "image_label": self.config.image_label,
-                        "perf_iops": 5000,
-                    },
-                }
-            ],
-            "public_network_interface": {
-                "ips": [{"new_ip": {"type": "zonal_ipv4", "tags": ["rag-ionis"]}}]
-            },
-        }
-        response = self._request("POST", "/servers", json=payload)
-        server_id = str(response.json().get("id") or "").strip()
-        if not server_id:
-            raise ScalewayJobError("Scaleway n'a renvoye aucun identifiant d'instance.")
-        return server_id
-
-    def set_cloud_init(self, server_id: str, content: str) -> None:
-        # v2alpha1 represents protobuf `bytes` as base64 in its JSON API.
-        self._request(
-            "PUT",
-            f"/servers/{server_id}/user-data/cloud-init",
-            json={
-                "content": base64.b64encode(content.encode("utf-8")).decode("ascii")
-            },
-        )
 
     def start_server(self, server_id: str) -> None:
         self._request("POST", f"/servers/{server_id}/start", json={})
@@ -189,22 +116,6 @@ class ScalewayClient:
     def server_status(self, server_id: str) -> str:
         response = self._request("GET", f"/servers/{server_id}")
         return str(response.json().get("status") or "unknown_status").lower()
-
-    def wait_until_ready(self, server_id: str) -> None:
-        deadline = time.monotonic() + min(self.config.timeout_seconds, 900.0)
-        while True:
-            status = self.server_status(server_id)
-            if status == "stopped":
-                return
-            if status == "started":
-                raise ScalewayJobError(
-                    f"L'instance Scaleway {server_id} a demarre avant son cloud-init."
-                )
-            if time.monotonic() >= deadline:
-                raise ScalewayJobError(
-                    f"L'instance Scaleway {server_id} n'est pas devenue disponible."
-                )
-            self.sleep(max(0.1, self.config.poll_seconds))
 
     def wait_until_started(self, server_id: str) -> None:
         deadline = time.monotonic() + min(self.config.timeout_seconds, 900.0)
@@ -269,42 +180,6 @@ class ScalewayClient:
                     f"Impossible d'arreter l'instance {server_id} dans le delai imparti."
                 )
             self.sleep(max(0.1, self.config.poll_seconds))
-
-    def destroy_server(self, server_id: str) -> None:
-        deadline = time.monotonic() + 300.0
-        status = self.server_status(server_id)
-        while status in {"starting", "stopping", "pausing", "locked"}:
-            if time.monotonic() >= deadline:
-                raise ScalewayJobError(
-                    f"Impossible de stabiliser l'instance {server_id} avant suppression."
-                )
-            self.sleep(max(0.1, self.config.poll_seconds))
-            status = self.server_status(server_id)
-        if status in {"started", "paused"}:
-            self._request("POST", f"/servers/{server_id}/stop", json={})
-            status = self.server_status(server_id)
-            while status != "stopped":
-                if status not in {"stopping", "paused"}:
-                    raise ScalewayJobError(
-                        f"Etat inattendu pendant l'arret de l'instance "
-                        f"{server_id}: {status}."
-                    )
-                if time.monotonic() >= deadline:
-                    raise ScalewayJobError(
-                        f"Impossible d'arreter l'instance {server_id} avant suppression."
-                    )
-                self.sleep(max(0.1, self.config.poll_seconds))
-                status = self.server_status(server_id)
-        if status == "stopped":
-            self._request(
-                "DELETE",
-                f"/servers/{server_id}",
-                params={
-                    "delete_all_ips": "true",
-                    "delete_all_volumes": "true",
-                    "keep_all_private_nics": "false",
-                },
-            )
 
     def wait_for_job(self, server_id: str, object_store, bucket: str, status_key: str) -> dict:
         deadline = time.monotonic() + self.config.timeout_seconds
@@ -395,82 +270,6 @@ class ScalewayClient:
                     )
                 else:
                     print(f"[scaleway] instance arretee: {server_id}", flush=True)
-
-
-def forwarded_environment() -> dict[str, str]:
-    extra = {
-        name.strip()
-        for name in os.getenv("SCALEWAY_FORWARD_ENV", "").split(",")
-        if name.strip()
-    }
-    values: dict[str, str] = {
-        "PIPELINE_EXECUTION_BACKEND": "local",
-        "SCALEWAY_WORKER": "1",
-    }
-    for name in sorted(DEFAULT_FORWARDED_ENV | extra):
-        value = os.getenv(name)
-        if value is None or value == "":
-            continue
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"La variable {name} ne peut pas contenir de saut de ligne.")
-        values[name] = value
-    return values
-
-
-def build_cloud_init(job_input: dict, config: ScalewayConfig) -> str:
-    job_b64 = base64.b64encode(
-        json.dumps(job_input, ensure_ascii=False).encode("utf-8")
-    ).decode("ascii")
-    env_text = "\n".join(
-        f"{name}={value}" for name, value in forwarded_environment().items()
-    ) + "\n"
-    env_b64 = base64.b64encode(env_text.encode("utf-8")).decode("ascii")
-    registry_endpoint = scaleway_registry_endpoint(config.container_image)
-    registry_secret_b64 = base64.b64encode(
-        f"{config.secret_key}\n".encode("utf-8")
-    ).decode("ascii")
-    runner = f"""#!/bin/bash
-set -euo pipefail
-cleanup() {{
-  rm -f /opt/rag-ionis/registry.secret /opt/rag-ionis/worker.env /opt/rag-ionis/job.json
-  docker logout {registry_endpoint} >/dev/null 2>&1 || true
-  shutdown -h now
-}}
-trap cleanup EXIT
-docker login {registry_endpoint} -u nologin --password-stdin \\
-  < /opt/rag-ionis/registry.secret
-rm -f /opt/rag-ionis/registry.secret
-docker pull {config.container_image}
-docker logout {registry_endpoint} >/dev/null 2>&1 || true
-docker run --rm --gpus all \\
-  --env-file /opt/rag-ionis/worker.env \\
-  -v /opt/rag-ionis:/job:ro \\
-  {config.container_image} \\
-  python3 -u -m pipeline.workers.scaleway_ingestion --job-file /job/job.json
-"""
-    runner_b64 = base64.b64encode(runner.encode("utf-8")).decode("ascii")
-    return f"""#cloud-config
-write_files:
-  - path: /opt/rag-ionis/job.json
-    permissions: '0600'
-    encoding: b64
-    content: {job_b64}
-  - path: /opt/rag-ionis/worker.env
-    permissions: '0600'
-    encoding: b64
-    content: {env_b64}
-  - path: /opt/rag-ionis/registry.secret
-    permissions: '0600'
-    encoding: b64
-    content: {registry_secret_b64}
-  - path: /opt/rag-ionis/run-job.sh
-    permissions: '0700'
-    encoding: b64
-    content: {runner_b64}
-runcmd:
-  - [bash, /opt/rag-ionis/run-job.sh]
-final_message: "rag-ionis Scaleway GPU job finished"
-"""
 
 
 def s3_client(region: str | None = None):

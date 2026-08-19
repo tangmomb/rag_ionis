@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import io
 import json
 import tempfile
@@ -12,7 +11,6 @@ from pipeline.support import scaleway_execution
 from pipeline.support.scaleway_jobs import (
     ScalewayClient,
     ScalewayConfig,
-    build_cloud_init,
     download_s3_prefix,
     upload_s3_directory,
 )
@@ -34,33 +32,10 @@ class FakeResponse:
 
 
 class ScalewayClientTests(unittest.TestCase):
-    def test_cloud_init_base64_encodes_v2alpha1_bytes_field(self) -> None:
-        session = Mock()
-        session.request.return_value = FakeResponse()
-        config = ScalewayConfig(
-            "secret",
-            "project",
-            "rg.fr-par.scw.cloud/rag-ionis/worker:latest",
-        )
-        client = ScalewayClient(config, session=session)
-
-        client.set_cloud_init("server-123", "#cloud-config\n")
-
-        request = session.request.call_args
-        self.assertEqual(request.args[0], "PUT")
-        self.assertEqual(
-            request.args[1],
-            f"{client.base_url}/servers/server-123/user-data/cloud-init",
-        )
-        self.assertEqual(
-            base64.b64decode(request.kwargs["json"]["content"]),
-            b"#cloud-config\n",
-        )
-
     def test_api_error_never_echoes_response_body(self) -> None:
         secret = "must-never-appear"
         response = FakeResponse(status_code=400, headers={"x-request-id": "request-1"})
-        response.text = json.dumps({"message": f"invalid cloud-init {secret}"})
+        response.text = json.dumps({"message": f"invalid request {secret}"})
         response.raise_for_status = Mock(
             side_effect=__import__("requests").HTTPError("bad request")
         )
@@ -76,36 +51,9 @@ class ScalewayClientTests(unittest.TestCase):
         with self.assertRaisesRegex(
             Exception, r"API Scaleway: HTTP 400, requete request-1\."
         ) as raised:
-            client.set_cloud_init("server-123", secret)
+            client.server_status("server-123")
 
         self.assertNotIn(secret, str(raised.exception))
-
-    def test_create_server_uses_ephemeral_l40s_configuration(self) -> None:
-        session = Mock()
-        session.request.return_value = FakeResponse({"id": "server-123"})
-        config = ScalewayConfig(
-            "secret",
-            "project",
-            "rg.fr-par.scw.cloud/rag-ionis/worker:latest",
-        )
-        client = ScalewayClient(config, session=session)
-
-        server_id = client.create_server("rag-ionis-job")
-
-        self.assertEqual(server_id, "server-123")
-        request = session.request.call_args
-        self.assertEqual(request.args[:2], ("POST", f"{client.base_url}/servers"))
-        payload = request.kwargs["json"]
-        self.assertEqual(payload["server_type"], "L40S-1-48G")
-        self.assertEqual(
-            payload["volumes"][0]["new_volume"]["image_label"],
-            "ubuntu_noble_gpu_os_13_nvidia",
-        )
-        self.assertEqual(payload["volumes"][0]["new_volume"]["size"], 125_000_000_000)
-        self.assertEqual(
-            payload["public_network_interface"]["ips"][0]["new_ip"]["type"],
-            "zonal_ipv4",
-        )
 
     def test_completed_job_starts_and_stops_dedicated_instance(self) -> None:
         config = ScalewayConfig(
@@ -137,38 +85,6 @@ class ScalewayClientTests(unittest.TestCase):
         client.stop_server.assert_called_once_with("server-123")
         self.assertTrue(object_store.put_object.called)
 
-    def test_destroy_paused_server_stops_then_deletes_ephemeral_resources(self) -> None:
-        session = Mock()
-        session.request.side_effect = [
-            FakeResponse({"status": "paused"}),
-            FakeResponse({"status": "stopping"}),
-            FakeResponse({"status": "stopped"}),
-            FakeResponse(),
-        ]
-        config = ScalewayConfig(
-            "secret",
-            "project",
-            "rg.fr-par.scw.cloud/rag-ionis/worker:latest",
-        )
-        client = ScalewayClient(config, session=session)
-
-        client.destroy_server("server-123")
-
-        stop_request = session.request.call_args_list[1]
-        self.assertEqual(stop_request.args[0], "POST")
-        self.assertTrue(stop_request.args[1].endswith("/server-123/stop"))
-        delete_request = session.request.call_args_list[3]
-        self.assertEqual(delete_request.args[0], "DELETE")
-        self.assertTrue(delete_request.args[1].endswith("/server-123"))
-        self.assertEqual(
-            delete_request.kwargs["params"],
-            {
-                "delete_all_ips": "true",
-                "delete_all_volumes": "true",
-                "keep_all_private_nics": "false",
-            },
-        )
-
     def test_cleanup_error_does_not_mask_job_error(self) -> None:
         config = ScalewayConfig(
             "secret",
@@ -187,33 +103,6 @@ class ScalewayClientTests(unittest.TestCase):
                 object_store=object_store,
                 bucket="bucket",
             )
-
-    def test_cloud_init_isolates_private_registry_secret_from_worker_env(self) -> None:
-        config = ScalewayConfig(
-            "control-secret",
-            "project",
-            "rg.fr-par.scw.cloud/rag-ionis/worker:latest",
-        )
-        with patch.dict(
-            "os.environ",
-            {"OPENAI_API_KEY": "openai-secret", "SCW_SECRET_KEY": "control-secret"},
-            clear=True,
-        ):
-            content = build_cloud_init({"control": {}}, config)
-
-        decoded_files = [
-            base64.b64decode(line.split("content: ", 1)[1]).decode("utf-8")
-            for line in content.splitlines()
-            if line.strip().startswith("content: ")
-        ]
-        self.assertEqual(decoded_files.count("control-secret\n"), 1)
-        worker_env = next(value for value in decoded_files if "SCALEWAY_WORKER=1" in value)
-        runner = next(value for value in decoded_files if value.startswith("#!/bin/bash"))
-        self.assertNotIn("control-secret", worker_env)
-        self.assertNotIn("control-secret", runner)
-        self.assertIn("docker login rg.fr-par.scw.cloud/rag-ionis", runner)
-        self.assertIn("rm -f /opt/rag-ionis/registry.secret", runner)
-        self.assertIn("rg.fr-par.scw.cloud/rag-ionis/worker:latest", runner)
 
     def test_s3_prefix_is_downloaded_below_selected_video_directory(self) -> None:
         paginator = Mock()

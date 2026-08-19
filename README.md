@@ -1067,7 +1067,7 @@ seules et de `pipeline.update_runs`. Une VM GPU `L40S-1-48G` est provisionnée
 et configurée une seule fois. Elle reste arrêtée hors traitement. Pour chaque
 job, l'orchestrateur écrit un payload dans S3, démarre la VM, attend le worker
 Docker persistant puis arrête la VM après traitement. L'instance, son volume et
-son IP ne sont donc plus recréés à chaque job.
+son IP restent associés à cette VM dédiée.
 
 Pour une vidéo locale, son dossier transite par un préfixe S3 temporaire, puis
 `outputs/` et `metadata/` sont rapatriés. La daily sync transmet les métadonnées
@@ -1123,7 +1123,7 @@ Le namespace Container Registry peut rester privé. L'image est installée sur l
 VM par l'administrateur et le worker peut la mettre à jour au démarrage avec
 `SCALEWAY_WORKER_PULL_IMAGE=1`. La clé API de la machine de soumission doit
 autoriser le démarrage et l'arrêt de l'instance ainsi que l'accès S3. La L40S
-doit être provisionnée une seule fois dans la zone choisie.
+doit rester attachée à la zone choisie.
 
 Installer le worker persistant sur la VM GPU :
 
@@ -1147,8 +1147,7 @@ arrête ensuite la VM après avoir reçu le statut du job. Le premier boot doit
 
 Les secrets métier sont conservés dans le fichier root-only
 `/etc/rag-ionis/scaleway-worker.env` sur la VM et transmis au conteneur à chaque
-boot. `SCALEWAY_FORWARD_ENV` permet d'ajouter d'autres noms de variables côté
-machine de soumission :
+boot :
 
 ```dotenv
 OPENAI_API_KEY=...

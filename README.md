@@ -8,7 +8,7 @@ Le développement Windows reste piloté par `start_app_local.bat`, qui charge
 `.env.local` et démarre les services Docker locaux. En production,
 l'interface RAG est déployée avec Docker sur un VPS Infomaniak, tandis qu'Amazon
 S3 conserve les artefacts. Voir
-[`README_HEBERGEMENT_DEBUTANT.md`](README_HEBERGEMENT_DEBUTANT.md).
+[`README_HEBERGEMENT_DEBUTANT.md`](utils/memos/README_HEBERGEMENT_DEBUTANT.md).
 
 ## Principe
 
@@ -663,7 +663,9 @@ une erreur explicite au lieu de remplacer silencieusement l'état.
 
 ## Installation
 
-Le projet utilise un environnement Python unique :
+Le poste de développement utilise un environnement Python complet. Le fichier
+`requirements.txt` est uniquement un agrégateur des trois rôles : API, orchestration
+VPS et traitement GPU.
 
 ```powershell
 py -3.10 -m venv .venv
@@ -671,6 +673,17 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.local.example .env.local
 ```
+
+Les déploiements n’installent jamais cet agrégateur :
+
+| Rôle | Fichier | Contenu |
+|---|---|---|
+| API RAG du VPS | `requirements-api.txt` | FastAPI, fournisseurs LLM, PostgreSQL et Phoenix |
+| Orchestrateur du VPS | `requirements-vps.txt` | YouTube, S3, Scaleway et PostgreSQL, sans CUDA |
+| Worker GPU | `requirements-gpu.txt` | WhisperX, Torch, PaddleOCR et traitement vidéo |
+
+`requirements-paddle-bootstrap.txt` est un détail de construction de l’image GPU,
+pas un environnement à installer directement.
 
 Le projet utilise deux environnements avec les memes cles : `.env.local` pour
 les tests sur le poste de developpement et `.env.production` pour le VPS.
@@ -1033,7 +1046,26 @@ fichiers sont stockés sous `s3://<bucket>/youtube/<nom_update>/`; aucun dossier
 d’archive permanent n’est conservé localement.
 
 Les deux commandes utilisent le même verrou PostgreSQL et peuvent être
-programmées séparément. Sur un serveur Linux, par exemple :
+programmées séparément. Sur le VPS, la méthode recommandée est le conteneur CPU
+ponctuel du profil Compose `jobs`. Il partage le réseau PostgreSQL sans installer
+Python sur l’hôte :
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  --env-file .env.production \
+  --profile jobs run --rm updater python -m pipeline.update_stats
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  --env-file .env.production \
+  --profile jobs run --rm updater python -m pipeline.update_videos
+```
+
+Une installation Python hôte avec le seul `requirements-vps.txt` reste possible.
+Dans ce cas, par exemple :
 
 ```cron
 0 2 * * * cd /srv/rag_ionis && RAG_IONIS_ENV=production ./.venv/bin/python -m pipeline.update_stats 2>&1 | logger -t rag-ionis-youtube-stats
@@ -1165,6 +1197,11 @@ Le service démarre au boot et surveille les jobs S3. Le worker quitte lorsque l
 file est vide depuis `SCALEWAY_WORKER_IDLE_SECONDS` secondes ; l'orchestrateur
 arrête ensuite la VM après avoir reçu le statut du job. Le premier boot doit
 être testé manuellement avec `systemctl start`.
+
+Le script monte automatiquement `/var/lib/rag-ionis/models` dans `/models`. Les
+modèles WhisperX, Hugging Face et Paddle restent donc en cache sur le volume de
+la VM entre deux démarrages. `SCALEWAY_MODEL_CACHE_DIR` permet de choisir un autre
+chemin hôte absolu.
 
 Les secrets métier sont conservés dans le fichier root-only
 `/etc/rag-ionis/scaleway-worker.env` sur la VM et transmis au conteneur à chaque

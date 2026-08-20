@@ -1,4 +1,11 @@
+# syntax=docker/dockerfile:1.7
+
 ARG CUDA_BASE=nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+ARG NODE_BASE=node:22.18.0-bullseye-slim
+
+# yt-dlp 2026 exige Node 22 ou plus pour les challenges JavaScript YouTube.
+# La variante Bullseye reste compatible avec la glibc d'Ubuntu 22.04.
+FROM ${NODE_BASE} AS node-runtime
 
 # Paddle est assemble dans une etape jetable. Ses quatre plus gros binaires sont
 # copies separement dans l'image finale afin que chaque blob reste publiable meme
@@ -11,10 +18,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-scaleway.txt /tmp/requirements-scaleway.txt
+COPY requirements-paddle-bootstrap.txt /tmp/requirements-paddle-bootstrap.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install --upgrade pip \
-    && python3 -m pip install --no-deps --requirement /tmp/requirements-scaleway.txt
+    && python3 -m pip install --no-deps --requirement /tmp/requirements-paddle-bootstrap.txt
 RUN mkdir -p /paddle-parts \
     && mv /usr/local/lib/python3.10/dist-packages/paddle/base/libpaddle.so /paddle-parts/libpaddle.so \
     && mv /usr/local/lib/python3.10/dist-packages/paddle/libs/libflashattn.so /paddle-parts/libflashattn.so \
@@ -55,15 +62,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg nodejs ca-certificates \
+    && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-scaleway.txt ./
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+RUN node --version \
+    && test "$(node --version | cut -d. -f1)" = "v22"
 
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install --upgrade pip
 
 # Les bibliotheques CUDA de Torch sont volontairement reparties en couches :
 # cela evite un unique blob de plus de 10 Go et rend les pushes reprenables.
+# Torch 2.8 et Paddle 3.2 declarent trois versions NVIDIA incompatibles
+# (cuDNN, cuSPARSELt et NCCL). Les versions Torch ci-dessous sont conservees :
+# le smoke test de l'image execute bien Torch puis Paddle sur CUDA 12.6.
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install --no-deps \
     nvidia-cudnn-cu12==9.10.2.21
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install --no-deps \
@@ -76,20 +88,22 @@ RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install --no-deps 
     nvidia-cuda-cupti-cu12==12.6.80 nvidia-cuda-nvrtc-cu12==12.6.77 \
     nvidia-cuda-runtime-cu12==12.6.77 nvidia-cufile-cu12==1.11.1.6 \
     nvidia-curand-cu12==10.3.7.77 nvidia-nvjitlink-cu12==12.6.85 \
-    nvidia-nvtx-cu12==12.6.77 nvidia-cuda-cccl-cu12 opt-einsum
+    nvidia-nvtx-cu12==12.6.77 nvidia-cuda-cccl-cu12==12.6.77 opt-einsum==3.3.0
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install --no-deps \
-    --extra-index-url https://download.pytorch.org/whl/cu126/ \
+    --index-url https://download.pytorch.org/whl/cu126/ \
     torch==2.8.0+cu126 torchvision==0.23.0+cu126 torchaudio==2.8.0+cu126
 
 # Le reste est separe entre dependances generales, audio/Whisper et OCR.
+COPY requirements-gpu.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    sed -e '/^paddlepaddle-gpu==/d' -e '/^paddleocr==/d' \
+    sed -e '/^--extra-index-url /d' \
+        -e '/^paddlepaddle-gpu==/d' -e '/^paddleocr==/d' \
         -e '/^torch==/d' -e '/^torchvision==/d' -e '/^torchaudio==/d' \
         -e '/^openai-whisper==/d' -e '/^whisperx==/d' -e '/^transformers/d' \
-        requirements.txt > /tmp/requirements-core.txt \
+        requirements-gpu.txt > /tmp/requirements-core.txt \
     && python3 -m pip install --requirement /tmp/requirements-core.txt
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install \
-    openai-whisper==20250625 whisperx==3.8.6 'transformers>=4.40'
+    openai-whisper==20250625 whisperx==3.8.6 transformers==4.57.6
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install \
     paddleocr==3.7.0
 

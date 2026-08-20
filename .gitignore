@@ -12,7 +12,7 @@ downloads/
 models/huggingface/
 models/faster-whisper-large-v3/
 *.log
-utils/memos/
+utils/memos/*
 utils/scaleway_disponibility/scaleway_gpu_availability.csv
 others/
 .venv_py310_backup_20260705_140330/

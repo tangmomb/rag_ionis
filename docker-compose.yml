@@ -1,7 +1,7 @@
 # Services communs au developpement local et a la production.
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.2-pg16
     container_name: rag_ionis_postgres
     restart: unless-stopped
     environment:

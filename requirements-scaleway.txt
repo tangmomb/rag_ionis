@@ -1,5 +1,0 @@
---extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
-
-# Installe separement sans les roues CUDA imposees par Paddle. Le conteneur
-# utilise les bibliotheques CUDA/cuDNN plus recentes deja installees par Torch.
-paddlepaddle-gpu==3.2.0

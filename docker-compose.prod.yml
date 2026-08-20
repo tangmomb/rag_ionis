@@ -25,7 +25,10 @@ services:
       context: .
       dockerfile: Dockerfile.api
     restart: unless-stopped
+    env_file:
+      - .env.production
     environment:
+      RAG_IONIS_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       ANALYTICS_DATABASE_URL: postgresql://rag_ionis_analytics:${ANALYTICS_DATABASE_PASSWORD}@postgres:5432/${POSTGRES_DB}
       ANALYTICS_MAX_TOTAL_COST: ${ANALYTICS_MAX_TOTAL_COST:-100000}
@@ -37,6 +40,8 @@ services:
       PHOENIX_ENABLED: "true"
       PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-rag-ionis}
+    volumes:
+      - ./.env.production:/app/.env.production:ro
     expose:
       - "8006"
     depends_on:

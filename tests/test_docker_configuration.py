@@ -19,12 +19,13 @@ class DockerConfigurationTests(unittest.TestCase):
         self.assertIn('command: ["postgres", "-c", "timezone=Europe/Paris"]', compose)
 
     def test_production_services_are_not_directly_public(self) -> None:
-        compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
+        common_compose = COMPOSE_PATH.read_text(encoding="utf-8")
+        production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('"127.0.0.1:5432:5432"', compose)
-        self.assertIn('"127.0.0.1:6006:6006"', compose)
-        self.assertIn('expose:\n      - "8006"', compose)
-        self.assertNotIn('"8006:8006"', compose)
+        self.assertIn('"127.0.0.1:${POSTGRES_PORT:-5432}:5432"', common_compose)
+        self.assertIn('"127.0.0.1:${PHOENIX_PORT:-6006}:6006"', common_compose)
+        self.assertIn('expose:\n      - "8006"', production_compose)
+        self.assertNotIn('"8006:8006"', production_compose)
 
     def test_production_api_runs_without_reload_as_non_root(self) -> None:
         dockerfile = API_DOCKERFILE_PATH.read_text(encoding="utf-8")

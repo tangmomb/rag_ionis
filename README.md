@@ -685,20 +685,15 @@ YOUTUBE_API_KEY=...
 OPENAI_API_KEY=...
 HUGGINGFACE_TOKEN=...
 
-WHISPERX_MODEL=large-v3
-WHISPERX_LANGUAGE=fr
-WHISPERX_DEVICE=cuda
-WHISPERX_COMPUTE_TYPE=float16
-WHISPERX_CUDA_FALLBACK_COMPUTE_TYPE=int8_float16
-WHISPERX_STRICT_CUDA=1
-WHISPERX_BATCH_SIZE=4
-PADDLEOCR_BATCH_SIZE=8
-
 S3_BUCKET_NAME=...
 S3_REGION=...
 S3_ACCESS_KEY_ID=...
 S3_SECRET_ACCESS_KEY=...
 ```
+
+Les modèles, tailles de batch, délais et autres paramètres internes du pipeline
+ont leurs valeurs par défaut dans les scripts concernés ; ils ne sont pas
+nécessaires dans les fichiers `.env`.
 
 ## Utilisation du pipeline
 

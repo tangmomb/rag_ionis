@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
 from openai import OpenAI
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
+
 EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 2000
 TEMPORARY_COLUMN = "embedding_2000"
@@ -207,10 +212,10 @@ def main() -> int:
     args = parse_args()
     if args.batch_size <= 0:
         raise ValueError("--batch-size doit etre strictement positif")
-    load_dotenv(PROJECT_DIR / ".env", override=True)
+    load_project_env(PROJECT_DIR, override=True)
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
-        raise RuntimeError("DATABASE_URL manquante dans .env")
+        raise RuntimeError("DATABASE_URL manquante dans le fichier d'environnement selectionne")
 
     with psycopg.connect(database_url) as connection:
         state = database_state(connection)

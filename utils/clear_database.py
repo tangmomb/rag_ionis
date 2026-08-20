@@ -1,7 +1,15 @@
 import os
+import sys
+from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
 
 
 TABLES_BY_SCHEMA = {
@@ -40,7 +48,7 @@ def existing_tables(cursor, schema_name, tables):
 
 
 def main():
-    load_dotenv()
+    load_project_env(PROJECT_DIR, override=False)
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:

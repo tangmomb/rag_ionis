@@ -2,7 +2,12 @@ import json
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
 
 
 DEFAULT_SEARCH_DIR = Path("downloads/youtube")
@@ -168,7 +173,7 @@ def write_outputs(video_path, payload, model_option):
 def main():
     from openai import OpenAI
 
-    load_dotenv(override=True)
+    load_project_env(PROJECT_DIR, override=True)
     client = OpenAI()
     search_dir = DEFAULT_SEARCH_DIR
     candidates = find_media_files(search_dir)

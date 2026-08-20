@@ -6,12 +6,17 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dotenv import load_dotenv
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
 
 try:
     from utils.model_embedding.benchmark import (
@@ -468,7 +473,7 @@ def main() -> int:
         print(f"[ok] selection: {selection_path}")
         return 0
 
-    load_dotenv()
+    load_project_env(PROJECT_DIR, override=False)
     try:
         from openai import OpenAI
     except ImportError as error:

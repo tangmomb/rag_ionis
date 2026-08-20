@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from dotenv import load_dotenv
 
 try:
     from utils.model_embedding.benchmark import (
@@ -58,6 +57,9 @@ ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = ROOT.parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
+
 DEFAULT_RAG_CONFIGS_PATH = ROOT / "rag_configs.json"
 DEFAULT_RAG_CACHE_DIR = ROOT / "cache" / "rag_rerank"
 DEFAULT_RAG_REPORT_PATH = ROOT / "reports" / "rag_report.md"
@@ -580,7 +582,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    load_dotenv(PROJECT_DIR / ".env", override=True)
+    load_project_env(PROJECT_DIR, override=True)
     settings, embedding_configs = load_rag_settings(args.rag_configs, args.embedding_configs)
     chunks = discover_chunks(args.video_dir)
     cases = load_cases(args.cases)

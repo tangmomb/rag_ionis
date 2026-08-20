@@ -5,13 +5,13 @@ import csv
 import hashlib
 import json
 import math
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
-from dotenv import load_dotenv
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -19,6 +19,11 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = ROOT.parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
+
 DEFAULT_VIDEO_DIR = PROJECT_DIR / "downloads" / "youtube"
 DEFAULT_CONFIGS_PATH = ROOT / "configs.json"
 DEFAULT_CASES_PATH = ROOT / "cases.jsonl"
@@ -686,7 +691,7 @@ def main() -> int:
     configs, top_k = load_configs(args.configs)
     cases = load_cases(args.cases)
     validate_references(cases, {chunk.key for chunk in chunks})
-    load_dotenv()
+    load_project_env(PROJECT_DIR, override=False)
     try:
         from openai import OpenAI
     except ImportError as error:

@@ -7,7 +7,7 @@ Usage:
     python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --record --resource gpu --model L40S
     python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --summary --resource gpu --model L40S
 
-The Scaleway API token is read from SCW_SECRET_KEY in the environment or .env.
+The Scaleway API token is read from SCW_SECRET_KEY in the selected environment file.
 It is never printed.
 """
 
@@ -22,10 +22,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.support.environment import load_project_env
+
 DEFAULT_HISTORY_FILE = Path(__file__).resolve().with_name(
     "scaleway_gpu_availability.csv"
 )
@@ -310,7 +314,7 @@ def select_resource_and_model(
 
 
 def main() -> int:
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    load_project_env(PROJECT_ROOT, override=False)
     args = parse_args()
     token = os.getenv("SCW_SECRET_KEY", "").strip()
     if not token:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline.support.environment import load_project_env
+from .environment import load_project_env
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]

@@ -44,6 +44,24 @@ class ProjectEnvironmentTests(unittest.TestCase):
                     "local",
                 )
 
+    def test_allows_missing_file_when_environment_is_injected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with patch.dict(
+                os.environ,
+                {
+                    "RAG_IONIS_ENV": "production",
+                    "RAG_IONIS_ENV_FILE_OPTIONAL": "1",
+                    "PIPELINE_EXECUTION_BACKEND": "scaleway",
+                },
+                clear=True,
+            ):
+                selected = load_project_env(Path(temporary_dir))
+
+                self.assertEqual(
+                    selected,
+                    Path(temporary_dir) / ".env.production",
+                )
+
     def test_rejects_unknown_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             with patch.dict(

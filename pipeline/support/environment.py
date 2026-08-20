@@ -30,6 +30,12 @@ def load_project_env(project_root: Path, *, override: bool = True) -> Path:
         if legacy_path.exists():
             selected_path = legacy_path
     if not selected_path.exists():
+        if os.getenv("RAG_IONIS_ENV_FILE_OPTIONAL", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return selected_path
         raise FileNotFoundError(
             f"Fichier d'environnement introuvable: {selected_path}"
         )

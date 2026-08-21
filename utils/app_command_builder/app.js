@@ -123,7 +123,7 @@ const scalewayWorkerConnectionFields = [
     id: "scalewayWorkerIdentityFile",
     label: "Clé privée SSH",
     type: "text",
-    placeholder: "Optionnelle : utilisée seulement si nécessaire",
+    value: String.raw`C:\Users\rgb\.ssh\rag_ionis_scaleway_admin`,
     full: true,
   },
 ];
@@ -583,7 +583,7 @@ const actions = [
     category: "Scaleway",
     title: "Publier l’image Scaleway",
     short: "Envoyer le commit et latest au registre",
-    description: "Construit puis pousse la même image worker sous le tag du commit et sous latest avec le script lancé via Git Bash.",
+    description: "Pousse l’image worker déjà construite sous le tag du commit et sous latest, sans la reconstruire.",
     icon: "↑",
     accent: "#dce8f5",
     commandBuilder: buildScalewayPublishCommand,
@@ -622,6 +622,17 @@ const actions = [
       summary: "Pull local de latest",
     }),
     sections: [{ title: "Image", fields: [scalewayImageFields[0]] }],
+  },
+  {
+    id: "scaleway-connect",
+    category: "Scaleway",
+    title: "Se connecter à la VM Scaleway",
+    short: "Ouvrir une session SSH sur la VM GPU",
+    description: "Ouvre une connexion SSH interactive vers la VM Scaleway avec l’utilisateur et la clé indiqués.",
+    icon: "⌁",
+    accent: "#d9eee8",
+    commandBuilder: buildScalewayConnectCommand,
+    sections: [{ title: "Connexion à la VM", fields: scalewayWorkerConnectionFields }],
   },
   {
     id: "scaleway-worker-info",
@@ -903,14 +914,18 @@ function scalewayCommitTag() {
 function buildScalewayPublishCommand() {
   const repository = scalewayRepository();
   const commitTag = scalewayCommitTag();
-  const tagArgument = commitTag ? ` ${quotePowerShell(commitTag)}` : "";
+  const tagExpression = commitTag
+    ? powerShellString(commitTag)
+    : "(git rev-parse --short=7 HEAD).Trim()";
   const command = [
-    `$env:SCALEWAY_IMAGE_REPOSITORY = ${powerShellString(repository)}`,
-    `& "C:\\Program Files\\Git\\bin\\bash.exe" deploy/publish-scaleway-image.sh${tagArgument}`,
+    `$repository = ${powerShellString(repository)}`,
+    `$commitTag = ${tagExpression}`,
+    'docker push "${repository}:$commitTag"',
+    'docker push "${repository}:latest"',
   ].join("\n");
   return {
     command,
-    summary: "Publication des tags commit et latest",
+    summary: "Envoi des tags commit et latest sans reconstruction",
   };
 }
 
@@ -947,6 +962,17 @@ function buildScalewayWorkerInfoCommand() {
   return {
     command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)} "sudo systemctl cat rag-ionis-scaleway-worker; printf '\\n--- Environnement worker ---\\n'; sudo cat /etc/rag-ionis/scaleway-worker.env"`,
     summary: "Vérification distante du worker",
+  };
+}
+
+function buildScalewayConnectCommand() {
+  const host = formValue("scalewayWorkerHost", "51.159.135.156") || "51.159.135.156";
+  const user = formValue("scalewayWorkerUser", "root") || "root";
+  const identityFile = formValue("scalewayWorkerIdentityFile");
+  const identityOption = identityFile ? ` -i ${quotePowerShell(identityFile)}` : "";
+  return {
+    command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)}`,
+    summary: "Connexion SSH à la VM Scaleway",
   };
 }
 

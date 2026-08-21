@@ -86,7 +86,7 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertNotIn('flag: "--', daily_sync)
         self.assertIn("API YouTube", daily_sync)
         self.assertIn("table stats", daily_sync)
-        self.assertIn('app.js?v=20260821-vps-scaleway', index)
+        self.assertIn('app.js?v=20260821-scaleway-ssh', index)
 
     def test_vps_actions_keep_only_the_requested_operations(self) -> None:
         source = APP_PATH.read_text(encoding="utf-8")
@@ -143,17 +143,23 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway', source)
         self.assertNotIn('rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway', source)
         self.assertIn('id: "scaleway-publish-image"', source)
-        self.assertIn('deploy/publish-scaleway-image.sh', source)
-        self.assertIn(r'C:\\Program Files\\Git\\bin\\bash.exe', source)
+        self.assertIn('docker push "${repository}:$commitTag"', source)
+        self.assertIn('docker push "${repository}:latest"', source)
+        self.assertIn("sans la reconstruire", source)
+        self.assertNotIn('deploy/publish-scaleway-image.sh', source)
         self.assertIn('id: "scaleway-inspect-image"', source)
         self.assertIn('docker buildx imagetools inspect', source)
         self.assertIn('id: "scaleway-pull-latest"', source)
+        self.assertIn('id: "scaleway-connect"', source)
+        self.assertIn('title: "Se connecter à la VM Scaleway"', source)
+        self.assertIn('command: `ssh${identityOption}', source)
         self.assertIn('id: "scaleway-worker-info"', source)
         worker_info = source.split('id: "scaleway-worker-info"', 1)[1].split(
             '];', 1
         )[0]
         self.assertIn('fields: scalewayWorkerConnectionFields', worker_info)
         self.assertIn('id: "scalewayWorkerHost"', source)
+        self.assertIn(r'C:\Users\rgb\.ssh\rag_ionis_scaleway_admin', source)
         self.assertIn('value: "51.159.135.156"', source)
         self.assertIn('value: "root"', source)
         self.assertNotIn('ubuntu@179.237.98.117', worker_info)
@@ -161,7 +167,7 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('/etc/rag-ionis/scaleway-worker.env', source)
         self.assertIn('sudo cat /etc/rag-ionis/scaleway-worker.env', source)
         self.assertIn('clés S3 et API en clair', source)
-        self.assertIn('app.js?v=20260821-vps-scaleway', index)
+        self.assertIn('app.js?v=20260821-scaleway-ssh-key', index)
 
 if __name__ == "__main__":
     unittest.main()

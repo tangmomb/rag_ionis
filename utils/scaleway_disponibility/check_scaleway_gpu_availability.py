@@ -2,10 +2,10 @@
 
 Usage:
     python utils/scaleway_disponibility/check_scaleway_gpu_availability.py
-    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --resource gpu --model L40S
-    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --gpu L40S --zone pl-waw-2
-    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --record --resource gpu --model L40S
-    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --summary --resource gpu --model L40S
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --resource gpu --model L4
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --gpu L4 --zone pl-waw-2
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --record --resource gpu --model L4
+    python utils/scaleway_disponibility/check_scaleway_gpu_availability.py --summary --resource gpu --model L4
 
 The Scaleway API token is read from SCW_SECRET_KEY in the selected environment file.
 It is never printed.
@@ -260,7 +260,7 @@ def parse_args() -> argparse.Namespace:
         "--model",
         "--gpu",
         dest="model",
-        help="Type d'instance à rechercher (ex. L40S ou DEV1-S).",
+        help="Type d'instance à rechercher (ex. L4 ou DEV1-S).",
     )
     parser.add_argument(
         "--zone",
@@ -306,7 +306,7 @@ def select_resource_and_model(
     if resource not in {"gpu", "cpu"}:
         raise ValueError("La ressource doit être gpu ou cpu.")
 
-    default_model = "L40S" if resource == "gpu" else "DEV1-S"
+    default_model = "L4" if resource == "gpu" else "DEV1-S"
     if interactive and model is None and args.resource is None:
         model = input(f"Type d'instance (défaut : {default_model}) : ").strip()
     model = model or default_model

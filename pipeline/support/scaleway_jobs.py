@@ -27,7 +27,7 @@ class ScalewayConfig:
     project_id: str
     container_image: str = ""
     zone: str = "fr-par-2"
-    instance_type: str = "L40S-1-48G"
+    instance_type: str = "L4-1-24G"
     poll_seconds: float = 10.0
     timeout_seconds: float = 21600.0
     server_id: str = ""
@@ -56,7 +56,7 @@ class ScalewayConfig:
             project_id=project_id,
             container_image=container_image,
             zone=os.getenv("SCW_DEFAULT_ZONE", "fr-par-2").strip(),
-            instance_type=os.getenv("SCALEWAY_INSTANCE_TYPE", "L40S-1-48G").strip(),
+            instance_type=os.getenv("SCALEWAY_INSTANCE_TYPE", "L4-1-24G").strip(),
             poll_seconds=float(os.getenv("SCALEWAY_POLL_SECONDS", "10")),
             timeout_seconds=float(os.getenv("SCALEWAY_JOB_TIMEOUT_SECONDS", "21600")),
             server_id=server_id,

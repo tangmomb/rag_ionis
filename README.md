@@ -1080,7 +1080,7 @@ et supprimés à la fin.
 #### Traitement GPU avec une VM Scaleway dédiée
 
 Scaleway est le backend par défaut de `pipeline run`, des tâches GPU lancées
-seules et de `pipeline.update_runs`. Une VM GPU `L40S-1-48G` est provisionnée
+seules et de `pipeline.update_runs`. Une VM GPU `L4-1-24G` est provisionnée
 et configurée une seule fois. Elle reste arrêtée hors traitement. Pour chaque
 job, l'orchestrateur écrit un payload dans S3, démarre la VM, attend le worker
 Docker persistant puis arrête la VM après traitement. L'instance, son volume et
@@ -1098,7 +1098,7 @@ SCW_SECRET_KEY=...
 SCW_DEFAULT_PROJECT_ID=...
 SCW_DEFAULT_ZONE=fr-par-2
 SCALEWAY_SERVER_ID=...
-SCALEWAY_INSTANCE_TYPE=L40S-1-48G
+SCALEWAY_INSTANCE_TYPE=L4-1-24G
 SCALEWAY_POLL_SECONDS=10
 SCALEWAY_JOB_TIMEOUT_SECONDS=21600
 SCALEWAY_MAX_CONCURRENT_JOBS=1
@@ -1119,7 +1119,7 @@ Pour vérifier les GPU disponibles dans toutes les zones Scaleway :
 ```
 
 Le script demande la ressource (`gpu` ou `cpu`) et le type d'instance. Les
-valeurs par défaut sont `gpu` et `L40S`. Les options `--resource`, `--model` et
+valeurs par défaut sont `gpu` et `L4`. Les options `--resource`, `--model` et
 `--zone` permettent une utilisation non interactive.
 Une zone `available` peut toutefois passer en `low_stock` ou `out_of_stock`
 entre la vérification et la création de l'instance.
@@ -1128,14 +1128,14 @@ Pour construire un historique, exécuter périodiquement :
 
 ```powershell
 .\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py `
-  --record --resource gpu --model L40S
+  --record --resource gpu --model L4
 ```
 
 Puis afficher la moyenne sur les sept derniers jours :
 
 ```powershell
 .\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py `
-  --summary --resource gpu --model L40S --days 7
+  --summary --resource gpu --model L4 --days 7
 ```
 
 Les relevés sont conservés localement dans
@@ -1185,7 +1185,7 @@ Le namespace Container Registry peut rester privé. L'image est installée sur l
 VM par l'administrateur et le worker peut la mettre à jour au démarrage avec
 `SCALEWAY_WORKER_PULL_IMAGE=1` (à activer si la VM doit récupérer le nouveau
 `latest` à chaque démarrage). La clé API de la machine de soumission doit
-autoriser le démarrage et l'arrêt de l'instance ainsi que l'accès S3. La L40S
+autoriser le démarrage et l'arrêt de l'instance ainsi que l'accès S3. La L4
 doit rester attachée à la zone choisie.
 
 Installer le worker persistant sur la VM GPU :
@@ -1229,16 +1229,16 @@ WHISPERX_MODEL=large-v3
 WHISPERX_DEVICE=cuda
 WHISPERX_COMPUTE_TYPE=float16
 WHISPERX_STRICT_CUDA=1
-WHISPERX_BATCH_SIZE=32
+WHISPERX_BATCH_SIZE=8
 WHISPERX_DIARIZATION_DEVICE=cuda
 WHISPERX_KEEP_MODEL=1
-FRAME_CLASSIFICATION_BATCH_SIZE=128
+FRAME_CLASSIFICATION_BATCH_SIZE=32
 FRAME_CLASSIFICATION_DTYPE=float16
 FRAME_CLASSIFICATION_KEEP_MODEL=1
-PADDLEOCR_BATCH_SIZE=64
+PADDLEOCR_BATCH_SIZE=16
 ```
 
-L'image Docker fournit déjà ces valeurs adaptées aux 48 Go de VRAM. Les préfixes
+L'image Docker fournit déjà ces valeurs adaptées aux 24 Go de VRAM. Les préfixes
 temporaires sont supprimés après rapatriement réussi. Mettre
 `SCALEWAY_KEEP_JOB_ARTIFACTS=1` pour les conserver. Pour laisser la VM démarrée
 pendant un diagnostic, utiliser temporairement `SCALEWAY_STOP_AFTER_JOB=0`.

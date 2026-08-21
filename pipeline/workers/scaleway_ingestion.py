@@ -63,8 +63,8 @@ def validate_worker_gpu() -> None:
         raise RuntimeError("Le worker Scaleway ne voit aucun GPU CUDA.")
     properties = torch.cuda.get_device_properties(0)
     memory_gb = properties.total_memory / (1024**3)
-    required_name = os.getenv("SCALEWAY_REQUIRED_GPU_NAME", "L40S").strip().lower()
-    minimum_memory_gb = float(os.getenv("SCALEWAY_MIN_GPU_MEMORY_GB", "44"))
+    required_name = os.getenv("SCALEWAY_REQUIRED_GPU_NAME", "L4").strip().lower()
+    minimum_memory_gb = float(os.getenv("SCALEWAY_MIN_GPU_MEMORY_GB", "22"))
     if required_name and required_name not in properties.name.lower():
         raise RuntimeError(
             f"GPU Scaleway inattendu: {properties.name}; {required_name!r} requis."

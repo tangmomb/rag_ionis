@@ -86,23 +86,82 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertNotIn('flag: "--', daily_sync)
         self.assertIn("API YouTube", daily_sync)
         self.assertIn("table stats", daily_sync)
-        self.assertIn('app.js?v=20260819-daily-sync-split', index)
+        self.assertIn('app.js?v=20260821-vps-scaleway', index)
 
-    def test_vps_actions_include_combined_tunnels_and_safe_sql_sync(self) -> None:
+    def test_vps_actions_keep_only_the_requested_operations(self) -> None:
         source = APP_PATH.read_text(encoding="utf-8")
 
         self.assertIn('category: "VPS"', source)
-        self.assertIn('id: "vps-tunnels"', source)
+        for action_id in (
+            "vps-connect",
+            "vps-pull-code",
+            "vps-rebuild-stack",
+            "vps-send-production-env",
+        ):
+            self.assertIn(f'id: "{action_id}"', source)
+        self.assertIn('git pull --ff-only', source)
+        pull_code = source.split('id: "vps-pull-code"', 1)[1].split(
+            'id: "vps-rebuild-stack"', 1
+        )[0]
+        self.assertIn('shellCommand: "cd /rag_ionis && git pull --ff-only"', pull_code)
+        self.assertIn('shellLabel: "Commande Linux VPS"', pull_code)
+        self.assertIn('terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" }', pull_code)
+        self.assertNotIn('vpsRemoteCommand', pull_code)
+        rebuild_stack = source.split('id: "vps-rebuild-stack"', 1)[1].split(
+            'id: "vps-send-production-env"', 1
+        )[0]
         self.assertIn(
-            '-L 127.0.0.1:15432:127.0.0.1:5432 -L 127.0.0.1:16006:127.0.0.1:6006',
-            source,
+            'shellCommand: "cd /rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build"',
+            rebuild_stack,
         )
-        self.assertIn('id: "vps-phoenix"', source)
-        self.assertIn('http://127.0.0.1:16006', source)
-        self.assertIn('id: "vps-sync-db"', source)
-        self.assertIn('PYTHON_DOTENV_DISABLED', source)
-        self.assertIn('pipeline.publish.sync_database', source)
-        self.assertIn('if (mode === "dry-run") syncArgs.push("--dry-run");', source)
+        self.assertIn('shellLabel: "Commande Linux VPS"', rebuild_stack)
+        self.assertNotIn('vpsRemoteCommand', rebuild_stack)
+        self.assertIn('docker-compose.prod.yml', source)
+        self.assertIn('scp -i', source)
+        self.assertIn('.env.production', source)
+
+        for removed_action_id in (
+            "vps-tunnels",
+            "vps-phoenix",
+            "vps-list-hidden",
+            "vps-start-stack",
+            "vps-logs",
+            "vps-update-stats",
+            "vps-update-videos",
+            "vps-stop-stack",
+            "vps-sync-db",
+            "vps-clean-session",
+        ):
+            self.assertNotIn(f'id: "{removed_action_id}"', source)
+
+    def test_scaleway_actions_include_image_lifecycle_and_worker_info(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+        index = INDEX_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('"Scaleway"', source)
+        self.assertIn('id: "scaleway-build-image"', source)
+        self.assertIn('rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway', source)
+        self.assertNotIn('rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway', source)
+        self.assertIn('id: "scaleway-publish-image"', source)
+        self.assertIn('deploy/publish-scaleway-image.sh', source)
+        self.assertIn(r'C:\\Program Files\\Git\\bin\\bash.exe', source)
+        self.assertIn('id: "scaleway-inspect-image"', source)
+        self.assertIn('docker buildx imagetools inspect', source)
+        self.assertIn('id: "scaleway-pull-latest"', source)
+        self.assertIn('id: "scaleway-worker-info"', source)
+        worker_info = source.split('id: "scaleway-worker-info"', 1)[1].split(
+            '];', 1
+        )[0]
+        self.assertIn('fields: scalewayWorkerConnectionFields', worker_info)
+        self.assertIn('id: "scalewayWorkerHost"', source)
+        self.assertIn('value: "51.159.135.156"', source)
+        self.assertIn('value: "root"', source)
+        self.assertNotIn('ubuntu@179.237.98.117', worker_info)
+        self.assertIn('sudo systemctl cat rag-ionis-scaleway-worker', source)
+        self.assertIn('/etc/rag-ionis/scaleway-worker.env', source)
+        self.assertIn('sudo cat /etc/rag-ionis/scaleway-worker.env', source)
+        self.assertIn('clés S3 et API en clair', source)
+        self.assertIn('app.js?v=20260821-vps-scaleway', index)
 
 if __name__ == "__main__":
     unittest.main()

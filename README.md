@@ -1167,14 +1167,24 @@ PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
 Construire puis publier l'image du worker :
 
 ```bash
-docker build --platform linux/amd64 -f Dockerfile.scaleway \
-  -t rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION .
-docker push rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION
+SCALEWAY_IMAGE_REPOSITORY=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway \
+  bash deploy/publish-scaleway-image.sh
+```
+
+Le script construit une seule image et la publie sous deux tags : le tag court
+du commit courant (par exemple `dd062e7`) et `latest`. La VM peut donc continuer
+à utiliser `:latest`, tandis que chaque version reste récupérable avec son tag
+immuable. Pour publier un tag précis, le passer en argument :
+
+```bash
+SCALEWAY_IMAGE_REPOSITORY=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway \
+  bash deploy/publish-scaleway-image.sh dd062e7
 ```
 
 Le namespace Container Registry peut rester privé. L'image est installée sur la
 VM par l'administrateur et le worker peut la mettre à jour au démarrage avec
-`SCALEWAY_WORKER_PULL_IMAGE=1`. La clé API de la machine de soumission doit
+`SCALEWAY_WORKER_PULL_IMAGE=1` (à activer si la VM doit récupérer le nouveau
+`latest` à chaque démarrage). La clé API de la machine de soumission doit
 autoriser le démarrage et l'arrêt de l'instance ainsi que l'accès S3. La L40S
 doit rester attachée à la zone choisie.
 

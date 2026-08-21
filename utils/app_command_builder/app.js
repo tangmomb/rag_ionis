@@ -84,6 +84,52 @@ const runBatchField = {
   full: true,
 };
 
+const scalewayImageFields = [
+  {
+    id: "scalewayRepository",
+    label: "Dépôt Container Registry",
+    type: "text",
+    value: "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway",
+    required: true,
+    full: true,
+    help: "Namespace Scaleway par défaut : rag-ionis.",
+  },
+  {
+    id: "scalewayCommitTag",
+    label: "Tag du commit",
+    type: "text",
+    placeholder: "Vide = git rev-parse --short=7 HEAD (ex. dd062e7)",
+    full: true,
+  },
+];
+
+const scalewayWorkerConnectionFields = [
+  {
+    id: "scalewayWorkerHost",
+    label: "Hôte SSH de la VM",
+    type: "text",
+    value: "51.159.135.156",
+    required: true,
+    full: true,
+  },
+  {
+    id: "scalewayWorkerUser",
+    label: "Utilisateur SSH",
+    type: "text",
+    value: "root",
+    required: true,
+  },
+  {
+    id: "scalewayWorkerIdentityFile",
+    label: "Clé privée SSH",
+    type: "text",
+    placeholder: "Optionnelle : utilisée seulement si nécessaire",
+    full: true,
+  },
+];
+
+const VPS_SSH = String.raw`ssh -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" ubuntu@179.237.98.117`;
+
 const actions = [
   {
     id: "fetch",
@@ -473,83 +519,125 @@ const actions = [
     ],
   },
   {
-    id: "vps-tunnels",
+    id: "vps-connect",
     category: "VPS",
-    title: "Ouvrir les tunnels VPS",
-    short: "PostgreSQL et Phoenix dans une seule session SSH",
-    description: "Ouvre une connexion SSH qui redirige PostgreSQL vers le port local 15432 et Phoenix vers le port local 16006. Laisse le terminal ouvert pendant leur utilisation.",
-    icon: "⇆",
+    title: "Se connecter au VPS",
+    short: "Ouvrir une session SSH interactive",
+    description: "Ouvre un terminal SSH interactif dans le dossier personnel de l’utilisateur du VPS.",
+    icon: "⌁",
     accent: "#d9f36d",
-    shellCommand: String.raw`ssh -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" -o ExitOnForwardFailure=yes -N -L 127.0.0.1:15432:127.0.0.1:5432 -L 127.0.0.1:16006:127.0.0.1:6006 ubuntu@179.237.98.117`,
+    shellCommand: VPS_SSH,
     sections: [],
   },
   {
-    id: "vps-phoenix",
+    id: "vps-pull-code",
     category: "VPS",
-    title: "Consulter Phoenix du VPS",
-    short: "Ouvrir l’interface via le tunnel SSH",
-    description: "Ouvre Phoenix dans le navigateur. Le tunnel VPS doit déjà être actif dans un autre terminal.",
-    icon: "◉",
+    title: "Mettre à jour le code du VPS",
+    short: "Récupérer le dernier commit avec git pull",
+    description: "À lancer depuis une session SSH déjà ouverte : exécute un git pull --ff-only dans le dépôt du VPS. La commande s’arrête si des modifications locales empêchent une mise à jour propre.",
+    icon: "↓",
     accent: "#dce8f5",
-    shellCommand: "Start-Process http://127.0.0.1:16006",
+    shellCommand: "cd /rag_ionis && git pull --ff-only",
+    shellLabel: "Commande Linux VPS",
+    terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
     sections: [],
   },
   {
-    id: "vps-sync-db",
+    id: "vps-rebuild-stack",
     category: "VPS",
-    title: "Synchroniser SQL du VPS",
-    short: "Tester, simuler ou publier via le tunnel PostgreSQL",
-    description: "Configure temporairement ce terminal PowerShell pour cibler PostgreSQL du VPS, puis teste la connexion ou synchronise les fichiers locaux.",
-    icon: "⇄",
+    title: "Reconstruire le stack VPS",
+    short: "Reconstruire les images et redémarrer les services",
+    description: "À lancer depuis une session SSH déjà ouverte : reconstruit les images de production puis redémarre le stack avec les derniers fichiers déployés.",
+    icon: "↻",
     accent: "#e7e1f4",
-    commandBuilder: buildVpsDatabaseCommand,
+    shellCommand: "cd /rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build",
+    shellLabel: "Commande Linux VPS",
+    terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
+    sections: [],
+  },
+  {
+    id: "vps-send-production-env",
+    category: "VPS",
+    title: "Renvoyer .env.production",
+    short: "Copier l’environnement local vers le VPS",
+    description: "Envoie le fichier .env.production local vers /srv/rag_ionis/.env.production via SCP.",
+    icon: "↑",
+    accent: "#f4d8d1",
+    shellCommand: String.raw`scp -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" ".env.production" ubuntu@179.237.98.117:/srv/rag_ionis/.env.production`,
+    sections: [],
+    warning: "Cette commande transmet les secrets de .env.production au VPS et remplace le fichier distant. À utiliser uniquement si nécessaire.",
+  },
+  {
+    id: "scaleway-build-image",
+    category: "Scaleway",
+    title: "Construire l’image Scaleway",
+    short: "Créer les tags commit et latest sans pousser",
+    description: "Construit localement l’image GPU linux/amd64 avec le tag court du commit et latest, sans l’envoyer au registre.",
+    icon: "◆",
+    accent: "#d9f36d",
+    commandBuilder: buildScalewayLocalBuildCommand,
+    sections: [{ title: "Image", fields: scalewayImageFields }],
+  },
+  {
+    id: "scaleway-publish-image",
+    category: "Scaleway",
+    title: "Publier l’image Scaleway",
+    short: "Envoyer le commit et latest au registre",
+    description: "Construit puis pousse la même image worker sous le tag du commit et sous latest avec le script lancé via Git Bash.",
+    icon: "↑",
+    accent: "#dce8f5",
+    commandBuilder: buildScalewayPublishCommand,
+    sections: [{ title: "Image", fields: scalewayImageFields }],
+    warning: "Vérifie le namespace, le login Docker et le commit avant de pousser. Le tag latest sera déplacé vers cette image.",
+  },
+  {
+    id: "scaleway-inspect-image",
+    category: "Scaleway",
+    title: "Inspecter une image Scaleway",
+    short: "Afficher le digest et les métadonnées du registre",
+    description: "Interroge le Container Registry Scaleway avec docker buildx imagetools inspect.",
+    icon: "⌕",
+    accent: "#e7e1f4",
+    commandBuilder: buildScalewayInspectCommand,
     sections: [
       {
-        title: "Connexion PostgreSQL du VPS",
+        title: "Image distante",
         fields: [
-          { id: "vpsDatabaseUser", label: "Utilisateur SQL", type: "text", value: "rag_ionis", required: true },
-          { id: "vpsDatabaseName", label: "Nom de la base", type: "text", value: "rag_ionis", required: true },
-          { id: "vpsDatabasePassword", label: "Mot de passe SQL", type: "password", placeholder: "POSTGRES_PASSWORD du VPS", required: true, help: "La valeur reste dans ce navigateur et sera copiée dans la commande PowerShell.", full: true },
-          {
-            id: "vpsDatabaseMode",
-            label: "Opération",
-            type: "select",
-            value: "dry-run",
-            defaultValue: "dry-run",
-            options: [
-              ["test", "Tester la connexion"],
-              ["dry-run", "Simuler la synchronisation"],
-              ["sync", "Synchroniser réellement"],
-            ],
-            full: true,
-          },
-        ],
-      },
-      {
-        title: "Source locale de la synchronisation",
-        fields: [
-          { id: "videoDir", label: "Dossier traité", flag: "--video-dir", type: "text", placeholder: "Défaut : dernier dossier", full: true },
-          { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube" },
-          { id: "videoIds", label: "Limiter à des IDs vidéo", flag: "--video-id", type: "textarea", placeholder: "Un ID par ligne", repeatable: true, full: true },
+          { ...scalewayImageFields[0] },
+          { id: "scalewayInspectTag", label: "Tag à inspecter", type: "text", value: "latest", defaultValue: "latest", required: true },
         ],
       },
     ],
-    warning: "Le mode « Synchroniser réellement » écrit dans la base de production. Lance d’abord la simulation et n’utilise pas --reset-database.",
   },
   {
-    id: "vps-clean-session",
-    category: "VPS",
-    title: "Nettoyer la session VPS",
-    short: "Retirer les variables PostgreSQL de production",
-    description: "Supprime DATABASE_URL et le verrouillage du fichier .env dans le terminal PowerShell courant. Ferme séparément le tunnel avec Ctrl+C.",
-    icon: "×",
-    accent: "#f5ddd5",
-    shellCommand: "Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue; Remove-Item Env:PYTHON_DOTENV_DISABLED -ErrorAction SilentlyContinue",
-    sections: [],
+    id: "scaleway-pull-latest",
+    category: "Scaleway",
+    title: "Récupérer latest localement",
+    short: "Tester le pull de l’image publiée",
+    description: "Télécharge le tag latest depuis le Container Registry pour vérifier l’accès et la publication.",
+    icon: "↓",
+    accent: "#dff0e5",
+    commandBuilder: () => ({
+      command: `docker pull ${quotePowerShell(`${scalewayRepository()}:latest`)}`,
+      summary: "Pull local de latest",
+    }),
+    sections: [{ title: "Image", fields: [scalewayImageFields[0]] }],
+  },
+  {
+    id: "scaleway-worker-info",
+    category: "Scaleway",
+    title: "Vérifier la configuration worker",
+    short: "Lire le service et l’environnement actifs sur la VM",
+    description: "Se connecte à la VM Scaleway indiquée ci-dessous pour afficher l’unité systemd active et le fichier d’environnement réellement utilisé.",
+    icon: "☷",
+    accent: "#f4d8d1",
+    commandBuilder: buildScalewayWorkerInfoCommand,
+    sections: [{ title: "Connexion à la VM", fields: scalewayWorkerConnectionFields }],
+    warning: "La VM Scaleway doit être démarrée et accessible en SSH. Cette commande affiche les clés S3 et API en clair.",
   },
 ];
 
-const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance", "VPS"];
+const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance", "VPS", "Scaleway"];
 const launchers = {
   venv: String.raw`.\.venv\Scripts\python.exe`,
   python: "python",
@@ -576,6 +664,8 @@ const elements = {
   badge: document.querySelector("#action-badge"),
   output: document.querySelector("#command-output"),
   summary: document.querySelector("#option-summary"),
+  terminalLabel: document.querySelector("#terminal-label"),
+  terminalPrompt: document.querySelector("#terminal-prompt"),
   warning: document.querySelector("#warning-box"),
   copy: document.querySelector("#copy-button"),
   wrap: document.querySelector("#wrap-button"),
@@ -799,11 +889,79 @@ function buildVpsDatabaseCommand() {
   };
 }
 
+function scalewayRepository() {
+  return formValue(
+    "scalewayRepository",
+    "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway",
+  ) || "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway";
+}
+
+function scalewayCommitTag() {
+  return formValue("scalewayCommitTag");
+}
+
+function buildScalewayPublishCommand() {
+  const repository = scalewayRepository();
+  const commitTag = scalewayCommitTag();
+  const tagArgument = commitTag ? ` ${quotePowerShell(commitTag)}` : "";
+  const command = [
+    `$env:SCALEWAY_IMAGE_REPOSITORY = ${powerShellString(repository)}`,
+    `& "C:\\Program Files\\Git\\bin\\bash.exe" deploy/publish-scaleway-image.sh${tagArgument}`,
+  ].join("\n");
+  return {
+    command,
+    summary: "Publication des tags commit et latest",
+  };
+}
+
+function buildScalewayLocalBuildCommand() {
+  const repository = scalewayRepository();
+  const commitTag = scalewayCommitTag();
+  const tagExpression = commitTag
+    ? powerShellString(commitTag)
+    : "(git rev-parse --short=7 HEAD).Trim()";
+  return {
+    command: [
+      `$repository = ${powerShellString(repository)}`,
+      `$commitTag = ${tagExpression}`,
+      'docker build --platform linux/amd64 -f Dockerfile.scaleway -t "${repository}:$commitTag" -t "${repository}:latest" .',
+    ].join("\n"),
+    summary: "Build local sans publication",
+  };
+}
+
+function buildScalewayInspectCommand() {
+  const repository = scalewayRepository();
+  const tag = formValue("scalewayInspectTag", "latest") || "latest";
+  return {
+    command: `docker buildx imagetools inspect ${quotePowerShell(`${repository}:${tag}`)}`,
+    summary: `Inspection du registre : ${tag}`,
+  };
+}
+
+function buildScalewayWorkerInfoCommand() {
+  const host = formValue("scalewayWorkerHost", "51.159.135.156") || "51.159.135.156";
+  const user = formValue("scalewayWorkerUser", "root") || "root";
+  const identityFile = formValue("scalewayWorkerIdentityFile");
+  const identityOption = identityFile ? ` -i ${quotePowerShell(identityFile)}` : "";
+  return {
+    command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)} "sudo systemctl cat rag-ionis-scaleway-worker; printf '\\n--- Environnement worker ---\\n'; sudo cat /etc/rag-ionis/scaleway-worker.env"`,
+    summary: "Vérification distante du worker",
+  };
+}
+
+function setTerminalContext(terminal) {
+  const context = terminal || { label: "PowerShell · rag_ionis", prompt: "PS rag_ionis>" };
+  elements.terminalLabel.textContent = context.label;
+  elements.terminalPrompt.textContent = context.prompt;
+}
+
 function updateCommand() {
   const action = currentAction();
+  setTerminalContext(action.terminal);
   if (action.shellCommand) {
     elements.output.textContent = action.shellCommand;
-    elements.summary.textContent = "Commande PowerShell VPS";
+    elements.summary.textContent = action.shellLabel || "Commande PowerShell VPS";
     return;
   }
   if (action.commandBuilder) {

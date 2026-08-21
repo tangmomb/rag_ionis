@@ -13,6 +13,7 @@ GPU_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.scaleway"
 GPU_REQUIREMENTS_PATH = ROOT_DIR / "requirements-gpu.txt"
 VPS_REQUIREMENTS_PATH = ROOT_DIR / "requirements-vps.txt"
 WORKER_SCRIPT_PATH = ROOT_DIR / "deploy" / "rag-ionis-scaleway-worker.sh"
+PUBLISH_SCRIPT_PATH = ROOT_DIR / "deploy" / "publish-scaleway-image.sh"
 WORKER_ENV_EXAMPLE_PATH = ROOT_DIR / "deploy" / "scaleway-worker.env.example"
 ANALYTICS_SQL_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "002_analytics_readonly.sql"
 
@@ -69,6 +70,15 @@ class DockerConfigurationTests(unittest.TestCase):
         self.assertNotIn("ffmpeg nodejs ca-certificates", dockerfile)
         self.assertIn('dst=/models', worker_script)
         self.assertIn("SCALEWAY_MODEL_CACHE_DIR=/var/lib/rag-ionis/models", worker_env)
+
+    def test_scaleway_image_publisher_pushes_commit_and_latest_tags(self) -> None:
+        publisher = PUBLISH_SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('rev-parse --short=7 HEAD', publisher)
+        self.assertIn('-t "${commit_image}"', publisher)
+        self.assertIn('-t "${latest_image}"', publisher)
+        self.assertIn('docker push "${commit_image}"', publisher)
+        self.assertIn('docker push "${latest_image}"', publisher)
 
     def test_gpu_requirements_do_not_include_api_or_database_stack(self) -> None:
         requirements = GPU_REQUIREMENTS_PATH.read_text(encoding="utf-8")

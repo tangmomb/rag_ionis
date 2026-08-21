@@ -9,6 +9,9 @@ Il génère des commandes PowerShell à exécuter depuis la racine du projet pou
 - les commandes `inspect`, `plan`, `run` et `task` du pipeline ;
 - la publication S3 et la synchronisation SQL ;
 - le lancement des services locaux ;
+- la connexion SSH, la mise à jour Git, la reconstruction des conteneurs et
+  l’envoi contrôlé de `.env.production` sur le VPS ;
+- la construction, la publication et l’inspection des images worker Scaleway ;
 - les tests et quelques opérations de maintenance.
 
 Les définitions sont alignées sur les parseurs `argparse` présents dans

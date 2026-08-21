@@ -32,17 +32,28 @@ def get_analytics_database_url() -> str:
     return database_url
 
 
+def _connection_url(database_url: str) -> str:
+    """Avoid Windows/Docker localhost resolution stalls in local development."""
+    # On Windows, libpq can spend more than two minutes trying the IPv6
+    # localhost address before falling back to IPv4.  The host name used by
+    # Compose in production is ``postgres``, so normalizing an explicit local
+    # URL is safe regardless of how RAG_IONIS_ENV was inherited by Uvicorn.
+    return database_url.replace("@localhost:", "@127.0.0.1:")
+
+
 def connect_database():
     return psycopg.connect(
-        get_database_url(),
+        _connection_url(get_database_url()),
         options="-c search_path=data,public",
+        connect_timeout=5,
     )
 
 
 def connect_analytics_database():
     return psycopg.connect(
-        get_analytics_database_url(),
+        _connection_url(get_analytics_database_url()),
         options="-c search_path=data,public",
+        connect_timeout=5,
     )
 
 

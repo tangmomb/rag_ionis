@@ -11,6 +11,7 @@ API_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.api"
 VPS_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.vps"
 GPU_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.scaleway"
 GPU_REQUIREMENTS_PATH = ROOT_DIR / "requirements-gpu.txt"
+YTDLP_REQUIREMENTS_PATH = ROOT_DIR / "requirements-ytdlp.txt"
 VPS_REQUIREMENTS_PATH = ROOT_DIR / "requirements-vps.txt"
 WORKER_SCRIPT_PATH = ROOT_DIR / "deploy" / "rag-ionis-scaleway-worker.sh"
 PUBLISH_SCRIPT_PATH = ROOT_DIR / "deploy" / "publish-scaleway-image.sh"
@@ -88,6 +89,22 @@ class DockerConfigurationTests(unittest.TestCase):
         self.assertNotIn("psycopg", requirements)
         self.assertNotIn("pgvector", requirements)
         self.assertNotIn("cohere", requirements)
+
+    def test_ytdlp_is_installed_after_expensive_gpu_dependencies(self) -> None:
+        dockerfile = GPU_DOCKERFILE_PATH.read_text(encoding="utf-8")
+        gpu_requirements = GPU_REQUIREMENTS_PATH.read_text(encoding="utf-8")
+        ytdlp_requirements = YTDLP_REQUIREMENTS_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("yt-dlp", gpu_requirements)
+        self.assertIn("yt-dlp==", ytdlp_requirements)
+        self.assertLess(
+            dockerfile.index("COPY --from=paddle-builder /paddle-parts/libphi_gpu.so"),
+            dockerfile.index("COPY requirements-ytdlp.txt ./"),
+        )
+        self.assertLess(
+            dockerfile.index("COPY requirements-ytdlp.txt ./"),
+            dockerfile.index("COPY pipeline ./pipeline"),
+        )
 
     def test_analytics_password_is_not_hardcoded_in_sql(self) -> None:
         sql = ANALYTICS_SQL_PATH.read_text(encoding="utf-8")

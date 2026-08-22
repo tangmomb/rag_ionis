@@ -1,0 +1,3 @@
+# Dependence volatile installee tard dans l'image Scaleway pour preserver
+# le cache des lourdes dependances GPU lors des mises a jour de yt-dlp.
+yt-dlp==2026.8.19

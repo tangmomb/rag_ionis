@@ -680,7 +680,7 @@ Les déploiements n’installent jamais cet agrégateur :
 |---|---|---|
 | API RAG du VPS | `requirements-api.txt` | FastAPI, fournisseurs LLM, PostgreSQL et Phoenix |
 | Orchestrateur du VPS | `requirements-vps.txt` | YouTube, S3, Scaleway et PostgreSQL, sans CUDA |
-| Worker GPU | `requirements-gpu.txt` | WhisperX, Torch, PaddleOCR et traitement vidéo |
+| Worker GPU | `requirements-gpu.txt` et `requirements-ytdlp.txt` | WhisperX, Torch, PaddleOCR, yt-dlp et traitement vidéo |
 
 `requirements-paddle-bootstrap.txt` est un détail de construction de l’image GPU,
 pas un environnement à installer directement.

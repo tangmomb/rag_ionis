@@ -115,6 +115,12 @@ COPY --from=paddle-builder /paddle-parts/libflashattn.so /usr/local/lib/python3.
 COPY --from=paddle-builder /paddle-parts/libphi_core.so /usr/local/lib/python3.10/dist-packages/paddle/libs/libphi_core.so
 COPY --from=paddle-builder /paddle-parts/libphi_gpu.so /usr/local/lib/python3.10/dist-packages/paddle/libs/libphi_gpu.so
 
+# yt-dlp evolue plus souvent que les dependances GPU. Le garder dans une
+# couche tardive evite de reinstaller Whisper et PaddleOCR a chaque mise a jour.
+COPY requirements-ytdlp.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install \
+    --requirement requirements-ytdlp.txt
+
 COPY pipeline ./pipeline
 COPY models/frame_filter_2026-07-02_21-30-31.joblib ./models/frame_filter_2026-07-02_21-30-31.joblib
 

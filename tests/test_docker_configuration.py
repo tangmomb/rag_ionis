@@ -112,6 +112,7 @@ class DockerConfigurationTests(unittest.TestCase):
         workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
 
         self.assertIn("Select affected images", workflow)
+        self.assertIn("pull_request:", workflow)
         self.assertIn("docker/build-push-action@v7", workflow)
         self.assertIn("cache-from: type=registry", workflow)
         self.assertIn("cache-to: type=registry", workflow)

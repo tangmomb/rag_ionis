@@ -1,6 +1,8 @@
 name: Release container images
 
 on:
+  pull_request:
+    branches: [master]
   push:
     branches: [master]
     paths:
@@ -68,6 +70,7 @@ jobs:
           REQUESTED_COMPONENTS: ${{ inputs.components }}
           BEFORE_SHA: ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GPU_BUILD_RUNNER: ${{ vars.GPU_BUILD_RUNNER }}
         run: |
           set -euo pipefail
@@ -84,6 +87,8 @@ jobs:
               scaleway) scaleway=true ;;
               *) printf 'Unknown component selection: %s\n' "${REQUESTED_COMPONENTS}" >&2; exit 2 ;;
             esac
+          elif [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            changed_files="$(git diff --name-only "${PULL_REQUEST_BASE_SHA}" "${CURRENT_SHA}")"
           else
             if [[ "${BEFORE_SHA}" =~ ^0+$ ]]; then
               changed_files="$(git diff-tree --no-commit-id --name-only -r "${CURRENT_SHA}")"
@@ -171,7 +176,7 @@ jobs:
 
   build:
     needs: [changes, validate]
-    if: needs.changes.outputs.matrix != '[]'
+    if: github.event_name != 'pull_request' && needs.changes.outputs.matrix != '[]'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -214,6 +219,7 @@ jobs:
     needs: [changes, validate, build]
     if: >-
       ${{ always() && !cancelled() && needs.changes.outputs.vps == 'true' &&
+          github.event_name != 'pull_request' &&
           vars.ENABLE_VPS_DEPLOY == 'true' &&
           needs.validate.result == 'success' &&
           (needs.build.result == 'success' || needs.build.result == 'skipped') }}
@@ -295,6 +301,7 @@ jobs:
     needs: [changes, validate, build]
     if: >-
       ${{ always() && !cancelled() && needs.changes.outputs.scaleway == 'true' &&
+          github.event_name != 'pull_request' &&
           vars.ENABLE_SCALEWAY_DEPLOY == 'true' && needs.validate.result == 'success' &&
           needs.build.result == 'success' }}
     runs-on: ubuntu-latest

@@ -19,7 +19,6 @@ from pipeline.ingest.fetch_youtube_metadata import (
     fetch_videos,
     video_info_payload,
 )
-from pipeline.ingest.download_videos import download_video
 from pipeline.publish.sync_database import (
     ensure_schema,
     sync_video_comments_incremental,
@@ -477,6 +476,8 @@ def download_and_run_pipeline(
         raise RuntimeError(
             "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'scaleway'."
         )
+
+    from pipeline.ingest.download_videos import download_video
 
     youtube_video_id = video["id"]
     payload = video_info_payload(video)

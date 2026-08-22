@@ -162,8 +162,8 @@ const actions = [
     id: "youtube-update-stats",
     category: "YouTube",
     title: "Update statistiques YouTube",
-    short: "Mettre à jour les snapshots de statistiques",
-    description: "Interroge l’API YouTube et met à jour uniquement la table stats pour les vidéos déjà présentes dans PostgreSQL. Cette commande ne télécharge aucune vidéo et ne démarre pas la VM GPU ; son journal est conservé dans S3.",
+    short: "Mettre à jour les stats et les nouveaux commentaires",
+    description: "Interroge l’API YouTube et met à jour les snapshots de stats ainsi que les commentaires de chaque vidéo déjà présente dans PostgreSQL. Les vidéos absentes sont listées dans le journal sans être importées. La synchronisation des commentaires détecte les ajouts, modifications et suppressions. Cette commande ne télécharge aucune vidéo et ne démarre pas la VM GPU ; son journal est conservé dans S3.",
     icon: "↻",
     accent: "#d9eee8",
     fixedArgs: ["-m", "pipeline.update_stats"],
@@ -476,6 +476,17 @@ const actions = [
     warning: "Sans simulation, tous les dossiers metadata/ et outputs/ sous init sont supprimés définitivement. Les fichiers vidéo sont conservés.",
   },
   {
+    id: "backup-sql",
+    category: "Maintenance",
+    title: "Sauvegarder la base SQL",
+    short: "Créer un dump PostgreSQL daté dans utils/backup_sql",
+    description: "Crée une archive PostgreSQL binaire valide dans utils/backup_sql, sans utiliser la redirection PowerShell qui corrompt ce type de fichier.",
+    icon: "▣",
+    accent: "#d9eee8",
+    commandBuilder: buildSqlBackupCommand,
+    sections: [],
+  },
+  {
     id: "clear-db",
     category: "Maintenance",
     title: "Vider les tables SQL",
@@ -530,6 +541,77 @@ const actions = [
     sections: [],
   },
   {
+    id: "vps-browse-postgres",
+    category: "VPS",
+    title: "Consulter PostgreSQL du VPS",
+    short: "Ouvrir la base et explorer le schéma data",
+    description: "Après la connexion SSH, choisis les étapes dans l’ordre : ouvrir psql, lister les tables du schéma data, puis compter leurs lignes. Les commandes de consultation ne modifient aucune donnée.",
+    icon: "⌕",
+    accent: "#d9eee8",
+    commandBuilder: buildVpsPostgresBrowseCommand,
+    shellLabel: "Tutoriel de consultation PostgreSQL",
+    terminal: { label: "PostgreSQL · VPS", prompt: "rag_ionis=#" },
+    sections: [{
+      title: "Étape du tutoriel",
+      fields: [
+        {
+          id: "vpsPostgresStep",
+          label: "Commande à copier",
+          type: "select",
+          value: "connect",
+          defaultValue: "connect",
+          options: [
+            ["connect", "1. Ouvrir psql dans le conteneur PostgreSQL"],
+            ["tables", "2. Lister les tables du schéma data"],
+            ["counts", "3. Compter les éléments de chaque table"],
+            ["quit", "4. Quitter psql"],
+          ],
+          full: true,
+        },
+      ],
+    }],
+  },
+  {
+    id: "vps-restore-postgres",
+    category: "VPS",
+    title: "Mettre à jour PostgreSQL du VPS",
+    short: "Restaurer un dump local dans la base distante",
+    description: "Choisis les étapes dans l’ordre. Le dump est envoyé depuis PowerShell, puis restauré depuis le terminal SSH du VPS. La restauration remplace les données présentes sur le VPS.",
+    icon: "↑",
+    accent: "#f4d8d1",
+    commandBuilder: buildVpsPostgresRestoreCommand,
+    shellLabel: "Tutoriel de restauration PostgreSQL",
+    terminal: { label: "VPS · PostgreSQL", prompt: "ubuntu@vps:~$" },
+    sections: [{
+      title: "Dump et étape du tutoriel",
+      fields: [
+        {
+          id: "vpsRestoreDumpPath",
+          label: "Dump local",
+          type: "text",
+          value: "utils\\backup_sql\\rag_ionis_20260822_001644.dump",
+          defaultValue: "utils\\backup_sql\\rag_ionis_20260822_001644.dump",
+          full: true,
+        },
+        {
+          id: "vpsRestoreStep",
+          label: "Commande à copier",
+          type: "select",
+          value: "upload",
+          defaultValue: "upload",
+          options: [
+            ["upload", "1. Envoyer le dump depuis PowerShell"],
+            ["copy", "2. Copier le dump dans PostgreSQL (VPS)"],
+            ["restore", "3. Restaurer et remplacer la base du VPS"],
+            ["cleanup", "4. Supprimer les fichiers temporaires (VPS)"],
+          ],
+          full: true,
+        },
+      ],
+    }],
+    warning: "L’étape de restauration utilise --clean --if-exists : les données actuelles de la base du VPS sont supprimées et remplacées par celles du dump.",
+  },
+  {
     id: "vps-pull-code",
     category: "VPS",
     title: "Mettre à jour le code du VPS",
@@ -537,7 +619,7 @@ const actions = [
     description: "À lancer depuis une session SSH déjà ouverte : exécute un git pull --ff-only dans le dépôt du VPS. La commande s’arrête si des modifications locales empêchent une mise à jour propre.",
     icon: "↓",
     accent: "#dce8f5",
-    shellCommand: "cd /rag_ionis && git pull --ff-only",
+    shellCommand: "cd rag_ionis/ && git pull --ff-only",
     shellLabel: "Commande Linux VPS",
     terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
     sections: [],
@@ -550,7 +632,7 @@ const actions = [
     description: "À lancer depuis une session SSH déjà ouverte : reconstruit les images de production puis redémarre le stack avec les derniers fichiers déployés.",
     icon: "↻",
     accent: "#e7e1f4",
-    shellCommand: "cd /rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build",
+    shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build",
     shellLabel: "Commande Linux VPS",
     terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
     sections: [],
@@ -560,10 +642,10 @@ const actions = [
     category: "VPS",
     title: "Renvoyer .env.production",
     short: "Copier l’environnement local vers le VPS",
-    description: "Envoie le fichier .env.production local vers /srv/rag_ionis/.env.production via SCP.",
+    description: "Envoie le fichier .env.production local vers rag_ionis/.env.production dans le dossier personnel du VPS via SCP.",
     icon: "↑",
     accent: "#f4d8d1",
-    shellCommand: String.raw`scp -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" ".env.production" ubuntu@179.237.98.117:/srv/rag_ionis/.env.production`,
+    shellCommand: String.raw`scp -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" ".env.production" ubuntu@179.237.98.117:rag_ionis/.env.production`,
     sections: [],
     warning: "Cette commande transmet les secrets de .env.production au VPS et remplace le fichier distant. À utiliser uniquement si nécessaire.",
   },
@@ -871,6 +953,82 @@ function formValue(id, fallback = "") {
 
 function powerShellString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function buildSqlBackupCommand() {
+  const command = [
+    '$backupFile = "rag_ionis_$(Get-Date -Format yyyyMMdd_HHmmss).dump"',
+    'New-Item -ItemType Directory -Force utils/backup_sql | Out-Null',
+    'docker compose exec -T postgres sh -c "pg_dump -U rag_ionis -d rag_ionis -Fc -f /tmp/$backupFile"',
+    'docker compose cp "postgres:/tmp/$backupFile" "utils/backup_sql/$backupFile"',
+    'docker compose exec -T postgres pg_restore -l "/tmp/$backupFile"',
+    'docker compose exec -T postgres rm "/tmp/$backupFile"',
+  ].join("\n");
+  return {
+    command,
+    summary: "Dump PostgreSQL daté et vérifié dans utils/backup_sql",
+  };
+}
+
+function buildVpsPostgresBrowseCommand() {
+  const step = formValue("vpsPostgresStep", "connect") || "connect";
+  const commands = {
+    connect: {
+      command: "docker exec -it rag_ionis_postgres psql -U rag_ionis -d rag_ionis",
+      summary: "À exécuter dans le terminal SSH du VPS",
+    },
+    tables: {
+      command: "\\dt data.*",
+      summary: "À exécuter une fois dans psql",
+    },
+    counts: {
+      command: [
+        "SELECT 'chunks' AS nom_table, count(*) AS nb_elements FROM data.chunks",
+        "UNION ALL SELECT 'comments', count(*) FROM data.comments",
+        "UNION ALL SELECT 'speakers', count(*) FROM data.speakers",
+        "UNION ALL SELECT 'stats', count(*) FROM data.stats",
+        "UNION ALL SELECT 'transcripts', count(*) FROM data.transcripts",
+        "UNION ALL SELECT 'update_runs', count(*) FROM data.update_runs",
+        "UNION ALL SELECT 'video_speakers', count(*) FROM data.video_speakers",
+        "UNION ALL SELECT 'videos', count(*) FROM data.videos",
+        "ORDER BY 1;",
+      ].join("\n"),
+      summary: "À exécuter une fois dans psql",
+    },
+    quit: {
+      command: "\\q",
+      summary: "Quitter psql et revenir au terminal du VPS",
+    },
+  };
+  return commands[step];
+}
+
+function buildVpsPostgresRestoreCommand() {
+  const dumpPath = formValue(
+    "vpsRestoreDumpPath",
+    "utils\\backup_sql\\rag_ionis_20260822_001644.dump",
+  );
+  const dumpFile = dumpPath.split(/[\\/]/).filter(Boolean).at(-1) || "rag_ionis_local.dump";
+  const step = formValue("vpsRestoreStep", "upload") || "upload";
+  const commands = {
+    upload: {
+      command: String.raw`scp -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" "${dumpPath}" ubuntu@179.237.98.117:~`,
+      summary: "À exécuter dans PowerShell, à la racine du projet",
+    },
+    copy: {
+      command: `docker cp ~/${dumpFile} rag_ionis_postgres:/tmp/local.dump`,
+      summary: "À exécuter dans le terminal SSH du VPS",
+    },
+    restore: {
+      command: "docker exec -it rag_ionis_postgres pg_restore -U rag_ionis -d rag_ionis --clean --if-exists /tmp/local.dump",
+      summary: "À exécuter dans le terminal SSH du VPS — remplace la base",
+    },
+    cleanup: {
+      command: `docker exec -it rag_ionis_postgres rm /tmp/local.dump\nrm ~/${dumpFile}`,
+      summary: "À exécuter dans le terminal SSH du VPS",
+    },
+  };
+  return commands[step];
 }
 
 function buildVpsDatabaseCommand() {

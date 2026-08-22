@@ -763,10 +763,18 @@ def summarize_sections(context: PipelineContext) -> TaskResult:
     )
 
     try:
-        _payload, target = load_chunks(context.video_path)
+        payload, target = load_chunks(context.video_path)
     except FileNotFoundError:
         return TaskResult.blocked(
             "Resume des sections impossible; chunks absents."
+        )
+    profile = str(
+        payload.get("chunking", {}).get("profile") or "short"
+    ).strip().lower()
+    if profile != "long":
+        return TaskResult.skipped(
+            f"Resume des sections non applicable; profil de chunks={profile}, "
+            "long attendu."
         )
     before = _snapshot((target,))
     result = summarize(
@@ -803,10 +811,18 @@ def summarize_video(context: PipelineContext) -> TaskResult:
     )
 
     try:
-        _payload, target = load_chunks(context.video_path)
+        payload, target = load_chunks(context.video_path)
     except FileNotFoundError:
         return TaskResult.blocked(
             "Resume global impossible; chunks absents."
+        )
+    profile = str(
+        payload.get("chunking", {}).get("profile") or "short"
+    ).strip().lower()
+    if profile != "long":
+        return TaskResult.skipped(
+            f"Resume global non applicable; profil de chunks={profile}, "
+            "long attendu."
         )
     before = _snapshot((target,))
     result = summarize(

@@ -111,6 +111,26 @@ def database_videos(cursor) -> dict[str, int]:
     return {str(row[0]): int(row[1]) for row in cursor.fetchall()}
 
 
+def database_comment_counts(cursor) -> dict[int, int]:
+    """Return the number of currently visible comments for each video."""
+    cursor.execute(
+        """
+        SELECT video_id, COUNT(*)
+        FROM comments
+        WHERE is_deleted = FALSE
+        GROUP BY video_id
+        """
+    )
+    return {int(row[0]): int(row[1]) for row in cursor.fetchall()}
+
+
+def comment_count_from_video(video: dict) -> int | None:
+    statistics = video.get("statistics")
+    if not isinstance(statistics, dict):
+        return None
+    return optional_count(statistics.get("commentCount"))
+
+
 def videos_missing_from_database(
     api_videos: list[dict],
     existing_videos: dict[str, int] | set[str],
@@ -132,14 +152,18 @@ def release_lock(cursor) -> None:
     cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", (LOCK_NAME,))
 
 
-def create_run(cursor, archive_path: str | Path | None) -> int:
+def create_run(
+    cursor,
+    archive_path: str | Path | None,
+    run_type: str,
+) -> int:
     cursor.execute(
         """
-        INSERT INTO update_runs (status, archive_path)
-        VALUES ('running', %s)
+        INSERT INTO update_runs (run_type, status, archive_path)
+        VALUES (%s, 'running', %s)
         RETURNING id
         """,
-        (str(archive_path),),
+        (run_type, str(archive_path)),
     )
     return int(cursor.fetchone()[0])
 
@@ -625,6 +649,12 @@ def write_stats_update_log(
             "videos_updated": metrics["videos_updated"],
             "videos_skipped": metrics["videos_skipped"],
             "stats_snapshots": metrics["stats_snapshots"],
+            "comments_seen": metrics["comments_seen"],
+            "comments_new": metrics["comments_new"],
+            "comments_refreshed": metrics["comments_refreshed"],
+            "comments_deleted": metrics["comments_deleted"],
+            "videos_with_new_comments": metrics["videos_with_new_comments"],
+            "new_comments_detected": metrics["new_comments_detected"],
             "errors": errors,
         },
     )
@@ -669,23 +699,55 @@ def run_stats_only() -> dict:
                 run_id = create_run(
                     cursor,
                     f"s3://{bucket}/{update_s3_archive_prefix(archive_name)}",
+                    "stats",
                 )
             connection.commit()
 
             api_videos = collect_videos()
             metrics["videos_discovered"] = len(api_videos)
+            metrics["comments_seen"] = sum(
+                comment_count_from_video(video) or 0
+                for video in api_videos
+            )
             with connection.cursor() as cursor:
                 existing_videos = database_videos(cursor)
+                existing_comment_counts = database_comment_counts(cursor)
             connection.rollback()
-
-            metrics["videos_skipped"] = sum(
-                1 for video in api_videos if video["id"] not in existing_videos
+            metrics["comments_new"] = max(
+                0,
+                metrics["comments_seen"] - sum(existing_comment_counts.values()),
             )
+
+            missing_videos = videos_missing_from_database(
+                api_videos,
+                existing_videos,
+            )
+            metrics["videos_skipped"] = len(missing_videos)
+            metrics["new_videos"] = len(missing_videos)
+            metrics["new_video_ids"] = [
+                str(video["id"])
+                for video in missing_videos
+            ]
             for video in api_videos:
                 youtube_video_id = str(video.get("id") or "")
                 video_db_id = existing_videos.get(youtube_video_id)
                 if video_db_id is None:
                     continue
+                comments_payload = None
+                try:
+                    # Les seules statistiques ne permettent pas de voir une
+                    # modification ou une suppression. On recupere donc le
+                    # contenu des commentaires pour chaque video existante.
+                    comments_payload = fetch_comments(youtube_video_id)
+                except Exception as error:
+                    errors.append(
+                        {
+                            "video_id": youtube_video_id,
+                            "phase": "comments_api",
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                    )
                 try:
                     with connection.transaction():
                         with connection.cursor() as cursor:
@@ -696,6 +758,23 @@ def run_stats_only() -> dict:
                                 snapshot_date=started_at.date(),
                             ):
                                 metrics["stats_snapshots"] += 1
+                            if comments_payload is not None:
+                                comment_result = sync_video_comments_incremental(
+                                    cursor,
+                                    video_db_id,
+                                    comments_payload,
+                                    collected_at=datetime.now(timezone.utc),
+                                )
+                                metrics["comments_refreshed"] += comment_result.refreshed
+                                metrics["comments_deleted"] += comment_result.deleted
+                                if comment_result.created:
+                                    metrics["videos_with_new_comments"] += 1
+                                    metrics["new_comments_detected"] += (
+                                        comment_result.created
+                                    )
+                                existing_comment_counts[video_db_id] = (
+                                    comment_result.seen
+                                )
                     metrics["videos_updated"] += 1
                 except Exception as error:
                     errors.append(
@@ -825,6 +904,7 @@ def run_videos_only() -> dict:
                 run_id = create_run(
                     cursor,
                     f"s3://{bucket}/{update_s3_archive_prefix(archive_name)}",
+                    "videos",
                 )
             connection.commit()
 
@@ -1031,7 +1111,7 @@ def run() -> dict:
                 if not lock_acquired:
                     raise RuntimeError("Une synchronisation YouTube quotidienne est deja en cours.")
                 archive_dir = create_archive_directory(download_dir, started_at)
-                run_id = create_run(cursor, archive_dir)
+                run_id = create_run(cursor, archive_dir, "all")
             connection.commit()
 
             with connection.cursor() as cursor:

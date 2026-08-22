@@ -44,6 +44,22 @@ class ProjectEnvironmentTests(unittest.TestCase):
                     "local",
                 )
 
+    def test_uses_ipv4_for_local_postgres_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            (root / ".env.local").write_text(
+                "DATABASE_URL=postgresql://user:password@localhost:5432/app\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pipeline.support.environment.os.name", "nt"):
+                    load_project_env(root)
+
+                self.assertEqual(
+                    os.environ["DATABASE_URL"],
+                    "postgresql://user:password@127.0.0.1:5432/app",
+                )
+
     def test_rejects_unknown_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             with patch.dict(

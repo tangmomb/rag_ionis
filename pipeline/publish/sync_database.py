@@ -212,6 +212,7 @@ def ensure_update_runs_schema(cursor):
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS update_runs (
+            run_type TEXT NOT NULL CHECK (run_type IN ('stats', 'videos', 'all', 'legacy')),
             id BIGSERIAL PRIMARY KEY,
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             finished_at TIMESTAMPTZ,
@@ -236,6 +237,23 @@ def ensure_update_runs_schema(cursor):
             new_comments_detected INTEGER NOT NULL DEFAULT 0,
             errors JSONB NOT NULL DEFAULT '[]'::jsonb
         )
+        """
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "run_type TEXT NOT NULL DEFAULT 'legacy' "
+        "CHECK (run_type IN ('stats', 'videos', 'all', 'legacy'))"
+    )
+    cursor.execute("ALTER TABLE update_runs ALTER COLUMN run_type DROP DEFAULT")
+    cursor.execute(
+        """
+        UPDATE update_runs
+        SET run_type = CASE
+            WHEN archive_path LIKE '%update_stats%' THEN 'stats'
+            WHEN archive_path LIKE '%update_videos%' THEN 'videos'
+            ELSE 'all'
+        END
+        WHERE run_type = 'legacy'
         """
     )
     cursor.execute(

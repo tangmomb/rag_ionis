@@ -1018,8 +1018,14 @@ importe ensuite ces fichiers dans la table `comments`.
 L’update YouTube est séparé en deux commandes indépendantes.
 
 Le sync des statistiques ne touche qu’aux vidéos déjà présentes dans PostgreSQL.
-Il appelle l’API YouTube, écrit un snapshot quotidien dans `stats` et ne
-nécessite ni téléchargement, ni S3, ni GPU :
+Il appelle l’API YouTube, écrit un snapshot quotidien dans `stats` et récupère
+les commentaires de chaque vidéo déjà présente via l’API dédiée. Cette
+synchronisation détecte les ajouts, modifications et suppressions dans
+`comments`. Il ne nécessite ni téléchargement, ni GPU :
+
+Les vidéos détectées sur YouTube mais absentes de `data.videos` ne sont pas
+importées par cette commande ; elles sont néanmoins enregistrées dans
+`update_runs.new_videos` et `update_runs.new_video_ids`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline.update_stats

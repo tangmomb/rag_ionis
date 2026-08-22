@@ -17,3 +17,6 @@ utils/scaleway_disponibility/scaleway_gpu_availability.csv
 others/
 .venv_py310_backup_20260705_140330/
 utils/env_prod_previous_sur_vps.txt
+utils/backup_sql/
+utils/modifs_finales
+utils/ssh_rag.txt

@@ -32,11 +32,17 @@ def database_url() -> str:
     value = os.getenv("DATABASE_URL")
     if not value:
         raise RuntimeError("DATABASE_URL manquant dans .env")
-    return value
+    # Sous Windows, libpq peut essayer l'adresse IPv6 de ``localhost`` pendant
+    # longtemps alors que Docker publie PostgreSQL seulement sur IPv4.
+    return value.replace("@localhost:", "@127.0.0.1:")
 
 
 def connection():
-    return psycopg.connect(database_url(), row_factory=dict_row)
+    return psycopg.connect(
+        database_url(),
+        row_factory=dict_row,
+        connect_timeout=5,
+    )
 
 
 def quote_table(schema: str, table: str) -> sql.Composed:
@@ -585,17 +591,26 @@ def tables() -> list[dict[str, Any]]:
     with connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT t.table_schema AS schema, t.table_name AS name,
-                   COALESCE(s.n_live_tup, 0)::bigint AS estimated_rows
+            SELECT t.table_schema AS schema, t.table_name AS name
             FROM information_schema.tables t
-            LEFT JOIN pg_stat_user_tables s
-              ON s.schemaname = t.table_schema AND s.relname = t.table_name
             WHERE t.table_type = 'BASE TABLE'
               AND t.table_schema NOT IN ('pg_catalog', 'information_schema')
             ORDER BY t.table_schema, t.table_name
             """
         )
-        return cur.fetchall()
+        result = cur.fetchall()
+        for item in result:
+            # ``n_live_tup`` is only refreshed by PostgreSQL statistics
+            # collection.  It is therefore often zero just after imports,
+            # even when a table contains rows.  The sidebar promises a row
+            # count, so use the exact value rather than a stale estimate.
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) AS row_count FROM {}").format(
+                    quote_table(item["schema"], item["name"])
+                )
+            )
+            item["estimated_rows"] = cur.fetchone()["row_count"]
+        return result
 
 
 @app.get("/api/tables/{schema}/{table}")
@@ -626,6 +641,12 @@ def table_data(
         columns = cur.fetchall()
         if not columns:
             raise HTTPException(status_code=404, detail="Table vide ou introuvable")
+
+        # Les anciennes bases ajoutent ``run_type`` en fin de table lors de la
+        # migration. L'explorateur le garde en premiere colonne pour que le
+        # type d'update soit immediatement visible, comme dans une base neuve.
+        if schema == "data" and table == "update_runs":
+            columns.sort(key=lambda column: column["name"] != "run_type")
 
         names = [column["name"] for column in columns]
         text_columns = [

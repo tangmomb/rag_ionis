@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE TABLE IF NOT EXISTS update_runs (
+    run_type TEXT NOT NULL CHECK (run_type IN ('stats', 'videos', 'all', 'legacy')),
     id BIGSERIAL PRIMARY KEY,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,

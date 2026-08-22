@@ -36,6 +36,31 @@ class YoutubeDailySyncTests(unittest.TestCase):
 
         self.assertEqual(missing, [{"id": "new-video"}])
 
+    def test_youtube_comment_count_is_read_from_video_statistics(self) -> None:
+        video = {"statistics": {"commentCount": "8"}}
+
+        self.assertEqual(update_runs.comment_count_from_video(video), 8)
+        self.assertIsNone(update_runs.comment_count_from_video({}))
+
+    def test_database_comment_counts_excludes_soft_deleted_comments(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.sql = ""
+
+            def execute(self, sql: str) -> None:
+                self.sql = sql
+
+            def fetchall(self):
+                return [(12, 4), (13, 9)]
+
+        cursor = RecordingCursor()
+
+        self.assertEqual(
+            update_runs.database_comment_counts(cursor),
+            {12: 4, 13: 9},
+        )
+        self.assertIn("WHERE is_deleted = FALSE", cursor.sql)
+
     def test_archive_directory_uses_start_minute_and_never_overwrites(self) -> None:
         started_at = datetime.now().astimezone().replace(
             year=2026,
@@ -543,12 +568,13 @@ class YoutubeDailySyncTests(unittest.TestCase):
         run_id = update_runs.create_run(
             cursor,
             Path("downloads/youtube/20260802_1437"),
+            "stats",
         )
 
         self.assertEqual(run_id, 12)
         self.assertEqual(
             cursor.params,
-            (str(Path("downloads/youtube/20260802_1437")),),
+            ("stats", str(Path("downloads/youtube/20260802_1437"))),
         )
 
 

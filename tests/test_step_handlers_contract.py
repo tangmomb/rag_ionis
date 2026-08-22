@@ -153,6 +153,7 @@ class StepHandlerContractTests(unittest.TestCase):
             context.options = PipelineOptions(openai_mode="batch")
             target = context.outputs_dir / "chunks" / "transcript_chunks.json"
             payload = {
+                "chunking": {"profile": "long"},
                 "chunks": [
                     {
                         "chunk_index": 1,
@@ -181,6 +182,29 @@ class StepHandlerContractTests(unittest.TestCase):
         self.assertIs(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(summarize.call_args.kwargs["mode"], "batch")
         self.assertFalse(summarize.call_args.kwargs["reset_batch"])
+
+    def test_section_summaries_skip_short_chunk_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            target = context.outputs_dir / "chunks" / "transcript_chunks.json"
+            payload = {
+                "chunking": {"profile": "short"},
+                "chunks": [],
+            }
+            with (
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.load_chunks",
+                    return_value=(payload, target),
+                ),
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.summarize_sections"
+                ) as summarize,
+            ):
+                result = step_handlers.summarize_sections(context)
+
+        self.assertIs(result.status, TaskStatus.SKIPPED)
+        self.assertIn("non applicable", result.reason)
+        summarize.assert_not_called()
 
     def test_remaining_openai_steps_use_configured_batch_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -217,6 +241,7 @@ class StepHandlerContractTests(unittest.TestCase):
             chunks_target.parent.mkdir(parents=True)
             chunks_target.write_text("{}", encoding="utf-8")
             global_payload = {
+                "chunking": {"profile": "long"},
                 "chunks": [
                     {
                         "chunk_index": 1,
@@ -260,6 +285,29 @@ class StepHandlerContractTests(unittest.TestCase):
             self.assertIs(result.status, TaskStatus.SUCCEEDED)
             self.assertTrue(embed_mock.call_args.kwargs["wait"])
             self.assertFalse(embed_mock.call_args.kwargs["reset_batch"])
+
+    def test_global_summary_skips_short_chunk_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            context = self.context(Path(temporary_directory))
+            target = context.outputs_dir / "chunks" / "transcript_chunks.json"
+            payload = {
+                "chunking": {"profile": "short"},
+                "chunks": [],
+            }
+            with (
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.load_chunks",
+                    return_value=(payload, target),
+                ),
+                patch(
+                    "pipeline.steps.chunks.hierarchical_chunks.summarize_video"
+                ) as summarize,
+            ):
+                result = step_handlers.summarize_video(context)
+
+        self.assertIs(result.status, TaskStatus.SKIPPED)
+        self.assertIn("non applicable", result.reason)
+        summarize.assert_not_called()
 
     def test_named_inspection_apis_build_typed_options(self) -> None:
         video = Path("video.mp4")

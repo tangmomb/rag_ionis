@@ -70,6 +70,21 @@ class ProjectEnvironmentTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "local, production"):
                     load_project_env(Path(temporary_dir))
 
+    def test_allows_a_missing_environment_file_in_a_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            with patch.dict(
+                os.environ,
+                {
+                    "RAG_IONIS_ENV": "production",
+                    "RAG_IONIS_ENV_FILE_OPTIONAL": "1",
+                },
+                clear=True,
+            ):
+                selected = load_project_env(root)
+
+        self.assertEqual(selected, root / ".env.production")
+
 
 if __name__ == "__main__":
     unittest.main()

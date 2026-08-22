@@ -54,6 +54,13 @@ def load_project_env(project_root: Path, *, override: bool = True) -> Path:
         legacy_path = Path(project_root) / ".env"
         if legacy_path.exists():
             selected_path = legacy_path
+    environment_file_optional = os.getenv(
+        "RAG_IONIS_ENV_FILE_OPTIONAL",
+        "",
+    ).strip().lower() in {"1", "true", "yes"}
+    if not selected_path.exists() and environment_file_optional:
+        _prefer_ipv4_for_local_postgres()
+        return selected_path
     if not selected_path.exists():
         raise FileNotFoundError(
             f"Fichier d'environnement introuvable: {selected_path}"

@@ -5,4 +5,4 @@ boto3==1.42.95
 psycopg[binary]==3.3.4
 python-dotenv==1.2.2
 requests==2.34.2
-yt-dlp==2026.6.9
+yt-dlp==2026.8.19

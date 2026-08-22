@@ -1046,10 +1046,12 @@ sera donc retentée au prochain lancement. Les exécutions sont journalisées da
 `update_runs` et une archive horodatée est créée sous `downloads/youtube/`.
 Les dossiers sont nommés `YYYYMMDD_HHMM_update_stats` et
 `YYYYMMDD_HHMM_update_videos`. L’update vidéos contient `new_videos.json`, qui
-liste les vidéos absentes de SQL, ainsi que `daily_sync_log.json`, qui conserve
-le détail de l’exécution. L’update stats écrit `update_stats_log.json`. Ces
-fichiers sont stockés sous `s3://<bucket>/youtube/<nom_update>/`; aucun dossier
-d’archive permanent n’est conservé localement.
+liste les vidéos absentes de SQL, ainsi que `update_videos_log.json`, qui conserve
+le détail de l’exécution. L’update stats écrit `update_stats_log.json`. En
+local, les archives sont conservées sous `downloads/youtube/<nom_update>/` et
+aucun objet n’est envoyé vers S3. En production, elles sont stockées sous
+`s3://<bucket>/youtube/<nom_update>/`; les dossiers locaux sont temporaires et
+supprimés à la fin.
 
 Les deux commandes utilisent le même verrou PostgreSQL et peuvent être
 programmées séparément. Sur le VPS, la méthode recommandée est le conteneur CPU
@@ -1168,7 +1170,7 @@ Scaleway. La VM dédiée traite les jobs séquentiellement puis s'arrête ;
 `SCALEWAY_MAX_CONCURRENT_JOBS` doit donc rester à `1`. `sync_database` est lancé
 localement.
 PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
-`daily_sync_log.json` conserve le backend, l'identifiant du job et l'URI S3.
+`update_videos_log.json` conserve le backend, l'identifiant du job et l'URI S3.
 
 Construire puis publier l'image du worker :
 

@@ -34,6 +34,7 @@ from pipeline.support.scaleway_jobs import s3_client, upload_s3_directory
 LOCK_NAME = "rag_ionis.update_runs"
 DEFAULT_DOWNLOAD_DIR = Path("downloads/youtube")
 DAILY_SYNC_LOG_NAME = "daily_sync_log.json"
+UPDATE_VIDEOS_LOG_NAME = "update_videos_log.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE_DIRECTORY_PATTERN = re.compile(r"^\d{8}_\d{4}(?:_\d{2})?$")
 NON_VIDEO_DIRECTORY_NAMES = {"_00_info_videos", "_00_info_comments"}
@@ -51,6 +52,33 @@ def required_update_s3() -> tuple[object, str]:
     return s3_client(os.getenv("S3_REGION", "").strip()), bucket
 
 
+def store_update_archives_locally() -> bool:
+    return os.getenv("RAG_IONIS_ENV", "local").strip().lower() == "local"
+
+
+def create_update_archive(
+    download_dir: Path,
+    started_at: datetime,
+    suffix: str,
+) -> tuple[object | None, str | None, Path | None, Path]:
+    """Create a persistent local archive or a temporary S3-backed one."""
+    if store_update_archives_locally():
+        return None, None, None, create_archive_directory(download_dir, started_at, suffix)
+
+    object_store, bucket = required_update_s3()
+    archive_name = update_archive_name(object_store, bucket, started_at, suffix)
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"rag-ionis-{suffix}-"))
+    archive_dir = temp_dir / archive_name
+    archive_dir.mkdir()
+    return object_store, bucket, temp_dir, archive_dir
+
+
+def update_archive_path(bucket: str | None, archive_dir: Path) -> str:
+    if bucket is None:
+        return str(archive_dir.resolve())
+    return f"s3://{bucket}/{update_s3_archive_prefix(archive_dir.name)}"
+
+
 def s3_prefix_exists(client, bucket: str, prefix: str) -> bool:
     response = client.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}/", MaxKeys=1)
     return bool(response.get("Contents"))
@@ -66,7 +94,14 @@ def update_archive_name(client, bucket: str, started_at: datetime, suffix: str) 
     return candidate
 
 
-def upload_archive_file(client, bucket: str, archive_name: str, path: Path) -> None:
+def upload_archive_file(
+    client: object | None,
+    bucket: str | None,
+    archive_name: str,
+    path: Path,
+) -> None:
+    if client is None or bucket is None:
+        return
     client.upload_file(
         str(path),
         bucket,
@@ -362,6 +397,7 @@ def archive_log_payload(
     comparison_directory: Path,
     errors: list[dict],
     finished_at: datetime | None = None,
+    include_video_snapshots: bool = True,
 ) -> dict:
     videos_by_id = {str(video.get("id") or ""): video for video in videos}
     pipelines = []
@@ -381,20 +417,7 @@ def archive_log_payload(
             }
         )
 
-    video_snapshots = []
-    for video in videos:
-        statistics = video.get("statistics") or {}
-        video_snapshots.append(
-            {
-                "youtube_video_id": video.get("id"),
-                "title": (video.get("snippet") or {}).get("title"),
-                "view_count": optional_count(statistics.get("viewCount")),
-                "like_count": optional_count(statistics.get("likeCount")),
-                "comment_count": optional_count(statistics.get("commentCount")),
-            }
-        )
-
-    return {
+    payload = {
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat() if finished_at else None,
         "snapshot_date": started_at.date().isoformat(),
@@ -403,9 +426,26 @@ def archive_log_payload(
         "new_videos_detected": len(new_video_ids),
         "new_video_ids": new_video_ids,
         "pipelines": pipelines,
-        "videos": video_snapshots,
         "errors": errors,
     }
+    if include_video_snapshots:
+        payload["videos"] = [
+            {
+                "youtube_video_id": video.get("id"),
+                "title": (video.get("snippet") or {}).get("title"),
+                "view_count": optional_count(
+                    (video.get("statistics") or {}).get("viewCount")
+                ),
+                "like_count": optional_count(
+                    (video.get("statistics") or {}).get("likeCount")
+                ),
+                "comment_count": optional_count(
+                    (video.get("statistics") or {}).get("commentCount")
+                ),
+            }
+            for video in videos
+        ]
+    return payload
 
 
 def write_archive_log(
@@ -413,7 +453,7 @@ def write_archive_log(
     **payload_kwargs,
 ) -> Path:
     return write_json(
-        archive_dir / DAILY_SYNC_LOG_NAME,
+        archive_dir / payload_kwargs.pop("log_name", DAILY_SYNC_LOG_NAME),
         archive_log_payload(**payload_kwargs),
     )
 
@@ -673,7 +713,8 @@ def run_stats_only() -> dict:
     started_at = datetime.now().astimezone()
     archive_dir: Path | None = None
     temp_dir: Path | None = None
-    object_store, bucket = required_update_s3()
+    object_store: object | None = None
+    bucket: str | None = None
 
     with psycopg.connect(
         database_url,
@@ -687,18 +728,14 @@ def run_stats_only() -> dict:
                     raise RuntimeError(
                         "Une synchronisation YouTube est deja en cours."
                     )
-                archive_name = update_archive_name(
-                    object_store,
-                    bucket,
+                object_store, bucket, temp_dir, archive_dir = create_update_archive(
+                    DEFAULT_DOWNLOAD_DIR,
                     started_at,
                     "update_stats",
                 )
-                temp_dir = Path(tempfile.mkdtemp(prefix="rag-ionis-update-stats-"))
-                archive_dir = temp_dir / archive_name
-                archive_dir.mkdir()
                 run_id = create_run(
                     cursor,
-                    f"s3://{bucket}/{update_s3_archive_prefix(archive_name)}",
+                    update_archive_path(bucket, archive_dir),
                     "stats",
                 )
             connection.commit()
@@ -853,7 +890,8 @@ def run_videos_only() -> dict:
     lock_acquired = False
     download_dir = DEFAULT_DOWNLOAD_DIR
     started_at = datetime.now().astimezone()
-    object_store, bucket = required_update_s3()
+    object_store: object | None = None
+    bucket: str | None = None
     archive_dir: Path | None = None
     temp_dir: Path | None = None
     archive_name: str | None = None
@@ -864,10 +902,12 @@ def run_videos_only() -> dict:
     def update_archive_log(status: str, *, finished: bool = False) -> None:
         write_archive_log(
             archive_dir,
+            log_name=UPDATE_VIDEOS_LOG_NAME,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc) if finished else None,
             status=status,
             videos=api_videos,
+            include_video_snapshots=False,
             new_video_ids=new_video_ids,
             pipeline_results=pipeline_results,
             comparison_directory=Path("data.videos"),
@@ -877,7 +917,7 @@ def run_videos_only() -> dict:
             object_store,
             bucket,
             archive_name,
-            archive_dir / DAILY_SYNC_LOG_NAME,
+            archive_dir / UPDATE_VIDEOS_LOG_NAME,
         )
 
     with psycopg.connect(
@@ -892,18 +932,15 @@ def run_videos_only() -> dict:
                     raise RuntimeError(
                         "Une synchronisation YouTube est deja en cours."
                     )
-                archive_name = update_archive_name(
-                    object_store,
-                    bucket,
+                object_store, bucket, temp_dir, archive_dir = create_update_archive(
+                    download_dir,
                     started_at,
                     "update_videos",
                 )
-                temp_dir = Path(tempfile.mkdtemp(prefix="rag-ionis-update-videos-"))
-                archive_dir = temp_dir / archive_name
-                archive_dir.mkdir()
+                archive_name = archive_dir.name
                 run_id = create_run(
                     cursor,
-                    f"s3://{bucket}/{update_s3_archive_prefix(archive_name)}",
+                    update_archive_path(bucket, archive_dir),
                     "videos",
                 )
             connection.commit()
@@ -980,7 +1017,7 @@ def run_videos_only() -> dict:
                         started_at.date(),
                         comments_payload=comments_payload,
                     )
-                    if result.get("backend") == "local":
+                    if result.get("backend") == "local" and object_store is not None:
                         upload_s3_directory(
                             object_store,
                             bucket,

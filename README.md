@@ -1172,29 +1172,36 @@ localement.
 PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
 `update_videos_log.json` conserve le backend, l'identifiant du job et l'URI S3.
 
-Construire puis publier l'image du worker :
+Construire puis publier les trois images avec Buildx :
+
+```bash
+IMAGE_REGISTRY=rg.fr-par.scw.cloud/NAMESPACE \
+  bash deploy/publish-images.sh
+```
+
+Chaque image utilise un cache distant distinct dans le Container Registry sous
+le tag `buildcache`. Le mode `max` conserve également les couches des étapes
+intermédiaires. Le build et le push sont réalisés en une seule opération.
+
+Pour ne publier que le worker GPU :
 
 ```bash
 SCALEWAY_IMAGE_REPOSITORY=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway \
   bash deploy/publish-scaleway-image.sh
 ```
 
-Le script construit une seule image et la publie sous deux tags : le tag court
-du commit courant (par exemple `dd062e7`) et `latest`. La VM peut donc continuer
-à utiliser `:latest`, tandis que chaque version reste récupérable avec son tag
-immuable. Pour publier un tag précis, le passer en argument :
+Le script publie le tag court du commit courant (par exemple `dd062e7`) et
+`latest`, mais le déploiement de la VM utilise toujours le tag immuable. Pour
+publier un tag précis, le passer en argument :
 
 ```bash
 SCALEWAY_IMAGE_REPOSITORY=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway \
   bash deploy/publish-scaleway-image.sh dd062e7
 ```
 
-Le namespace Container Registry peut rester privé. L'image est installée sur la
-VM par l'administrateur et le worker peut la mettre à jour au démarrage avec
-`SCALEWAY_WORKER_PULL_IMAGE=1` (à activer si la VM doit récupérer le nouveau
-`latest` à chaque démarrage). La clé API de la machine de soumission doit
-autoriser le démarrage et l'arrêt de l'instance ainsi que l'accès S3. La L4
-doit rester attachée à la zone choisie.
+Le namespace Container Registry peut rester privé. La clé API de la machine de
+soumission doit autoriser le démarrage et l'arrêt de l'instance ainsi que
+l'accès S3. La L4 doit rester attachée à la zone choisie.
 
 Installer le worker persistant sur la VM GPU :
 
@@ -1211,6 +1218,14 @@ sudo systemctl daemon-reload
 sudo systemctl enable rag-ionis-scaleway-worker.service
 ```
 
+Installer aussi le secret du registre sur le VPS et sur la VM GPU, sans
+l'ajouter au dépôt :
+
+```bash
+printf '%s' "$SCW_SECRET_KEY" | sudo tee /etc/rag-ionis/registry.secret >/dev/null
+sudo chmod 0600 /etc/rag-ionis/registry.secret
+```
+
 Le service démarre au boot et surveille les jobs S3. Le worker quitte lorsque la
 file est vide depuis `SCALEWAY_WORKER_IDLE_SECONDS` secondes ; l'orchestrateur
 arrête ensuite la VM après avoir reçu le statut du job. Le premier boot doit
@@ -1220,6 +1235,76 @@ Le script monte automatiquement `/var/lib/rag-ionis/models` dans `/models`. Les
 modèles WhisperX, Hugging Face et Paddle restent donc en cache sur le volume de
 la VM entre deux démarrages. `SCALEWAY_MODEL_CACHE_DIR` permet de choisir un autre
 chemin hôte absolu.
+
+Le déploiement d'une version précise attend que le worker courant termine, tire
+l'image, lance un smoke test CUDA/Torch/Paddle puis change atomiquement la
+version. Si la VM vient d'être démarrée uniquement pour le déploiement, la CI la
+prépare sans lancer le worker et l'arrête ensuite :
+
+```bash
+sudo deploy/deploy-scaleway-worker.sh \
+  rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:COMMIT_SHA
+```
+
+### Publication et déploiement continus
+
+Le workflow `.github/workflows/release-images.yml` est exécuté lors d'un push
+sur `master`. Il construit uniquement les images affectées :
+
+| Modification | Images publiées |
+|---|---|
+| `interface/**` ou `requirements-api.txt` | API |
+| `pipeline/**` | updater et worker GPU |
+| `requirements-vps.txt` | updater |
+| dépendances ou Dockerfile GPU | worker GPU |
+| `.dockerignore` | les trois images |
+
+Les images sont publiées sous le SHA Git complet et sous `latest`. Les scripts
+de déploiement utilisent exclusivement le SHA complet. Un lancement manuel du
+workflow permet aussi de republier `all`, `api`, `updater` ou `scaleway`.
+
+Configurer les variables GitHub suivantes :
+
+| Variable | Exemple |
+|---|---|
+| `SCW_REGISTRY_NAMESPACE` | `rg.fr-par.scw.cloud/rag-ionis` |
+| `GPU_BUILD_RUNNER` | `gpu-image-builder` |
+| `ENABLE_VPS_DEPLOY` | `true` après le bootstrap du VPS |
+| `VPS_DEPLOY_PATH` | `rag_ionis` |
+| `ENABLE_SCALEWAY_DEPLOY` | `true` après le bootstrap de la VM |
+| `SCALEWAY_ZONE` | `fr-par-2` |
+
+Configurer les secrets GitHub suivants :
+
+| Cible | Secrets |
+|---|---|
+| Registre | `SCW_REGISTRY_PASSWORD` |
+| VPS | `VPS_HOST`, `VPS_USER`, `VPS_SSH_PRIVATE_KEY`, `VPS_SSH_KNOWN_HOSTS` |
+| VM GPU | `SCW_SECRET_KEY`, `SCALEWAY_SERVER_ID`, `SCALEWAY_HOST`, `SCALEWAY_USER`, `SCALEWAY_SSH_PRIVATE_KEY`, `SCALEWAY_SSH_KNOWN_HOSTS` |
+
+L'image GPU dépasse 23 Go et ne tient pas sur le disque de 14 Go d'un runner
+GitHub standard. `GPU_BUILD_RUNNER` doit donc désigner le label d'un runner
+self-hosted ou d'un larger runner disposant d'au moins 60 Go libres. Les images
+API et updater continuent d'utiliser `ubuntu-latest`.
+
+Les valeurs `*_SSH_KNOWN_HOSTS` contiennent les clés publiques SSH vérifiées des
+serveurs. Elles évitent d'accepter silencieusement une nouvelle identité de
+machine pendant un déploiement.
+
+Sur le VPS, `.env.production` doit contenir au minimum les références d'images :
+
+```dotenv
+CONTAINER_REGISTRY=rg.fr-par.scw.cloud/NAMESPACE
+API_IMAGE_TAG=COMMIT_SHA
+UPDATER_IMAGE_TAG=COMMIT_SHA
+```
+
+Le workflow synchronise seulement les fichiers Compose et le script de
+déploiement, puis exécute `deploy/deploy-vps.sh`. L'API est contrôlée par son
+healthcheck et revient automatiquement au tag précédent en cas d'échec.
+Pour le tout premier déploiement, laisser les deux variables `ENABLE_*` à
+`false`, lancer manuellement le workflow avec `all`, reporter le SHA publié dans
+les fichiers d'environnement des serveurs, puis activer les déploiements.
 
 Les secrets métier sont conservés dans le fichier root-only
 `/etc/rag-ionis/scaleway-worker.env` sur la VM et transmis au conteneur à chaque
@@ -1301,14 +1386,16 @@ docker compose --env-file .env.local up -d
 ```
 
 Sur le VPS, utiliser le fichier Compose de production et l'environnement de
-production :
+production. Les images doivent avoir été publiées par la CI et les variables
+`CONTAINER_REGISTRY`, `API_IMAGE_TAG` et `UPDATER_IMAGE_TAG` doivent être
+renseignées :
 
 ```bash
 docker compose \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   --env-file .env.production \
-  up -d
+  up -d --no-build
 ```
 
 Le premier fichier contient l'infrastructure commune. Le second surcharge les

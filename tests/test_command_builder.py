@@ -126,7 +126,7 @@ class CommandBuilderTests(unittest.TestCase):
             'id: "vps-send-production-env"', 1
         )[0]
         self.assertIn(
-            'shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build"',
+            'shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --no-build"',
             rebuild_stack,
         )
         self.assertIn('shellLabel: "Commande Linux VPS"', rebuild_stack)
@@ -134,13 +134,13 @@ class CommandBuilderTests(unittest.TestCase):
         update_stats = source.split('id: "vps-run-update-stats"', 1)[1].split(
             'id: "vps-send-production-env"', 1
         )[0]
-        self.assertIn('--profile jobs run --rm --build updater', update_stats)
+        self.assertIn('--profile jobs run --rm --no-build updater', update_stats)
         self.assertIn('python -m pipeline.update_stats', update_stats)
         self.assertIn('shellLabel: "Commande Linux VPS"', update_stats)
         update_videos = source.split('id: "vps-run-update-videos"', 1)[1].split(
             'id: "vps-send-production-env"', 1
         )[0]
-        self.assertIn('--profile jobs run --rm --build updater', update_videos)
+        self.assertIn('--profile jobs run --rm --no-build updater', update_videos)
         self.assertIn('python -m pipeline.update_videos', update_videos)
         self.assertIn('shellLabel: "Commande Linux VPS"', update_videos)
         self.assertIn('docker-compose.prod.yml', source)
@@ -184,10 +184,9 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway', source)
         self.assertNotIn('rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway', source)
         self.assertIn('id: "scaleway-publish-image"', source)
-        self.assertIn('docker push "${repository}:$commitTag"', source)
-        self.assertIn('docker push "${repository}:latest"', source)
-        self.assertIn("sans la reconstruire", source)
-        self.assertNotIn('deploy/publish-scaleway-image.sh', source)
+        self.assertIn('$env:SCALEWAY_IMAGE_REPOSITORY = $repository', source)
+        self.assertIn('bash deploy/publish-scaleway-image.sh $commitTag', source)
+        self.assertIn("cache distant", source)
         self.assertIn('id: "scaleway-inspect-image"', source)
         self.assertIn('docker buildx imagetools inspect', source)
         self.assertIn('id: "scaleway-pull-latest"', source)

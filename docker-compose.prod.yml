@@ -21,9 +21,7 @@ services:
         max-file: "3"
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    image: ${CONTAINER_REGISTRY:?CONTAINER_REGISTRY is required}/rag-ionis-api:${API_IMAGE_TAG:?API_IMAGE_TAG is required}
     restart: unless-stopped
     environment:
       RAG_IONIS_ENV: production
@@ -61,9 +59,7 @@ services:
   # docker compose ... --profile jobs run --rm updater
   updater:
     profiles: ["jobs"]
-    build:
-      context: .
-      dockerfile: Dockerfile.vps
+    image: ${CONTAINER_REGISTRY:?CONTAINER_REGISTRY is required}/rag-ionis-updater:${UPDATER_IMAGE_TAG:?UPDATER_IMAGE_TAG is required}
     environment:
       RAG_IONIS_ENV: production
       RAG_IONIS_ENV_FILE_OPTIONAL: "1"

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Publishes the same image under an immutable commit tag and the moving tag
-# consumed by the persistent Scaleway VM.
+# Compatibility wrapper around the shared Buildx publisher.
 : "${SCALEWAY_IMAGE_REPOSITORY:?Set SCALEWAY_IMAGE_REPOSITORY, for example rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway}"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,17 +24,5 @@ if [[ -z "${image_repository}" || "${image_repository}" == *:* ]]; then
   exit 2
 fi
 
-commit_image="${image_repository}:${commit_tag}"
-latest_image="${image_repository}:latest"
-
-docker build \
-  --platform linux/amd64 \
-  -f "${repo_root}/Dockerfile.scaleway" \
-  -t "${commit_image}" \
-  -t "${latest_image}" \
-  "${repo_root}"
-
-docker push "${commit_image}"
-docker push "${latest_image}"
-
-printf 'Published %s and %s\n' "${commit_image}" "${latest_image}"
+IMAGE_REPOSITORY="${image_repository}" \
+  bash "${script_dir}/publish-image.sh" scaleway "${commit_tag}"

@@ -15,6 +15,10 @@ YTDLP_REQUIREMENTS_PATH = ROOT_DIR / "requirements-ytdlp.txt"
 VPS_REQUIREMENTS_PATH = ROOT_DIR / "requirements-vps.txt"
 WORKER_SCRIPT_PATH = ROOT_DIR / "deploy" / "rag-ionis-scaleway-worker.sh"
 PUBLISH_SCRIPT_PATH = ROOT_DIR / "deploy" / "publish-scaleway-image.sh"
+SHARED_PUBLISH_SCRIPT_PATH = ROOT_DIR / "deploy" / "publish-image.sh"
+VPS_DEPLOY_SCRIPT_PATH = ROOT_DIR / "deploy" / "deploy-vps.sh"
+SCALEWAY_DEPLOY_SCRIPT_PATH = ROOT_DIR / "deploy" / "deploy-scaleway-worker.sh"
+RELEASE_WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "release-images.yml"
 WORKER_ENV_EXAMPLE_PATH = ROOT_DIR / "deploy" / "scaleway-worker.env.example"
 ANALYTICS_SQL_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "002_analytics_readonly.sql"
 
@@ -56,7 +60,7 @@ class DockerConfigurationTests(unittest.TestCase):
         requirements = VPS_REQUIREMENTS_PATH.read_text(encoding="utf-8")
 
         self.assertIn('profiles: ["jobs"]', production_compose)
-        self.assertIn("dockerfile: Dockerfile.vps", production_compose)
+        self.assertIn("rag-ionis-updater:${UPDATER_IMAGE_TAG", production_compose)
         self.assertIn("USER app", dockerfile)
         self.assertNotIn("torch", requirements)
         self.assertNotIn("paddle", requirements)
@@ -72,14 +76,49 @@ class DockerConfigurationTests(unittest.TestCase):
         self.assertIn('dst=/models', worker_script)
         self.assertIn("SCALEWAY_MODEL_CACHE_DIR=/var/lib/rag-ionis/models", worker_env)
 
-    def test_scaleway_image_publisher_pushes_commit_and_latest_tags(self) -> None:
+    def test_scaleway_image_publisher_uses_remote_build_cache(self) -> None:
         publisher = PUBLISH_SCRIPT_PATH.read_text(encoding="utf-8")
+        shared_publisher = SHARED_PUBLISH_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertIn('rev-parse --short=7 HEAD', publisher)
-        self.assertIn('-t "${commit_image}"', publisher)
-        self.assertIn('-t "${latest_image}"', publisher)
-        self.assertIn('docker push "${commit_image}"', publisher)
-        self.assertIn('docker push "${latest_image}"', publisher)
+        self.assertIn('publish-image.sh" scaleway', publisher)
+        self.assertIn("docker buildx build", shared_publisher)
+        self.assertIn('--tag "${commit_image}"', shared_publisher)
+        self.assertIn('--tag "${latest_image}"', shared_publisher)
+        self.assertIn('--cache-from "type=registry,ref=${cache_image}"', shared_publisher)
+        self.assertIn('--cache-to "type=registry,ref=${cache_image},mode=max"', shared_publisher)
+        self.assertIn("--push", shared_publisher)
+
+    def test_production_compose_uses_immutable_published_images(self) -> None:
+        production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("build:", production_compose)
+        self.assertIn("rag-ionis-api:${API_IMAGE_TAG", production_compose)
+        self.assertIn("rag-ionis-updater:${UPDATER_IMAGE_TAG", production_compose)
+
+    def test_deployment_scripts_support_healthcheck_and_rollback(self) -> None:
+        vps_deploy = VPS_DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8")
+        scaleway_deploy = SCALEWAY_DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("docker pull", vps_deploy)
+        self.assertIn("rolling back", vps_deploy)
+        self.assertIn("State.Health", vps_deploy)
+        self.assertIn("docker pull", scaleway_deploy)
+        self.assertIn("--gpus all", scaleway_deploy)
+        self.assertIn("rolling back", scaleway_deploy)
+        self.assertIn("Waiting for the current GPU worker", scaleway_deploy)
+
+    def test_release_workflow_builds_selectively_with_registry_cache(self) -> None:
+        workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("Select affected images", workflow)
+        self.assertIn("docker/build-push-action@v7", workflow)
+        self.assertIn("cache-from: type=registry", workflow)
+        self.assertIn("cache-to: type=registry", workflow)
+        self.assertIn("validate:", workflow)
+        self.assertIn("actionlint@sha256:", workflow)
+        self.assertIn("deploy-vps:", workflow)
+        self.assertIn("deploy-scaleway:", workflow)
 
     def test_gpu_requirements_do_not_include_api_or_database_stack(self) -> None:
         requirements = GPU_REQUIREMENTS_PATH.read_text(encoding="utf-8")

@@ -85,8 +85,8 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn("sections: []", daily_sync)
         self.assertNotIn('flag: "--', daily_sync)
         self.assertIn("API YouTube", daily_sync)
-        self.assertIn("table stats", daily_sync)
-        self.assertIn('app.js?v=20260822-vps-postgres-restore', index)
+        self.assertIn("snapshots de stats", daily_sync)
+        self.assertIn('app.js?v=20260822-vps-update-stats', index)
 
     def test_sql_backup_action_uses_a_binary_dump_without_powershell_redirection(self) -> None:
         source = APP_PATH.read_text(encoding="utf-8")
@@ -104,10 +104,13 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('category: "VPS"', source)
         for action_id in (
             "vps-connect",
+            "vps-phoenix",
             "vps-browse-postgres",
             "vps-restore-postgres",
             "vps-pull-code",
             "vps-rebuild-stack",
+            "vps-run-update-stats",
+            "vps-run-update-videos",
             "vps-send-production-env",
         ):
             self.assertIn(f'id: "{action_id}"', source)
@@ -128,6 +131,18 @@ class CommandBuilderTests(unittest.TestCase):
         )
         self.assertIn('shellLabel: "Commande Linux VPS"', rebuild_stack)
         self.assertNotIn('vpsRemoteCommand', rebuild_stack)
+        update_stats = source.split('id: "vps-run-update-stats"', 1)[1].split(
+            'id: "vps-send-production-env"', 1
+        )[0]
+        self.assertIn('--profile jobs run --rm --build updater', update_stats)
+        self.assertIn('python -m pipeline.update_stats', update_stats)
+        self.assertIn('shellLabel: "Commande Linux VPS"', update_stats)
+        update_videos = source.split('id: "vps-run-update-videos"', 1)[1].split(
+            'id: "vps-send-production-env"', 1
+        )[0]
+        self.assertIn('--profile jobs run --rm --build updater', update_videos)
+        self.assertIn('python -m pipeline.update_videos', update_videos)
+        self.assertIn('shellLabel: "Commande Linux VPS"', update_videos)
         self.assertIn('docker-compose.prod.yml', source)
         self.assertIn('scp -i', source)
         self.assertIn('ubuntu@179.237.98.117:rag_ionis/.env.production', source)
@@ -143,7 +158,6 @@ class CommandBuilderTests(unittest.TestCase):
 
         for removed_action_id in (
             "vps-tunnels",
-            "vps-phoenix",
             "vps-list-hidden",
             "vps-start-stack",
             "vps-logs",
@@ -154,6 +168,12 @@ class CommandBuilderTests(unittest.TestCase):
             "vps-clean-session",
         ):
             self.assertNotIn(f'id: "{removed_action_id}"', source)
+
+        phoenix = source.split('id: "vps-phoenix"', 1)[1].split(
+            'id: "vps-browse-postgres"', 1
+        )[0]
+        self.assertIn('-L 6007:127.0.0.1:6006', phoenix)
+        self.assertIn('http://127.0.0.1:6007/projects', phoenix)
 
     def test_scaleway_actions_include_image_lifecycle_and_worker_info(self) -> None:
         source = APP_PATH.read_text(encoding="utf-8")
@@ -188,7 +208,7 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('/etc/rag-ionis/scaleway-worker.env', source)
         self.assertIn('sudo cat /etc/rag-ionis/scaleway-worker.env', source)
         self.assertIn('clés S3 et API en clair', source)
-        self.assertIn('app.js?v=20260822-vps-postgres-restore', index)
+        self.assertIn('app.js?v=20260822-vps-update-stats', index)
 
 if __name__ == "__main__":
     unittest.main()

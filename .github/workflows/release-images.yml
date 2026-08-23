@@ -101,6 +101,9 @@ jobs:
                 .dockerignore)
                   api=true; updater=true; scaleway=true
                   ;;
+                .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh|deploy/publish-scaleway-image.sh)
+                  api=true; updater=true; scaleway=true
+                  ;;
                 Dockerfile.api|requirements-api.txt|interface/*)
                   api=true
                   ;;

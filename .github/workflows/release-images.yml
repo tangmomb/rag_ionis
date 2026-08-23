@@ -125,14 +125,14 @@ jobs:
 
           matrix='[]'
           if [[ "${api}" == "true" ]]; then
-            matrix="$(jq -c '. + [{"component":"api","dockerfile":"Dockerfile.api","image":"rag-ionis-api","runner":"ubuntu-latest"}]' <<<"${matrix}")"
+            matrix="$(jq -c '. + [{"component":"api","dockerfile":"Dockerfile.api","image":"rag-ionis-api","runner":"ubuntu-latest","cache_mode":"max"}]' <<<"${matrix}")"
           fi
           if [[ "${updater}" == "true" ]]; then
-            matrix="$(jq -c '. + [{"component":"updater","dockerfile":"Dockerfile.vps","image":"rag-ionis-updater","runner":"ubuntu-latest"}]' <<<"${matrix}")"
+            matrix="$(jq -c '. + [{"component":"updater","dockerfile":"Dockerfile.vps","image":"rag-ionis-updater","runner":"ubuntu-latest","cache_mode":"max"}]' <<<"${matrix}")"
           fi
           if [[ "${scaleway}" == "true" ]]; then
             gpu_runner="${GPU_BUILD_RUNNER:-gpu-image-builder}"
-            matrix="$(jq -c --arg runner "${gpu_runner}" '. + [{"component":"scaleway","dockerfile":"Dockerfile.scaleway","image":"rag-ionis-scaleway","runner":$runner}]' <<<"${matrix}")"
+            matrix="$(jq -c --arg runner "${gpu_runner}" '. + [{"component":"scaleway","dockerfile":"Dockerfile.scaleway","image":"rag-ionis-scaleway","runner":$runner,"cache_mode":"min"}]' <<<"${matrix}")"
           fi
 
           if [[ "${api}" == "true" || "${updater}" == "true" || "${vps_config}" == "true" ]]; then
@@ -243,7 +243,7 @@ jobs:
             ${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
             ${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:latest
           cache-from: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:buildcache
-          cache-to: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:buildcache,mode=max
+          cache-to: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:buildcache,mode=${{ matrix.cache_mode }}
 
   deploy-vps:
     needs: [changes, validate, build]

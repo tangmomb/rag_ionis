@@ -359,13 +359,14 @@ jobs:
           if [[ "${status}" == "stopped" || "${status}" == "paused" ]]; then
             printf 'started_by_ci=true\n' >>"${GITHUB_OUTPUT}"
             started_by_ci=true
-            curl -fsS -X POST "${auth[@]}" --data '{}' "${server_url}/start" >/dev/null
+            curl -fsS -X POST "${auth[@]}" \
+              --data '{"action":"poweron"}' "${server_url}/action" >/dev/null
           else
             printf 'started_by_ci=false\n' >>"${GITHUB_OUTPUT}"
           fi
           for _ in {1..90}; do
             status="$(curl -fsS "${auth[@]}" "${server_url}" | jq -r '.server.state // .state // .server.status // .status')"
-            [[ "${status}" == "started" ]] && exit 0
+            [[ "${status}" == "running" ]] && exit 0
             sleep 10
           done
           echo "GPU instance did not start (last state: ${status}, started_by_ci: ${started_by_ci})" >&2
@@ -438,4 +439,4 @@ jobs:
           curl -fsS -X POST \
             -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
             -H 'Content-Type: application/json' \
-            --data '{}' "${server_url}/stop" >/dev/null
+            --data '{"action":"poweroff"}' "${server_url}/action" >/dev/null

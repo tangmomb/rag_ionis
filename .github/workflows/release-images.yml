@@ -191,8 +191,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Validate registry configuration
-        shell: pwsh
+      - name: Validate registry configuration on Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
+          REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${REGISTRY_NAMESPACE}" || { echo 'Missing repository variable SCW_REGISTRY_NAMESPACE' >&2; exit 1; }
+          test -n "${REGISTRY_PASSWORD}" || { echo 'Missing secret SCW_REGISTRY_PASSWORD' >&2; exit 1; }
+
+      - name: Validate registry configuration on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
         env:
           REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
           REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD }}

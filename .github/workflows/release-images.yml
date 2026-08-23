@@ -192,14 +192,18 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Validate registry configuration
-        shell: bash
+        shell: pwsh
         env:
           REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
           REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD }}
         run: |
-          set -euo pipefail
-          test -n "${REGISTRY_NAMESPACE}" || { echo 'Missing repository variable SCW_REGISTRY_NAMESPACE' >&2; exit 1; }
-          test -n "${REGISTRY_PASSWORD}" || { echo 'Missing secret SCW_REGISTRY_PASSWORD' >&2; exit 1; }
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:REGISTRY_NAMESPACE)) {
+            throw 'Missing repository variable SCW_REGISTRY_NAMESPACE'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:REGISTRY_PASSWORD)) {
+            throw 'Missing secret SCW_REGISTRY_PASSWORD'
+          }
 
       - uses: docker/setup-buildx-action@v3
 

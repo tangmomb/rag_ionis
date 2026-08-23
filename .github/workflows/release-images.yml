@@ -1,0 +1,417 @@
+name: Release container images
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+    paths:
+      - ".dockerignore"
+      - "Dockerfile.api"
+      - "Dockerfile.vps"
+      - "Dockerfile.scaleway"
+      - "requirements-api.txt"
+      - "requirements-vps.txt"
+      - "requirements-gpu.txt"
+      - "requirements-paddle-bootstrap.txt"
+      - "requirements-ytdlp.txt"
+      - "interface/**"
+      - "pipeline/**"
+      - "models/frame_filter_2026-07-02_21-30-31.joblib"
+      - "docker-compose.yml"
+      - "docker-compose.prod.yml"
+      - "deploy/deploy-vps.sh"
+      - "deploy/deploy-scaleway-worker.sh"
+      - "deploy/publish-image.sh"
+      - "deploy/publish-images.sh"
+      - "deploy/publish-scaleway-image.sh"
+      - "tests/test_command_builder.py"
+      - "tests/test_docker_configuration.py"
+      - ".github/workflows/release-images.yml"
+  workflow_dispatch:
+    inputs:
+      components:
+        description: Images to publish
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - api
+          - updater
+          - scaleway
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-container-release
+  cancel-in-progress: false
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+      api: ${{ steps.detect.outputs.api }}
+      updater: ${{ steps.detect.outputs.updater }}
+      scaleway: ${{ steps.detect.outputs.scaleway }}
+      vps: ${{ steps.detect.outputs.vps }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        name: Select affected images
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_COMPONENTS: ${{ inputs.components }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GPU_BUILD_RUNNER: ${{ vars.GPU_BUILD_RUNNER }}
+        run: |
+          set -euo pipefail
+          api=false
+          updater=false
+          scaleway=false
+          vps_config=false
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            case "${REQUESTED_COMPONENTS}" in
+              all) api=true; updater=true; scaleway=true ;;
+              api) api=true ;;
+              updater) updater=true ;;
+              scaleway) scaleway=true ;;
+              *) printf 'Unknown component selection: %s\n' "${REQUESTED_COMPONENTS}" >&2; exit 2 ;;
+            esac
+          elif [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            changed_files="$(git diff --name-only "${PULL_REQUEST_BASE_SHA}" "${CURRENT_SHA}")"
+          else
+            if [[ "${BEFORE_SHA}" =~ ^0+$ ]]; then
+              changed_files="$(git diff-tree --no-commit-id --name-only -r "${CURRENT_SHA}")"
+            else
+              changed_files="$(git diff --name-only "${BEFORE_SHA}" "${CURRENT_SHA}")"
+            fi
+
+            while IFS= read -r path; do
+              case "${path}" in
+                .dockerignore)
+                  api=true; updater=true; scaleway=true
+                  ;;
+                .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh|deploy/publish-scaleway-image.sh)
+                  api=true; updater=true; scaleway=true
+                  ;;
+                Dockerfile.api|requirements-api.txt|interface/*)
+                  api=true
+                  ;;
+                Dockerfile.vps|requirements-vps.txt)
+                  updater=true
+                  ;;
+                Dockerfile.scaleway|requirements-gpu.txt|requirements-paddle-bootstrap.txt|requirements-ytdlp.txt|models/frame_filter_2026-07-02_21-30-31.joblib)
+                  scaleway=true
+                  ;;
+                pipeline/*)
+                  updater=true; scaleway=true
+                  ;;
+                docker-compose.yml|docker-compose.prod.yml|deploy/deploy-vps.sh)
+                  vps_config=true
+                  ;;
+              esac
+            done <<<"${changed_files}"
+          fi
+
+          matrix='[]'
+          if [[ "${api}" == "true" ]]; then
+            matrix="$(jq -c '. + [{"component":"api","dockerfile":"Dockerfile.api","image":"rag-ionis-api","runner":"ubuntu-latest"}]' <<<"${matrix}")"
+          fi
+          if [[ "${updater}" == "true" ]]; then
+            matrix="$(jq -c '. + [{"component":"updater","dockerfile":"Dockerfile.vps","image":"rag-ionis-updater","runner":"ubuntu-latest"}]' <<<"${matrix}")"
+          fi
+          if [[ "${scaleway}" == "true" ]]; then
+            gpu_runner="${GPU_BUILD_RUNNER:-gpu-image-builder}"
+            matrix="$(jq -c --arg runner "${gpu_runner}" '. + [{"component":"scaleway","dockerfile":"Dockerfile.scaleway","image":"rag-ionis-scaleway","runner":$runner}]' <<<"${matrix}")"
+          fi
+
+          if [[ "${api}" == "true" || "${updater}" == "true" || "${vps_config}" == "true" ]]; then
+            vps=true
+          else
+            vps=false
+          fi
+
+          {
+            printf 'matrix=%s\n' "${matrix}"
+            printf 'api=%s\n' "${api}"
+            printf 'updater=%s\n' "${updater}"
+            printf 'scaleway=%s\n' "${scaleway}"
+            printf 'vps=%s\n' "${vps}"
+          } >>"${GITHUB_OUTPUT}"
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install lightweight test dependencies
+        run: python -m pip install --requirement requirements-vps.txt
+
+      - name: Run deployment configuration tests
+        run: python -m unittest tests.test_docker_configuration tests.test_command_builder
+
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          bash -n \
+            deploy/publish-image.sh \
+            deploy/publish-images.sh \
+            deploy/publish-scaleway-image.sh \
+            deploy/deploy-vps.sh \
+            deploy/deploy-scaleway-worker.sh
+
+      - name: Validate production Compose rendering
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production.example config --quiet
+
+      - name: Lint GitHub Actions workflow
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+  build:
+    needs: [changes, validate]
+    if: github.event_name != 'pull_request' && needs.changes.outputs.matrix != '[]'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate registry configuration
+        shell: bash
+        env:
+          REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
+          REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${REGISTRY_NAMESPACE}" || { echo 'Missing repository variable SCW_REGISTRY_NAMESPACE' >&2; exit 1; }
+          test -n "${REGISTRY_PASSWORD}" || { echo 'Missing secret SCW_REGISTRY_PASSWORD' >&2; exit 1; }
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.SCW_REGISTRY_NAMESPACE }}
+          username: nologin
+          password: ${{ secrets.SCW_REGISTRY_PASSWORD }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:latest
+          cache-from: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/${{ matrix.image }}:buildcache,mode=max
+
+  deploy-vps:
+    needs: [changes, validate, build]
+    if: >-
+      ${{ always() && !cancelled() && needs.changes.outputs.vps == 'true' &&
+          github.event_name != 'pull_request' &&
+          vars.ENABLE_VPS_DEPLOY == 'true' &&
+          needs.validate.result == 'success' &&
+          (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: production-vps
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure pinned SSH host key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}" || { echo 'Missing VPS_SSH_PRIVATE_KEY' >&2; exit 1; }
+          test -n "${SSH_KNOWN_HOSTS}" || { echo 'Missing VPS_SSH_KNOWN_HOSTS' >&2; exit 1; }
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" >~/.ssh/id_ed25519
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" >~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Synchronize deployment configuration
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
+          [[ "${deploy_path}" =~ ^[A-Za-z0-9_./-]+$ ]] || { echo 'Invalid VPS_DEPLOY_PATH' >&2; exit 2; }
+          test -n "${VPS_HOST}" || { echo 'Missing VPS_HOST' >&2; exit 1; }
+          test -n "${VPS_USER}" || { echo 'Missing VPS_USER' >&2; exit 1; }
+          remote="${VPS_USER}@${VPS_HOST}"
+          ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
+          set -euo pipefail
+          mkdir -p "$1/deploy"
+          REMOTE
+          scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
+          scp deploy/deploy-vps.sh "${remote}:${deploy_path}/deploy/"
+
+      - name: Deploy affected VPS services
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+          DEPLOY_API: ${{ needs.changes.outputs.api }}
+          DEPLOY_UPDATER: ${{ needs.changes.outputs.updater }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
+          remote="${VPS_USER}@${VPS_HOST}"
+          # Prepare the updater first so a first all-images deployment populates
+          # both required Compose tags before the API healthcheck is evaluated.
+          if [[ "${DEPLOY_UPDATER}" == "true" ]]; then
+            ssh "${remote}" bash -s -- "${deploy_path}" updater "${IMAGE_TAG}" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          bash deploy/deploy-vps.sh "$2" "$3"
+          REMOTE
+          fi
+          if [[ "${DEPLOY_API}" == "true" ]]; then
+            ssh "${remote}" bash -s -- "${deploy_path}" api "${IMAGE_TAG}" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          bash deploy/deploy-vps.sh "$2" "$3"
+          REMOTE
+          fi
+          ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production config --quiet
+          REMOTE
+
+  deploy-scaleway:
+    needs: [changes, validate, build]
+    if: >-
+      ${{ always() && !cancelled() && needs.changes.outputs.scaleway == 'true' &&
+          github.event_name != 'pull_request' &&
+          vars.ENABLE_SCALEWAY_DEPLOY == 'true' && needs.validate.result == 'success' &&
+          needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    environment: production-scaleway
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: instance
+        name: Ensure the GPU instance is running
+        shell: bash
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCALEWAY_ZONE: ${{ vars.SCALEWAY_ZONE }}
+          SCALEWAY_SERVER_ID: ${{ secrets.SCALEWAY_SERVER_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${SCW_SECRET_KEY}" || { echo 'Missing SCW_SECRET_KEY' >&2; exit 1; }
+          test -n "${SCALEWAY_SERVER_ID}" || { echo 'Missing SCALEWAY_SERVER_ID' >&2; exit 1; }
+          zone="${SCALEWAY_ZONE:-fr-par-2}"
+          server_url="https://api.scaleway.com/instance/v1/zones/${zone}/servers/${SCALEWAY_SERVER_ID}"
+          auth=(-H "X-Auth-Token: ${SCW_SECRET_KEY}" -H 'Content-Type: application/json')
+          status="$(curl -fsS "${auth[@]}" "${server_url}" | jq -r '.server.state // .state // .server.status // .status')"
+          started_by_ci=false
+          if [[ "${status}" == "stopped" || "${status}" == "paused" ]]; then
+            printf 'started_by_ci=true\n' >>"${GITHUB_OUTPUT}"
+            started_by_ci=true
+            curl -fsS -X POST "${auth[@]}" --data '{}' "${server_url}/start" >/dev/null
+          else
+            printf 'started_by_ci=false\n' >>"${GITHUB_OUTPUT}"
+          fi
+          for _ in {1..90}; do
+            status="$(curl -fsS "${auth[@]}" "${server_url}" | jq -r '.server.state // .state // .server.status // .status')"
+            [[ "${status}" == "started" ]] && exit 0
+            sleep 10
+          done
+          echo "GPU instance did not start (last state: ${status}, started_by_ci: ${started_by_ci})" >&2
+          exit 1
+
+      - name: Configure pinned SSH host key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SCALEWAY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SCALEWAY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}" || { echo 'Missing SCALEWAY_SSH_PRIVATE_KEY' >&2; exit 1; }
+          test -n "${SSH_KNOWN_HOSTS}" || { echo 'Missing SCALEWAY_SSH_KNOWN_HOSTS' >&2; exit 1; }
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" >~/.ssh/id_ed25519
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" >~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Wait for SSH
+        shell: bash
+        env:
+          SCALEWAY_HOST: ${{ secrets.SCALEWAY_HOST }}
+          SCALEWAY_USER: ${{ secrets.SCALEWAY_USER }}
+        run: |
+          set -euo pipefail
+          test -n "${SCALEWAY_HOST}" || { echo 'Missing SCALEWAY_HOST' >&2; exit 1; }
+          test -n "${SCALEWAY_USER}" || { echo 'Missing SCALEWAY_USER' >&2; exit 1; }
+          for _ in {1..60}; do
+            if ssh -o BatchMode=yes -o ConnectTimeout=5 "${SCALEWAY_USER}@${SCALEWAY_HOST}" true; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'GPU instance did not become reachable through SSH.' >&2
+          exit 1
+
+      - name: Deploy immutable GPU worker image
+        shell: bash
+        env:
+          SCALEWAY_HOST: ${{ secrets.SCALEWAY_HOST }}
+          SCALEWAY_USER: ${{ secrets.SCALEWAY_USER }}
+          REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
+          IMAGE_TAG: ${{ github.sha }}
+          STARTED_BY_CI: ${{ steps.instance.outputs.started_by_ci }}
+        run: |
+          set -euo pipefail
+          remote="${SCALEWAY_USER}@${SCALEWAY_HOST}"
+          image="${REGISTRY_NAMESPACE}/rag-ionis-scaleway:${IMAGE_TAG}"
+          start_worker=1
+          [[ "${STARTED_BY_CI}" == "true" ]] && start_worker=0
+          scp deploy/deploy-scaleway-worker.sh "${remote}:/tmp/deploy-scaleway-worker.sh"
+          ssh "${remote}" bash -s -- "${start_worker}" "${image}" <<'REMOTE'
+          set -euo pipefail
+          sudo install -m 0755 /tmp/deploy-scaleway-worker.sh /usr/local/bin/deploy-scaleway-worker.sh
+          sudo env SCALEWAY_DEPLOY_START_WORKER="$1" /usr/local/bin/deploy-scaleway-worker.sh "$2"
+          REMOTE
+
+      - name: Stop CI-started GPU instance
+        if: always() && steps.instance.outputs.started_by_ci == 'true'
+        shell: bash
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCALEWAY_ZONE: ${{ vars.SCALEWAY_ZONE }}
+          SCALEWAY_SERVER_ID: ${{ secrets.SCALEWAY_SERVER_ID }}
+        run: |
+          set -euo pipefail
+          zone="${SCALEWAY_ZONE:-fr-par-2}"
+          server_url="https://api.scaleway.com/instance/v1/zones/${zone}/servers/${SCALEWAY_SERVER_ID}"
+          curl -fsS -X POST \
+            -H "X-Auth-Token: ${SCW_SECRET_KEY}" \
+            -H 'Content-Type: application/json' \
+            --data '{}' "${server_url}/stop" >/dev/null

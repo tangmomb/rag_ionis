@@ -9,12 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from dotenv import load_dotenv
-
-
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
+
+from pipeline.support.environment import load_project_env
 
 from interface.backend.api import run_rag as rag
 from interface.backend.config import (
@@ -811,7 +810,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    load_dotenv(PROJECT_DIR / ".env", override=True)
+    load_project_env(PROJECT_DIR, override=True)
     args = build_parser().parse_args(argv)
     if not args.dataset:
         selection = prompt_experiment_selection(

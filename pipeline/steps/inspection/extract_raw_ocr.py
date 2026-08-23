@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from pipeline.support.paths import existing_images_dir, ocr_raw_dir as output_oc
 
 
 DEFAULT_MIN_CONFIDENCE = 0.9
+DEFAULT_BATCH_SIZE = 8
 IMAGE_GROUPS = ("footage", "graphic", "mixture")
 
 
@@ -23,10 +25,20 @@ class RawOcrOptions:
     device: str = "gpu:0"
     lang: str = "fr"
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    batch_size: int = DEFAULT_BATCH_SIZE
 
 
 class RawOcrRecognizer(Protocol):
     def recognize_raw(self, image_path: Path) -> object: ...
+
+
+def resolved_batch_size(batch_size: int | None = None) -> int:
+    value = batch_size
+    if value is None:
+        value = int(os.getenv("PADDLEOCR_BATCH_SIZE", str(DEFAULT_BATCH_SIZE)))
+    if value < 1:
+        raise ValueError("PADDLEOCR_BATCH_SIZE doit etre un entier positif.")
+    return value
 
 
 def raw_ocr_name(group_name):
@@ -47,6 +59,7 @@ def extract_for_video_isolated(
     device: str = "gpu:0",
     lang: str = "fr",
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    batch_size: int | None = None,
     force: bool = False,
 ) -> list[Path]:
     """Execute PaddleOCR outside the process that may already have loaded PyTorch.
@@ -68,6 +81,8 @@ def extract_for_video_isolated(
         lang,
         "--min-confidence",
         str(min_confidence),
+        "--batch-size",
+        str(resolved_batch_size(batch_size)),
     ]
     if force:
         command.append("--force")
@@ -97,6 +112,7 @@ def base_payload(
         "device": options.device,
         "lang": options.lang,
         "min_confidence": options.min_confidence,
+        "batch_size": options.batch_size,
         "items": items,
     }
 
@@ -116,6 +132,7 @@ def extract_for_video(
     device: str = "gpu:0",
     lang: str = "fr",
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    batch_size: int | None = None,
     force: bool = False,
     ocr: RawOcrRecognizer | None = None,
 ) -> list[Path]:
@@ -123,6 +140,7 @@ def extract_for_video(
         device=device,
         lang=lang,
         min_confidence=min_confidence,
+        batch_size=resolved_batch_size(batch_size),
     )
     images_dir = existing_images_dir(video_path)
     ocr_dir = output_ocr_raw_dir(video_path)
@@ -149,22 +167,43 @@ def extract_for_video(
             device=device,
             lang=lang,
             min_confidence=min_confidence,
+            batch_size=options.batch_size,
         )
 
-    print(f"[analyse] {video_path.name}: {len(images)} images", flush=True)
+    print(
+        f"[analyse] {video_path.name}: {len(images)} images "
+        f"(batch_size={options.batch_size})",
+        flush=True,
+    )
     raw_items_by_group = {group_name: [] for group_name in IMAGE_GROUPS}
     total_images = len(images)
-    for index, image_path in enumerate(images, start=1):
-        image_name = image_path.relative_to(images_dir).as_posix()
-        raw_result = ocr.recognize_raw(image_path)
-        item = {
-            "image": image_name,
-            "raw": raw_result,
-        }
-        group_name = Path(image_name).parts[0] if Path(image_name).parts else ""
-        if group_name in raw_items_by_group:
-            raw_items_by_group[group_name].append(item)
-        print_step_progress(f"ocr {video_path.name}", index, total_images)
+    batch_recognizer = getattr(ocr, "recognize_raw_batch", None)
+    for start in range(0, total_images, options.batch_size):
+        batch_paths = images[start : start + options.batch_size]
+        if callable(batch_recognizer):
+            batch_results = list(batch_recognizer(batch_paths))
+            if len(batch_results) != len(batch_paths):
+                raise RuntimeError(
+                    "PaddleOCR a renvoye un nombre de resultats different du "
+                    "nombre d'images du batch."
+                )
+        else:
+            batch_results = [ocr.recognize_raw(path) for path in batch_paths]
+
+        for image_path, raw_result in zip(batch_paths, batch_results, strict=True):
+            image_name = image_path.relative_to(images_dir).as_posix()
+            item = {
+                "image": image_name,
+                "raw": raw_result,
+            }
+            group_name = Path(image_name).parts[0] if Path(image_name).parts else ""
+            if group_name in raw_items_by_group:
+                raw_items_by_group[group_name].append(item)
+        print_step_progress(
+            f"ocr {video_path.name}",
+            min(start + len(batch_paths), total_images),
+            total_images,
+        )
 
     paths = []
     for group_name in IMAGE_GROUPS:

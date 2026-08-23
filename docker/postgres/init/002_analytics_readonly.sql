@@ -3,7 +3,6 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rag_ionis_analytics') THEN
         CREATE ROLE rag_ionis_analytics
             LOGIN
-            PASSWORD 'rag_ionis_analytics_dev_password'
             NOSUPERUSER
             NOCREATEDB
             NOCREATEROLE

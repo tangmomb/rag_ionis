@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.12.14-slim-trixie
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN addgroup --system app && adduser --system --ingroup app app
+
+COPY requirements-api.txt ./
+RUN python -m pip install --upgrade pip \
+    && python -m pip install --requirement requirements-api.txt
+
+COPY --chown=app:app interface ./interface
+
+USER app
+
+EXPOSE 8006
+
+CMD ["python", "-m", "uvicorn", "interface.app:app", "--host", "0.0.0.0", "--port", "8006", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips=*"]

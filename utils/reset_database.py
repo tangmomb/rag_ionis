@@ -3,10 +3,14 @@ import sys
 from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from pipeline.support.environment import load_project_env
+
 SCHEMA_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "001_schema.sql"
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -48,7 +52,7 @@ def reset_database(cursor):
 
 
 def main():
-    load_dotenv()
+    load_project_env(ROOT_DIR, override=False)
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         with connection.cursor() as cursor:
             reset_database(cursor)

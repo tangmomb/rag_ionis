@@ -5,11 +5,11 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from pipeline.support.environment import load_project_env
 
 from interface.backend.llm_providers import (
     LLM_MODEL_CATALOG,
@@ -23,7 +23,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 
-load_dotenv(PROJECT_DIR / ".env", override=True)
+load_project_env(PROJECT_DIR)
 
 app = FastAPI(title="RAG IONIS — LLM tester")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

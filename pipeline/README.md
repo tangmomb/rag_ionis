@@ -588,6 +588,14 @@ Préparer effectivement la vidéo jusqu'aux chunks :
 .\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
 ```
 
+Avec `PIPELINE_EXECUTION_BACKEND=scaleway` (valeur par défaut), cette commande
+envoie le dossier de la vidéo sur S3, démarre la VM GPU dédiée L4 24 Go,
+dépose le job dans sa file S3, exécute tout le plan dans son conteneur puis
+arrête la VM et remplace localement `outputs/` tout en actualisant `metadata/`. Les
+tâches `frames.classify`, `ocr.extract_raw` et `transcript.whisper` lancées seules
+suivent le même chemin. Utiliser `PIPELINE_EXECUTION_BACKEND=local` uniquement
+pour un dépannage local explicite.
+
 Lister le registre ou relancer une seule tâche :
 
 ```powershell

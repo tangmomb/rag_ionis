@@ -19,6 +19,8 @@ WHISPER_TRANSCRIPT_TIMECODED_NAME = TRANSCRIPT_1_BRUT_NAME
 LEGACY_TRANSCRIPT_TIMECODED_SUFFIX = "_transcript_timecodes.txt"
 OCR_SUBTITLES_TIMECODED_NAME = "ocr_subtitles_timecoded.txt"
 LEGACY_OCR_SUBTITLE_TIMECODED_SUFFIX = "_ocr_subtitle_timecodes.txt"
+_WHISPER_MODEL_CACHE = {}
+_DIARIZATION_PIPELINE_CACHE = {}
 
 
 def optional_positive_int_env(name):
@@ -177,6 +179,11 @@ def load_whisperx_model():
         attempts.append(("cpu", "int8"))
 
     clear_cuda_memory()
+    keep_model = os.getenv("WHISPERX_KEEP_MODEL", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     for attempt_index, (attempt_device, attempt_compute_type) in enumerate(attempts):
         print(
             f"[whisperx] model={DEFAULT_TRANSCRIBE_MODEL} "
@@ -184,11 +191,20 @@ def load_whisperx_model():
             f"batch_size={DEFAULT_TRANSCRIBE_BATCH_SIZE}"
         )
         try:
+            cache_key = (
+                DEFAULT_TRANSCRIBE_MODEL,
+                attempt_device,
+                attempt_compute_type,
+            )
+            if keep_model and cache_key in _WHISPER_MODEL_CACHE:
+                return whisperx, _WHISPER_MODEL_CACHE[cache_key], attempt_device
             model = whisperx.load_model(
                 DEFAULT_TRANSCRIBE_MODEL,
                 attempt_device,
                 compute_type=attempt_compute_type,
             )
+            if keep_model:
+                _WHISPER_MODEL_CACHE[cache_key] = model
             return whisperx, model, attempt_device
         except RuntimeError as error:
             has_next_attempt = attempt_index + 1 < len(attempts)
@@ -239,6 +255,18 @@ def load_diarization_pipeline(device):
 
     DEFAULT_DIARIZATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     diarization_device = resolved_device(REQUESTED_DIARIZATION_DEVICE or device)
+    keep_model = os.getenv("WHISPERX_KEEP_MODEL", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    cache_key = (
+        DEFAULT_DIARIZATION_MODEL,
+        diarization_device,
+        str(DEFAULT_DIARIZATION_CACHE_DIR),
+    )
+    if keep_model and cache_key in _DIARIZATION_PIPELINE_CACHE:
+        return _DIARIZATION_PIPELINE_CACHE[cache_key], diarization_device
     print(
         f"[diarization] model={DEFAULT_DIARIZATION_MODEL} device={diarization_device} "
         f"cache={DEFAULT_DIARIZATION_CACHE_DIR}"
@@ -264,6 +292,8 @@ def load_diarization_pipeline(device):
                 "compte que celui du token, puis relance la Step 16."
             ) from error
         raise
+    if keep_model:
+        _DIARIZATION_PIPELINE_CACHE[cache_key] = pipeline
     return pipeline, diarization_device
 
 

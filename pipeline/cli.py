@@ -4,8 +4,6 @@ import argparse
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from .catalog import TASKS
 from .context import PipelineContext
 from .contracts import PlannedTask
@@ -14,6 +12,7 @@ from .executor import execute_tasks
 from .manifest import write_manifest
 from .options import PipelineOptions
 from .orchestrator import inspect_video, plan_video, run_video
+from .support.environment import load_project_env
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -190,7 +189,7 @@ def options_from_args(args: argparse.Namespace) -> PipelineOptions:
 
 
 def main() -> None:
-    load_dotenv(PROJECT_ROOT / ".env", override=True)
+    load_project_env(PROJECT_ROOT)
     args = parse_args()
     if args.command == "task" and args.list_tasks:
         print_task_catalog()
@@ -214,6 +213,31 @@ def main() -> None:
         raise RuntimeError(f"Aucune video trouvee dans {args.root}")
 
     print(f"{len(videos)} video(s) selectionnee(s)", flush=True)
+    from .support.scaleway_execution import (
+        RemoteCommand,
+        run_videos_on_scaleway,
+        should_delegate_to_scaleway,
+    )
+
+    if should_delegate_to_scaleway(
+        args.command,
+        task_id=getattr(args, "task_id", None),
+        dry_run=getattr(args, "dry_run", False),
+        probe_only=getattr(args, "probe_only", False),
+    ):
+        remote_command = RemoteCommand(
+            command=args.command,
+            task_id=getattr(args, "task_id", None),
+            skip_inspection=getattr(args, "skip_inspection", False),
+        )
+        results = run_videos_on_scaleway(videos, options, remote_command)
+        for result in results:
+            print(
+                f"[scaleway] termine job={result['job_id']} video={result['video']}",
+                flush=True,
+            )
+        return
+
     for index, video in enumerate(videos, start=1):
         print(f"\n=== VIDEO {index}/{len(videos)}: {video.name} ===", flush=True)
         if args.command == "inspect":

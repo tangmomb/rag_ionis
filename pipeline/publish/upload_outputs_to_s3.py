@@ -6,7 +6,7 @@ from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
-from dotenv import load_dotenv
+from pipeline.support.environment import load_project_env
 from pipeline.support.paths import consolidate_init_dir
 
 
@@ -210,7 +210,7 @@ def parse_args():
 
 
 def main():
-    load_dotenv(ROOT_DIR / ".env", override=True)
+    load_project_env(ROOT_DIR)
     default_bucket = os.environ.get("S3_BUCKET_NAME", "")
     default_region = os.environ.get("S3_REGION", "")
     args = parse_args()

@@ -1,7 +1,9 @@
 import json
+import os
 import re
 import shutil
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +16,7 @@ DINO_EMBEDDING_DIMENSIONS = {
     "facebook/dinov2-base": 768,
 }
 DEFAULT_BATCH_SIZE = 16
+_EMBEDDER_CACHE = {}
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 FOOTAGE_DIR_NAME = "footage"
 GRAPHIC_DIR_NAME = "graphic"
@@ -142,7 +145,8 @@ def existing_manifest_path(images_dir):
 def load_image_rgb(path, crop_bottom=0.0):
     from PIL import Image
 
-    image = Image.open(path).convert("RGB")
+    with Image.open(path) as source:
+        image = source.convert("RGB")
     if crop_bottom > 0:
         width, height = image.size
         keep_height = max(1, int(round(height * (1.0 - crop_bottom))))
@@ -188,6 +192,14 @@ class FrozenBackboneEmbedder:
         self.config = config
         self.torch = torch
         self.device = torch.device(device)
+        self.inference_dtype = os.getenv(
+            "FRAME_CLASSIFICATION_DTYPE",
+            "float32",
+        ).strip().lower()
+        if self.inference_dtype not in {"float32", "float16", "bfloat16"}:
+            raise ValueError(
+                "FRAME_CLASSIFICATION_DTYPE doit valoir float32, float16 ou bfloat16."
+            )
         self.dino_processor = AutoImageProcessor.from_pretrained(self.config.dino_model, use_fast=False)
         self.dino_model = AutoModel.from_pretrained(self.config.dino_model).to(self.device)
         self.dino_model.eval()
@@ -200,20 +212,47 @@ class FrozenBackboneEmbedder:
         for parameter in self.clip_model.parameters():
             parameter.requires_grad_(False)
 
-    def embed_images(self, images):
+    def prepare_images(self, images):
+        """Prepare tensors on CPU so this work can overlap GPU inference."""
+
+        return (
+            self.dino_processor(images=list(images), return_tensors="pt"),
+            self.clip_processor(images=list(images), return_tensors="pt"),
+        )
+
+    def _to_device(self, inputs):
+        non_blocking = self.device.type == "cuda"
+        moved = {}
+        for name, value in inputs.items():
+            if non_blocking and hasattr(value, "pin_memory"):
+                value = value.pin_memory()
+            moved[name] = value.to(self.device, non_blocking=non_blocking)
+        return moved
+
+    def embed_prepared(self, prepared):
         import numpy as np
 
         torch = self.torch
-        if not images:
-            return np.empty((0, 0), dtype=np.float32)
+        dino_inputs, clip_inputs = prepared
 
-        with torch.inference_mode():
-            dino_inputs = self.dino_processor(images=list(images), return_tensors="pt").to(self.device)
+        autocast_enabled = (
+            self.device.type == "cuda" and self.inference_dtype != "float32"
+        )
+        autocast_dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }.get(self.inference_dtype, torch.float32)
+        with torch.inference_mode(), torch.autocast(
+            device_type=self.device.type,
+            dtype=autocast_dtype,
+            enabled=autocast_enabled,
+        ):
+            dino_inputs = self._to_device(dino_inputs)
             dino_outputs = self.dino_model(**dino_inputs)
             dino_vec = dino_outputs.last_hidden_state[:, 0, :]
             dino_vec = torch.nn.functional.normalize(dino_vec, dim=1)
 
-            clip_inputs = self.clip_processor(images=list(images), return_tensors="pt").to(self.device)
+            clip_inputs = self._to_device(clip_inputs)
             clip_outputs = self.clip_model.vision_model(pixel_values=clip_inputs["pixel_values"])
             if hasattr(clip_outputs, "pooler_output") and clip_outputs.pooler_output is not None:
                 clip_vec = clip_outputs.pooler_output
@@ -231,6 +270,34 @@ class FrozenBackboneEmbedder:
                     axis=1,
                 )
             )
+
+    def embed_images(self, images):
+        import numpy as np
+
+        if not images:
+            return np.empty((0, 0), dtype=np.float32)
+        return self.embed_prepared(self.prepare_images(images))
+
+
+def get_frozen_backbone_embedder(config, device):
+    keep_model = os.getenv(
+        "FRAME_CLASSIFICATION_KEEP_MODEL",
+        "0",
+    ).strip().lower() in {"1", "true", "yes"}
+    if not keep_model:
+        return FrozenBackboneEmbedder(config=config, device=device)
+    key = (
+        config.dino_model,
+        config.clip_model,
+        config.crop_bottom,
+        str(device),
+        os.getenv("FRAME_CLASSIFICATION_DTYPE", "float32").strip().lower(),
+    )
+    embedder = _EMBEDDER_CACHE.get(key)
+    if embedder is None:
+        embedder = FrozenBackboneEmbedder(config=config, device=device)
+        _EMBEDDER_CACHE[key] = embedder
+    return embedder
 
 
 def cache_path_for_image(
@@ -347,6 +414,14 @@ def load_cached_dino_embeddings(
     return np.vstack(vectors).astype(np.float32)
 
 
+def prepare_image_batch(paths, batch_indices, embedder):
+    images = [
+        load_image_rgb(paths[index], crop_bottom=embedder.config.crop_bottom)
+        for index in batch_indices
+    ]
+    return embedder.prepare_images(images)
+
+
 def embed_image_paths(image_paths, embedder, batch_size=16, cache_dir=None):
     import joblib
     import numpy as np
@@ -366,16 +441,72 @@ def embed_image_paths(image_paths, embedder, batch_size=16, cache_dir=None):
         else:
             missing_indices.append(idx)
 
-    for start in range(0, len(missing_indices), batch_size):
-        batch_indices = missing_indices[start : start + batch_size]
-        images = [load_image_rgb(paths[i], crop_bottom=embedder.config.crop_bottom) for i in batch_indices]
-        embeddings = embedder.embed_images(images)
-        for local_idx, original_idx in enumerate(batch_indices):
-            vector = embeddings[local_idx].astype(np.float32)
-            output[original_idx] = vector
-            if cache_root:
-                joblib.dump(vector, cache_path_for_image(paths[original_idx], cache_root, embedder.config))
-        print(f"[embeddings] {min(start + batch_size, len(missing_indices))}/{len(missing_indices)} images", flush=True)
+    batches = [
+        missing_indices[start : start + batch_size]
+        for start in range(0, len(missing_indices), batch_size)
+    ]
+    supports_prefetch = all(
+        callable(getattr(embedder, method, None))
+        for method in ("prepare_images", "embed_prepared")
+    )
+
+    if supports_prefetch and batches:
+        # Double buffering: while the GPU consumes one batch, the CPU decodes and
+        # transforms the following batch. Only one preparation thread touches the
+        # Hugging Face processors, which keeps their use deterministic.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="frame-prefetch") as pool:
+            prepared = pool.submit(prepare_image_batch, paths, batches[0], embedder)
+            for batch_number, batch_indices in enumerate(batches):
+                batch_inputs = prepared.result()
+                if batch_number + 1 < len(batches):
+                    prepared = pool.submit(
+                        prepare_image_batch,
+                        paths,
+                        batches[batch_number + 1],
+                        embedder,
+                    )
+                embeddings = embedder.embed_prepared(batch_inputs)
+                for local_idx, original_idx in enumerate(batch_indices):
+                    vector = embeddings[local_idx].astype(np.float32)
+                    output[original_idx] = vector
+                    if cache_root:
+                        joblib.dump(
+                            vector,
+                            cache_path_for_image(
+                                paths[original_idx],
+                                cache_root,
+                                embedder.config,
+                            ),
+                        )
+                completed = min((batch_number + 1) * batch_size, len(missing_indices))
+                print(
+                    f"[embeddings] {completed}/{len(missing_indices)} images",
+                    flush=True,
+                )
+    else:
+        for batch_number, batch_indices in enumerate(batches):
+            images = [
+                load_image_rgb(paths[index], crop_bottom=embedder.config.crop_bottom)
+                for index in batch_indices
+            ]
+            embeddings = embedder.embed_images(images)
+            for local_idx, original_idx in enumerate(batch_indices):
+                vector = embeddings[local_idx].astype(np.float32)
+                output[original_idx] = vector
+                if cache_root:
+                    joblib.dump(
+                        vector,
+                        cache_path_for_image(
+                            paths[original_idx],
+                            cache_root,
+                            embedder.config,
+                        ),
+                    )
+            completed = min((batch_number + 1) * batch_size, len(missing_indices))
+            print(
+                f"[embeddings] {completed}/{len(missing_indices)} images",
+                flush=True,
+            )
 
     ready = [vector for vector in output if vector is not None]
     if len(ready) != len(paths):
@@ -471,7 +602,7 @@ def classify_paths(image_paths, args):
     print(f"[model] {args.model}", flush=True)
     print(f"[device] {device}", flush=True)
     config = EmbeddingConfig(dino_model=dino_model, clip_model=clip_model, crop_bottom=crop_bottom)
-    embedder = FrozenBackboneEmbedder(config=config, device=device)
+    embedder = get_frozen_backbone_embedder(config=config, device=device)
     embeddings = embed_image_paths(
         image_paths,
         embedder,

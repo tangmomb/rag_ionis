@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
+from pipeline.support.environment import load_project_env
 from pipeline.support.analysis import load_routing_facts
 from pipeline.support.paths import (
     CANONICAL_TRANSCRIPTS_DIR_NAME,
@@ -212,6 +212,7 @@ def ensure_update_runs_schema(cursor):
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS update_runs (
+            run_type TEXT NOT NULL CHECK (run_type IN ('stats', 'videos', 'all', 'legacy')),
             id BIGSERIAL PRIMARY KEY,
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             finished_at TIMESTAMPTZ,
@@ -236,6 +237,23 @@ def ensure_update_runs_schema(cursor):
             new_comments_detected INTEGER NOT NULL DEFAULT 0,
             errors JSONB NOT NULL DEFAULT '[]'::jsonb
         )
+        """
+    )
+    cursor.execute(
+        "ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS "
+        "run_type TEXT NOT NULL DEFAULT 'legacy' "
+        "CHECK (run_type IN ('stats', 'videos', 'all', 'legacy'))"
+    )
+    cursor.execute("ALTER TABLE update_runs ALTER COLUMN run_type DROP DEFAULT")
+    cursor.execute(
+        """
+        UPDATE update_runs
+        SET run_type = CASE
+            WHEN archive_path LIKE '%update_stats%' THEN 'stats'
+            WHEN archive_path LIKE '%update_videos%' THEN 'videos'
+            ELSE 'all'
+        END
+        WHERE run_type = 'legacy'
         """
     )
     cursor.execute(
@@ -1459,8 +1477,10 @@ def parse_args():
 
 
 def main():
-    load_dotenv(override=True)
+    load_project_env(ROOT_DIR)
     args = parse_args()
+    if not args.bucket:
+        args.bucket = os.environ.get("S3_BUCKET_NAME", "")
     snapshot_date = date.fromisoformat(args.snapshot_date) if args.snapshot_date else None
     video_dir = Path(args.video_dir) if args.video_dir else latest_video_dir(Path(args.download_dir))
     if not video_dir.exists() or not video_dir.is_dir():

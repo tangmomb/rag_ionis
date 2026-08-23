@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_BASE=node:22.18.0-bullseye-slim
+FROM ${NODE_BASE} AS node-runtime
+
+FROM python:3.12.14-slim-trixie
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    RAG_IONIS_ENV=production \
+    RAG_IONIS_ENV_FILE_OPTIONAL=1 \
+    PIPELINE_EXECUTION_BACKEND=scaleway
+
+WORKDIR /app
+
+RUN addgroup --system app && adduser --system --ingroup app app
+
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+RUN node --version \
+    && test "$(node --version | cut -d. -f1)" = "v22"
+
+COPY requirements-vps.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip \
+    && python -m pip install --requirement requirements-vps.txt
+
+COPY --chown=app:app pipeline ./pipeline
+
+USER app
+
+CMD ["python", "-u", "-m", "pipeline.update_runs"]

@@ -84,6 +84,52 @@ const runBatchField = {
   full: true,
 };
 
+const scalewayImageFields = [
+  {
+    id: "scalewayRepository",
+    label: "Dépôt Container Registry",
+    type: "text",
+    value: "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway",
+    required: true,
+    full: true,
+    help: "Namespace Scaleway par défaut : rag-ionis.",
+  },
+  {
+    id: "scalewayCommitTag",
+    label: "Tag du commit",
+    type: "text",
+    placeholder: "Vide = git rev-parse --short=7 HEAD (ex. dd062e7)",
+    full: true,
+  },
+];
+
+const scalewayWorkerConnectionFields = [
+  {
+    id: "scalewayWorkerHost",
+    label: "Hôte SSH de la VM",
+    type: "text",
+    value: "51.159.135.156",
+    required: true,
+    full: true,
+  },
+  {
+    id: "scalewayWorkerUser",
+    label: "Utilisateur SSH",
+    type: "text",
+    value: "root",
+    required: true,
+  },
+  {
+    id: "scalewayWorkerIdentityFile",
+    label: "Clé privée SSH",
+    type: "text",
+    value: String.raw`C:\Users\rgb\.ssh\rag_ionis_scaleway_admin`,
+    full: true,
+  },
+];
+
+const VPS_SSH = String.raw`ssh -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" ubuntu@179.237.98.117`;
+
 const actions = [
   {
     id: "fetch",
@@ -113,14 +159,25 @@ const actions = [
     ],
   },
   {
-    id: "youtube-daily-sync",
+    id: "youtube-update-stats",
     category: "YouTube",
-    title: "Daily sync YouTube",
-    short: "Stats, commentaires et pipeline des nouvelles vidéos",
-    description: "Sans option : parcourt systématiquement toute la chaîne IONIS-STM et crée dans une nouvelle archive horodatée un sous-dossier par vidéo contenant au minimum ses métadonnées et ses commentaires. Pour détecter les nouveautés, les identifiants de cette archive sont comparés aux dossiers de downloads/youtube/init/ lors du premier Daily Sync, puis uniquement aux dossiers de l’archive horodatée précédente. Le pipeline complet — téléchargement, metadata/, outputs/, chunks, embeddings et publication SQL — démarre seulement pour une vidéo dont le dossier était absent de cette référence. Les vidéos déjà présentes reçoivent uniquement leur nouvelle archive JSON et l’actualisation SQL des statistiques et commentaires. Un fichier daily_sync_log.json récapitule le nombre de nouveautés, le succès du pipeline pour chacune et les vues, likes et commentaires de chaque vidéo à cette date. Le dossier init/ n’est jamais modifié ; le journal SQL de l’exécution est enregistré dans update_runs.",
+    title: "Update statistiques YouTube",
+    short: "Mettre à jour les stats et les nouveaux commentaires",
+    description: "Interroge l’API YouTube et met à jour les snapshots de stats ainsi que les commentaires de chaque vidéo déjà présente dans PostgreSQL. Les vidéos absentes sont listées dans le journal sans être importées. La synchronisation des commentaires détecte les ajouts, modifications et suppressions. Cette commande ne télécharge aucune vidéo et ne démarre pas la VM GPU ; son journal est conservé dans S3.",
     icon: "↻",
     accent: "#d9eee8",
-    module: "pipeline.update_runs",
+    fixedArgs: ["-m", "pipeline.update_stats"],
+    sections: [],
+  },
+  {
+    id: "youtube-update-videos",
+    category: "YouTube",
+    title: "Update nouvelles vidéos YouTube",
+    short: "Comparer YouTube à PostgreSQL et traiter les absentes",
+    description: "Interroge l’API YouTube, compare directement les IDs avec la table videos de PostgreSQL et traite uniquement les vidéos absentes. Chaque update est archivé dans S3 : new_videos.json liste les absentes, puis chaque vidéo est envoyée au pipeline GPU Scaleway, enrichie avec ses embeddings et synchronisée en SQL. Une vidéo en échec reste absente de SQL et sera retentée au prochain lancement.",
+    icon: "↻",
+    accent: "#d9eee8",
+    fixedArgs: ["-m", "pipeline.update_videos"],
     sections: [],
   },
   {
@@ -419,6 +476,17 @@ const actions = [
     warning: "Sans simulation, tous les dossiers metadata/ et outputs/ sous init sont supprimés définitivement. Les fichiers vidéo sont conservés.",
   },
   {
+    id: "backup-sql",
+    category: "Maintenance",
+    title: "Sauvegarder la base SQL",
+    short: "Créer un dump PostgreSQL daté dans utils/backup_sql",
+    description: "Crée une archive PostgreSQL binaire valide dans utils/backup_sql, sans utiliser la redirection PowerShell qui corrompt ce type de fichier.",
+    icon: "▣",
+    accent: "#d9eee8",
+    commandBuilder: buildSqlBackupCommand,
+    sections: [],
+  },
+  {
     id: "clear-db",
     category: "Maintenance",
     title: "Vider les tables SQL",
@@ -461,9 +529,247 @@ const actions = [
       },
     ],
   },
+  {
+    id: "vps-connect",
+    category: "VPS",
+    title: "Se connecter au VPS",
+    short: "Ouvrir une session SSH interactive",
+    description: "Ouvre un terminal SSH interactif dans le dossier personnel de l’utilisateur du VPS.",
+    icon: "⌁",
+    accent: "#d9f36d",
+    shellCommand: VPS_SSH,
+    sections: [],
+  },
+  {
+    id: "vps-phoenix",
+    category: "VPS",
+    title: "Ouvrir Phoenix du VPS",
+    short: "Créer le tunnel SSH vers Phoenix (port local 6007)",
+    description: "Ouvre un tunnel SSH vers Phoenix du VPS sur le port local 6007, sans entrer en conflit avec Phoenix local. Laisse le terminal ouvert, puis ouvre http://127.0.0.1:6007/projects dans ton navigateur.",
+    icon: "◉",
+    accent: "#f4d8d1",
+    shellCommand: String.raw`ssh -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" -L 6007:127.0.0.1:6006 ubuntu@179.237.98.117`,
+    shellLabel: "Tunnel SSH · Phoenix",
+    terminal: { label: "Phoenix · VPS", prompt: "ubuntu@vps:~$" },
+    sections: [],
+  },
+  {
+    id: "vps-browse-postgres",
+    category: "VPS",
+    title: "Consulter PostgreSQL du VPS",
+    short: "Ouvrir la base et explorer le schéma data",
+    description: "Après la connexion SSH, choisis les étapes dans l’ordre : ouvrir psql, lister les tables du schéma data, puis compter leurs lignes. Les commandes de consultation ne modifient aucune donnée.",
+    icon: "⌕",
+    accent: "#d9eee8",
+    commandBuilder: buildVpsPostgresBrowseCommand,
+    shellLabel: "Tutoriel de consultation PostgreSQL",
+    terminal: { label: "PostgreSQL · VPS", prompt: "rag_ionis=#" },
+    sections: [{
+      title: "Étape du tutoriel",
+      fields: [
+        {
+          id: "vpsPostgresStep",
+          label: "Commande à copier",
+          type: "select",
+          value: "connect",
+          defaultValue: "connect",
+          options: [
+            ["connect", "1. Ouvrir psql dans le conteneur PostgreSQL"],
+            ["tables", "2. Lister les tables du schéma data"],
+            ["counts", "3. Compter les éléments de chaque table"],
+            ["quit", "4. Quitter psql"],
+          ],
+          full: true,
+        },
+      ],
+    }],
+  },
+  {
+    id: "vps-restore-postgres",
+    category: "VPS",
+    title: "Mettre à jour PostgreSQL du VPS",
+    short: "Restaurer un dump local dans la base distante",
+    description: "Choisis les étapes dans l’ordre. Le dump est envoyé depuis PowerShell, puis restauré depuis le terminal SSH du VPS. La restauration remplace les données présentes sur le VPS.",
+    icon: "↑",
+    accent: "#f4d8d1",
+    commandBuilder: buildVpsPostgresRestoreCommand,
+    shellLabel: "Tutoriel de restauration PostgreSQL",
+    terminal: { label: "VPS · PostgreSQL", prompt: "ubuntu@vps:~$" },
+    sections: [{
+      title: "Dump et étape du tutoriel",
+      fields: [
+        {
+          id: "vpsRestoreDumpPath",
+          label: "Dump local",
+          type: "text",
+          value: "utils\\backup_sql\\rag_ionis_20260822_001644.dump",
+          defaultValue: "utils\\backup_sql\\rag_ionis_20260822_001644.dump",
+          full: true,
+        },
+        {
+          id: "vpsRestoreStep",
+          label: "Commande à copier",
+          type: "select",
+          value: "upload",
+          defaultValue: "upload",
+          options: [
+            ["upload", "1. Envoyer le dump depuis PowerShell"],
+            ["copy", "2. Copier le dump dans PostgreSQL (VPS)"],
+            ["restore", "3. Restaurer et remplacer la base du VPS"],
+            ["cleanup", "4. Supprimer les fichiers temporaires (VPS)"],
+          ],
+          full: true,
+        },
+      ],
+    }],
+    warning: "L’étape de restauration utilise --clean --if-exists : les données actuelles de la base du VPS sont supprimées et remplacées par celles du dump.",
+  },
+  {
+    id: "vps-pull-code",
+    category: "VPS",
+    title: "Mettre à jour le code du VPS",
+    short: "Récupérer le dernier commit avec git pull",
+    description: "À lancer depuis une session SSH déjà ouverte : exécute un git pull --ff-only dans le dépôt du VPS. La commande s’arrête si des modifications locales empêchent une mise à jour propre.",
+    icon: "↓",
+    accent: "#dce8f5",
+    shellCommand: "cd rag_ionis/ && git pull --ff-only",
+    shellLabel: "Commande Linux VPS",
+    terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
+    sections: [],
+  },
+  {
+    id: "vps-rebuild-stack",
+    category: "VPS",
+    title: "Mettre à jour le stack VPS",
+    short: "Redémarrer avec les images déjà déployées",
+    description: "À lancer depuis une session SSH déjà ouverte : redémarre le stack avec les images immuables déjà tirées par le script de déploiement, sans construire sur le VPS.",
+    icon: "↻",
+    accent: "#e7e1f4",
+    shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --no-build",
+    shellLabel: "Commande Linux VPS",
+    terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
+    sections: [],
+  },
+  {
+    id: "vps-run-update-stats",
+    category: "VPS",
+    title: "Lancer l’update stats sur le VPS",
+    short: "Utiliser updater publié et synchroniser YouTube",
+    description: "Utilise l’image updater immuable déjà publiée par la CI, synchronise les statistiques et les commentaires YouTube, puis supprime le conteneur à la fin.",
+    icon: "↻",
+    accent: "#d9eee8",
+    shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm --no-build updater python -m pipeline.update_stats",
+    shellLabel: "Commande Linux VPS",
+    terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
+    sections: [],
+  },
+  {
+    id: "vps-run-update-videos",
+    category: "VPS",
+    title: "Lancer l’update vidéos sur le VPS",
+    short: "Utiliser updater publié et traiter les vidéos",
+    description: "Utilise l’image updater immuable déjà publiée par la CI, détecte les vidéos YouTube absentes de PostgreSQL et lance leur traitement, puis supprime le conteneur à la fin.",
+    icon: "↻",
+    accent: "#dce8f5",
+    shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm --no-build updater python -m pipeline.update_videos",
+    shellLabel: "Commande Linux VPS",
+    terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" },
+    sections: [],
+  },
+  {
+    id: "vps-send-production-env",
+    category: "VPS",
+    title: "Renvoyer .env.production",
+    short: "Copier l’environnement local vers le VPS",
+    description: "Envoie le fichier .env.production local vers rag_ionis/.env.production dans le dossier personnel du VPS via SCP.",
+    icon: "↑",
+    accent: "#f4d8d1",
+    shellCommand: String.raw`scp -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" ".env.production" ubuntu@179.237.98.117:rag_ionis/.env.production`,
+    sections: [],
+    warning: "Cette commande transmet les secrets de .env.production au VPS et remplace le fichier distant. À utiliser uniquement si nécessaire.",
+  },
+  {
+    id: "scaleway-build-image",
+    category: "Scaleway",
+    title: "Construire l’image Scaleway",
+    short: "Créer les tags commit et latest sans pousser",
+    description: "Construit localement l’image GPU linux/amd64 avec le tag court du commit et latest, sans l’envoyer au registre.",
+    icon: "◆",
+    accent: "#d9f36d",
+    commandBuilder: buildScalewayLocalBuildCommand,
+    sections: [{ title: "Image", fields: scalewayImageFields }],
+  },
+  {
+    id: "scaleway-publish-image",
+    category: "Scaleway",
+    title: "Publier l’image Scaleway",
+    short: "Construire et publier avec le cache distant",
+    description: "Construit avec Buildx, réutilise le cache du registre puis publie le tag immuable du commit et latest en une opération.",
+    icon: "↑",
+    accent: "#dce8f5",
+    commandBuilder: buildScalewayPublishCommand,
+    sections: [{ title: "Image", fields: scalewayImageFields }],
+    warning: "Vérifie le namespace, le login Docker et le commit avant de pousser. Le tag latest sera déplacé vers cette image.",
+  },
+  {
+    id: "scaleway-inspect-image",
+    category: "Scaleway",
+    title: "Inspecter une image Scaleway",
+    short: "Afficher le digest et les métadonnées du registre",
+    description: "Interroge le Container Registry Scaleway avec docker buildx imagetools inspect.",
+    icon: "⌕",
+    accent: "#e7e1f4",
+    commandBuilder: buildScalewayInspectCommand,
+    sections: [
+      {
+        title: "Image distante",
+        fields: [
+          { ...scalewayImageFields[0] },
+          { id: "scalewayInspectTag", label: "Tag à inspecter", type: "text", value: "latest", defaultValue: "latest", required: true },
+        ],
+      },
+    ],
+  },
+  {
+    id: "scaleway-pull-latest",
+    category: "Scaleway",
+    title: "Récupérer latest localement",
+    short: "Tester le pull de l’image publiée",
+    description: "Télécharge le tag latest depuis le Container Registry pour vérifier l’accès et la publication.",
+    icon: "↓",
+    accent: "#dff0e5",
+    commandBuilder: () => ({
+      command: `docker pull ${quotePowerShell(`${scalewayRepository()}:latest`)}`,
+      summary: "Pull local de latest",
+    }),
+    sections: [{ title: "Image", fields: [scalewayImageFields[0]] }],
+  },
+  {
+    id: "scaleway-connect",
+    category: "Scaleway",
+    title: "Se connecter à la VM Scaleway",
+    short: "Ouvrir une session SSH sur la VM GPU",
+    description: "Ouvre une connexion SSH interactive vers la VM Scaleway avec l’utilisateur et la clé indiqués.",
+    icon: "⌁",
+    accent: "#d9eee8",
+    commandBuilder: buildScalewayConnectCommand,
+    sections: [{ title: "Connexion à la VM", fields: scalewayWorkerConnectionFields }],
+  },
+  {
+    id: "scaleway-worker-info",
+    category: "Scaleway",
+    title: "Vérifier la configuration worker",
+    short: "Lire le service et l’environnement actifs sur la VM",
+    description: "Se connecte à la VM Scaleway indiquée ci-dessous pour afficher l’unité systemd active et le fichier d’environnement réellement utilisé.",
+    icon: "☷",
+    accent: "#f4d8d1",
+    commandBuilder: buildScalewayWorkerInfoCommand,
+    sections: [{ title: "Connexion à la VM", fields: scalewayWorkerConnectionFields }],
+    warning: "La VM Scaleway doit être démarrée et accessible en SSH. Cette commande affiche les clés S3 et API en clair.",
+  },
 ];
 
-const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance"];
+const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance", "VPS", "Scaleway"];
 const launchers = {
   venv: String.raw`.\.venv\Scripts\python.exe`,
   python: "python",
@@ -482,6 +788,7 @@ const elements = {
   categoryTabs: document.querySelector("#category-tabs"),
   search: document.querySelector("#action-search"),
   form: document.querySelector("#options-form"),
+  launcherRow: document.querySelector("#launcher-row"),
   launcher: document.querySelector("#launcher"),
   title: document.querySelector("#selected-title"),
   description: document.querySelector("#selected-description"),
@@ -489,6 +796,8 @@ const elements = {
   badge: document.querySelector("#action-badge"),
   output: document.querySelector("#command-output"),
   summary: document.querySelector("#option-summary"),
+  terminalLabel: document.querySelector("#terminal-label"),
+  terminalPrompt: document.querySelector("#terminal-prompt"),
   warning: document.querySelector("#warning-box"),
   copy: document.querySelector("#copy-button"),
   wrap: document.querySelector("#wrap-button"),
@@ -590,7 +899,7 @@ function renderField(field) {
   } else if (field.type === "textarea") {
     control = `<textarea id="${field.id}" name="${field.id}" placeholder="${field.placeholder || ""}" data-flag="${field.flag || ""}" data-repeatable="${Boolean(field.repeatable)}" data-exclusive="${field.exclusive || ""}">${field.value || ""}</textarea>`;
   } else {
-    const inputType = ["url", "number"].includes(field.type) ? field.type : "text";
+    const inputType = ["url", "number", "password"].includes(field.type) ? field.type : "text";
     control = `<input id="${field.id}" name="${field.id}" type="${inputType}" value="${field.value ?? ""}" placeholder="${field.placeholder || ""}" ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step !== undefined ? `step="${field.step}"` : ""} ${field.required ? "required" : ""} data-flag="${field.flag || ""}" data-positional="${Boolean(field.positional)}" data-default="${field.defaultValue ?? ""}" data-exclusive="${field.exclusive || ""}">`;
   }
 
@@ -610,6 +919,7 @@ function renderForm() {
   elements.icon.textContent = action.icon;
   elements.icon.style.background = action.accent;
   elements.badge.textContent = action.category;
+  elements.launcherRow.hidden = Boolean(action.shellCommand || action.commandBuilder);
   elements.form.innerHTML = sections.map((section) => `
     <section class="form-section">
       <h4 class="form-section-title">${section.title}</h4>
@@ -675,8 +985,214 @@ function baseArgs(action) {
   return args;
 }
 
+function formValue(id, fallback = "") {
+  const control = elements.form.elements.namedItem(id);
+  return control ? control.value.trim() : fallback;
+}
+
+function powerShellString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function buildSqlBackupCommand() {
+  const command = [
+    '$backupFile = "rag_ionis_$(Get-Date -Format yyyyMMdd_HHmmss).dump"',
+    'New-Item -ItemType Directory -Force utils/backup_sql | Out-Null',
+    'docker compose exec -T postgres sh -c "pg_dump -U rag_ionis -d rag_ionis -Fc -f /tmp/$backupFile"',
+    'docker compose cp "postgres:/tmp/$backupFile" "utils/backup_sql/$backupFile"',
+    'docker compose exec -T postgres pg_restore -l "/tmp/$backupFile"',
+    'docker compose exec -T postgres rm "/tmp/$backupFile"',
+  ].join("\n");
+  return {
+    command,
+    summary: "Dump PostgreSQL daté et vérifié dans utils/backup_sql",
+  };
+}
+
+function buildVpsPostgresBrowseCommand() {
+  const step = formValue("vpsPostgresStep", "connect") || "connect";
+  const commands = {
+    connect: {
+      command: "docker exec -it rag_ionis_postgres psql -U rag_ionis -d rag_ionis",
+      summary: "À exécuter dans le terminal SSH du VPS",
+    },
+    tables: {
+      command: "\\dt data.*",
+      summary: "À exécuter une fois dans psql",
+    },
+    counts: {
+      command: [
+        "SELECT 'chunks' AS nom_table, count(*) AS nb_elements FROM data.chunks",
+        "UNION ALL SELECT 'comments', count(*) FROM data.comments",
+        "UNION ALL SELECT 'speakers', count(*) FROM data.speakers",
+        "UNION ALL SELECT 'stats', count(*) FROM data.stats",
+        "UNION ALL SELECT 'transcripts', count(*) FROM data.transcripts",
+        "UNION ALL SELECT 'update_runs', count(*) FROM data.update_runs",
+        "UNION ALL SELECT 'video_speakers', count(*) FROM data.video_speakers",
+        "UNION ALL SELECT 'videos', count(*) FROM data.videos",
+        "ORDER BY 1;",
+      ].join("\n"),
+      summary: "À exécuter une fois dans psql",
+    },
+    quit: {
+      command: "\\q",
+      summary: "Quitter psql et revenir au terminal du VPS",
+    },
+  };
+  return commands[step];
+}
+
+function buildVpsPostgresRestoreCommand() {
+  const dumpPath = formValue(
+    "vpsRestoreDumpPath",
+    "utils\\backup_sql\\rag_ionis_20260822_001644.dump",
+  );
+  const dumpFile = dumpPath.split(/[\\/]/).filter(Boolean).at(-1) || "rag_ionis_local.dump";
+  const step = formValue("vpsRestoreStep", "upload") || "upload";
+  const commands = {
+    upload: {
+      command: String.raw`scp -i "C:\Users\rgb\.ssh\rag_ionis_infomaniak_ed25519" "${dumpPath}" ubuntu@179.237.98.117:~`,
+      summary: "À exécuter dans PowerShell, à la racine du projet",
+    },
+    copy: {
+      command: `docker cp ~/${dumpFile} rag_ionis_postgres:/tmp/local.dump`,
+      summary: "À exécuter dans le terminal SSH du VPS",
+    },
+    restore: {
+      command: "docker exec -it rag_ionis_postgres pg_restore -U rag_ionis -d rag_ionis --clean --if-exists /tmp/local.dump",
+      summary: "À exécuter dans le terminal SSH du VPS — remplace la base",
+    },
+    cleanup: {
+      command: `docker exec -it rag_ionis_postgres rm /tmp/local.dump\nrm ~/${dumpFile}`,
+      summary: "À exécuter dans le terminal SSH du VPS",
+    },
+  };
+  return commands[step];
+}
+
+function buildVpsDatabaseCommand() {
+  const user = formValue("vpsDatabaseUser", "rag_ionis") || "rag_ionis";
+  const password = formValue("vpsDatabasePassword") || "REMPLACER_PAR_POSTGRES_PASSWORD";
+  const database = formValue("vpsDatabaseName", "rag_ionis") || "rag_ionis";
+  const mode = formValue("vpsDatabaseMode", "dry-run");
+  const databaseUrl = `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@127.0.0.1:15432/${encodeURIComponent(database)}`;
+  const setup = [
+    `$env:PYTHON_DOTENV_DISABLED = "1"`,
+    `$env:DATABASE_URL = ${powerShellString(databaseUrl)}`,
+  ];
+
+  if (mode === "test") {
+    return {
+      command: `${setup.join("\n")}\n${launchers.venv} -c "import os, psycopg; c=psycopg.connect(os.environ['DATABASE_URL']); print(c.execute('SELECT current_database(), current_user').fetchone()); c.close()"`,
+      summary: "Test de connexion au VPS",
+    };
+  }
+
+  const { args } = collectArgs();
+  const syncArgs = [launchers.venv, "-m", "pipeline.publish.sync_database", ...args];
+  if (mode === "dry-run") syncArgs.push("--dry-run");
+  return {
+    command: `${setup.join("\n")}\n${syncArgs.join(" ")}`,
+    summary: mode === "dry-run" ? "Simulation sur la base du VPS" : "Synchronisation réelle de la base du VPS",
+  };
+}
+
+function scalewayRepository() {
+  return formValue(
+    "scalewayRepository",
+    "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway",
+  ) || "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway";
+}
+
+function scalewayCommitTag() {
+  return formValue("scalewayCommitTag");
+}
+
+function buildScalewayPublishCommand() {
+  const repository = scalewayRepository();
+  const commitTag = scalewayCommitTag();
+  const tagExpression = commitTag
+    ? powerShellString(commitTag)
+    : "(git rev-parse --short=7 HEAD).Trim()";
+  const command = [
+    `$repository = ${powerShellString(repository)}`,
+    `$commitTag = ${tagExpression}`,
+    '$env:SCALEWAY_IMAGE_REPOSITORY = $repository',
+    'bash deploy/publish-scaleway-image.sh $commitTag',
+  ].join("\n");
+  return {
+    command,
+    summary: "Build et publication avec cache distant",
+  };
+}
+
+function buildScalewayLocalBuildCommand() {
+  const repository = scalewayRepository();
+  const commitTag = scalewayCommitTag();
+  const tagExpression = commitTag
+    ? powerShellString(commitTag)
+    : "(git rev-parse --short=7 HEAD).Trim()";
+  return {
+    command: [
+      `$repository = ${powerShellString(repository)}`,
+      `$commitTag = ${tagExpression}`,
+      'docker build --platform linux/amd64 -f Dockerfile.scaleway -t "${repository}:$commitTag" -t "${repository}:latest" .',
+    ].join("\n"),
+    summary: "Build local sans publication",
+  };
+}
+
+function buildScalewayInspectCommand() {
+  const repository = scalewayRepository();
+  const tag = formValue("scalewayInspectTag", "latest") || "latest";
+  return {
+    command: `docker buildx imagetools inspect ${quotePowerShell(`${repository}:${tag}`)}`,
+    summary: `Inspection du registre : ${tag}`,
+  };
+}
+
+function buildScalewayWorkerInfoCommand() {
+  const host = formValue("scalewayWorkerHost", "51.159.135.156") || "51.159.135.156";
+  const user = formValue("scalewayWorkerUser", "root") || "root";
+  const identityFile = formValue("scalewayWorkerIdentityFile");
+  const identityOption = identityFile ? ` -i ${quotePowerShell(identityFile)}` : "";
+  return {
+    command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)} "sudo systemctl cat rag-ionis-scaleway-worker; printf '\\n--- Environnement worker ---\\n'; sudo cat /etc/rag-ionis/scaleway-worker.env"`,
+    summary: "Vérification distante du worker",
+  };
+}
+
+function buildScalewayConnectCommand() {
+  const host = formValue("scalewayWorkerHost", "51.159.135.156") || "51.159.135.156";
+  const user = formValue("scalewayWorkerUser", "root") || "root";
+  const identityFile = formValue("scalewayWorkerIdentityFile");
+  const identityOption = identityFile ? ` -i ${quotePowerShell(identityFile)}` : "";
+  return {
+    command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)}`,
+    summary: "Connexion SSH à la VM Scaleway",
+  };
+}
+
+function setTerminalContext(terminal) {
+  const context = terminal || { label: "PowerShell · rag_ionis", prompt: "PS rag_ionis>" };
+  elements.terminalLabel.textContent = context.label;
+  elements.terminalPrompt.textContent = context.prompt;
+}
+
 function updateCommand() {
   const action = currentAction();
+  setTerminalContext(action.terminal);
+  if (action.shellCommand) {
+    elements.output.textContent = action.shellCommand;
+    elements.summary.textContent = action.shellLabel || "Commande PowerShell VPS";
+    return;
+  }
+  if (action.commandBuilder) {
+    const result = action.commandBuilder();
+    elements.output.textContent = result.command;
+    elements.summary.textContent = result.summary;
+    return;
+  }
   const { args, activeOptions } = collectArgs();
   const command = [launchers[elements.launcher.value], ...baseArgs(action), ...args].join(" ");
   elements.output.textContent = command;

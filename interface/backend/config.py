@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotenv import load_dotenv
+from .environment import load_project_env
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_DIR / ".env", override=True)
+load_project_env(PROJECT_DIR)
 
 DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL

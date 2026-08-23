@@ -330,9 +330,10 @@ h1 em {
   padding-bottom: 20px;
   border-bottom: 1px solid var(--line);
 }
+.launcher-row[hidden] { display: none; }
 .launcher-row label, .field > label { font-size: 11px; font-weight: 700; }
 
-select, input[type="text"], input[type="url"], input[type="number"], textarea {
+select, input[type="text"], input[type="url"], input[type="number"], input[type="password"], textarea {
   width: 100%;
   border: 1px solid #d6dbd3;
   border-radius: 10px;
@@ -342,7 +343,7 @@ select, input[type="text"], input[type="url"], input[type="number"], textarea {
   font-size: 11px;
   transition: border-color .16s ease, box-shadow .16s ease;
 }
-select, input[type="text"], input[type="url"], input[type="number"] { height: 38px; padding: 0 11px; }
+select, input[type="text"], input[type="url"], input[type="number"], input[type="password"] { height: 38px; padding: 0 11px; }
 textarea { min-height: 70px; padding: 10px 11px; resize: vertical; }
 select:focus, input:focus, textarea:focus { border-color: #6d9d7d; box-shadow: 0 0 0 3px rgba(84, 142, 103, .12); }
 

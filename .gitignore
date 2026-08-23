@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
+!.env.*.example
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -9,5 +12,11 @@ downloads/
 models/huggingface/
 models/faster-whisper-large-v3/
 *.log
+utils/memos/*
+utils/scaleway_disponibility/scaleway_gpu_availability.csv
 others/
 .venv_py310_backup_20260705_140330/
+utils/env_prod_previous_sur_vps.txt
+utils/backup_sql/
+utils/modifs_finales
+utils/ssh_rag.txt

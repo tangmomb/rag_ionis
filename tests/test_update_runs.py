@@ -8,11 +8,86 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from pipeline import update_runs
+from pipeline import update_stats, update_videos
 from pipeline.ingest import fetch_youtube_metadata
 from pipeline.publish import sync_database
 
 
 class YoutubeDailySyncTests(unittest.TestCase):
+    def test_named_update_entrypoints_expose_the_split_modes(self) -> None:
+        self.assertTrue(callable(update_stats.main))
+        self.assertTrue(callable(update_videos.main))
+
+    def test_local_update_archives_are_created_in_downloads_directory(self) -> None:
+        started_at = datetime(2026, 8, 22, 19, 12, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            download_dir = Path(temporary_dir) / "downloads" / "youtube"
+            with patch.dict("os.environ", {"RAG_IONIS_ENV": "local"}, clear=False):
+                object_store, bucket, temp_dir, archive_dir = (
+                    update_runs.create_update_archive(
+                        download_dir,
+                        started_at,
+                        "update_videos",
+                    )
+                )
+
+            self.assertIsNone(object_store)
+            self.assertIsNone(bucket)
+            self.assertIsNone(temp_dir)
+            self.assertEqual(
+                archive_dir,
+                download_dir
+                / f"{started_at.astimezone().strftime('%Y%m%d_%H%M')}_update_videos",
+            )
+            self.assertTrue(archive_dir.is_dir())
+            self.assertEqual(
+                update_runs.update_archive_path(bucket, archive_dir),
+                str(archive_dir.resolve()),
+            )
+
+    def test_parse_args_supports_separate_stats_and_videos_modes(self) -> None:
+        self.assertEqual(update_runs.parse_args(["stats"]).mode, "stats")
+        self.assertEqual(update_runs.parse_args(["videos"]).mode, "videos")
+        self.assertEqual(update_runs.parse_args([]).mode, "all")
+
+    def test_video_mode_compares_api_ids_directly_with_sql_ids(self) -> None:
+        api_videos = [
+            {"id": "already-in-sql"},
+            {"id": "new-video"},
+        ]
+
+        missing = update_runs.videos_missing_from_database(
+            api_videos,
+            {"already-in-sql": 42},
+        )
+
+        self.assertEqual(missing, [{"id": "new-video"}])
+
+    def test_youtube_comment_count_is_read_from_video_statistics(self) -> None:
+        video = {"statistics": {"commentCount": "8"}}
+
+        self.assertEqual(update_runs.comment_count_from_video(video), 8)
+        self.assertIsNone(update_runs.comment_count_from_video({}))
+
+    def test_database_comment_counts_excludes_soft_deleted_comments(self) -> None:
+        class RecordingCursor:
+            def __init__(self) -> None:
+                self.sql = ""
+
+            def execute(self, sql: str) -> None:
+                self.sql = sql
+
+            def fetchall(self):
+                return [(12, 4), (13, 9)]
+
+        cursor = RecordingCursor()
+
+        self.assertEqual(
+            update_runs.database_comment_counts(cursor),
+            {12: 4, 13: 9},
+        )
+        self.assertIn("WHERE is_deleted = FALSE", cursor.sql)
+
     def test_archive_directory_uses_start_minute_and_never_overwrites(self) -> None:
         started_at = datetime.now().astimezone().replace(
             year=2026,
@@ -37,6 +112,18 @@ class YoutubeDailySyncTests(unittest.TestCase):
 
             self.assertEqual(first.name, "20260802_1437")
             self.assertEqual(second.name, "20260802_1437_02")
+
+    def test_update_archive_directory_uses_named_suffix(self) -> None:
+        started_at = datetime(2026, 8, 2, 14, 37, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            archive_dir = update_runs.create_archive_directory(
+                Path(temporary_dir),
+                started_at,
+                suffix="update_videos",
+            )
+
+        expected = started_at.astimezone().strftime("%Y%m%d_%H%M_update_videos")
+        self.assertEqual(archive_dir.name, expected)
 
     def test_daily_json_is_only_saved_in_the_dated_video_directory(self) -> None:
         video = {
@@ -82,7 +169,7 @@ class YoutubeDailySyncTests(unittest.TestCase):
             )
             self.assertFalse((download_dir / "init").exists())
 
-    def test_archive_log_records_detection_pipeline_and_video_statistics(self) -> None:
+    def test_update_videos_log_omits_full_video_statistics_snapshot(self) -> None:
         started_at = datetime(2026, 8, 13, 3, 0, tzinfo=timezone.utc)
         videos = [
             {
@@ -110,10 +197,12 @@ class YoutubeDailySyncTests(unittest.TestCase):
 
             log_path = update_runs.write_archive_log(
                 archive_dir,
+                log_name=update_runs.UPDATE_VIDEOS_LOG_NAME,
                 started_at=started_at,
                 finished_at=started_at,
                 status="completed",
                 videos=videos,
+                include_video_snapshots=False,
                 new_video_ids=["new-video-1"],
                 pipeline_results={
                     "new-video-1": {
@@ -128,22 +217,39 @@ class YoutubeDailySyncTests(unittest.TestCase):
 
             payload = json.loads(log_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(log_path.name, "daily_sync_log.json")
+        self.assertEqual(log_path.name, "update_videos_log.json")
         self.assertEqual(payload["snapshot_date"], "2026-08-13")
         self.assertEqual(payload["new_videos_detected"], 1)
         self.assertEqual(payload["new_video_ids"], ["new-video-1"])
         self.assertTrue(payload["pipelines"][0]["succeeded"])
         self.assertEqual(payload["pipelines"][0]["status"], "completed")
-        self.assertEqual(
-            payload["videos"][0],
-            {
-                "youtube_video_id": "new-video-1",
+        self.assertNotIn("videos", payload)
+
+    def test_new_videos_manifest_lists_videos_absent_from_sql(self) -> None:
+        video = {
+            "id": "new-video-1",
+            "snippet": {
                 "title": "Nouvelle vidéo",
-                "view_count": 123,
-                "like_count": 17,
-                "comment_count": 4,
+                "description": "Description",
+                "publishedAt": "2026-08-01T10:00:00Z",
+                "thumbnails": {},
             },
-        )
+            "contentDetails": {"duration": "PT42S"},
+            "statistics": {"viewCount": "12"},
+        }
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            archive_dir = Path(temporary_dir)
+            path = update_runs.write_new_videos_manifest(
+                archive_dir,
+                [video],
+                generated_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(path.name, "new_videos.json")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["videos"][0]["youtube_video_id"], "new-video-1")
+        self.assertEqual(payload["videos"][0]["title"], "Nouvelle vidéo")
 
     def test_new_videos_are_compared_with_init_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -256,6 +362,7 @@ class YoutubeDailySyncTests(unittest.TestCase):
         download_dir = Path("downloads/youtube")
 
         with (
+            patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "local"}),
             patch.object(update_runs, "download_video") as download,
             patch.object(update_runs.subprocess, "run") as pipeline_run,
         ):
@@ -292,6 +399,33 @@ class YoutubeDailySyncTests(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs["check"] for call in pipeline_run.call_args_list)
         )
+
+    def test_scaleway_backend_delegates_without_local_download(self) -> None:
+        video = {"id": "new-video-1"}
+        expected = {
+            "backend": "scaleway",
+            "job_id": "job-123",
+            "s3_uri": "s3://bucket/youtube/archive/new-video-1",
+        }
+        with (
+            patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "scaleway"}),
+            patch.object(
+                update_runs,
+                "run_pipeline_on_scaleway",
+                return_value=expected,
+            ) as remote,
+            patch.object(update_runs, "download_video") as local_download,
+        ):
+            result = update_runs.download_and_run_pipeline(
+                video,
+                Path("downloads/youtube/20260815_0300"),
+                Path("downloads/youtube"),
+                datetime(2026, 8, 15).date(),
+            )
+
+        self.assertEqual(result, expected)
+        remote.assert_called_once()
+        local_download.assert_not_called()
 
     def test_stats_snapshot_is_written_even_when_counts_are_unchanged(self) -> None:
         class RecordingCursor:
@@ -454,12 +588,13 @@ class YoutubeDailySyncTests(unittest.TestCase):
         run_id = update_runs.create_run(
             cursor,
             Path("downloads/youtube/20260802_1437"),
+            "stats",
         )
 
         self.assertEqual(run_id, 12)
         self.assertEqual(
             cursor.params,
-            (str(Path("downloads/youtube/20260802_1437")),),
+            ("stats", str(Path("downloads/youtube/20260802_1437"))),
         )
 
 

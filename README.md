@@ -2,6 +2,14 @@
 
 Pipeline local de préparation de vidéos et interface RAG.
 
+## Déploiement
+
+Le développement Windows reste piloté par `start_app_local.bat`, qui charge
+`.env.local` et démarre les services Docker locaux. En production,
+l'interface RAG est déployée avec Docker sur un VPS Infomaniak, tandis qu'Amazon
+S3 conserve les artefacts. Voir
+[`README_HEBERGEMENT_DEBUTANT.md`](utils/memos/README_HEBERGEMENT_DEBUTANT.md).
+
 ## Principe
 
 Chaque vidéo est d'abord inspectée. Le pipeline produit ensuite
@@ -342,6 +350,9 @@ La durée n'est pas une étape d'inspection : elle est obtenue immédiatement pa
 Sous Windows, `ocr.extract_raw` lance PaddleOCR dans un processus Python dédié.
 Cette isolation évite les conflits de DLL CUDA/cuDNN lorsque la classification
 des frames a déjà chargé PyTorch dans le processus principal.
+La classification prépare le prochain lot de frames sur CPU pendant l'inférence
+GPU. PaddleOCR reçoit les images par lots et utilise `PADDLEOCR_BATCH_SIZE=8` par
+défaut ; réduire cette valeur si la VRAM est insuffisante.
 
 ### Traitements communs
 
@@ -652,14 +663,33 @@ une erreur explicite au lieu de remplacer silencieusement l'état.
 
 ## Installation
 
-Le projet utilise un environnement Python unique :
+Le poste de développement utilise un environnement Python complet. Le fichier
+`requirements.txt` est uniquement un agrégateur des trois rôles : API, orchestration
+VPS et traitement GPU.
 
 ```powershell
 py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
+Copy-Item .env.local.example .env.local
 ```
+
+Les déploiements n’installent jamais cet agrégateur :
+
+| Rôle | Fichier | Contenu |
+|---|---|---|
+| API RAG du VPS | `requirements-api.txt` | FastAPI, fournisseurs LLM, PostgreSQL et Phoenix |
+| Orchestrateur du VPS | `requirements-vps.txt` | YouTube, S3, Scaleway et PostgreSQL, sans CUDA |
+| Worker GPU | `requirements-gpu.txt` et `requirements-ytdlp.txt` | WhisperX, Torch, PaddleOCR, yt-dlp et traitement vidéo |
+
+`requirements-paddle-bootstrap.txt` est un détail de construction de l’image GPU,
+pas un environnement à installer directement.
+
+Le projet utilise deux environnements avec les memes cles : `.env.local` pour
+les tests sur le poste de developpement et `.env.production` pour le VPS.
+Copier `.env.production.example` vers `.env.production`, puis renseigner les
+secrets de production. Le choix est explicite via `RAG_IONIS_ENV` ; sans cette
+variable, le projet charge l'environnement local.
 
 Variables principales :
 
@@ -668,19 +698,15 @@ YOUTUBE_API_KEY=...
 OPENAI_API_KEY=...
 HUGGINGFACE_TOKEN=...
 
-WHISPERX_MODEL=large-v3
-WHISPERX_LANGUAGE=fr
-WHISPERX_DEVICE=cuda
-WHISPERX_COMPUTE_TYPE=float16
-WHISPERX_CUDA_FALLBACK_COMPUTE_TYPE=int8_float16
-WHISPERX_STRICT_CUDA=1
-WHISPERX_BATCH_SIZE=4
-
 S3_BUCKET_NAME=...
 S3_REGION=...
 S3_ACCESS_KEY_ID=...
 S3_SECRET_ACCESS_KEY=...
 ```
+
+Les modèles, tailles de batch, délais et autres paramètres internes du pipeline
+ont leurs valeurs par défaut dans les scripts concernés ; ils ne sont pas
+nécessaires dans les fichiers `.env`.
 
 ## Utilisation du pipeline
 
@@ -987,70 +1013,333 @@ dans `init/VIDEO_ID/metadata/youtube_comments.json` si la vidéo est locale.
 Cette commande ne touche pas PostgreSQL. `pipeline.publish.sync_database`
 importe ensuite ces fichiers dans la table `comments`.
 
-### Actualisation YouTube quotidienne
+### Updates YouTube
 
-La commande dédiée au serveur parcourt la chaîne IONIS-STM avec la même collecte
-API que `pipeline.ingest.fetch_youtube_metadata` :
+L’update YouTube est séparé en deux commandes indépendantes.
+
+Le sync des statistiques ne touche qu’aux vidéos déjà présentes dans PostgreSQL.
+Il appelle l’API YouTube, écrit un snapshot quotidien dans `stats` et récupère
+les commentaires de chaque vidéo déjà présente via l’API dédiée. Cette
+synchronisation détecte les ajouts, modifications et suppressions dans
+`comments`. Il ne nécessite ni téléchargement, ni GPU :
+
+Les vidéos détectées sur YouTube mais absentes de `data.videos` ne sont pas
+importées par cette commande ; elles sont néanmoins enregistrées dans
+`update_runs.new_videos` et `update_runs.new_video_ids`.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pipeline.update_runs
+.\.venv\Scripts\python.exe -m pipeline.update_stats
 ```
 
-Elle crée d’abord un dossier correspondant à la minute de lancement, avec un
-sous-dossier par vidéo :
+Le sync des vidéos compare directement les IDs renvoyés par l’API YouTube avec
+les IDs de `data.videos`. Toute vidéo absente de SQL est traitée ; les vidéos
+déjà présentes sont ignorées :
 
-```text
-downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_video_metadata.json
-downloads/youtube/20260802_1437/VIDEO_ID/metadata/youtube_comments.json
-downloads/youtube/20260802_1437/daily_sync_log.json
+```powershell
+.\.venv\Scripts\python.exe -m pipeline.update_videos
 ```
 
-Ces archives ne sont jamais remplacées. Si deux lancements ont lieu dans la même
-minute, le second utilise par exemple `20260802_1437_02`. La commande ne modifie
-jamais `init/_00_info_videos/`, `init/_00_info_comments/` ni les dossiers vidéo de
-`init/`. Elle utilise directement les
-données collectées pour :
+Pour chaque nouvelle vidéo, cette seconde commande récupère les commentaires,
+lance le pipeline local ou Scaleway, crée les embeddings puis synchronise la
+vidéo complète en SQL. Une vidéo en échec reste absente de la table `videos` et
+sera donc retentée au prochain lancement. Les exécutions sont journalisées dans
+`update_runs` et une archive horodatée est créée sous `downloads/youtube/`.
+Les dossiers sont nommés `YYYYMMDD_HHMM_update_stats` et
+`YYYYMMDD_HHMM_update_videos`. L’update vidéos contient `new_videos.json`, qui
+liste les vidéos absentes de SQL, ainsi que `update_videos_log.json`, qui conserve
+le détail de l’exécution. L’update stats écrit `update_stats_log.json`. En
+local, les archives sont conservées sous `downloads/youtube/<nom_update>/` et
+aucun objet n’est envoyé vers S3. En production, elles sont stockées sous
+`s3://<bucket>/youtube/<nom_update>/`; les dossiers locaux sont temporaires et
+supprimés à la fin.
 
-- crée ou actualise le snapshot du jour dans `stats` ;
-- ajoute les nouveaux commentaires et actualise ceux déjà connus sans changer
-  leur `id` SQL, uniquement lorsqu’au moins un nouvel ID est présent par rapport
-  au JSON de l’archive précédente (ou de `init/` lors du premier lancement) ;
-- compare à la fin les dossiers vidéo de l’archive avec ceux de `init/`, affiche
-  le nombre de nouvelles vidéos et conserve leurs identifiants dans
-  `update_runs.new_video_ids` ;
-- compare ensuite l’archive actuelle à l’archive horodatée précédente et
-  journalise les nouveautés dans `new_since_previous` et
-  `new_since_previous_ids` ;
-- pour chaque vidéo nouvelle depuis l’archive précédente — ou absente de
-  `init/` lorsqu’il n’existe pas encore d’archive précédente — télécharge la
-  vidéo directement dans son dossier horodaté et lance
-  `pipeline run`, puis `embeddings.create` et enfin `sync_database` sur cette
-  seule vidéo ; la vidéo, le manifeste et tous les résultats restent dans cette
-  archive ;
-- marque `is_deleted = TRUE` les commentaires qui ne sont plus renvoyés par
-  YouTube ;
-- journalise le résultat et le chemin de l’archive dans `update_runs` ;
-- écrit `daily_sync_log.json` à la racine de l’archive avec le nombre et les
-  identifiants des nouvelles vidéos, le succès ou l’échec du pipeline pour
-  chacune, ainsi que les vues, likes et commentaires de chaque vidéo à la date
-  du snapshot ;
-- refuse un deuxième lancement simultané grâce à un verrou PostgreSQL.
+Les deux commandes utilisent le même verrou PostgreSQL et peuvent être
+programmées séparément. Sur le VPS, la méthode recommandée est le conteneur CPU
+ponctuel du profil Compose `jobs`. Il partage le réseau PostgreSQL sans installer
+Python sur l’hôte :
 
-Cette commande n'accepte aucune option métier : elle parcourt toujours toute la
-chaîne IONIS-STM, récupère les commentaires et écrit ses archives sous
-`downloads/youtube/`.
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  --env-file .env.production \
+  --profile jobs run --rm updater python -m pipeline.update_stats
 
-Sur un serveur Linux, la commande équivalente est
-`./.venv/bin/python -m pipeline.update_runs`. Par exemple, une entrée
-cron quotidienne à 03:00 peut être installée avec le bon utilisateur de service
-(en adaptant `/srv/rag_ionis`) :
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  --env-file .env.production \
+  --profile jobs run --rm updater python -m pipeline.update_videos
+```
+
+Une installation Python hôte avec le seul `requirements-vps.txt` reste possible.
+Dans ce cas, par exemple :
 
 ```cron
-0 3 * * * cd /srv/rag_ionis && ./.venv/bin/python -m pipeline.update_runs 2>&1 | logger -t rag-ionis-youtube
+0 2 * * * cd /srv/rag_ionis && RAG_IONIS_ENV=production ./.venv/bin/python -m pipeline.update_stats 2>&1 | logger -t rag-ionis-youtube-stats
+30 2 * * * cd /srv/rag_ionis && RAG_IONIS_ENV=production ./.venv/bin/python -m pipeline.update_videos 2>&1 | logger -t rag-ionis-youtube-videos
 ```
 
-Le planificateur n’a besoin que de `DATABASE_URL` et `YOUTUBE_API_KEY` dans le
-fichier `.env` du projet. Une erreur limitée à une vidéo n’empêche pas les autres
+Sans argument, `python -m pipeline.update_runs` exécute les deux updates dans
+l’ordre stats puis vidéos. Les archives et journaux persistants sont stockés
+dans S3 ; les dossiers locaux utilisés pendant le traitement sont temporaires
+et supprimés à la fin.
+
+#### Traitement GPU avec une VM Scaleway dédiée
+
+Scaleway est le backend par défaut de `pipeline run`, des tâches GPU lancées
+seules et de `pipeline.update_runs`. Une VM GPU `L4-1-24G` est provisionnée
+et configurée une seule fois. Elle reste arrêtée hors traitement. Pour chaque
+job, l'orchestrateur écrit un payload dans S3, démarre la VM, attend le worker
+Docker persistant puis arrête la VM après traitement. L'instance, son volume et
+son IP restent associés à cette VM dédiée.
+
+Pour une vidéo locale, son dossier transite par un préfixe S3 temporaire, puis
+`outputs/` et `metadata/` sont rapatriés. L’update vidéo transmet les métadonnées
+et le worker télécharge directement la vidéo YouTube.
+
+Configurer la machine qui soumet les jobs ainsi :
+
+```dotenv
+PIPELINE_EXECUTION_BACKEND=scaleway
+SCW_SECRET_KEY=...
+SCW_DEFAULT_PROJECT_ID=...
+SCW_DEFAULT_ZONE=fr-par-2
+SCALEWAY_SERVER_ID=...
+SCALEWAY_INSTANCE_TYPE=L4-1-24G
+SCALEWAY_POLL_SECONDS=10
+SCALEWAY_JOB_TIMEOUT_SECONDS=21600
+SCALEWAY_MAX_CONCURRENT_JOBS=1
+SCALEWAY_S3_JOB_PREFIX=scaleway/jobs
+SCALEWAY_STOP_AFTER_JOB=1
+SCALEWAY_KEEP_JOB_ARTIFACTS=0
+
+S3_BUCKET_NAME=...
+S3_REGION=eu-west-3
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+```
+
+Pour vérifier les GPU disponibles dans toutes les zones Scaleway :
+
+```powershell
+.\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py
+```
+
+Le script demande la ressource (`gpu` ou `cpu`) et le type d'instance. Les
+valeurs par défaut sont `gpu` et `L4`. Les options `--resource`, `--model` et
+`--zone` permettent une utilisation non interactive.
+Une zone `available` peut toutefois passer en `low_stock` ou `out_of_stock`
+entre la vérification et la création de l'instance.
+
+Pour construire un historique, exécuter périodiquement :
+
+```powershell
+.\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py `
+  --record --resource gpu --model L4
+```
+
+Puis afficher la moyenne sur les sept derniers jours :
+
+```powershell
+.\.venv\Scripts\python.exe utils/scaleway_disponibility/check_scaleway_gpu_availability.py `
+  --summary --resource gpu --model L4 --days 7
+```
+
+Les relevés sont conservés localement dans
+`utils/scaleway_disponibility/scaleway_gpu_availability.csv`, un fichier ignoré
+par Git.
+
+Les commandes restent inchangées :
+
+```powershell
+.\.venv\Scripts\python.exe -m pipeline run VIDEO_ID
+.\.venv\Scripts\python.exe -m pipeline task transcript.whisper VIDEO_ID
+.\.venv\Scripts\python.exe -m pipeline.update_stats
+.\.venv\Scripts\python.exe -m pipeline.update_videos
+```
+
+Sur le VPS, prefixer les commandes par `RAG_IONIS_ENV=production` (ou exporter
+cette variable dans l'environnement systemd) afin de charger `.env.production`.
+En local, `RAG_IONIS_ENV=local` est la valeur par défaut et le backend doit
+rester `PIPELINE_EXECUTION_BACKEND=local`.
+
+`plan`, `--dry-run`, `inspect --probe-only` et les tâches strictement CPU restent
+locaux. `PIPELINE_EXECUTION_BACKEND=local` permet un dépannage explicite sans
+Scaleway. La VM dédiée traite les jobs séquentiellement puis s'arrête ;
+`SCALEWAY_MAX_CONCURRENT_JOBS` doit donc rester à `1`. `sync_database` est lancé
+localement.
+PostgreSQL n'a donc pas besoin d'être exposé au worker GPU. Le journal
+`update_videos_log.json` conserve le backend, l'identifiant du job et l'URI S3.
+
+Construire puis publier les trois images avec Buildx :
+
+```bash
+IMAGE_REGISTRY=rg.fr-par.scw.cloud/NAMESPACE \
+  bash deploy/publish-images.sh
+```
+
+Chaque image utilise un cache distant distinct dans le Container Registry sous
+le tag `buildcache`. Le mode `max` conserve également les couches des étapes
+intermédiaires. Le build et le push sont réalisés en une seule opération.
+
+Pour ne publier que le worker GPU :
+
+```bash
+SCALEWAY_IMAGE_REPOSITORY=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway \
+  bash deploy/publish-scaleway-image.sh
+```
+
+Le script publie le tag court du commit courant (par exemple `dd062e7`) et
+`latest`, mais le déploiement de la VM utilise toujours le tag immuable. Pour
+publier un tag précis, le passer en argument :
+
+```bash
+SCALEWAY_IMAGE_REPOSITORY=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway \
+  bash deploy/publish-scaleway-image.sh dd062e7
+```
+
+Le namespace Container Registry peut rester privé. La clé API de la machine de
+soumission doit autoriser le démarrage et l'arrêt de l'instance ainsi que
+l'accès S3. La L4 doit rester attachée à la zone choisie.
+
+Installer le worker persistant sur la VM GPU :
+
+```bash
+sudo install -d -m 0750 /etc/rag-ionis /usr/local/bin
+sudo install -m 0755 deploy/rag-ionis-scaleway-worker.sh \
+  /usr/local/bin/rag-ionis-scaleway-worker.sh
+sudo install -m 0644 deploy/rag-ionis-scaleway-worker.service \
+  /etc/systemd/system/rag-ionis-scaleway-worker.service
+sudo install -m 0600 deploy/scaleway-worker.env.example \
+  /etc/rag-ionis/scaleway-worker.env
+# Editer ensuite /etc/rag-ionis/scaleway-worker.env.
+sudo systemctl daemon-reload
+sudo systemctl enable rag-ionis-scaleway-worker.service
+```
+
+Installer aussi le secret du registre sur le VPS et sur la VM GPU, sans
+l'ajouter au dépôt :
+
+```bash
+printf '%s' "$SCW_SECRET_KEY" | sudo tee /etc/rag-ionis/registry.secret >/dev/null
+sudo chmod 0600 /etc/rag-ionis/registry.secret
+```
+
+Le service démarre au boot et surveille les jobs S3. Le worker quitte lorsque la
+file est vide depuis `SCALEWAY_WORKER_IDLE_SECONDS` secondes ; l'orchestrateur
+arrête ensuite la VM après avoir reçu le statut du job. Le premier boot doit
+être testé manuellement avec `systemctl start`.
+
+Le script monte automatiquement `/var/lib/rag-ionis/models` dans `/models`. Les
+modèles WhisperX, Hugging Face et Paddle restent donc en cache sur le volume de
+la VM entre deux démarrages. `SCALEWAY_MODEL_CACHE_DIR` permet de choisir un autre
+chemin hôte absolu.
+
+Le déploiement d'une version précise attend que le worker courant termine, tire
+l'image, lance un smoke test CUDA/Torch/Paddle puis change atomiquement la
+version. Si la VM vient d'être démarrée uniquement pour le déploiement, la CI la
+prépare sans lancer le worker et l'arrête ensuite :
+
+```bash
+sudo deploy/deploy-scaleway-worker.sh \
+  rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:COMMIT_SHA
+```
+
+### Publication et déploiement continus
+
+Le workflow `.github/workflows/release-images.yml` est exécuté lors d'un push
+sur `master`. Il construit uniquement les images affectées :
+
+| Modification | Images publiées |
+|---|---|
+| `interface/**` ou `requirements-api.txt` | API |
+| `pipeline/**` | updater et worker GPU |
+| `requirements-vps.txt` | updater |
+| dépendances ou Dockerfile GPU | worker GPU |
+| `.dockerignore` | les trois images |
+
+Les images sont publiées sous le SHA Git complet et sous `latest`. Les scripts
+de déploiement utilisent exclusivement le SHA complet. Un lancement manuel du
+workflow permet aussi de republier `all`, `api`, `updater` ou `scaleway`.
+
+Configurer les variables GitHub suivantes :
+
+| Variable | Exemple |
+|---|---|
+| `SCW_REGISTRY_NAMESPACE` | `rg.fr-par.scw.cloud/rag-ionis` |
+| `GPU_BUILD_RUNNER` | `gpu-image-builder` |
+| `ENABLE_VPS_DEPLOY` | `true` après le bootstrap du VPS |
+| `VPS_DEPLOY_PATH` | `rag_ionis` |
+| `ENABLE_SCALEWAY_DEPLOY` | `true` après le bootstrap de la VM |
+| `SCALEWAY_ZONE` | `fr-par-2` |
+
+Configurer les secrets GitHub suivants :
+
+| Cible | Secrets |
+|---|---|
+| Registre | `SCW_REGISTRY_PASSWORD` |
+| VPS | `VPS_HOST`, `VPS_USER`, `VPS_SSH_PRIVATE_KEY`, `VPS_SSH_KNOWN_HOSTS` |
+| VM GPU | `SCW_SECRET_KEY`, `SCALEWAY_SERVER_ID`, `SCALEWAY_HOST`, `SCALEWAY_USER`, `SCALEWAY_SSH_PRIVATE_KEY`, `SCALEWAY_SSH_KNOWN_HOSTS` |
+
+L'image GPU dépasse 23 Go et ne tient pas sur le disque de 14 Go d'un runner
+GitHub standard. `GPU_BUILD_RUNNER` doit donc désigner le label d'un runner
+self-hosted ou d'un larger runner disposant d'au moins 60 Go libres. Les images
+API et updater continuent d'utiliser `ubuntu-latest`.
+
+Les valeurs `*_SSH_KNOWN_HOSTS` contiennent les clés publiques SSH vérifiées des
+serveurs. Elles évitent d'accepter silencieusement une nouvelle identité de
+machine pendant un déploiement.
+
+Sur le VPS, `.env.production` doit contenir au minimum les références d'images :
+
+```dotenv
+CONTAINER_REGISTRY=rg.fr-par.scw.cloud/NAMESPACE
+API_IMAGE_TAG=COMMIT_SHA
+UPDATER_IMAGE_TAG=COMMIT_SHA
+```
+
+Le workflow synchronise seulement les fichiers Compose et le script de
+déploiement, puis exécute `deploy/deploy-vps.sh`. L'API est contrôlée par son
+healthcheck et revient automatiquement au tag précédent en cas d'échec.
+Pour le tout premier déploiement, laisser les deux variables `ENABLE_*` à
+`false`, lancer manuellement le workflow avec `all`, reporter le SHA publié dans
+les fichiers d'environnement des serveurs, puis activer les déploiements.
+
+Les secrets métier sont conservés dans le fichier root-only
+`/etc/rag-ionis/scaleway-worker.env` sur la VM et transmis au conteneur à chaque
+boot :
+
+```dotenv
+OPENAI_API_KEY=...
+OPENAI_SERVICE_TIER=auto
+HUGGINGFACE_TOKEN=...
+S3_BUCKET_NAME=...
+S3_REGION=eu-west-3
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+WHISPERX_MODEL=large-v3
+WHISPERX_DEVICE=cuda
+WHISPERX_COMPUTE_TYPE=float16
+WHISPERX_STRICT_CUDA=1
+WHISPERX_BATCH_SIZE=8
+WHISPERX_DIARIZATION_DEVICE=cuda
+WHISPERX_KEEP_MODEL=1
+FRAME_CLASSIFICATION_BATCH_SIZE=32
+FRAME_CLASSIFICATION_DTYPE=float16
+FRAME_CLASSIFICATION_KEEP_MODEL=1
+PADDLEOCR_BATCH_SIZE=16
+```
+
+L'image Docker fournit déjà ces valeurs adaptées aux 24 Go de VRAM. Les préfixes
+temporaires sont supprimés après rapatriement réussi. Mettre
+`SCALEWAY_KEEP_JOB_ARTIFACTS=1` pour les conserver. Pour laisser la VM démarrée
+pendant un diagnostic, utiliser temporairement `SCALEWAY_STOP_AFTER_JOB=0`.
+
+En mode local, le planificateur utilise `DATABASE_URL`, `YOUTUBE_API_KEY` et les
+variables des étapes métier. En mode Scaleway, la machine de soumission requiert
+en plus les variables `SCW_*`, `SCALEWAY_*` et les accès S3 décrits ci-dessus.
+Une erreur limitée à une vidéo n’empêche pas les autres
 d’être actualisées et produit le statut `completed_with_errors`. Un échec global
 produit le statut `failed`. Les détails sont conservés dans `update_runs`.
 
@@ -1090,11 +1379,27 @@ Les embeddings utilisent `text-embedding-3-large` en 2000 dimensions.
 
 ## Base de données
 
-Démarrer PostgreSQL et Phoenix :
+En local, démarrer PostgreSQL et Phoenix avec l'environnement local :
 
 ```powershell
-docker compose up -d postgres phoenix
+docker compose --env-file .env.local up -d
 ```
+
+Sur le VPS, utiliser le fichier Compose de production et l'environnement de
+production. Les images doivent avoir été publiées par la CI et les variables
+`CONTAINER_REGISTRY`, `API_IMAGE_TAG` et `UPDATER_IMAGE_TAG` doivent être
+renseignées :
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  --env-file .env.production \
+  up -d --no-build
+```
+
+Le premier fichier contient l'infrastructure commune. Le second surcharge les
+réglages de production et ajoute l'API ainsi que Caddy.
 
 Le serveur PostgreSQL est configuré avec `timezone=Europe/Paris`. Les colonnes
 `TIMESTAMPTZ` restent des instants normalisés, mais toutes les sessions Docker
@@ -1144,8 +1449,8 @@ Démarrer l'API et l'interface :
 - Phoenix : `http://127.0.0.1:6006/`
 
 Le backend combine recherche SQL, BM25, recherche vectorielle pgvector, fusion RRF
-et reranking. Les traces OpenTelemetry sont envoyées à Phoenix lorsque
-`PHOENIX_ENABLED=true`.
+et reranking. En production, toutes les requêtes RAG sont envoyées à Phoenix sous
+forme de traces OpenTelemetry.
 
 L'interface utilisateur ne propose pas de sélecteur de LLM : la reformulation,
 le planner et la génération finale utilisent tous `mistral-medium-latest`.
@@ -1180,14 +1485,15 @@ une place supplémentaire dans les résultats.
 
 L'utilitaire `utils/app_llm_tester` envoie un message à OpenAI, Mistral ou
 Google et affiche côte à côte le texte extrait et le payload JSON complet.
-Les clés restent côté serveur et sont lues depuis `.env`.
+Les clés restent côté serveur et sont lues depuis l'environnement sélectionné
+(`.env.local` ou `.env.production`).
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester
 ```
 
 Ouvrir ensuite `http://127.0.0.1:8002/`. L'application est également démarrée
-par `start_app.bat`.
+par `start_app_local.bat`.
 
 Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix :
 

@@ -1,0 +1,4 @@
+--index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+
+# Paddle est assemble dans une etape isolee du Dockerfile GPU.
+paddlepaddle-gpu==3.2.0

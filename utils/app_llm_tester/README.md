@@ -32,7 +32,7 @@ OpenAI et Google sont réservés à `utils/run_phoenix_experiment.py`.
 Depuis la racine du projet :
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester
+.\.venv\Scripts\python.exe -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester --reload-dir interface/backend
 ```
 
 Ouvrir ensuite <http://127.0.0.1:8002/>.

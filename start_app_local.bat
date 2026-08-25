@@ -31,7 +31,7 @@ if errorlevel 1 (
 
 start "RAG IONIS API" cmd /k "%API_PYTHON% -m uvicorn interface.app:app --host 127.0.0.1 --port 8006 --reload --reload-dir interface"
 start "Database browser" cmd /k "%API_PYTHON% -m uvicorn utils.app_database_browser.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir utils/app_database_browser"
-start "LLM tester" cmd /k "%API_PYTHON% -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester"
+start "LLM tester" cmd /k "%API_PYTHON% -m uvicorn utils.app_llm_tester.app:app --host 127.0.0.1 --port 8002 --reload --reload-dir utils/app_llm_tester --reload-dir interface/backend"
 start "Phoenix Replay" cmd /k "%API_PYTHON% -m uvicorn utils.app_phoenix_replay.app:app --host 127.0.0.1 --port 8004 --reload --reload-dir utils --reload-dir interface"
 start "Apps statiques" cmd /k "%API_PYTHON% -m http.server 8003 --bind 127.0.0.1 --directory utils"
 

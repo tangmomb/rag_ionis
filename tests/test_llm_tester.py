@@ -39,6 +39,7 @@ class LlmTesterTests(unittest.TestCase):
         providers = {item["id"]: item for item in payload["providers"]}
         self.assertEqual(set(providers), {"mistral"})
         self.assertFalse(providers["mistral"]["configured"])
+        self.assertIn("zai-glm-5-2", providers["mistral"]["models"])
 
     def test_missing_key_is_reported_before_network_call(self) -> None:
         with (

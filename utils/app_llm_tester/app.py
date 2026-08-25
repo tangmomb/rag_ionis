@@ -44,7 +44,9 @@ class GenerateRequest(BaseModel):
         return cleaned
 
 
-PROVIDERS = {"mistral": LLM_MODEL_CATALOG["mistral"]}
+PROVIDERS = {
+    "mistral": LLM_MODEL_CATALOG["mistral"],
+}
 
 
 def provider_config(provider: str) -> dict[str, Any]:

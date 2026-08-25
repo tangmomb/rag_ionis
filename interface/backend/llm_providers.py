@@ -41,6 +41,7 @@ LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
             ("Medium", "mistral-medium-latest"),
             ("Small", "mistral-small-latest"),
             ("Large", "mistral-large-latest"),
+            ("ZAI GLM 5.2", "zai-glm-5-2"),
         ),
     },
     "google": {

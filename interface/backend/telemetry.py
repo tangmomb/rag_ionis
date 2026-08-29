@@ -46,20 +46,29 @@ def configure_telemetry() -> None:
         project_name = os.getenv("PHOENIX_PROJECT_NAME", "rag-ionis").strip() or "rag-ionis"
 
         try:
-            from openinference.instrumentation.mistralai import MistralAIInstrumentor
-            from openinference.instrumentation.openai import OpenAIInstrumentor
             from phoenix.otel import register
+
+            # Nettoie aussi un environnement local existant dans lequel
+            # l'instrumenteur LangChain aurait déjà été chargé. Il n'est plus
+            # installé par requirements-api.txt sur les nouveaux déploiements.
+            try:
+                from openinference.instrumentation.langchain import LangChainInstrumentor
+
+                langchain_instrumentor = LangChainInstrumentor()
+                if langchain_instrumentor.is_instrumented_by_opentelemetry:
+                    langchain_instrumentor.uninstrument()
+            except ImportError:
+                pass
 
             _TRACER_PROVIDER = register(
                 endpoint=endpoint,
                 project_name=project_name,
                 protocol="http/protobuf",
                 batch=True,
+                auto_instrument=False,
                 verbose=False,
             )
             _TRACER = _TRACER_PROVIDER.get_tracer("rag_ionis.interface")
-            OpenAIInstrumentor().instrument(tracer_provider=_TRACER_PROVIDER)
-            MistralAIInstrumentor().instrument(tracer_provider=_TRACER_PROVIDER)
             _ENABLED = True
             print(
                 f"[telemetry] Phoenix actif: project={project_name} endpoint={endpoint}",

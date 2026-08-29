@@ -58,18 +58,19 @@ def _source() -> dict:
 
 class AnswerActionTests(unittest.TestCase):
     def test_generator_output_exposes_answer_and_action(self) -> None:
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = parse_answer_output(
-            '{"answer":"Peux-tu préciser la vidéo ?","action":"clarify"}',
+            '{"answer":"Peux-tu préciser la vidéo ?","action":"clarify","source_indexes":[2]}',
             trace,
         )
 
         self.assertEqual(answer, "Peux-tu préciser la vidéo ?")
         self.assertEqual(trace["action"], "clarify")
+        self.assertEqual(trace["source_indexes"], [2])
 
     def test_invalid_or_missing_action_falls_back_to_abstention(self) -> None:
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = parse_answer_output('{"answer":"Réponse non qualifiée"}', trace)
 
@@ -80,7 +81,7 @@ class AnswerActionTests(unittest.TestCase):
         client = _Client(
             [{"answer": "De quelle vidéo parles-tu ?", "action": "clarify"}]
         )
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = generate_answer(
             client,
@@ -102,7 +103,7 @@ class AnswerActionTests(unittest.TestCase):
         client = _Client(
             [{"answer": "Parles-tu d'Alice Martin ou d'Alice Durand ?", "action": "clarify"}]
         )
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = generate_person_clarification_answer(
             client,
@@ -132,7 +133,8 @@ class AnswerActionTests(unittest.TestCase):
         def generate(*args, **kwargs):
             trace = args[5]
             trace["action"] = "answer"
-            return "Le 12 avril 2022. [S1]"
+            trace["source_indexes"] = [1]
+            return "Le 12 avril 2022."
 
         with (
             patch.object(api, "orchestrate_request", return_value=("", [_source()], retrieval)),
@@ -162,7 +164,8 @@ class AnswerActionTests(unittest.TestCase):
         def generate(*args, **kwargs):
             trace = args[5]
             trace["action"] = "clarify"
-            return "Parles-tu de cette Sophie ? [S1]"
+            trace["source_indexes"] = [1]
+            return "Parles-tu de cette Sophie ?"
 
         with (
             patch.object(api, "orchestrate_request", return_value=("", [source], retrieval)),

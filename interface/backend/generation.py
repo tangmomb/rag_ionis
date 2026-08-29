@@ -23,10 +23,10 @@ FINAL_ANSWER_STYLE = (
 )
 
 
-SOURCE_MARKER_INSTRUCTION = (
-    "Pour chaque information importante provenant d'un chunk, ajoute son marqueur "
-    "[S1], [S2], etc. correspondant au numéro du chunk dans le contexte. "
-    "N'utilise que les marqueurs des chunks réellement utilisés."
+SOURCE_SELECTION_INSTRUCTION = (
+    "Renseigne `source_indexes` avec les numéros des sources réellement utilisées "
+    "pour construire la réponse, par exemple [1, 3]. Utilise une liste vide si aucune "
+    "source n'est utilisée. N'ajoute aucun marqueur [S1] ou citation technique dans `answer`."
 )
 
 
@@ -36,7 +36,8 @@ ANSWER_ACTION_INSTRUCTION = (
     "clarify si une ambiguïté empêche de savoir quelle information, personne ou vidéo est "
     "demandée ; answer contient alors une seule question de précision. Choisis abstain si la "
     "demande est claire mais que les éléments fournis ne permettent pas d'y répondre "
-    "fidèlement. Le champ answer contient uniquement le message final à afficher."
+    "fidèlement. Le champ `answer` contient uniquement le message final à afficher et "
+    "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )
 
 
@@ -48,8 +49,13 @@ ANSWER_RESPONSE_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": ["answer", "clarify", "abstain"],
         },
+        "source_indexes": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 1},
+            "uniqueItems": True,
+        },
     },
-    "required": ["answer", "action"],
+    "required": ["answer", "action", "source_indexes"],
     "additionalProperties": False,
 }
 
@@ -98,7 +104,7 @@ def render_answer_system_prompt(
 
 
 def record_answer_trace(
-    trace: dict[str, str] | None,
+    trace: dict[str, Any] | None,
     model: str,
     input_messages: list[dict[str, str]],
     response: Any,
@@ -112,7 +118,7 @@ def record_answer_trace(
     trace["response_raw"] = serialize_openai_response(response)
 
 
-def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) -> str:
+def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) -> str:
     """Extrait la réponse et conserve l'action choisie par le modèle."""
     fallback_action: AnswerAction = "abstain"
     try:
@@ -120,11 +126,13 @@ def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) ->
     except (TypeError, ValueError, json.JSONDecodeError):
         if trace is not None:
             trace["action"] = fallback_action
+            trace["source_indexes"] = []
         return raw_answer
 
     if not isinstance(payload, dict):
         if trace is not None:
             trace["action"] = fallback_action
+            trace["source_indexes"] = []
         return raw_answer
 
     action = payload.get("action")
@@ -132,17 +140,32 @@ def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) ->
         action = fallback_action
     if trace is not None:
         trace["action"] = action
+        raw_source_indexes = payload.get("source_indexes")
+        trace["source_indexes"] = list(
+            dict.fromkeys(
+                index
+                for index in raw_source_indexes
+                if isinstance(index, int) and not isinstance(index, bool) and index >= 1
+            )
+        ) if isinstance(raw_source_indexes, list) else []
     answer = str(payload.get("answer") or "").strip()
     return answer or raw_answer
 
 
-def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Retire les marqueurs et conserve les sources citées par marqueur ou URL."""
+def select_answer_sources(
+    answer: str,
+    sources: list[dict[str, Any]],
+    source_indexes: list[int] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Sélectionne les sources JSON, avec lecture des anciens marqueurs en secours."""
     selected_indexes = {
+        index for index in (source_indexes or []) if 1 <= index <= len(sources)
+    }
+    selected_indexes.update({
         int(value)
         for value in re.findall(r"\[S(\d+)\]", answer, flags=re.IGNORECASE)
         if 1 <= int(value) <= len(sources)
-    }
+    })
     selected_indexes.update(
         index
         for index, source in enumerate(sources, start=1)
@@ -172,7 +195,7 @@ def generate_answer(
     question: str,
     answer_model: str | None,
     sources: list[dict[str, Any]],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
 ) -> str:
     if client is None or not answer_model:
@@ -220,7 +243,7 @@ def generate_answer(
                         "Tu es un assistant RAG. Réponds en français, de façon concise, "
                         "en t'appuyant uniquement sur les sources fournies."
                     ),
-                    source_marker_instruction=SOURCE_MARKER_INSTRUCTION,
+                    source_marker_instruction=SOURCE_SELECTION_INSTRUCTION,
                 ),
             },
             {
@@ -285,7 +308,7 @@ def generate_multi_source_answer(
     route_name: str,
     sources: list[dict[str, Any]],
     sql_sub_intent: str | None = None,
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
 ) -> str:
     if client is None or not answer_model:
@@ -311,9 +334,7 @@ def generate_multi_source_answer(
             )
         )
     source_block = "\n\n".join(source_blocks) or "Aucune source documentaire exploitable."
-    source_marker_instruction = (
-        "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
-    )
+    source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
 
     input_messages = [
             {
@@ -346,7 +367,7 @@ def generate_sql_answer(
     answer_model: str | None,
     sql_sub_intent: str | None,
     sources: list[dict[str, Any]],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
 ) -> str:
     if client is None or not answer_model:
@@ -380,9 +401,7 @@ def generate_sql_answer(
         )
 
     task_prompt = build_sql_sub_intent_prompt(sql_sub_intent)
-    source_marker_instruction = (
-        "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
-    )
+    source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
     system_prompt = render_answer_system_prompt(
         prompt_template,
         route_instructions=(
@@ -413,7 +432,7 @@ def generate_person_clarification_answer(
     question: str,
     answer_model: str | None,
     person_resolution: dict[str, Any],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
 ) -> str:
     """Laisse le modèle de réponse formuler l'action face à une personne ambiguë."""
@@ -460,7 +479,7 @@ def generate_final_answer(
     answer_model: str | None,
     retrieval: dict[str, Any],
     sources: list[dict[str, Any]],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
     judge_feedback: str | None = None,
 ) -> str:

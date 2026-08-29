@@ -7,8 +7,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from interface.app import RagRequest, app
-from interface.backend import generation, orchestration, planner, retrieval
+from interface.backend import api, generation, orchestration, planner, retrieval
 from interface.backend.config import (
+    DEFAULT_ANALYTICS_SQL_MODEL,
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PLANNER_MODEL,
     DEFAULT_REFORMULATION_MODEL,
@@ -48,9 +49,25 @@ class InterfaceAppTests(unittest.TestCase):
         )
         self.assertEqual(selected_sources, [source])
 
-    def test_all_llm_steps_use_mistral_medium_by_default(self) -> None:
+    def test_answer_json_source_indexes_select_sources_without_visible_markers(self) -> None:
+        sources = [
+            {"video_url": "https://example.test/one"},
+            {"video_url": "https://example.test/two"},
+        ]
+
+        answer, selected_sources = generation.select_answer_sources(
+            "Réponse sans marqueur technique.",
+            sources,
+            [2],
+        )
+
+        self.assertEqual(answer, "Réponse sans marqueur technique.")
+        self.assertEqual(selected_sources, [sources[1]])
+
+    def test_llm_steps_use_the_configured_models(self) -> None:
         self.assertEqual(DEFAULT_PLANNER_MODEL, "mistral-medium-latest")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-terra")
+        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "mistral-medium-latest")
         self.assertEqual(DEFAULT_GENERATION_MODEL, "mistral-medium-latest")
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
@@ -70,7 +87,7 @@ class InterfaceAppTests(unittest.TestCase):
                 set(schema["properties"]),
             )
 
-    def test_interface_fixes_all_llm_steps_to_mistral_medium(self) -> None:
+    def test_interface_uses_backend_defaults_for_llm_steps(self) -> None:
         response = TestClient(app).get("/")
 
         self.assertEqual(response.status_code, 200)
@@ -79,7 +96,9 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn('id="plannerModel"', html)
         self.assertNotIn('id="answerModel"', html)
         self.assertNotIn('fetch("/api/llm-models")', html)
-        self.assertEqual(html.count('"mistral-medium-latest"'), 3)
+        self.assertNotIn('reformulationModel:', html)
+        self.assertNotIn('plannerModel:', html)
+        self.assertNotIn('answerModel:', html)
 
     def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
         system_prompt, user_prompt = planner.build_question_reformulation_prompt(
@@ -269,7 +288,8 @@ class InterfaceAppTests(unittest.TestCase):
             211,
             limit=planner.REFORMULATION_HISTORY_EXCHANGES,
         )
-        reformulation_prompt = calls[0]["input"][1]["content"]
+        self.assertEqual(len(calls[0]["input"]), 1)
+        reformulation_prompt = calls[0]["input"][0]["content"]
         self.assertNotIn("Emric", reformulation_prompt)
         self.assertIn("Fadila Ouro Sama", reformulation_prompt)
         self.assertIn("Hugo Gérardin", reformulation_prompt)
@@ -318,7 +338,8 @@ class InterfaceAppTests(unittest.TestCase):
                 client,
             )
 
-        reformulation_prompt = calls[0]["input"][1]["content"]
+        self.assertEqual(len(calls[0]["input"]), 1)
+        reformulation_prompt = calls[0]["input"][0]["content"]
         self.assertNotIn("Sophie Vanderpol", reformulation_prompt)
         self.assertIn("Loucif", reformulation_prompt)
         self.assertIn("Sophie Ollivier", reformulation_prompt)
@@ -1021,7 +1042,7 @@ class InterfaceAppTests(unittest.TestCase):
             },
         )
 
-    def test_llm_model_catalog_exposes_only_mistral(self) -> None:
+    def test_llm_model_catalog_exposes_all_supported_providers(self) -> None:
         response = TestClient(app).get("/api/llm-models")
 
         self.assertEqual(response.status_code, 200)
@@ -1029,7 +1050,7 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(
             data["defaults"],
             {
-                "reformulationModel": "mistral-medium-latest",
+                "reformulationModel": "gpt-5.6-terra",
                 "plannerModel": "mistral-medium-latest",
                 "answerModel": "mistral-medium-latest",
             },
@@ -1038,25 +1059,41 @@ class InterfaceAppTests(unittest.TestCase):
             "mistral-medium-latest",
             {model["id"] for model in data["models"]},
         )
+        self.assertIn(
+            "gpt-5.6-luna",
+            {model["id"] for model in data["models"]},
+        )
         self.assertEqual(
             {model["provider"] for model in data["models"]},
-            {"mistral"},
+            {"openai", "mistral", "google"},
         )
 
-    def test_public_rag_endpoint_rejects_non_mistral_models(self) -> None:
-        response = TestClient(app).post(
-            "/api/rag",
-            json={
-                "question": "Bonjour",
-                "reformulationModel": "gpt-5.6-sol",
-                "plannerModel": "mistral-medium-latest",
-                "answerModel": "mistral-medium-latest",
+    def test_public_rag_endpoint_accepts_independent_provider_per_step(self) -> None:
+        request = {
+            "question": "Bonjour",
+            "reformulationModel": "gpt-5.6-luna",
+            "plannerModel": "mistral-medium-latest",
+            "answerModel": "gemini-3.6-flash",
+        }
+        with patch.object(
+            api,
+            "run_rag",
+            return_value={
+                "conversation_id": 1,
+                "message_id": 1,
+                "answer": "ok",
+                "action": "answer",
+                "sources": [],
+                "retrieval": {},
             },
-        )
+        ) as run_rag:
+            response = TestClient(app).post("/api/rag", json=request)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("uniquement Mistral", response.json()["detail"])
-        self.assertIn("run_phoenix_experiment.py", response.json()["detail"])
+        self.assertEqual(response.status_code, 200)
+        validated = run_rag.call_args.args[0]
+        self.assertEqual(validated.reformulationModel, "gpt-5.6-luna")
+        self.assertEqual(validated.plannerModel, "mistral-medium-latest")
+        self.assertEqual(validated.answerModel, "gemini-3.6-flash")
 
     def test_request_schema_remains_available_from_app(self) -> None:
         payload = RagRequest(question="Bonjour")

@@ -1078,20 +1078,18 @@ def reformulate_question(
         system_prompt_override,
         memory_context,
     )
+    reformulation_prompt = f"{system_prompt}\n\n{user_prompt}"
+    reformulation_input = [
+        {"role": "user", "content": reformulation_prompt},
+    ]
     trace["prompt"] = json.dumps(
-        {"model": model, "input": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]},
+        {"model": model, "input": reformulation_input},
         ensure_ascii=False,
     )
     try:
         response = client.responses.create(
             model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            input=reformulation_input,
             response_schema=REFORMULATION_RESPONSE_SCHEMA,
         )
         trace["response_raw"] = serialize_openai_response(response)

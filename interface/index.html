@@ -71,13 +71,13 @@
             >
               <div class="suggested-questions-list">
                 <button type="button" class="suggested-question">
-                  Qui est Emric ?
+                  Qui est Aymerich ?
                 </button>
                 <button type="button" class="suggested-question">
                   J'ai besoin de la transcription d'une vidéo.
                 </button>
                 <button type="button" class="suggested-question">
-                  Quelles questions ont été posées à Déborah ?
+                  Quelles questions ont été posées à Fadila ?
                 </button>
               </div>
             </div>
@@ -124,9 +124,6 @@
       let conversationId = null;
       const RAG_CONFIG = {
         apiUrl: "/api/rag",
-        reformulationModel: "mistral-medium-latest",
-        plannerModel: "mistral-medium-latest",
-        answerModel: "mistral-medium-latest",
         embeddingModel: "meme modele que la base",
         rerankModel: "cohere rerank",
         topK: 40,
@@ -328,9 +325,6 @@
           question: text,
           conversationId,
           apiUrl: RAG_CONFIG.apiUrl,
-          reformulationModel: RAG_CONFIG.reformulationModel,
-          plannerModel: RAG_CONFIG.plannerModel,
-          answerModel: RAG_CONFIG.answerModel,
           embeddingModel: RAG_CONFIG.embeddingModel,
           rerankModel: RAG_CONFIG.rerankModel,
           useSql: RAG_CONFIG.useSql,

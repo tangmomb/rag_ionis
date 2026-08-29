@@ -28,7 +28,7 @@ from interface.backend.llm_providers import (
 )
 from interface.backend.schemas import ChunkSource, RagRequest, RagResponse
 from interface.backend.telemetry import current_trace_id, telemetry_status, trace_operation
-from interface.backend.utilities import get_llm_client
+from interface.backend.utilities import get_llm_client, normalize_model_name
 
 
 router = APIRouter()
@@ -36,17 +36,17 @@ router = APIRouter()
 
 @router.get("/llm-models")
 def llm_models() -> dict[str, Any]:
-    provider = "mistral"
-    provider_config = LLM_MODEL_CATALOG[provider]
-    models = [
-        {
-            "provider": provider,
-            "provider_label": provider_config["label"],
-            "label": model_label,
-            "id": model_id,
-        }
-        for model_label, model_id in provider_config["models"]
-    ]
+    models = []
+    for provider, provider_config in LLM_MODEL_CATALOG.items():
+        models.extend(
+            {
+                "provider": provider,
+                "provider_label": provider_config["label"],
+                "label": model_label,
+                "id": model_id,
+            }
+            for model_label, model_id in provider_config["models"]
+        )
     return {
         "models": models,
         "defaults": {
@@ -96,7 +96,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
             )
 
         answer_client = get_llm_client()
-        answer_trace: dict[str, str] = {}
+        answer_trace: dict[str, Any] = {}
         if not answer:
             with trace_operation(
                 "rag.generation",
@@ -128,7 +128,11 @@ def execute_rag(payload: RagRequest) -> RagResponse:
         answer_action = answer_trace.get("action", "abstain")
         retrieval["answer_action"] = answer_action
         if answer_action in {"answer", "clarify"}:
-            answer, carousel_sources = select_answer_sources(answer, sources)
+            answer, carousel_sources = select_answer_sources(
+                answer,
+                sources,
+                answer_trace.get("source_indexes"),
+            )
         else:
             carousel_sources = []
         retrieval["answer_source_indexes"] = [
@@ -220,29 +224,23 @@ def run_rag(payload: RagRequest) -> RagResponse:
         return response
 
 
-def ensure_interface_uses_mistral(payload: RagRequest) -> None:
-    for field_name in (
-        "reformulationModel",
-        "plannerModel",
-        "answerModel",
-    ):
-        model = getattr(payload, field_name)
+def validate_step_models(payload: RagRequest) -> None:
+    """Normalize and validate each independently configured RAG LLM."""
+    defaults = {
+        "reformulationModel": DEFAULT_REFORMULATION_MODEL,
+        "plannerModel": DEFAULT_PLANNER_MODEL,
+        "answerModel": DEFAULT_GENERATION_MODEL,
+    }
+    for field_name, default in defaults.items():
+        model = normalize_model_name(getattr(payload, field_name), default)
         try:
-            provider = provider_for_model(model)
+            provider_for_model(model)
         except LLMProviderError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if provider != "mistral":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "L'interface RAG utilise uniquement Mistral. "
-                    "Les autres fournisseurs sont reserves a "
-                    "utils/run_phoenix_experiment.py."
-                ),
-            )
+        setattr(payload, field_name, model)
 
 
 @router.post("/rag", response_model=RagResponse)
 def rag(payload: RagRequest) -> RagResponse:
-    ensure_interface_uses_mistral(payload)
+    validate_step_models(payload)
     return run_rag(payload)

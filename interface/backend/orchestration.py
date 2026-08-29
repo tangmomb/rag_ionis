@@ -4,6 +4,7 @@ from typing import Any
 
 from interface.backend.analytics_sql import run_analytics_text_to_sql
 from interface.backend.config import (
+    DEFAULT_ANALYTICS_SQL_MODEL,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PLANNER_MODEL,
@@ -71,6 +72,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         payload.plannerModel,
         DEFAULT_PLANNER_MODEL,
     )
+    analytics_sql_model = DEFAULT_ANALYTICS_SQL_MODEL
     with trace_operation(
         "rag.reformulation",
         kind="CHAIN",
@@ -293,6 +295,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "contextual_question": contextual_question,
         "reformulation_model": reformulation_model,
         "planner_model": planner_model,
+        "analytics_sql_model": analytics_sql_model,
         "planner_plan": planner_plan.model_dump(),
         "execution_plan": execution_plan.model_dump(),
         "validated_query": execution_plan.model_dump(),
@@ -356,7 +359,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                     sources, direct_trace = run_analytics_text_to_sql(
                         execution_plan,
                         client,
-                        planner_model,
+                        analytics_sql_model,
                         database_persons=database_persons,
                         database_companies=database_company,
                     )
@@ -429,7 +432,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                         doc_sources, doc_trace = run_analytics_text_to_sql(
                             execution_plan,
                             client,
-                            planner_model,
+                            analytics_sql_model,
                             database_persons=database_persons,
                             database_companies=database_company,
                         )

@@ -81,6 +81,16 @@ class RagModelSelectionTests(unittest.TestCase):
             client.responses.calls[0]["response_schema"],
             planner.REFORMULATION_RESPONSE_SCHEMA,
         )
+        self.assertEqual(len(client.responses.calls[0]["input"]), 1)
+        self.assertEqual(client.responses.calls[0]["input"][0]["role"], "user")
+        self.assertIn(
+            "Reformule le dernier message utilisateur",
+            client.responses.calls[0]["input"][0]["content"],
+        )
+        self.assertIn(
+            "Message actuel : Question",
+            client.responses.calls[0]["input"][0]["content"],
+        )
         self.assertIn('"model": "gpt-5.6-luna"', trace["prompt"])
 
     def test_orchestration_passes_independent_models_to_each_step(self) -> None:

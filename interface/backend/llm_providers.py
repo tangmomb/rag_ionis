@@ -3,14 +3,13 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Sequence
-from urllib.parse import quote
+from typing import Any, Callable, Literal, Protocol, Sequence
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai import ChatMistralAI
+from langchain_openai import ChatOpenAI
 
-import requests
-from mistralai.client import Mistral
-from openai import OpenAI
+from interface.backend.telemetry import trace_operation
 
-from interface.backend.telemetry import TraceOperation, trace_operation
 
 
 LLMProvider = Literal["openai", "mistral", "google"]
@@ -132,7 +131,7 @@ def provider_for_model(model: str) -> LLMProvider:
     if normalized.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-")):
         return "openai"
     if normalized.startswith(
-        ("mistral-", "ministral-", "codestral-", "pixtral-")
+        ("mistral-", "ministral-", "codestral-", "pixtral-", "zai-")
     ):
         return "mistral"
     if normalized.startswith("gemini-"):
@@ -141,7 +140,7 @@ def provider_for_model(model: str) -> LLMProvider:
         "unknown",
         (
             f"Fournisseur impossible à déduire du modèle {model!r}. "
-            "Utilise un identifiant gpt-*, mistral-* ou gemini-*."
+            "Utilise un identifiant gpt-*, mistral-*, zai-* ou gemini-*."
         ),
     )
 
@@ -192,6 +191,94 @@ def normalize_messages(input_value: Any) -> list[dict[str, str]]:
     return messages or [{"role": "user", "content": ""}]
 
 
+def langchain_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Give function-calling providers the name LangChain requires."""
+    return {"title": "rag_response", **schema}
+
+
+def invoke_langchain_model(
+    provider: LLMProvider,
+    model: str,
+    messages: list[dict[str, str]],
+    invoke: Callable[[], Any],
+    *,
+    invocation_parameters: dict[str, Any] | None = None,
+) -> Any:
+    """Create one provider-level Phoenix LLM span, without LangChain internals."""
+    with trace_operation(
+        model,
+        kind="LLM",
+        input_value=messages,
+        attributes={
+            "llm.provider": provider,
+            "llm.system": provider,
+            "llm.model_name": model,
+            "llm.invocation_parameters": invocation_parameters or {"model": model},
+        },
+    ) as operation:
+        add_llm_message_attributes(operation, "llm.input_messages", messages)
+        result = invoke()
+        operation.set_output(result)
+        response = raw_langchain_response(result)
+        output_text = langchain_result_text(result)
+        add_llm_message_attributes(
+            operation,
+            "llm.output_messages",
+            [{"role": "assistant", "content": output_text}],
+        )
+        add_llm_usage_attributes(operation, response)
+        return result
+
+
+def add_llm_message_attributes(
+    operation: Any,
+    attribute_name: str,
+    messages: list[dict[str, str]],
+) -> None:
+    """Write the flattened OpenInference attributes Phoenix renders as message cards."""
+    for index, message in enumerate(messages):
+        prefix = f"{attribute_name}.{index}.message"
+        operation.set_attribute(f"{prefix}.role", message["role"])
+        operation.set_attribute(f"{prefix}.content", message["content"])
+
+
+def raw_langchain_response(result: Any) -> Any:
+    if isinstance(result, dict) and result.get("raw") is not None:
+        return result["raw"]
+    return result
+
+
+def langchain_result_text(result: Any) -> str:
+    if isinstance(result, dict) and result.get("parsed") is not None:
+        return json.dumps(result["parsed"], ensure_ascii=False)
+    return content_text(getattr(raw_langchain_response(result), "content", "")).strip()
+
+
+def add_llm_usage_attributes(operation: Any, response: Any) -> None:
+    usage = getattr(response, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        metadata = getattr(response, "response_metadata", None)
+        usage = metadata.get("token_usage", {}) if isinstance(metadata, dict) else {}
+    operation.set_attribute(
+        "llm.token_count.prompt",
+        usage.get("input_tokens", usage.get("prompt_tokens")),
+    )
+    operation.set_attribute(
+        "llm.token_count.completion",
+        usage.get("output_tokens", usage.get("completion_tokens")),
+    )
+    operation.set_attribute("llm.token_count.total", usage.get("total_tokens"))
+
+
+def traced_invocation_parameters(options: dict[str, Any]) -> dict[str, Any]:
+    """Keep useful request options in Phoenix without exposing credentials."""
+    return {
+        key: value
+        for key, value in options.items()
+        if key not in {"api_key", "timeout", "request_timeout"}
+    }
+
+
 def extract_openai_text(payload: dict[str, Any]) -> str:
     top_level = payload.get("output_text")
     if isinstance(top_level, str) and top_level.strip():
@@ -234,76 +321,6 @@ def extract_mistral_text(payload: dict[str, Any]) -> str:
     return "\n".join(pieces).strip()
 
 
-def extract_google_text(payload: dict[str, Any]) -> str:
-    pieces = []
-    for candidate in payload.get("candidates", []) or []:
-        if not isinstance(candidate, dict):
-            continue
-        content = candidate.get("content", {})
-        if not isinstance(content, dict):
-            continue
-        for part in content.get("parts", []) or []:
-            if not isinstance(part, dict) or part.get("thought") is True:
-                continue
-            text = part.get("text")
-            if isinstance(text, str) and text:
-                pieces.append(text)
-    return "\n".join(pieces).strip()
-
-
-def json_response(
-    response: requests.Response,
-    provider: LLMProvider,
-) -> dict[str, Any]:
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise LLMProviderError(
-            provider,
-            "Le fournisseur a renvoyé une réponse non JSON.",
-            status_code=response.status_code,
-            payload={"response_preview": response.text[:2_000]},
-        ) from exc
-    if not response.ok:
-        raise LLMProviderError(
-            provider,
-            "Le fournisseur a refusé la requête.",
-            status_code=response.status_code,
-            payload=payload,
-        )
-    if not isinstance(payload, dict):
-        raise LLMProviderError(
-            provider,
-            "Le fournisseur a renvoyé un JSON inattendu.",
-            status_code=response.status_code,
-            payload=payload,
-        )
-    return payload
-
-
-def add_llm_message_attributes(
-    operation: TraceOperation,
-    attribute_name: str,
-    messages: list[dict[str, str]],
-) -> None:
-    for index, message in enumerate(messages):
-        prefix = f"{attribute_name}.{index}.message"
-        operation.set_attribute(f"{prefix}.role", message["role"])
-        operation.set_attribute(f"{prefix}.content", message["content"])
-
-
-def add_llm_usage_attributes(
-    operation: TraceOperation,
-    *,
-    prompt_tokens: Any = None,
-    completion_tokens: Any = None,
-    total_tokens: Any = None,
-) -> None:
-    operation.set_attribute("llm.token_count.prompt", prompt_tokens)
-    operation.set_attribute("llm.token_count.completion", completion_tokens)
-    operation.set_attribute("llm.token_count.total", total_tokens)
-
-
 def call_openai(
     model: str,
     messages: list[dict[str, str]],
@@ -312,35 +329,51 @@ def call_openai(
     store: bool | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    request: dict[str, Any] = {
-        "model": model,
-        "input": messages,
-    }
+    options: dict[str, Any] = {"model": model, "api_key": api_key, "timeout": REQUEST_TIMEOUT_SECONDS}
     service_tier = configured_openai_service_tier()
     if service_tier is not None:
-        request["service_tier"] = service_tier
+        options["service_tier"] = service_tier
     if max_output_tokens is not None:
-        request["max_output_tokens"] = max_output_tokens
+        options["max_completion_tokens"] = max_output_tokens
     if store is not None:
-        request["store"] = store
-    if response_schema is not None:
-        request["text"] = {
-            "format": {
-                "type": "json_schema",
-                "name": "rag_answer",
-                "schema": response_schema,
-                "strict": True,
-            }
-        }
+        options["store"] = store
     try:
-        response = OpenAI(api_key=api_key).responses.create(**request)
+        chat = ChatOpenAI(**options)
+        if response_schema is not None:
+            structured_chat = chat.with_structured_output(
+                langchain_response_schema(response_schema),
+                method="json_schema",
+                include_raw=True,
+            )
+            result = invoke_langchain_model(
+                "openai",
+                model,
+                messages,
+                lambda: structured_chat.invoke(messages),
+                invocation_parameters={
+                    **traced_invocation_parameters(options),
+                    "response_format": "json_schema",
+                },
+            )
+            parsed = result["parsed"]
+            response = result["raw"]
+            output_text = json.dumps(parsed, ensure_ascii=False)
+        else:
+            response = invoke_langchain_model(
+                "openai",
+                model,
+                messages,
+                lambda: chat.invoke(messages),
+                invocation_parameters=traced_invocation_parameters(options),
+            )
+            output_text = content_text(response.content).strip()
     except Exception as exc:
         raise LLMProviderError("openai", str(exc)) from exc
-    payload = response.model_dump(mode="json")
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}
     return LLMResponse(
         provider="openai",
         model=model,
-        output_text=(response.output_text or "").strip(),
+        output_text=output_text,
         raw_payload=payload,
     )
 
@@ -352,26 +385,41 @@ def call_mistral(
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    request: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
+    options: dict[str, Any] = {
+        "model_name": model,
+        "api_key": api_key,
+        "timeout": REQUEST_TIMEOUT_SECONDS,
     }
     if max_output_tokens is not None:
-        request["max_tokens"] = max_output_tokens
-    if response_schema is not None:
-        request["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "rag_answer",
-                "schema": response_schema,
-                "strict": True,
-            },
-        }
+        options["max_tokens"] = max_output_tokens
     try:
-        response = Mistral(
-            api_key=api_key,
-            timeout_ms=REQUEST_TIMEOUT_SECONDS * 1_000,
-        ).chat.complete(**request)
+        chat = ChatMistralAI(**options)
+        if response_schema is not None:
+            structured_chat = chat.with_structured_output(
+                langchain_response_schema(response_schema), include_raw=True
+            )
+            result = invoke_langchain_model(
+                "mistral",
+                model,
+                messages,
+                lambda: structured_chat.invoke(messages),
+                invocation_parameters={
+                    **traced_invocation_parameters(options),
+                    "response_format": "json_schema",
+                },
+            )
+            parsed = result["parsed"]
+            response = result["raw"]
+            output_text = json.dumps(parsed, ensure_ascii=False)
+        else:
+            response = invoke_langchain_model(
+                "mistral",
+                model,
+                messages,
+                lambda: chat.invoke(messages),
+                invocation_parameters=traced_invocation_parameters(options),
+            )
+            output_text = content_text(response.content).strip()
     except Exception as exc:
         raw_response = getattr(exc, "raw_response", None)
         status_code = getattr(raw_response, "status_code", None)
@@ -383,8 +431,7 @@ def call_mistral(
             payload=payload,
         ) from exc
 
-    payload = response.model_dump(mode="json")
-    output_text = extract_mistral_text(payload)
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}
     return LLMResponse(
         provider="mistral",
         model=model,
@@ -400,86 +447,51 @@ def call_google(
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    system_parts = [
-        {"text": message["content"]}
-        for message in messages
-        if message["role"] == "system" and message["content"]
-    ]
-    contents = [
-        {
-            "role": "model" if message["role"] == "assistant" else "user",
-            "parts": [{"text": message["content"]}],
-        }
-        for message in messages
-        if message["role"] != "system"
-    ]
-    request: dict[str, Any] = {"contents": contents}
-    if system_parts:
-        request["systemInstruction"] = {"parts": system_parts}
-    generation_config: dict[str, Any] = {}
-    if max_output_tokens is not None:
-        generation_config["maxOutputTokens"] = max_output_tokens
-    if response_schema is not None:
-        generation_config.update(
-            {
-                "responseMimeType": "application/json",
-                "responseJsonSchema": response_schema,
-            }
-        )
-    if generation_config:
-        request["generationConfig"] = generation_config
-    model_id = model.removeprefix("models/")
-    invocation_parameters = {
-        key: value
-        for key, value in request.items()
-        if key not in {"contents", "systemInstruction"}
+    options: dict[str, Any] = {
+        "model": model.removeprefix("models/"),
+        "api_key": api_key,
+        "request_timeout": REQUEST_TIMEOUT_SECONDS,
     }
-    with trace_operation(
-        "GoogleGenerateContent",
-        kind="LLM",
-        input_value=messages,
-        attributes={
-            "llm.model_name": model,
-            "llm.provider": "google",
-            "llm.system": "google",
-            "llm.invocation_parameters": invocation_parameters,
-        },
-    ) as operation:
-        add_llm_message_attributes(operation, "llm.input_messages", messages)
-        response = requests.post(
-            (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{quote(model_id, safe='-._')}:generateContent"
-            ),
-            headers={
-                "x-goog-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            json=request,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        payload = json_response(response, "google")
-        output_text = extract_google_text(payload)
-        operation.set_output(payload)
-        add_llm_message_attributes(
-            operation,
-            "llm.output_messages",
-            [{"role": "assistant", "content": output_text}],
-        )
-        usage = payload.get("usageMetadata", {})
-        if isinstance(usage, dict):
-            add_llm_usage_attributes(
-                operation,
-                prompt_tokens=usage.get("promptTokenCount"),
-                completion_tokens=usage.get("candidatesTokenCount"),
-                total_tokens=usage.get("totalTokenCount"),
+    if max_output_tokens is not None:
+        options["max_tokens"] = max_output_tokens
+    try:
+        chat = ChatGoogleGenerativeAI(**options)
+        if response_schema is not None:
+            structured_chat = chat.with_structured_output(
+                langchain_response_schema(response_schema),
+                method="json_schema",
+                include_raw=True,
             )
-        return LLMResponse(
-            provider="google",
-            model=model,
-            output_text=output_text,
-            raw_payload=payload,
-        )
+            result = invoke_langchain_model(
+                "google",
+                model,
+                messages,
+                lambda: structured_chat.invoke(messages),
+                invocation_parameters={
+                    **traced_invocation_parameters(options),
+                    "response_format": "json_schema",
+                },
+            )
+            response = result["raw"]
+            output_text = json.dumps(result["parsed"], ensure_ascii=False)
+        else:
+            response = invoke_langchain_model(
+                "google",
+                model,
+                messages,
+                lambda: chat.invoke(messages),
+                invocation_parameters=traced_invocation_parameters(options),
+            )
+            output_text = content_text(response.content).strip()
+    except Exception as exc:
+        raise LLMProviderError("google", str(exc)) from exc
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}
+    return LLMResponse(
+        provider="google",
+        model=model,
+        output_text=output_text,
+        raw_payload=payload,
+    )
 
 
 def create_llm_response(
@@ -502,36 +514,30 @@ def create_llm_response(
             f"Clé absente : renseigne {key_names} dans .env.",
         )
     messages = normalize_messages(input)
-    try:
-        if selected_provider == "openai":
-            return call_openai(
-                model,
-                messages,
-                api_key,
-                max_output_tokens,
-                store,
-                response_schema,
-            )
-        if selected_provider == "mistral":
-            return call_mistral(
-                model,
-                messages,
-                api_key,
-                max_output_tokens,
-                response_schema,
-            )
-        return call_google(
+    if selected_provider == "openai":
+        return call_openai(
+            model,
+            messages,
+            api_key,
+            max_output_tokens,
+            store,
+            response_schema,
+        )
+    if selected_provider == "mistral":
+        return call_mistral(
             model,
             messages,
             api_key,
             max_output_tokens,
             response_schema,
         )
-    except requests.RequestException as exc:
-        raise LLMProviderError(
-            selected_provider,
-            f"Erreur réseau : {exc}",
-        ) from exc
+    return call_google(
+        model,
+        messages,
+        api_key,
+        max_output_tokens,
+        response_schema,
+    )
 
 
 class RoutedResponses:

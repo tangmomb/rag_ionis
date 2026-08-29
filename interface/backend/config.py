@@ -10,8 +10,11 @@ INTERFACE_DIR = Path(__file__).resolve().parents[1]
 load_project_env(PROJECT_DIR)
 
 DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
+# Configuration des LLM par étape. Change uniquement ces trois constantes pour
+# répartir les étapes entre Mistral, OpenAI ou Google.
+DEFAULT_REFORMULATION_MODEL = "gpt-5.6-terra"
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL
-DEFAULT_REFORMULATION_MODEL = DEFAULT_RAG_LLM_MODEL
+DEFAULT_ANALYTICS_SQL_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_GENERATION_MODEL = DEFAULT_RAG_LLM_MODEL
 RAG_LLM_MODEL_CHOICES = (
     "gpt-5.6-sol",

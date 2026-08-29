@@ -135,6 +135,28 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     trace_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS chat.conversation_topics (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+    summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+    keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS chat.conversation_episodes (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+    topic_id BIGINT NOT NULL REFERENCES chat.conversation_topics(id) ON DELETE CASCADE,
+    message_id BIGINT NOT NULL UNIQUE REFERENCES chat.messages(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+    keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
+    embedding vector(2000),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
 CREATE INDEX IF NOT EXISTS idx_speakers_name ON speakers(name);
 CREATE INDEX IF NOT EXISTS idx_video_speakers_speaker_id ON video_speakers(speaker_id);
@@ -153,3 +175,5 @@ CREATE INDEX IF NOT EXISTS idx_update_runs_started_at ON update_runs(started_at)
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id);
+CREATE INDEX IF NOT EXISTS idx_chat_topics_conversation_updated ON chat.conversation_topics(conversation_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_episodes_conversation_message ON chat.conversation_episodes(conversation_id, message_id DESC);

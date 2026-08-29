@@ -128,6 +128,36 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id)"
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat.conversation_topics (
+                        id BIGSERIAL PRIMARY KEY,
+                        conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+                        summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat.conversation_episodes (
+                        id BIGSERIAL PRIMARY KEY,
+                        conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+                        topic_id BIGINT NOT NULL REFERENCES chat.conversation_topics(id) ON DELETE CASCADE,
+                        message_id BIGINT NOT NULL UNIQUE REFERENCES chat.messages(id) ON DELETE CASCADE,
+                        content TEXT NOT NULL,
+                        entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        embedding vector(2000),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_topics_conversation_updated ON chat.conversation_topics(conversation_id, updated_at DESC)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_episodes_conversation_message ON chat.conversation_episodes(conversation_id, message_id DESC)")
             connection.commit()
 
         _SCHEMA_READY = True

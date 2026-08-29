@@ -135,6 +135,37 @@ class RagModelSelectionTests(unittest.TestCase):
         self.assertEqual(retrieval["planner_model"], "gpt-5.6-luna")
         self.assertEqual(retrieval["answer_model"], "gpt-5.6-terra")
 
+    def test_orchestration_uses_light_then_final_reformulation_with_memory(self) -> None:
+        client = object()
+        payload = RagRequest(question="Elle a plus de vues qu'eux ?", conversationId=46)
+        plan = PlannerPlan(route="rag", query_text="Question autonome")
+        memory = {
+            "available": True,
+            "active_topic": {"objective": "Job de Lou-Ann", "entities": ["Lou-Ann"]},
+            "immediate_history": [{"role": "user", "text": "Je cherche le job de Lou-Ann."}],
+            "episodes": [{"content": "Question : Qui a le plus de vues ?\nRéponse : Déborah contre Simon."}],
+            "retrieval": {"selected_count": 1},
+        }
+        with (
+            patch.object(orchestration, "get_llm_client", return_value=client),
+            patch.object(orchestration, "load_reformulation_memory", side_effect=[memory, memory]) as load_memory,
+            patch.object(
+                orchestration,
+                "reformulate_question",
+                side_effect=[("Elle a plus de vues qu'eux ?", {"phase": "light"}), ("Lou-Ann a-t-elle plus de vues que Déborah et Simon ?", {"phase": "final"})],
+            ) as reformulate,
+            patch.object(orchestration, "run_planner", return_value=(plan, "prompt", "raw", True)),
+            patch.object(orchestration, "retrieve_chunks", return_value=([], {})),
+        ):
+            _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
+
+        self.assertEqual(reformulate.call_count, 2)
+        self.assertEqual(load_memory.call_args_list[0].kwargs["include_episodes"], False)
+        self.assertEqual(load_memory.call_args_list[1].args[1], "Elle a plus de vues qu'eux ?")
+        self.assertEqual(reformulate.call_args_list[0].kwargs["phase"], "light")
+        self.assertEqual(reformulate.call_args_list[1].kwargs["phase"], "final")
+        self.assertEqual(retrieval["question_reformulation"]["strategy"], "light_rewrite+hybrid_memory+final_rewrite")
+
     def test_prompt_builders_accept_custom_system_prompts(self) -> None:
         planner_system, _ = planner.build_planner_prompt(
             "Question",

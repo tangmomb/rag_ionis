@@ -10,6 +10,7 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
+from interface.backend.conversation_memory import load_reformulation_memory
 from interface.backend.planner import (
     apply_deterministic_sql_policy,
     build_execution_plan,
@@ -75,13 +76,59 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             "model": reformulation_model,
         },
     ) as reformulation_span:
-        contextual_question, reformulation_trace = reformulate_question(
-            payload.question,
+        memory = load_reformulation_memory(
             payload.conversationId,
-            client,
-            reformulation_model,
-            payload.reformulationPrompt,
+            payload.question,
+            include_episodes=False,
         )
+        if memory.get("available"):
+            light_context = {"active_topic": memory.get("active_topic")}
+            light_question, light_trace = reformulate_question(
+                payload.question,
+                payload.conversationId,
+                client,
+                reformulation_model,
+                payload.reformulationPrompt,
+                history_override=memory.get("immediate_history", []),
+                memory_context=light_context,
+                phase="light",
+            )
+            long_memory = load_reformulation_memory(
+                payload.conversationId,
+                light_question,
+            )
+            # Episodes are retrieved after the light rewrite, then bounded before
+            # the second, definitive rewrite.
+            contextual_question, final_trace = reformulate_question(
+                light_question,
+                payload.conversationId,
+                client,
+                reformulation_model,
+                payload.reformulationPrompt,
+                history_override=memory.get("immediate_history", []),
+                memory_context={
+                    "active_topic": memory.get("active_topic"),
+                    "episodes": long_memory.get("episodes", []),
+                },
+                phase="final",
+            )
+            reformulation_trace = {
+                "strategy": "light_rewrite+hybrid_memory+final_rewrite",
+                "light": light_trace,
+                "final": final_trace,
+                "memory": {
+                    "light": {key: value for key, value in memory.items() if key != "immediate_history"},
+                    "long": {key: value for key, value in long_memory.items() if key != "immediate_history"},
+                },
+            }
+        else:
+            contextual_question, reformulation_trace = reformulate_question(
+                payload.question,
+                payload.conversationId,
+                client,
+                reformulation_model,
+                payload.reformulationPrompt,
+            )
         reformulation_span.set_output(reformulation_trace)
 
     with trace_operation(

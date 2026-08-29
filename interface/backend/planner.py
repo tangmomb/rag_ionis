@@ -853,7 +853,7 @@ def is_prior_video_comparison(question: str) -> bool:
     normalized = normalize_text(question)
     has_history_reference = bool(
         re.search(r"\b(?:les?|des?|leurs?)\s+(?:\d+|deux|trois)\b", normalized)
-        or re.search(r"\b(?:ces|celles|ceux|laquelle|lequel|parmi|entre)\b", normalized)
+        or re.search(r"\b(?:ces|celles|ceux|eux|laquelle|lequel|parmi|entre)\b", normalized)
     )
     has_comparison = bool(
         re.search(r"\b(?:plus|moins|meilleur|meilleure|compare|comparatif|laquelle|lequel)\b", normalized)
@@ -899,6 +899,7 @@ def build_question_reformulation_prompt(
     question: str,
     history_items: list[dict[str, str]],
     system_prompt_override: str | None = None,
+    memory_context: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     history = "\n\n".join(
         f"{item['role']}: {item['text']}" for item in history_items
@@ -930,11 +931,32 @@ seulement si ce dernier bloc ne suffit pas.
 Sinon, reformule sans changer le sens. Sois le plus simple et concis possible.
 reformulated_question doit être du texte normal, sans Markdown."""
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
+    memory = memory_context or {}
+    active_topic = memory.get("active_topic") or {}
+    episodes = memory.get("episodes") or []
+    memory_sections: list[str] = []
+    if active_topic:
+        memory_sections.append(
+            "Sujet actif (résumé compact, prioritaire pour les pronoms singuliers) :\n"
+            + json.dumps(active_topic, ensure_ascii=False)
+        )
+    if episodes:
+        rendered_episodes = "\n\n".join(
+            f"Épisode {index} :\n{episode.get('content', '')}"
+            for index, episode in enumerate(episodes, start=1)
+        )
+        memory_sections.append(
+            "Épisodes récupérés de la mémoire longue (aide seulement si nécessaire) :\n"
+            + rendered_episodes
+        )
+    memory_text = "\n\n".join(memory_sections)
     user_prompt = (
         f"Message actuel : {question}\n\n"
         "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
         f"prioritaire) :\n\n{history or '(vide)'}"
     )
+    if memory_text:
+        user_prompt += f"\n\n{memory_text}"
     return system_prompt, user_prompt
 
 
@@ -1016,12 +1038,20 @@ def reformulate_question(
     client: LLMClientProtocol | None,
     model: str = DEFAULT_REFORMULATION_MODEL,
     system_prompt_override: str | None = None,
+    *,
+    history_override: list[dict[str, str]] | None = None,
+    memory_context: dict[str, Any] | None = None,
+    phase: str = "single_pass",
 ) -> tuple[str, dict[str, Any]]:
     """Rend une relance autonome avant le planner, sans modifier le message stocké."""
-    source_history_items, history_trace = fetch_conversation_history(
-        conversation_id,
-        limit=REFORMULATION_HISTORY_EXCHANGES,
-    )
+    if history_override is None:
+        source_history_items, history_trace = fetch_conversation_history(
+            conversation_id,
+            limit=REFORMULATION_HISTORY_EXCHANGES,
+        )
+    else:
+        source_history_items = history_override
+        history_trace = {"applied": True, "reason": "memory_immediate_history", "message_count": len(history_override)}
     history_items = compact_reformulation_history(source_history_items)
     prompt_history_items = select_reformulation_history(question, history_items)
     history_trace = {
@@ -1036,6 +1066,11 @@ def reformulate_question(
         "reformulated_question": question,
         "history_message_count": len(history_items),
         "history": history_trace,
+        "phase": phase,
+        "memory": {
+            "active_topic": bool((memory_context or {}).get("active_topic")),
+            "episode_count": len((memory_context or {}).get("episodes") or []),
+        },
     }
     if client is None:
         trace["reason"] = "no_openai_client"
@@ -1045,6 +1080,7 @@ def reformulate_question(
         question,
         prompt_history_items,
         system_prompt_override,
+        memory_context,
     )
     trace["prompt"] = json.dumps(
         {"model": model, "input": [

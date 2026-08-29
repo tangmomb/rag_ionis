@@ -14,6 +14,7 @@ from interface.backend.config import (
     DEFAULT_PLANNER_MODEL,
     DEFAULT_REFORMULATION_MODEL,
 )
+from interface.backend.conversation_memory import remember_conversation_turn
 from interface.backend.generation import (
     generate_final_answer,
     select_answer_sources,
@@ -324,10 +325,17 @@ def execute_rag(payload: RagRequest) -> RagResponse:
                 answer_message=answer,
                 trace_id=trace_id,
             )
+            memory_update = remember_conversation_turn(
+                conversation_id,
+                message_id,
+                payload.question,
+                answer,
+            )
             storage_span.set_session_id(conversation_id)
             storage_span.set_output(
-                {"conversation_id": conversation_id, "message_id": message_id}
+                {"conversation_id": conversation_id, "message_id": message_id, "memory": memory_update}
             )
+        retrieval["conversation_memory"] = memory_update
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HTTPException:

@@ -360,6 +360,37 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("Hugo", selected_text)
         self.assertEqual(len(selected), 4)
 
+    def test_pronoun_comparison_keeps_latest_subject_and_prior_comparison(self) -> None:
+        """A later subject must not be hidden by an older comparison episode."""
+        history = [
+            {"role": "user", "text": "Des points communs dans ce qu'ils disent ?"},
+            {
+                "role": "assistant",
+                "text": "Déborah Rolland et Simon Payen de la Garanderie ont plusieurs points communs.",
+            },
+            {"role": "user", "text": "Qui a le plus de vues ?"},
+            {
+                "role": "assistant",
+                "text": "Déborah a 51 vues, contre 34 pour Simon.",
+            },
+            {"role": "user", "text": "Je cherche le job de Lou Ann."},
+            {
+                "role": "assistant",
+                "text": "Lou-Ann Corveddu est cheffe de produits chez ALK.",
+            },
+        ]
+
+        selected = planner.select_reformulation_history(
+            "Elle a plus de vues qu'eux ?",
+            history,
+        )
+
+        selected_text = "\n".join(item["text"] for item in selected)
+        self.assertNotIn("points communs", selected_text)
+        self.assertIn("Déborah a 51 vues", selected_text)
+        self.assertIn("Lou-Ann Corveddu", selected_text)
+        self.assertEqual(len(selected), 4)
+
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
         question = (
             "Que dit Matthieu dans la vidéo « Apporter ma pierre à l’édifice "

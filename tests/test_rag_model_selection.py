@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
 from interface.backend import orchestration, orchestration_graph, planner
 from interface.backend.generation import (
     DEFAULT_ANSWER_PROMPT_TEMPLATE,
@@ -62,7 +64,7 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": True},
-                    "execution_plan": execution_plan("direct"),
+                    "execution_plan": execution_plan("direct").model_dump(),
                 }
             ),
             "person_clarification",
@@ -71,7 +73,7 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("direct"),
+                    "execution_plan": execution_plan("direct").model_dump(),
                 }
             ),
             "direct",
@@ -80,7 +82,9 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("rag", sql_main_source=True),
+                    "execution_plan": execution_plan(
+                        "rag", sql_main_source=True
+                    ).model_dump(),
                 }
             ),
             "structured_sql",
@@ -89,7 +93,7 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("multi_source"),
+                    "execution_plan": execution_plan("multi_source").model_dump(),
                 }
             ),
             "multi_source",
@@ -98,11 +102,31 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("rag"),
+                    "execution_plan": execution_plan("rag").model_dump(),
                 }
             ),
             "rag",
         )
+
+    def test_orchestration_state_is_checkpoint_serializable(self) -> None:
+        self.assertNotIn("client", orchestration_graph.RagOrchestrationState.__annotations__)
+        serializer = JsonPlusSerializer()
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "planner_plan": PlannerPlan(query_text="Question").model_dump(),
+            "execution_plan": ExecutionPlan(
+                raw_question="Question",
+                query_text="Question",
+                query_text_bm25="Question",
+            ).model_dump(),
+            "sources": [],
+            "retrieval": {},
+        }
+
+        restored = serializer.loads_typed(serializer.dumps_typed(state))
+
+        self.assertEqual(restored["payload"]["question"], "Question")
+        self.assertEqual(restored["planner_plan"]["query_text"], "Question")
 
     def test_sol_terra_luna_aliases_are_normalized(self) -> None:
         self.assertEqual(normalize_model_name("1 sol", "fallback"), "gpt-5.6-sol")

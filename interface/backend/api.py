@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from fastapi import APIRouter, HTTPException
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 
 from interface.backend.database import (
     ConversationNotFoundError,
@@ -38,11 +40,10 @@ router = APIRouter()
 class RagResponseState(TypedDict, total=False):
     """State passed between the existing response-pipeline steps."""
 
-    payload: RagRequest
+    payload: dict[str, Any]
     answer: str
     sources: list[dict[str, Any]]
     retrieval: dict[str, Any]
-    answer_client: Any
     answer_trace: dict[str, Any]
     answer_action: str
     carousel_sources: list[dict[str, Any]]
@@ -50,8 +51,17 @@ class RagResponseState(TypedDict, total=False):
     message_id: int
 
 
+@dataclass
+class RagResponseContext:
+    answer_client: Any = None
+
+
+def _response_payload(state: RagResponseState) -> RagRequest:
+    return RagRequest.model_validate(state["payload"])
+
+
 def _orchestrate_response(state: RagResponseState) -> dict[str, Any]:
-    payload = state["payload"]
+    payload = _response_payload(state)
     with trace_operation(
         "rag.orchestration",
         kind="AGENT",
@@ -72,12 +82,16 @@ def _orchestrate_response(state: RagResponseState) -> dict[str, Any]:
     }
 
 
-def _generate_response(state: RagResponseState) -> dict[str, Any]:
-    payload = state["payload"]
+def _generate_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
+    payload = _response_payload(state)
     retrieval = state["retrieval"]
     sources = state["sources"]
     answer = state["answer"]
     answer_client = get_llm_client()
+    runtime.context.answer_client = answer_client
     answer_trace: dict[str, Any] = {}
     with trace_operation(
         "rag.generation",
@@ -105,14 +119,16 @@ def _generate_response(state: RagResponseState) -> dict[str, Any]:
         )
     return {
         "answer": answer,
-        "answer_client": answer_client,
         "answer_trace": answer_trace,
     }
 
 
-def _accept_precomputed_response(state: RagResponseState) -> dict[str, Any]:
+def _accept_precomputed_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
+    runtime.context.answer_client = get_llm_client()
     return {
-        "answer_client": get_llm_client(),
         "answer_trace": {"action": "answer"},
     }
 
@@ -146,11 +162,14 @@ def _finalize_response(state: RagResponseState) -> dict[str, Any]:
     }
 
 
-def _persist_response(state: RagResponseState) -> dict[str, Any]:
-    payload = state["payload"]
+def _persist_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
+    payload = _response_payload(state)
     answer = state["answer"]
     retrieval = state["retrieval"]
-    answer_client = state["answer_client"]
+    answer_client = runtime.context.answer_client
     trace_id = current_trace_id()
     retrieval["telemetry"] = {
         "trace_id": trace_id,
@@ -202,7 +221,10 @@ def _persist_response(state: RagResponseState) -> dict[str, Any]:
 
 
 def build_rag_response_graph():
-    graph = StateGraph(RagResponseState)
+    graph = StateGraph(
+        RagResponseState,
+        context_schema=RagResponseContext,
+    )
     graph.add_node("orchestrate", _orchestrate_response)
     graph.add_node("generate", _generate_response)
     graph.add_node("accept_precomputed", _accept_precomputed_response)
@@ -267,7 +289,10 @@ def execute_rag(payload: RagRequest) -> RagResponse:
     try:
         if payload.conversationId is None:
             payload.conversationId = create_conversation()
-        result = RAG_RESPONSE_GRAPH.invoke({"payload": payload})
+        result = RAG_RESPONSE_GRAPH.invoke(
+            {"payload": payload.model_dump()},
+            context=RagResponseContext(),
+        )
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HTTPException:

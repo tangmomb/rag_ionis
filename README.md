@@ -1488,6 +1488,12 @@ route conditionnelle parmi `person_clarification`, `direct`, `structured_sql`,
 `multi_source` et `rag`. Cette décomposition reprend les branches historiques de
 `orchestrate_request` sans changer leur comportement.
 
+Les états des deux graphes contiennent uniquement des dictionnaires, listes et
+valeurs sérialisables. Les objets `RagRequest`, `PlannerPlan` et `ExecutionPlan`
+sont convertis en dictionnaires entre les nœuds, tandis que les clients LLM sont
+injectés par le contexte d'exécution LangGraph. Les graphes sont ainsi prêts à
+recevoir un checkpointer sans tenter de persister des connexions clientes.
+
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
 `section` parente puis son résumé `global` lorsqu'ils existent. Ces parents

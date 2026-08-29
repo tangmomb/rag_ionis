@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
 from interface.backend import api
 from interface.backend.generation import (
     generate_answer,
@@ -44,6 +46,22 @@ class RagResponseGraphTests(unittest.TestCase):
                 "persist",
             }.issubset(graph.nodes)
         )
+
+    def test_response_state_is_checkpoint_serializable(self) -> None:
+        self.assertNotIn("answer_client", api.RagResponseState.__annotations__)
+        serializer = JsonPlusSerializer()
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse",
+            "sources": [],
+            "retrieval": {},
+            "answer_trace": {"action": "answer"},
+        }
+
+        restored = serializer.loads_typed(serializer.dumps_typed(state))
+
+        self.assertEqual(restored["payload"]["question"], "Question")
+        self.assertEqual(restored["answer_trace"]["action"], "answer")
 
 
 def _source() -> dict:

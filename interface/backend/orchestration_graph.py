@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 
 from interface.backend import orchestration as services
 from interface.backend.config import (
@@ -18,15 +20,14 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 
 
 class RagOrchestrationState(TypedDict, total=False):
-    payload: RagRequest
-    client: Any
+    payload: dict[str, Any]
     reformulation_model: str
     planner_model: str
     analytics_sql_model: str
     contextual_question: str
     reformulation_trace: dict[str, Any]
     topic_assignment: dict[str, Any]
-    planner_plan: PlannerPlan
+    planner_plan: dict[str, Any]
     planner_prompt: str
     planner_raw: str
     pydantic_verification: bool
@@ -34,17 +35,33 @@ class RagOrchestrationState(TypedDict, total=False):
     person_resolution: dict[str, Any]
     database_company: list[str]
     company_resolution: dict[str, Any]
-    execution_plan: ExecutionPlan
+    execution_plan: dict[str, Any]
     base_retrieval: dict[str, Any]
     answer: str
     sources: list[dict[str, Any]]
     retrieval: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RagOrchestrationContext:
+    client: Any
+
+
+def _payload(state: RagOrchestrationState) -> RagRequest:
+    return RagRequest.model_validate(state["payload"])
+
+
+def _planner_plan(state: RagOrchestrationState) -> PlannerPlan:
+    return PlannerPlan.model_validate(state["planner_plan"])
+
+
+def _execution_plan(state: RagOrchestrationState) -> ExecutionPlan:
+    return ExecutionPlan.model_validate(state["execution_plan"])
+
+
 def initialize(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
+    payload = _payload(state)
     return {
-        "client": services.get_llm_client(),
         "reformulation_model": services.normalize_model_name(
             payload.reformulationModel,
             DEFAULT_REFORMULATION_MODEL,
@@ -57,9 +74,12 @@ def initialize(state: RagOrchestrationState) -> dict[str, Any]:
     }
 
 
-def reformulate(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
-    client = state["client"]
+def reformulate(
+    state: RagOrchestrationState,
+    runtime: Runtime[RagOrchestrationContext],
+) -> dict[str, Any]:
+    payload = _payload(state)
+    client = runtime.context.client
     reformulation_model = state["reformulation_model"]
     with services.trace_operation(
         "rag.reformulation",
@@ -188,8 +208,11 @@ def reformulate(state: RagOrchestrationState) -> dict[str, Any]:
     }
 
 
-def plan(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
+def plan(
+    state: RagOrchestrationState,
+    runtime: Runtime[RagOrchestrationContext],
+) -> dict[str, Any]:
+    payload = _payload(state)
     contextual_question = state["contextual_question"]
     planner_model = state["planner_model"]
     with services.trace_operation(
@@ -200,7 +223,7 @@ def plan(state: RagOrchestrationState) -> dict[str, Any]:
         planner_plan, planner_prompt, planner_raw, pydantic_verification = (
             services.run_planner(
                 contextual_question,
-                state["client"],
+                runtime.context.client,
                 planner_model,
                 payload.plannerPrompt,
             )
@@ -224,7 +247,7 @@ def plan(state: RagOrchestrationState) -> dict[str, Any]:
             }
         )
     return {
-        "planner_plan": planner_plan,
+        "planner_plan": planner_plan.model_dump(),
         "planner_prompt": planner_prompt,
         "planner_raw": planner_raw,
         "pydantic_verification": pydantic_verification,
@@ -232,7 +255,7 @@ def plan(state: RagOrchestrationState) -> dict[str, Any]:
 
 
 def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
-    planner_plan = state["planner_plan"]
+    planner_plan = _planner_plan(state)
     planned_persons = [
         str(value).strip() for value in planner_plan.persons if str(value).strip()
     ]
@@ -288,8 +311,8 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
 
 
 def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
-    planner_plan = state["planner_plan"]
+    payload = _payload(state)
+    planner_plan = _planner_plan(state)
     execution_plan = services.build_execution_plan(payload, planner_plan)
     if not (
         execution_plan.sql_main_source
@@ -322,7 +345,10 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
         "resolved_companies": state["database_company"],
         "conversation_topic": state["topic_assignment"],
     }
-    return {"execution_plan": execution_plan, "base_retrieval": base_retrieval}
+    return {
+        "execution_plan": execution_plan.model_dump(),
+        "base_retrieval": base_retrieval,
+    }
 
 
 def select_route(
@@ -336,7 +362,7 @@ def select_route(
 ]:
     if state["person_resolution"].get("ambiguous"):
         return "person_clarification"
-    execution_plan = state["execution_plan"]
+    execution_plan = _execution_plan(state)
     if execution_plan.route == "direct":
         return "direct"
     if execution_plan.route == "rag" and execution_plan.sql_main_source:
@@ -347,8 +373,8 @@ def select_route(
 
 
 def person_clarification(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
-    execution_plan = state["execution_plan"]
+    payload = _payload(state)
+    execution_plan = _execution_plan(state)
     retrieval = {
         **state["base_retrieval"],
         "answer_model": services.normalize_model_name(
@@ -392,8 +418,9 @@ def direct(state: RagOrchestrationState) -> dict[str, Any]:
 
 def run_structured_lookup(
     state: RagOrchestrationState,
+    client: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
-    execution_plan = state["execution_plan"]
+    execution_plan = _execution_plan(state)
     sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
     with services.trace_operation(
         "rag.execution_plan",
@@ -411,7 +438,7 @@ def run_structured_lookup(
             if sql_sub_intent == "analytics":
                 sources, direct_trace = services.run_analytics_text_to_sql(
                     execution_plan,
-                    state["client"],
+                    client,
                     state["analytics_sql_model"],
                     database_persons=state["database_persons"],
                     database_companies=state["database_company"],
@@ -437,10 +464,15 @@ def run_structured_lookup(
     return sources, direct_trace, sql_sub_intent
 
 
-def structured_sql(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
-    execution_plan = state["execution_plan"]
-    sources, direct_trace, sql_sub_intent = run_structured_lookup(state)
+def structured_sql(
+    state: RagOrchestrationState,
+    runtime: Runtime[RagOrchestrationContext],
+) -> dict[str, Any]:
+    payload = _payload(state)
+    execution_plan = _execution_plan(state)
+    sources, direct_trace, sql_sub_intent = run_structured_lookup(
+        state, runtime.context.client
+    )
     retrieval = {
         **state["base_retrieval"],
         "answer_model": services.normalize_model_name(
@@ -472,14 +504,19 @@ def structured_sql(state: RagOrchestrationState) -> dict[str, Any]:
     return {"answer": "", "sources": sources, "retrieval": retrieval}
 
 
-def multi_source(state: RagOrchestrationState) -> dict[str, Any]:
-    payload = state["payload"]
-    execution_plan = state["execution_plan"]
+def multi_source(
+    state: RagOrchestrationState,
+    runtime: Runtime[RagOrchestrationContext],
+) -> dict[str, Any]:
+    payload = _payload(state)
+    execution_plan = _execution_plan(state)
     doc_sources: list[dict[str, Any]] = []
     doc_trace: dict[str, Any] = {}
     actions: list[dict[str, Any]] = []
     if execution_plan.sql_main_source:
-        doc_sources, doc_trace, sql_sub_intent = run_structured_lookup(state)
+        doc_sources, doc_trace, sql_sub_intent = run_structured_lookup(
+            state, runtime.context.client
+        )
         actions.append(
             {
                 "action": 1,
@@ -548,7 +585,7 @@ def multi_source(state: RagOrchestrationState) -> dict[str, Any]:
 
 def rag(state: RagOrchestrationState) -> dict[str, Any]:
     sources, retrieval = services.retrieve_chunks(
-        state["payload"], state["execution_plan"]
+        _payload(state), _execution_plan(state)
     )
     retrieval["route"] = "rag"
     retrieval.update(state["base_retrieval"])
@@ -556,7 +593,10 @@ def rag(state: RagOrchestrationState) -> dict[str, Any]:
 
 
 def build_graph():
-    graph = StateGraph(RagOrchestrationState)
+    graph = StateGraph(
+        RagOrchestrationState,
+        context_schema=RagOrchestrationContext,
+    )
     graph.add_node("initialize", initialize)
     graph.add_node("reformulate", reformulate)
     graph.add_node("plan", plan)
@@ -588,5 +628,8 @@ RAG_ORCHESTRATION_GRAPH = build_graph()
 
 
 def invoke(payload: RagRequest) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-    result = RAG_ORCHESTRATION_GRAPH.invoke({"payload": payload})
+    result = RAG_ORCHESTRATION_GRAPH.invoke(
+        {"payload": payload.model_dump()},
+        context=RagOrchestrationContext(client=services.get_llm_client()),
+    )
     return result["answer"], result["sources"], result["retrieval"]

@@ -1482,6 +1482,12 @@ existante sans modifier ses prompts, ses routes, son retrieval ou ses traces. Le
 graphe prépare l'ajout ultérieur d'une étape d'évaluation et de boucles de
 correction bornées ; aucune boucle de correction n'est active actuellement.
 
+Le nœud `orchestrate` appelle lui-même un sous-graphe : `initialize`,
+`reformulate`, `plan`, `resolve_entities` et `build_execution_plan`, puis une
+route conditionnelle parmi `person_clarification`, `direct`, `structured_sql`,
+`multi_source` et `rag`. Cette décomposition reprend les branches historiques de
+`orchestrate_request` sans changer leur comportement.
+
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
 `section` parente puis son résumé `global` lorsqu'ils existent. Ces parents

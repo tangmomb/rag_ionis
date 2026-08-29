@@ -5,12 +5,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from interface.backend import orchestration, planner
+from interface.backend import orchestration, orchestration_graph, planner
 from interface.backend.generation import (
     DEFAULT_ANSWER_PROMPT_TEMPLATE,
     render_answer_system_prompt,
 )
-from interface.backend.schemas import PlannerPlan, RagRequest
+from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 from interface.backend.utilities import normalize_model_name
 
 
@@ -30,6 +30,80 @@ class _Client:
 
 
 class RagModelSelectionTests(unittest.TestCase):
+    def test_orchestration_graph_exposes_existing_planning_and_retrieval_routes(self) -> None:
+        graph = orchestration_graph.RAG_ORCHESTRATION_GRAPH.get_graph()
+
+        self.assertTrue(
+            {
+                "initialize",
+                "reformulate",
+                "plan",
+                "resolve_entities",
+                "build_execution_plan",
+                "person_clarification",
+                "direct",
+                "structured_sql",
+                "multi_source",
+                "rag",
+            }.issubset(graph.nodes)
+        )
+
+    def test_orchestration_graph_preserves_route_precedence(self) -> None:
+        def execution_plan(route: str, *, sql_main_source: bool = False) -> ExecutionPlan:
+            return ExecutionPlan(
+                route=route,
+                raw_question="Question",
+                query_text="Question",
+                query_text_bm25="Question",
+                sql_main_source=sql_main_source,
+            )
+
+        self.assertEqual(
+            orchestration_graph.select_route(
+                {
+                    "person_resolution": {"ambiguous": True},
+                    "execution_plan": execution_plan("direct"),
+                }
+            ),
+            "person_clarification",
+        )
+        self.assertEqual(
+            orchestration_graph.select_route(
+                {
+                    "person_resolution": {"ambiguous": False},
+                    "execution_plan": execution_plan("direct"),
+                }
+            ),
+            "direct",
+        )
+        self.assertEqual(
+            orchestration_graph.select_route(
+                {
+                    "person_resolution": {"ambiguous": False},
+                    "execution_plan": execution_plan("rag", sql_main_source=True),
+                }
+            ),
+            "structured_sql",
+        )
+        self.assertEqual(
+            orchestration_graph.select_route(
+                {
+                    "person_resolution": {"ambiguous": False},
+                    "execution_plan": execution_plan("multi_source"),
+                }
+            ),
+            "multi_source",
+        )
+        self.assertEqual(
+            orchestration_graph.select_route(
+                {
+                    "person_resolution": {"ambiguous": False},
+                    "execution_plan": execution_plan("rag"),
+                }
+            ),
+            "rag",
+        )
+
     def test_sol_terra_luna_aliases_are_normalized(self) -> None:
         self.assertEqual(normalize_model_name("1 sol", "fallback"), "gpt-5.6-sol")
         self.assertEqual(normalize_model_name("2 terra", "fallback"), "gpt-5.6-terra")

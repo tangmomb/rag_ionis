@@ -64,45 +64,12 @@ DISALLOWED_SQL_OBJECTS = re.compile(
 )
 
 
-ANALYTICS_SCHEMA_PROMPT = """Schéma PostgreSQL autorisé (search_path=data,public) :
-
-videos(
-  id bigint primary key,
-  youtube_video_id text,
-  title text,
-  description text,
-  url text,
-  duration_seconds integer,
-  is_long_video boolean,
-  thumbnail_medium_url text,
-  has_subtitles boolean,
-  video_type text,
-  published_at timestamptz,
-  data_collected_date timestamptz
-)
-Valeurs connues de videos.video_type : interview, video_recording, long_video, motion_design.
-
-stats(
-  id bigint primary key,
-  video_id bigint references videos(id),
-  view_count bigint,
-  like_count bigint,
-  comment_count bigint,
-  snapshot_date date,
-  data_collected_date timestamptz
-)
-Il existe plusieurs snapshots par vidéo. Pour les statistiques actuelles, sélectionner
-exactement le snapshot le plus récent de chaque vidéo avec :
-ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1.
-Ce LIMIT 1 doit être corrélé à la vidéo concernée, par exemple dans un JOIN LATERAL
-avec WHERE stats.video_id = videos.id. Ne jamais placer un LIMIT 1 global dans un CTE
-lisant stats : il ne conserverait qu'un seul snapshot pour l'ensemble des vidéos.
-
-speakers(id bigint primary key, name text, title text, data_collected_date timestamptz)
-video_speakers(video_id bigint, speaker_id bigint, data_collected_date timestamptz)
-comments(id bigint primary key, video_id bigint, parent_comment_id bigint,
-         author_name text, text text, like_count bigint, published_at timestamptz,
-         updated_at timestamptz, is_deleted boolean)
+ANALYTICS_SCHEMA_PROMPT = """Schéma autorisé (search_path=data,public) :
+videos(id, title, description, url, thumbnail_medium_url, video_type, published_at, ...)
+stats(id, video_id, view_count, like_count, comment_count, snapshot_date, data_collected_date)
+speakers(id, name, title), video_speakers(video_id, speaker_id)
+comments(id, video_id, parent_comment_id, author_name, text, like_count, published_at, is_deleted)
+video_type : interview, video_recording, long_video, motion_design.
 """
 
 
@@ -118,39 +85,23 @@ qui répond exactement à la question, sans répondre toi-même.
 
 {ANALYTICS_SCHEMA_PROMPT}
 
-Règles obligatoires :
-- sql doit être une unique requête SELECT, éventuellement précédée de CTE WITH.
-- N'utilise que les tables du schéma fourni.
-- N'utilise jamais SELECT *, sauf dans un COUNT(*).
-- Utilise des placeholders psycopg %s pour toute valeur issue de la question et place
-  ces valeurs, dans le même ordre, dans params.
-- N'ajoute ni commentaire SQL ni point-virgule.
-- Pour un classement ou un extremum, trie sur la métrique demandée et applique la
-  limite utile. Ne trie pas par date de publication sauf demande explicite.
-- Pour compter des vidéos, conserve une ligne par vidéo et calcule le total avec
-  COUNT(*) OVER () afin de garder les métadonnées de chaque vidéo.
-- Pour une interview, filtre v.video_type = %s avec la valeur interview dans params.
-- Traite title_hint et les titres mentionnés comme des fragments : utilise v.title ILIKE %s
-  avec une valeur entourée de %, sauf si un identifiant vidéo exact est fourni.
-- Toute analyse portant sur des vidéos doit conserver une ligne concrète par vidéo et
-  retourner v.id AS video_id, v.title AS video_title, v.url AS video_url et
-  v.thumbnail_medium_url AS thumbnail_medium_url.
-- Pour un total ou une comparaison par personne, utilise une fonction fenêtre comme
-  SUM(...) OVER (PARTITION BY speaker) plutôt qu'un GROUP BY qui supprimerait les
-  métadonnées vidéo. Chaque ligne doit rester rattachée à sa vidéo.
-- Pour une statistique YouTube actuelle, utilise uniquement le dernier snapshot de
-  chaque vidéo selon la règle du schéma.
-- Pour comparer plusieurs personnes, cherche les vidéos associées à au moins une de
-  ces personnes avec OR/IN, puis classe leur union. N'exige leur présence dans la même
-  vidéo que si la question dit explicitement « ensemble », « dans la même vidéo » ou
-  demande une coapparition.
-- Les requêtes non agrégées doivent retourner au maximum {MAX_ANALYTICS_ROWS} lignes.
+Règles :
+- Une seule requête SELECT/CTE, tables ci-dessus seulement, sans commentaire ni ;.
+- Toute valeur utilisateur va dans params via %s, dans le même ordre. Pas de SELECT *.
+- Pour les stats actuelles, prends le dernier snapshot de chaque vidéo avec un LIMIT 1
+  corrélé (`WHERE stats.video_id = v.id`), jamais un LIMIT 1 global.
+- `title_hint` nul signifie aucun filtre `v.title`; sinon filtre avec `v.title ILIKE %s`.
+  N'invente jamais un titre depuis une description. Une interview impose
+  `v.video_type = %s` avec `interview`.
+- Toute liste de vidéos retourne `video_id`, `video_title`, `video_url` et
+  `thumbnail_medium_url`; maximum {MAX_ANALYTICS_ROWS} lignes non agrégées.
+- Plusieurs speakers = OR/IN, jamais AND, sauf coapparition explicitement demandée.
+- Une comparaison retourne les stats de tous les éléments concernés : jamais de LIMIT
+  1 final/global; trie seulement si utile. Toute limite finale doit être au moins 6.
+  Le seul LIMIT 1 autorisé est celui, corrélé, qui sélectionne le dernier snapshot.
 
-Exemple « quelle vidéo a le plus de vues ? » :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.view_count FROM videos v JOIN LATERAL (SELECT view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE ORDER BY s.view_count DESC NULLS LAST LIMIT %s","params":[1]}}
-
-Exemple « combien de vidéos interview sur la chaîne ? » :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, COUNT(*) OVER () AS video_count FROM videos v WHERE v.video_type = %s","params":["interview"]}}
+Exemple unique — comparaison de speakers :
+{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.view_count FROM videos v JOIN video_speakers vs ON vs.video_id = v.id JOIN speakers sp ON sp.id = vs.speaker_id JOIN LATERAL (SELECT view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE WHERE sp.name ILIKE %s OR sp.name ILIKE %s ORDER BY s.view_count DESC NULLS LAST","params":["%Déborah Rolland%","%Simon Payen%"]}}
 """
     context = {
         "question": question,

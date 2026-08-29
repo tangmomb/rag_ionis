@@ -556,11 +556,10 @@ def resolve_person_filters(
         normalize_text(person) for person in matched_in_transcripts
     }
     database_person_keys = {normalize_text(person) for person in database_persons}
-    unmatched_candidate_count = sum(
+    fuzzy_candidate_count = sum(
         1
         for candidate in candidates
         if normalize_text(candidate) not in database_person_keys
-        and normalize_text(candidate) not in transcript_match_keys
     )
 
     for candidate in candidates:
@@ -576,9 +575,6 @@ def resolve_person_filters(
                 if person not in matched_in_speakers:
                     matched_in_speakers.append(person)
             continue
-        if normalized_candidate in transcript_match_keys:
-            continue
-
         def person_similarity(person: str) -> float:
             # Les tirets font partie de la graphie d'un prénom composé, mais
             # l'utilisateur peut les omettre ("Lou Ann" / "Lou-Ann").
@@ -646,7 +642,7 @@ def resolve_person_filters(
                 if top_score - score <= 0.02
             ]
             if (
-                unmatched_candidate_count == 1
+                fuzzy_candidate_count == 1
                 and len(best_matches) == 1
                 and best_matches[0][0] > 0.9
             ):
@@ -666,7 +662,11 @@ def resolve_person_filters(
                     score,
                 )
         else:
-            unresolved_candidates.append(candidate)
+            # Une personne mentionnée dans un transcript, mais absente de la table
+            # speakers, reste une cible valide pour la recherche transcript. On ne
+            # la déclare inconnue que si aucune des deux sources ne la connaît.
+            if normalized_candidate not in transcript_match_keys:
+                unresolved_candidates.append(candidate)
 
     if ambiguous_candidates:
         unique_suggestions = ambiguous_suggestions[:3]
@@ -904,42 +904,38 @@ def build_question_reformulation_prompt(
     history = "\n\n".join(
         f"{item['role']}: {item['text']}" for item in history_items
     )
-    default_system_prompt = """Tu reformules le dernier message utilisateur sans y répondre.
-Indique dans follow_up s'il a besoin de l'historique. Le message peut n'avoir aucun rapport avec l'historique précédent si l'utilisateur veut changer de sujet.
+    default_system_prompt = """Reformule le dernier message utilisateur sans y répondre.
+Indique dans `follow_up` s'il dépend de l'historique ; il peut aussi changer de sujet.
 
-Règle absolue d'autonomie : si le message dépend de l'historique,
-reformulated_question doit être entièrement compréhensible par une personne qui ne
-voit ni l'historique ni le message original. Remplace chaque pronom, ordinal et
-référence implicite par le nom, le titre ou l'objet exact trouvé dans l'échange le plus
-récent : il, elle, lui, leur, les deux, la première, la seconde, la dernière, celle-ci,
-dedans, cette vidéo, vidéo mentionnée, etc. Il est interdit de conserver une expression
-comme « la première vidéo mentionnée » : copie le titre exact de cette vidéo et nomme
-aussi la personne concernée si le message y fait référence.
+Si nécessaire, remplace tout pronom, ordinal ou référence implicite par le nom, titre
+ou objet exact. Priorité au dernier échange ; ne consulte les précédents que s'il ne
+suffit pas. Conserve tous les référents réellement demandés.
 
-Test obligatoire avant de répondre : en lisant uniquement reformulated_question, on
-doit pouvoir identifier sans ambiguïté chaque personne, vidéo, entreprise ou élément
-demandé. Si ce test échoue, la reformulation est invalide.
+Ne change pas le sens. `reformulated_question` doit être concis, autonome, en texte normal, sans Markdown.
 
-Exemple : si la dernière réponse cite d'abord « Vidéo A » avec Alice, puis « Vidéo B »,
-« il/elle dit quoi dans la première ? » devient « Que dit Alice dans la vidéo « Vidéo A » ? ».
-
-Résous les références depuis l'échange le plus récent. S'il contient plusieurs
-référents demandés, conserve-les tous et ignore les personnes plus anciennes non
-reprises. L'historique est présenté du plus vieux au plus récent : commence toujours
-par le dernier bloc user/assistant, qui est prioritaire. Consulte un échange antérieur
-seulement si ce dernier bloc ne suffit pas.
-Sinon, reformule sans changer le sens. Sois le plus simple et concis possible.
-reformulated_question doit être du texte normal, sans Markdown."""
+Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre."""
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     memory = memory_context or {}
     active_topic = memory.get("active_topic") or {}
+    related_topics = memory.get("related_topics") or []
     episodes = memory.get("episodes") or []
     memory_sections: list[str] = []
     if active_topic:
         memory_sections.append(
             "Sujet actif (résumé compact, prioritaire pour les pronoms singuliers) :\n"
-            + json.dumps(active_topic, ensure_ascii=False)
+            + str(active_topic)
         )
+    if related_topics:
+        rendered_topics = "\n".join(
+            f"Sujet {index} : {topic.get('summary', '')}"
+            for index, topic in enumerate(related_topics, start=1)
+            if topic.get("summary")
+        )
+        if rendered_topics:
+            memory_sections.append(
+                "Sujets proches récupérés par similarité sémantique (aide seulement si nécessaire) :\n"
+                + rendered_topics
+            )
     if episodes:
         rendered_episodes = "\n\n".join(
             f"Épisode {index} :\n{episode.get('content', '')}"

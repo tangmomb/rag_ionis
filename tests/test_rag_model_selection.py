@@ -149,6 +149,7 @@ class RagModelSelectionTests(unittest.TestCase):
         with (
             patch.object(orchestration, "get_llm_client", return_value=client),
             patch.object(orchestration, "load_reformulation_memory", side_effect=[memory, memory]) as load_memory,
+            patch.object(orchestration, "assign_topic_id", return_value={"topic_id": 47, "decision": "new_topic"}) as assign_topic,
             patch.object(
                 orchestration,
                 "reformulate_question",
@@ -160,11 +161,65 @@ class RagModelSelectionTests(unittest.TestCase):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
         self.assertEqual(reformulate.call_count, 2)
+        assign_topic.assert_called_once_with(46, False)
         self.assertEqual(load_memory.call_args_list[0].kwargs["include_episodes"], False)
         self.assertEqual(load_memory.call_args_list[1].args[1], "Elle a plus de vues qu'eux ?")
+        self.assertNotIn("memory_context", reformulate.call_args_list[0].kwargs)
         self.assertEqual(reformulate.call_args_list[0].kwargs["phase"], "light")
         self.assertEqual(reformulate.call_args_list[1].kwargs["phase"], "final")
-        self.assertEqual(retrieval["question_reformulation"]["strategy"], "light_rewrite+hybrid_memory+final_rewrite")
+        self.assertEqual(retrieval["question_reformulation"]["strategy"], "light_rewrite+topic_match+final_rewrite")
+
+    def test_empty_structured_sql_does_not_fallback_to_rag(self) -> None:
+        client = object()
+        payload = RagRequest(question="Y a-t-il des commentaires ?")
+        plan = PlannerPlan(
+            route="rag",
+            sql_sub_intent="analytics",
+            query_text="Y a-t-il des commentaires ?",
+            sql_main_source=True,
+        )
+        empty_sql_trace = {"sql": "SELECT ...", "params": [], "result_count": 0}
+        with (
+            patch.object(orchestration, "get_llm_client", return_value=client),
+            patch.object(orchestration, "reformulate_question", return_value=(payload.question, {})),
+            patch.object(orchestration, "run_planner", return_value=(plan, "prompt", "raw", True)),
+            patch.object(orchestration, "resolve_person_filters", return_value=([], {"ambiguous": False, "matched_in_transcripts": []})),
+            patch.object(orchestration, "run_analytics_text_to_sql", return_value=([], empty_sql_trace)),
+            patch.object(orchestration, "retrieve_chunks") as retrieve_chunks,
+        ):
+            _answer, sources, retrieval = orchestration.orchestrate_request(payload)
+
+        self.assertEqual(sources, [])
+        self.assertEqual(retrieval["retrieval_mode"], "rag+structured_sql")
+        self.assertEqual(retrieval["direct_lookup"], empty_sql_trace)
+        retrieve_chunks.assert_not_called()
+
+    def test_follow_up_skips_the_final_rewrite(self) -> None:
+        client = object()
+        payload = RagRequest(question="Et elle ?", conversationId=46)
+        plan = PlannerPlan(route="direct", query_text="Et elle ?")
+        memory = {
+            "available": True,
+            "active_topic": "Déborah Rolland : interview et questions posées.",
+            "immediate_history": [{"role": "user", "text": "Quelles questions à Déborah ?"}],
+            "episodes": [],
+        }
+        with (
+            patch.object(orchestration, "get_llm_client", return_value=client),
+            patch.object(orchestration, "load_reformulation_memory", return_value=memory) as load_memory,
+            patch.object(orchestration, "assign_topic_id", return_value={"topic_id": 48, "decision": "current_topic"}) as assign_topic,
+            patch.object(
+                orchestration,
+                "reformulate_question",
+                return_value=("Et Déborah ?", {"follow_up": True}),
+            ) as reformulate,
+            patch.object(orchestration, "run_planner", return_value=(plan, "prompt", "raw", True)),
+        ):
+            orchestration.orchestrate_request(payload)
+
+        load_memory.assert_called_once()
+        assign_topic.assert_called_once_with(46, True)
+        reformulate.assert_called_once()
 
     def test_prompt_builders_accept_custom_system_prompts(self) -> None:
         planner_system, _ = planner.build_planner_prompt(

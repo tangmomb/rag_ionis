@@ -10,7 +10,11 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
-from interface.backend.conversation_memory import load_reformulation_memory
+from interface.backend.conversation_memory import (
+    TOPIC_MATCH_MAX_COSINE_DISTANCE,
+    assign_topic_id,
+    load_reformulation_memory,
+)
 from interface.backend.planner import (
     apply_deterministic_sql_policy,
     build_execution_plan,
@@ -82,7 +86,6 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
             include_episodes=False,
         )
         if memory.get("available"):
-            light_context = {"active_topic": memory.get("active_topic")}
             light_question, light_trace = reformulate_question(
                 payload.question,
                 payload.conversationId,
@@ -90,30 +93,80 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                 reformulation_model,
                 payload.reformulationPrompt,
                 history_override=memory.get("immediate_history", []),
-                memory_context=light_context,
                 phase="light",
             )
-            long_memory = load_reformulation_memory(
-                payload.conversationId,
-                light_question,
-            )
-            # Episodes are retrieved after the light rewrite, then bounded before
-            # the second, definitive rewrite.
-            contextual_question, final_trace = reformulate_question(
-                light_question,
-                payload.conversationId,
-                client,
-                reformulation_model,
-                payload.reformulationPrompt,
-                history_override=memory.get("immediate_history", []),
-                memory_context={
-                    "active_topic": memory.get("active_topic"),
-                    "episodes": long_memory.get("episodes", []),
+            follows_active_topic = bool(light_trace.get("follow_up"))
+            with trace_operation(
+                "rag.conversation_memory.topic_assignment",
+                kind="TOOL",
+                input_value={
+                    "conversation_id": payload.conversationId,
+                    "follow_up": follows_active_topic,
                 },
-                phase="final",
-            )
+            ) as topic_span:
+                topic_assignment = assign_topic_id(
+                    payload.conversationId,
+                    follows_active_topic,
+                )
+                topic_span.set_output(topic_assignment)
+            if follows_active_topic:
+                long_memory = {
+                    "available": True,
+                    "strategy": "final_rewrite_skipped_for_follow_up",
+                    "episodes": [],
+                }
+                contextual_question = light_question
+                final_trace = {
+                    "phase": "final",
+                    "skipped": True,
+                    "reason": "follow_up_uses_light_rewrite",
+                }
+            else:
+                with trace_operation(
+                    "rag.conversation_memory.topic_match",
+                    kind="RETRIEVER",
+                    input_value={
+                        "conversation_id": payload.conversationId,
+                        "question": light_question,
+                        "excluded_topic_id": topic_assignment.get("topic_id"),
+                        "match_max_cosine_distance": TOPIC_MATCH_MAX_COSINE_DISTANCE,
+                    },
+                ) as topic_match_span:
+                    long_memory = load_reformulation_memory(
+                        payload.conversationId,
+                        light_question,
+                        include_episodes=False,
+                        embed_question=True,
+                        exclude_topic_id=topic_assignment.get("topic_id"),
+                    )
+                    topic_match_span.set_output(
+                        {
+                            "available": long_memory.get("available"),
+                            "related_topics": long_memory.get("related_topics", []),
+                            "retrieval": long_memory.get("retrieval", {}),
+                        }
+                    )
+                final_memory_context = {
+                    "related_topics": long_memory.get("related_topics", []),
+                }
+                contextual_question, final_trace = reformulate_question(
+                    light_question,
+                    payload.conversationId,
+                    client,
+                    reformulation_model,
+                    payload.reformulationPrompt,
+                    history_override=[],
+                    memory_context=final_memory_context,
+                    phase="final",
+                )
             reformulation_trace = {
-                "strategy": "light_rewrite+hybrid_memory+final_rewrite",
+                "strategy": (
+                    "light_rewrite_only"
+                    if follows_active_topic
+                    else "light_rewrite+topic_match+final_rewrite"
+                ),
+                "follow_up": follows_active_topic,
+                "topic_assignment": topic_assignment,
                 "light": light_trace,
                 "final": final_trace,
                 "memory": {
@@ -129,6 +182,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                 reformulation_model,
                 payload.reformulationPrompt,
             )
+            topic_assignment = {"reason": "memory_unavailable"}
         reformulation_span.set_output(reformulation_trace)
 
     with trace_operation(
@@ -246,6 +300,7 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
         "company_resolution": company_resolution,
         "resolved_persons": database_persons,
         "resolved_companies": database_company,
+        "conversation_topic": topic_assignment,
     }
 
     if person_resolution.get("ambiguous"):
@@ -321,40 +376,29 @@ def orchestrate_request(payload: RagRequest) -> tuple[str, list[dict[str, Any]],
                     "source_count": len(sources),
                 }
             )
-        fallback_trace: dict[str, Any] = {}
-        retrieval_mode = "rag+structured_sql"
-        if not sources:
-            try:
-                fallback_sources, fallback_trace = retrieve_chunks(payload, execution_plan)
-            except Exception as exc:  # pragma: no cover
-                fallback_trace = {"mode": "rag_fallback", "error": str(exc), "result_count": 0}
-                fallback_sources = []
-            if fallback_sources:
-                sources = fallback_sources
-                retrieval_mode = "rag+structured_sql_fallback"
         answer_model = normalize_model_name(payload.answerModel, DEFAULT_GENERATION_MODEL)
         retrieval = {
             **base_retrieval,
             "answer_model": answer_model,
-            "embedding_model": fallback_trace.get("embedding_model"),
-            "rerank_model": fallback_trace.get("rerank_model"),
-            "retrieval_mode": retrieval_mode,
+            "embedding_model": None,
+            "rerank_model": None,
+            "retrieval_mode": "rag+structured_sql",
             "sql_main_source": True,
             "sql_prefilters": has_structured_sql_filters(execution_plan),
-            "bm25_top_k": fallback_trace.get("bm25_top_k", 0),
-            "vector_top_k": fallback_trace.get("vector_top_k", 0),
-            "rrf_top_n": fallback_trace.get("rrf_top_n", 0),
+            "bm25_top_k": 0,
+            "vector_top_k": 0,
+            "rrf_top_n": 0,
             "final_k": len(sources),
-            "used_rerank": fallback_trace.get("used_rerank", False),
+            "used_rerank": False,
             "general_question_only": not has_structured_sql_filters(execution_plan),
             "sql_query": direct_trace["sql"],
-            "prefilter": fallback_trace.get("prefilter", {}),
-            "sql_prefilters_trace": fallback_trace.get("sql_prefilters_trace", {}),
-            "bm25": fallback_trace.get("bm25", {}),
-            "vector": fallback_trace.get("vector", {}),
-            "rrf": fallback_trace.get("rrf", {}),
-            "rerank": fallback_trace.get("rerank", {}),
-            "direct_lookup": {**direct_trace, "rag_fallback": fallback_trace},
+            "prefilter": {},
+            "sql_prefilters_trace": {},
+            "bm25": {},
+            "vector": {},
+            "rrf": {},
+            "rerank": {},
+            "direct_lookup": direct_trace,
             "sql_sub_intent": sql_sub_intent,
         }
         return "", sources, retrieval

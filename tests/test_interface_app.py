@@ -55,14 +55,12 @@ class InterfaceAppTests(unittest.TestCase):
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
-        from interface.backend.answer_judge import ANSWER_JUDGE_RESPONSE_SCHEMA
 
         schemas = (
             planner.REFORMULATION_RESPONSE_SCHEMA,
             planner.PLANNER_RESPONSE_SCHEMA,
             ANALYTICS_SQL_RESPONSE_SCHEMA,
             generation.ANSWER_RESPONSE_SCHEMA,
-            ANSWER_JUDGE_RESPONSE_SCHEMA,
         )
         for schema in schemas:
             self.assertEqual(schema["type"], "object")
@@ -93,23 +91,14 @@ class InterfaceAppTests(unittest.TestCase):
         )
 
         self.assertLess(len(system_prompt), 1800)
-        self.assertIn("besoin de l'historique", system_prompt)
-        self.assertIn("peut n'avoir aucun rapport avec l'historique précédent", system_prompt)
+        self.assertIn("dépend de l'historique", system_prompt)
         self.assertIn("changer de sujet", system_prompt)
-        self.assertIn("Sois le plus simple et concis possible", system_prompt)
         self.assertIn("follow_up", system_prompt)
         self.assertIn("reformulated_question", system_prompt)
-        self.assertIn("échange le plus récent", system_prompt)
-        self.assertIn("conserve-les tous", system_prompt)
+        self.assertIn("dernier échange", system_prompt)
+        self.assertIn("Conserve tous les référents", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
-        self.assertIn("Règle absolue d'autonomie", system_prompt)
-        self.assertIn("entièrement compréhensible", system_prompt)
-        self.assertIn("la première vidéo mentionnée", system_prompt)
-        self.assertIn("copie le titre exact", system_prompt)
-        self.assertIn("Test obligatoire avant de répondre", system_prompt)
-        self.assertIn("Que dit Alice dans la vidéo « Vidéo A » ?", system_prompt)
-        self.assertIn("du plus vieux au plus récent", system_prompt)
-        self.assertIn("dernier bloc user/assistant", system_prompt)
+        self.assertIn("Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre", system_prompt)
         self.assertIn(
             "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
             "prioritaire) :\n\nuser: Que dit Alice Martin ?",

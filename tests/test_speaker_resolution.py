@@ -401,6 +401,28 @@ class PersonResolutionTests(unittest.TestCase):
             [{"person": "Lou-Ann Corveddu", "score": 1.0}],
         )
 
+    def test_transcript_match_does_not_skip_canonical_speaker_resolution(self) -> None:
+        class TranscriptCursor(_Cursor):
+            def fetchall(self):
+                if "FROM transcripts" in self.sql:
+                    return [("Lou Ann",)]
+                return super().fetchall()
+
+        class TranscriptConnection(_Connection):
+            def cursor(self):
+                return TranscriptCursor()
+
+        with patch.object(
+            planner,
+            "connect_database",
+            return_value=TranscriptConnection(),
+        ):
+            resolved, resolution = planner.resolve_person_filters(["Lou Ann"])
+
+        self.assertEqual(resolved, ["Lou-Ann Corveddu"])
+        self.assertTrue(resolution["auto_resolved"])
+        self.assertEqual(resolution["matched_in_transcripts"], ["Lou Ann"])
+
     def test_single_name_can_match_a_surname(self) -> None:
         plan = PlannerPlan(route="rag", query_text="Ouyaiha", persons=["Ouyaiha"])
         with patch.object(planner, "connect_database", return_value=_Connection()):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from interface.backend import conversation_memory
@@ -43,6 +44,42 @@ class ConversationMemoryTests(unittest.TestCase):
 
         self.assertFalse(memory["available"])
         self.assertEqual(memory["reason"], "database unavailable")
+
+    def test_topic_summary_is_text_generated_by_the_llm(self) -> None:
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                output_text='{"summary":"Lou-Ann Corveddu : vidéo et commentaires à vérifier."}'
+            )
+
+        client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        summary, trace = conversation_memory.summarize_topic_turn(
+            client,
+            "mistral-medium-latest",
+            "Sujet précédent : Déborah.",
+            "Et la vidéo de Lou Ann ?",
+            "Je recherche la vidéo de Lou-Ann Corveddu.",
+        )
+
+        self.assertEqual(summary, "Lou-Ann Corveddu : vidéo et commentaires à vérifier.")
+        self.assertEqual(trace["status"], "completed")
+        self.assertEqual(calls[0]["response_schema"], conversation_memory.MEMORY_SUMMARY_RESPONSE_SCHEMA)
+
+    def test_memory_turn_is_optional_when_database_unavailable(self) -> None:
+        with patch.object(
+            conversation_memory,
+            "connect_database",
+            side_effect=RuntimeError("database unavailable"),
+        ):
+            result = conversation_memory.remember_conversation_turn(
+                12,
+                34,
+                "Et elle ?",
+                "Réponse.",
+            )
+        self.assertFalse(result["available"])
 
 
 if __name__ == "__main__":

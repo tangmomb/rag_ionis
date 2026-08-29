@@ -79,9 +79,73 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     """
+                    DO $$
+                    BEGIN
+                        -- v1 stored topic content directly in conversation_topics.
+                        -- Preserve its ids so messages and Phoenix traces remain valid.
+                        IF to_regclass('chat.conversation_topics') IS NOT NULL
+                           AND EXISTS (
+                               SELECT 1 FROM information_schema.columns
+                               WHERE table_schema = 'chat'
+                                 AND table_name = 'conversation_topics'
+                                 AND column_name = 'summary'
+                           ) THEN
+                            IF to_regclass('chat.topics') IS NOT NULL THEN
+                                RAISE EXCEPTION 'Migration chat impossible: tables topics et conversation_topics (ancienne forme) coexistantes';
+                            END IF;
+                            ALTER TABLE chat.conversation_topics RENAME TO topics;
+                        END IF;
+                    END
+                    $$
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat.topics (
+                        id BIGSERIAL PRIMARY KEY,
+                        summary TEXT NOT NULL DEFAULT '',
+                        embedding vector(2000),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat.conversation_topics (
+                        conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+                        topic_id BIGINT NOT NULL REFERENCES chat.topics(id) ON DELETE CASCADE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        PRIMARY KEY (conversation_id, topic_id)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'topics'
+                              AND column_name = 'conversation_id'
+                        ) THEN
+                            INSERT INTO chat.conversation_topics (conversation_id, topic_id, created_at)
+                            SELECT conversation_id, id, created_at
+                            FROM chat.topics
+                            ON CONFLICT (conversation_id, topic_id) DO NOTHING;
+                            ALTER TABLE chat.topics DROP COLUMN conversation_id;
+                        END IF;
+                    END
+                    $$
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS chat.messages (
                         id BIGSERIAL PRIMARY KEY,
                         conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+                        topic_id BIGINT,
                         user_message TEXT NOT NULL,
                         answer_message TEXT,
                         trace_id TEXT
@@ -93,6 +157,9 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS trace_id TEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS topic_id BIGINT"
                 )
                 cursor.execute(
                     """
@@ -108,6 +175,7 @@ def ensure_chat_schema() -> None:
                               AND column_name NOT IN (
                                   'id',
                                   'conversation_id',
+                                  'topic_id',
                                   'user_message',
                                   'answer_message',
                                   'trace_id'
@@ -128,36 +196,24 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id)"
                 )
+                cursor.execute("DROP TABLE IF EXISTS chat.conversation_episodes")
+                cursor.execute("DROP TABLE IF EXISTS chat.topic_messages")
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS chat.conversation_topics (
-                        id BIGSERIAL PRIMARY KEY,
-                        conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
-                        summary JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        entities JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
+                    DO $$
+                    BEGIN
+                        ALTER TABLE chat.messages
+                        DROP CONSTRAINT IF EXISTS chat_messages_topic_id_fkey;
+                        ALTER TABLE chat.messages
+                        ADD CONSTRAINT chat_messages_topic_id_fkey
+                        FOREIGN KEY (topic_id) REFERENCES chat.topics(id)
+                        ON DELETE SET NULL;
+                    END
+                    $$
                     """
                 )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS chat.conversation_episodes (
-                        id BIGSERIAL PRIMARY KEY,
-                        conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
-                        topic_id BIGINT NOT NULL REFERENCES chat.conversation_topics(id) ON DELETE CASCADE,
-                        message_id BIGINT NOT NULL UNIQUE REFERENCES chat.messages(id) ON DELETE CASCADE,
-                        content TEXT NOT NULL,
-                        entities JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        embedding vector(2000),
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                    """
-                )
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_topics_conversation_updated ON chat.conversation_topics(conversation_id, updated_at DESC)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_episodes_conversation_message ON chat.conversation_episodes(conversation_id, message_id DESC)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_topics_updated ON chat.topics(updated_at DESC)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_conversation_topics_conversation ON chat.conversation_topics(conversation_id, topic_id DESC)")
             connection.commit()
 
         _SCHEMA_READY = True
@@ -173,6 +229,15 @@ def ensure_conversation(connection: psycopg.Connection[Any], conversation_id: in
             return int(row[0])
         cursor.execute("INSERT INTO chat.conversations DEFAULT VALUES RETURNING id")
         return int(cursor.fetchone()[0])
+
+
+def create_conversation() -> int:
+    """Create a conversation before the first LLM call when topic state is needed."""
+    ensure_chat_schema()
+    with connect_database() as connection:
+        conversation_id = ensure_conversation(connection, None)
+        connection.commit()
+    return conversation_id
 
 
 def fetch_conversation_history(
@@ -219,6 +284,7 @@ def store_chat_message(
     user_message: str,
     answer_message: str,
     trace_id: str | None,
+    topic_id: int | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
 
@@ -229,15 +295,17 @@ def store_chat_message(
                 """
                 INSERT INTO chat.messages (
                     conversation_id,
+                    topic_id,
                     user_message,
                     answer_message,
                     trace_id
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     resolved_conversation_id,
+                    topic_id,
                     user_message,
                     answer_message,
                     trace_id,

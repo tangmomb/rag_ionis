@@ -31,6 +31,21 @@ class _Client:
         self.responses = _Responses(outputs)
 
 
+class RagResponseGraphTests(unittest.TestCase):
+    def test_graph_exposes_the_existing_response_pipeline_steps(self) -> None:
+        graph = api.RAG_RESPONSE_GRAPH.get_graph()
+
+        self.assertTrue(
+            {
+                "orchestrate",
+                "generate",
+                "accept_precomputed",
+                "finalize",
+                "persist",
+            }.issubset(graph.nodes)
+        )
+
+
 def _source() -> dict:
     return {
         "chunk_id": 7,

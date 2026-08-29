@@ -1475,6 +1475,13 @@ question est ambiguë et `abstain` si la question est claire mais les preuves
 insuffisantes. Cette décision est enregistrée dans `rag.generation`; aucun appel
 LLM d'évaluation ou de révision supplémentaire n'est effectué.
 
+Le pipeline de réponse est exécuté par un graphe LangGraph séquentiel :
+`orchestrate` mène soit à `generate`, soit à `accept_precomputed`, puis les deux
+branches rejoignent `finalize` et `persist`. Les nœuds appellent la logique métier
+existante sans modifier ses prompts, ses routes, son retrieval ou ses traces. Le
+graphe prépare l'ajout ultérieur d'une étape d'évaluation et de boucles de
+correction bornées ; aucune boucle de correction n'est active actuellement.
+
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
 `section` parente puis son résumé `global` lorsqu'ils existent. Ces parents

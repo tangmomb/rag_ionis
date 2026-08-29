@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from fastapi import APIRouter, HTTPException
+from langgraph.graph import END, START, StateGraph
 
 from interface.backend.database import (
     ConversationNotFoundError,
@@ -32,6 +33,191 @@ from interface.backend.utilities import get_llm_client, normalize_model_name
 
 
 router = APIRouter()
+
+
+class RagResponseState(TypedDict, total=False):
+    """State passed between the existing response-pipeline steps."""
+
+    payload: RagRequest
+    answer: str
+    sources: list[dict[str, Any]]
+    retrieval: dict[str, Any]
+    answer_client: Any
+    answer_trace: dict[str, Any]
+    answer_action: str
+    carousel_sources: list[dict[str, Any]]
+    conversation_id: int
+    message_id: int
+
+
+def _orchestrate_response(state: RagResponseState) -> dict[str, Any]:
+    payload = state["payload"]
+    with trace_operation(
+        "rag.orchestration",
+        kind="AGENT",
+        input_value=payload.model_dump(),
+    ) as orchestration_span:
+        answer, sources, retrieval = orchestrate_request(payload)
+        orchestration_span.set_output(
+            {
+                "answer_provided": bool(answer),
+                "sources": sources,
+                "retrieval": retrieval,
+            }
+        )
+    return {
+        "answer": answer,
+        "sources": sources,
+        "retrieval": retrieval,
+    }
+
+
+def _generate_response(state: RagResponseState) -> dict[str, Any]:
+    payload = state["payload"]
+    retrieval = state["retrieval"]
+    sources = state["sources"]
+    answer = state["answer"]
+    answer_client = get_llm_client()
+    answer_trace: dict[str, Any] = {}
+    with trace_operation(
+        "rag.generation",
+        kind="CHAIN",
+        input_value={
+            "question": retrieval.get("contextual_question", payload.question),
+            "model": retrieval["answer_model"],
+            "sources": sources,
+        },
+    ) as generation_span:
+        answer = generate_final_answer(
+            answer_client,
+            retrieval.get("contextual_question", payload.question),
+            retrieval["answer_model"],
+            retrieval,
+            sources,
+            answer_trace,
+            payload.answerPrompt,
+        )
+        generation_span.set_output(
+            {
+                "answer": answer,
+                "trace": answer_trace,
+            }
+        )
+    return {
+        "answer": answer,
+        "answer_client": answer_client,
+        "answer_trace": answer_trace,
+    }
+
+
+def _accept_precomputed_response(state: RagResponseState) -> dict[str, Any]:
+    return {
+        "answer_client": get_llm_client(),
+        "answer_trace": {"action": "answer"},
+    }
+
+
+def _generation_route(state: RagResponseState) -> Literal["generate", "accept_precomputed"]:
+    return "accept_precomputed" if state["answer"] else "generate"
+
+
+def _finalize_response(state: RagResponseState) -> dict[str, Any]:
+    answer = state["answer"]
+    sources = state["sources"]
+    retrieval = state["retrieval"]
+    answer_trace = state["answer_trace"]
+    answer_action = answer_trace.get("action", "abstain")
+    retrieval["answer_action"] = answer_action
+    if answer_action in {"answer", "clarify"}:
+        answer, carousel_sources = select_answer_sources(
+            answer,
+            sources,
+            answer_trace.get("source_indexes"),
+        )
+    else:
+        carousel_sources = []
+    retrieval["answer_source_indexes"] = [
+        index for index, source in enumerate(sources, start=1) if source in carousel_sources
+    ]
+    return {
+        "answer": answer,
+        "answer_action": answer_action,
+        "carousel_sources": carousel_sources,
+    }
+
+
+def _persist_response(state: RagResponseState) -> dict[str, Any]:
+    payload = state["payload"]
+    answer = state["answer"]
+    retrieval = state["retrieval"]
+    answer_client = state["answer_client"]
+    trace_id = current_trace_id()
+    retrieval["telemetry"] = {
+        "trace_id": trace_id,
+        "project": telemetry_status().get("project"),
+    }
+    with trace_operation(
+        "rag.store_message",
+        kind="TOOL",
+        input_value={
+            "conversation_id": payload.conversationId,
+            "trace_id": trace_id,
+        },
+    ) as storage_span:
+        conversation_id, message_id = store_chat_message(
+            conversation_id=payload.conversationId,
+            user_message=payload.question,
+            answer_message=answer,
+            trace_id=trace_id,
+            topic_id=(retrieval.get("conversation_topic") or {}).get("topic_id"),
+        )
+        with trace_operation(
+            "rag.conversation_memory.summary",
+            kind="CHAIN",
+            input_value={
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "question": payload.question,
+            },
+        ) as memory_span:
+            memory_update = remember_conversation_turn(
+                conversation_id,
+                message_id,
+                payload.question,
+                answer,
+                summary_client=answer_client,
+                summary_model=retrieval.get("answer_model") or DEFAULT_GENERATION_MODEL,
+                topic_id=(retrieval.get("conversation_topic") or {}).get("topic_id"),
+            )
+            memory_span.set_output(memory_update)
+        storage_span.set_session_id(conversation_id)
+        storage_span.set_output(
+            {"conversation_id": conversation_id, "message_id": message_id, "memory": memory_update}
+        )
+    retrieval["conversation_memory"] = memory_update
+    return {
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+    }
+
+
+def build_rag_response_graph():
+    graph = StateGraph(RagResponseState)
+    graph.add_node("orchestrate", _orchestrate_response)
+    graph.add_node("generate", _generate_response)
+    graph.add_node("accept_precomputed", _accept_precomputed_response)
+    graph.add_node("finalize", _finalize_response)
+    graph.add_node("persist", _persist_response)
+    graph.add_edge(START, "orchestrate")
+    graph.add_conditional_edges("orchestrate", _generation_route)
+    graph.add_edge("generate", "finalize")
+    graph.add_edge("accept_precomputed", "finalize")
+    graph.add_edge("finalize", "persist")
+    graph.add_edge("persist", END)
+    return graph.compile()
+
+
+RAG_RESPONSE_GRAPH = build_rag_response_graph()
 
 
 @router.get("/llm-models")
@@ -81,107 +267,7 @@ def execute_rag(payload: RagRequest) -> RagResponse:
     try:
         if payload.conversationId is None:
             payload.conversationId = create_conversation()
-        with trace_operation(
-            "rag.orchestration",
-            kind="AGENT",
-            input_value=payload.model_dump(),
-        ) as orchestration_span:
-            answer, sources, retrieval = orchestrate_request(payload)
-            orchestration_span.set_output(
-                {
-                    "answer_provided": bool(answer),
-                    "sources": sources,
-                    "retrieval": retrieval,
-                }
-            )
-
-        answer_client = get_llm_client()
-        answer_trace: dict[str, Any] = {}
-        if not answer:
-            with trace_operation(
-                "rag.generation",
-                kind="CHAIN",
-                input_value={
-                    "question": retrieval.get("contextual_question", payload.question),
-                    "model": retrieval["answer_model"],
-                    "sources": sources,
-                },
-            ) as generation_span:
-                answer = generate_final_answer(
-                    answer_client,
-                    retrieval.get("contextual_question", payload.question),
-                    retrieval["answer_model"],
-                    retrieval,
-                    sources,
-                    answer_trace,
-                    payload.answerPrompt,
-                )
-                generation_span.set_output(
-                    {
-                        "answer": answer,
-                        "trace": answer_trace,
-                    }
-                )
-        else:
-            answer_trace["action"] = "answer"
-
-        answer_action = answer_trace.get("action", "abstain")
-        retrieval["answer_action"] = answer_action
-        if answer_action in {"answer", "clarify"}:
-            answer, carousel_sources = select_answer_sources(
-                answer,
-                sources,
-                answer_trace.get("source_indexes"),
-            )
-        else:
-            carousel_sources = []
-        retrieval["answer_source_indexes"] = [
-            index for index, source in enumerate(sources, start=1) if source in carousel_sources
-        ]
-        trace_id = current_trace_id()
-        retrieval["telemetry"] = {
-            "trace_id": trace_id,
-            "project": telemetry_status().get("project"),
-        }
-        with trace_operation(
-            "rag.store_message",
-            kind="TOOL",
-            input_value={
-                "conversation_id": payload.conversationId,
-                "trace_id": trace_id,
-            },
-        ) as storage_span:
-            conversation_id, message_id = store_chat_message(
-                conversation_id=payload.conversationId,
-                user_message=payload.question,
-                answer_message=answer,
-                trace_id=trace_id,
-                topic_id=(retrieval.get("conversation_topic") or {}).get("topic_id"),
-            )
-            with trace_operation(
-                "rag.conversation_memory.summary",
-                kind="CHAIN",
-                input_value={
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                    "question": payload.question,
-                },
-            ) as memory_span:
-                memory_update = remember_conversation_turn(
-                    conversation_id,
-                    message_id,
-                    payload.question,
-                    answer,
-                    summary_client=answer_client,
-                    summary_model=retrieval.get("answer_model") or DEFAULT_GENERATION_MODEL,
-                    topic_id=(retrieval.get("conversation_topic") or {}).get("topic_id"),
-                )
-                memory_span.set_output(memory_update)
-            storage_span.set_session_id(conversation_id)
-            storage_span.set_output(
-                {"conversation_id": conversation_id, "message_id": message_id, "memory": memory_update}
-            )
-        retrieval["conversation_memory"] = memory_update
+        result = RAG_RESPONSE_GRAPH.invoke({"payload": payload})
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HTTPException:
@@ -190,12 +276,12 @@ def execute_rag(payload: RagRequest) -> RagResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return RagResponse(
-        conversation_id=conversation_id,
-        message_id=message_id,
-        answer=answer,
-        action=answer_action,
-        sources=[ChunkSource(**source) for source in carousel_sources],
-        retrieval=retrieval,
+        conversation_id=result["conversation_id"],
+        message_id=result["message_id"],
+        answer=result["answer"],
+        action=result["answer_action"],
+        sources=[ChunkSource(**source) for source in result["carousel_sources"]],
+        retrieval=result["retrieval"],
     )
 
 

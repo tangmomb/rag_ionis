@@ -71,6 +71,14 @@ def shadow_evaluation_model(default_model: str) -> str:
     return os.getenv("RAG_SHADOW_EVALUATION_MODEL", "").strip() or default_model
 
 
+def correction_loop_enabled() -> bool:
+    return os.getenv("RAG_CORRECTION_LOOP_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 def _source_excerpt(source: dict[str, Any]) -> dict[str, Any]:
     return {
         "video_title": source.get("video_title"),

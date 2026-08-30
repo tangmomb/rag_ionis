@@ -1566,6 +1566,14 @@ campagne indépendamment des reprises d'exemples configurées par `--retries`.
 En dehors des expériences, les mêmes limites peuvent être configurées avec
 `RAG_LLM_REQUEST_TIMEOUT_SECONDS` et `RAG_LLM_MAX_RETRIES`.
 
+La première boucle de correction LangGraph est disponible avec
+`RAG_CORRECTION_LOOP_ENABLED=true`. Elle est désactivée par défaut, ne traite
+que `verdict=needs_correction` et effectue au maximum une régénération avec les
+mêmes sources avant une seconde évaluation. Si la régénération échoue, la
+réponse initiale est conservée.
+Pour une expérience isolée, utiliser `--shadow-evaluation --correction-loop` ;
+ce réglage est transmis uniquement au contexte LangGraph de la campagne.
+
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :
 

@@ -100,6 +100,7 @@ class RagExperimentSettings:
     openai_service_tier: str | None = None
     shadow_evaluation: bool = False
     shadow_evaluation_model: str = DEFAULT_REFORMULATION_MODEL
+    correction_loop: bool = False
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Il ne modifie jamais la reponse utilisateur."
         ),
     )
+    parser.add_argument(
+        "--correction-loop",
+        action="store_true",
+        help=(
+            "Autorise une correction maximum apres un verdict shadow "
+            "needs_correction."
+        ),
+    )
     parser.add_argument("--top-k", type=positive_integer, default=DEFAULT_TOP_K)
     parser.add_argument("--final-k", type=positive_integer, default=DEFAULT_FINAL_K)
     parser.add_argument(
@@ -349,6 +358,7 @@ def compact_experiment_output(
             "used_rerank": retrieval.get("used_rerank"),
             "source_evaluation": retrieval.get("source_evaluation"),
             "shadow_evaluation": dict(shadow_evaluation or {}),
+            "correction": retrieval.get("correction"),
         },
     }
 
@@ -362,6 +372,7 @@ def build_rag_task(settings: RagExperimentSettings):
             shadow_evaluation_enabled_override=settings.shadow_evaluation,
             shadow_evaluation_model_override=settings.shadow_evaluation_model,
             shadow_evaluation_sink=shadow_diagnostic,
+            correction_loop_enabled_override=settings.correction_loop,
         )
         return compact_experiment_output(response, shadow_diagnostic)
 
@@ -913,6 +924,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             args.shadow_evaluation_model,
             DEFAULT_REFORMULATION_MODEL,
         ),
+        correction_loop=args.correction_loop,
     )
 
     ensure_chat_schema()
@@ -982,6 +994,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "shadow_evaluation_provider": model_provider_name(
                     settings.shadow_evaluation_model
                 ),
+                "correction_loop": settings.correction_loop,
                 "llm_timeout_seconds": args.llm_timeout,
                 "llm_max_retries": args.llm_max_retries,
             },

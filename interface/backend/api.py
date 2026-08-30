@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from interface.backend.answer_evaluation import (
+    correction_loop_enabled,
     evaluate_answer_shadow,
     shadow_evaluation_enabled,
     shadow_evaluation_model,
@@ -55,6 +56,9 @@ class RagResponseState(TypedDict, total=False):
     carousel_sources: list[dict[str, Any]]
     conversation_id: int
     message_id: int
+    correction_count: int
+    correction_requested: bool
+    shadow_evaluation_history: list[dict[str, Any]]
 
 
 @dataclass
@@ -63,6 +67,7 @@ class RagResponseContext:
     shadow_evaluation_enabled_override: bool | None = None
     shadow_evaluation_model_override: str | None = None
     shadow_evaluation_sink: dict[str, Any] | None = None
+    correction_loop_enabled_override: bool | None = None
 
 
 def _response_payload(state: RagResponseState) -> RagRequest:
@@ -229,7 +234,108 @@ def _evaluate_response(
     if runtime.context.shadow_evaluation_sink is not None:
         runtime.context.shadow_evaluation_sink.clear()
         runtime.context.shadow_evaluation_sink.update(checkpoint_evaluation)
-    return {"shadow_evaluation": checkpoint_evaluation}
+    correction_enabled = runtime.context.correction_loop_enabled_override
+    if correction_enabled is None:
+        correction_enabled = correction_loop_enabled()
+    correction_requested = bool(
+        correction_enabled
+        and checkpoint_evaluation.get("verdict") == "needs_correction"
+        and state.get("correction_count", 0) < 1
+        and route != "direct"
+    )
+    return {
+        "shadow_evaluation": checkpoint_evaluation,
+        "correction_requested": correction_requested,
+    }
+
+
+def _correction_prompt(
+    base_prompt: str | None,
+    evaluation: dict[str, Any],
+    previous_answer: str,
+) -> str:
+    correction_context = {
+        "issue": evaluation.get("issue"),
+        "reason": evaluation.get("reason"),
+        "suggested_correction": evaluation.get("suggested_correction"),
+        "previous_answer": previous_answer,
+    }
+    return (
+        f"{base_prompt or ''}\n\n"
+        "Correction interne obligatoire : produis une nouvelle réponse en "
+        "corrigeant uniquement le problème décrit ci-dessous. Reste strictement "
+        "fondé sur les mêmes sources et n'invente aucune information.\n"
+        f"{correction_context}"
+    ).strip()
+
+
+def _correct_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
+    payload = _response_payload(state)
+    retrieval = dict(state["retrieval"])
+    evaluation = dict(state["shadow_evaluation"])
+    previous_answer = state["answer"]
+    answer_trace: dict[str, Any] = {}
+    correction_count = state.get("correction_count", 0) + 1
+    correction_metadata: dict[str, Any] = {
+        "attempted": True,
+        "count": correction_count,
+        "issue": evaluation.get("issue"),
+    }
+    with trace_operation(
+        "rag.correction",
+        kind="CHAIN",
+        input_value={
+            "question": retrieval.get("contextual_question", payload.question),
+            "model": retrieval.get("answer_model"),
+            "evaluation": evaluation,
+            "attempt": correction_count,
+        },
+    ) as correction_span:
+        try:
+            answer_client = runtime.context.answer_client or get_llm_client()
+            runtime.context.answer_client = answer_client
+            corrected_answer = generate_final_answer(
+                answer_client,
+                retrieval.get("contextual_question", payload.question),
+                retrieval["answer_model"],
+                retrieval,
+                state["sources"],
+                answer_trace,
+                _correction_prompt(payload.answerPrompt, evaluation, previous_answer),
+            )
+            correction_metadata["succeeded"] = True
+        except Exception as exc:  # Une correction ne doit jamais perdre la réponse initiale.
+            corrected_answer = previous_answer
+            answer_trace = dict(state["answer_trace"])
+            correction_metadata.update({"succeeded": False, "error": str(exc)})
+        correction_span.set_output(
+            {
+                "succeeded": correction_metadata["succeeded"],
+                "answer": corrected_answer,
+                "trace": answer_trace,
+            }
+        )
+    retrieval["correction"] = correction_metadata
+    return {
+        "answer": corrected_answer,
+        "answer_trace": answer_trace,
+        "retrieval": retrieval,
+        "correction_count": correction_count,
+        "correction_requested": False,
+        "shadow_evaluation_history": [
+            *state.get("shadow_evaluation_history", []),
+            evaluation,
+        ],
+    }
+
+
+def _post_evaluation_route(
+    state: RagResponseState,
+) -> Literal["correct", "finalize"]:
+    return "correct" if state.get("correction_requested", False) else "finalize"
 
 
 def _finalize_response(state: RagResponseState) -> dict[str, Any]:
@@ -324,13 +430,15 @@ def build_rag_response_graph():
     graph.add_node("generate", _generate_response)
     graph.add_node("accept_precomputed", _accept_precomputed_response)
     graph.add_node("evaluate", _evaluate_response)
+    graph.add_node("correct", _correct_response)
     graph.add_node("finalize", _finalize_response)
     graph.add_node("persist", _persist_response)
     graph.add_edge(START, "orchestrate")
     graph.add_conditional_edges("orchestrate", _generation_route)
     graph.add_edge("generate", "evaluate")
     graph.add_edge("accept_precomputed", "evaluate")
-    graph.add_edge("evaluate", "finalize")
+    graph.add_conditional_edges("evaluate", _post_evaluation_route)
+    graph.add_edge("correct", "evaluate")
     graph.add_edge("finalize", "persist")
     graph.add_edge("persist", END)
     return graph.compile()
@@ -385,6 +493,7 @@ def execute_rag(
     shadow_evaluation_enabled_override: bool | None = None,
     shadow_evaluation_model_override: str | None = None,
     shadow_evaluation_sink: dict[str, Any] | None = None,
+    correction_loop_enabled_override: bool | None = None,
 ) -> RagResponse:
     if not payload.useSql:
         raise HTTPException(status_code=400, detail="Le backend actuel attend useSql=true pour interroger la base.")
@@ -402,6 +511,9 @@ def execute_rag(
                     shadow_evaluation_model_override
                 ),
                 shadow_evaluation_sink=shadow_evaluation_sink,
+                correction_loop_enabled_override=(
+                    correction_loop_enabled_override
+                ),
             ),
         )
     except ConversationNotFoundError as exc:
@@ -427,6 +539,7 @@ def run_rag(
     shadow_evaluation_enabled_override: bool | None = None,
     shadow_evaluation_model_override: str | None = None,
     shadow_evaluation_sink: dict[str, Any] | None = None,
+    correction_loop_enabled_override: bool | None = None,
 ) -> RagResponse:
     with trace_operation(
         "rag.request",
@@ -453,6 +566,9 @@ def run_rag(
                 shadow_evaluation_model_override
             ),
             shadow_evaluation_sink=shadow_evaluation_sink,
+            correction_loop_enabled_override=(
+                correction_loop_enabled_override
+            ),
         )
         request_span.set_session_id(response.conversation_id)
         request_span.set_attribute("rag.action", response.action)

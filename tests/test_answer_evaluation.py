@@ -45,6 +45,7 @@ class RagResponseGraphTests(unittest.TestCase):
                 "generate",
                 "accept_precomputed",
                 "evaluate",
+                "correct",
                 "finalize",
                 "persist",
             }.issubset(graph.nodes)
@@ -104,7 +105,8 @@ class RagResponseGraphTests(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual(result, {"shadow_evaluation": diagnostic})
+        self.assertEqual(result["shadow_evaluation"], diagnostic)
+        self.assertFalse(result["correction_requested"])
         self.assertEqual(sink, diagnostic)
         self.assertEqual(state["answer"], "Réponse inchangée")
         evaluator.assert_called_once()
@@ -156,6 +158,172 @@ class RagResponseGraphTests(unittest.TestCase):
 
         self.assertEqual(result["shadow_evaluation"]["status"], "not_applicable")
         evaluator.assert_not_called()
+
+    def test_evaluation_requests_at_most_one_correction(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "answer"},
+            "correction_count": 0,
+        }
+        diagnostic = {
+            "enabled": True,
+            "mode": "shadow",
+            "verdict": "needs_correction",
+            "issue": "unsupported_answer",
+            "status": "unsupported_answer",
+            "reason": "Affirmation non étayée.",
+        }
+        runtime = Runtime(
+            context=api.RagResponseContext(
+                answer_client=object(),
+                shadow_evaluation_enabled_override=True,
+                correction_loop_enabled_override=True,
+            )
+        )
+        with patch.object(api, "evaluate_answer_shadow", return_value=diagnostic):
+            first = api._evaluate_response(state, runtime)
+            second = api._evaluate_response(
+                {**state, "correction_count": 1},
+                runtime,
+            )
+
+        self.assertTrue(first["correction_requested"])
+        self.assertFalse(second["correction_requested"])
+        self.assertEqual(api._post_evaluation_route(first), "correct")
+        self.assertEqual(api._post_evaluation_route(second), "finalize")
+
+    def test_correction_regenerates_with_same_sources_and_records_attempt(self) -> None:
+        state = {
+            "payload": RagRequest(
+                question="Question",
+                answerPrompt="Prompt initial",
+            ).model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {
+                "route": "rag",
+                "answer_model": "answer-model",
+                "contextual_question": "Question autonome",
+            },
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "unsupported_answer",
+                "reason": "Une affirmation dépasse les sources.",
+                "suggested_correction": "Supprimer cette affirmation.",
+            },
+        }
+        runtime = Runtime(context=api.RagResponseContext(answer_client=object()))
+
+        def generate(_client, question, model, retrieval, sources, trace, prompt):
+            self.assertEqual(question, "Question autonome")
+            self.assertEqual(model, "answer-model")
+            self.assertEqual(sources, state["sources"])
+            self.assertIn("Réponse initiale", prompt)
+            self.assertIn("unsupported_answer", prompt)
+            trace.update({"action": "answer", "source_indexes": [1]})
+            return "Réponse corrigée"
+
+        with patch.object(api, "generate_final_answer", side_effect=generate):
+            result = api._correct_response(state, runtime)
+
+        self.assertEqual(result["answer"], "Réponse corrigée")
+        self.assertEqual(result["correction_count"], 1)
+        self.assertTrue(result["retrieval"]["correction"]["succeeded"])
+        self.assertEqual(len(result["shadow_evaluation_history"]), 1)
+
+    def test_failed_correction_keeps_the_initial_answer(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "unsupported_answer",
+            },
+        }
+        runtime = Runtime(context=api.RagResponseContext(answer_client=object()))
+        with patch.object(
+            api,
+            "generate_final_answer",
+            side_effect=RuntimeError("échec correction"),
+        ):
+            result = api._correct_response(state, runtime)
+
+        self.assertEqual(result["answer"], "Réponse initiale")
+        self.assertFalse(result["retrieval"]["correction"]["succeeded"])
+
+    def test_graph_runs_one_correction_then_finalizes(self) -> None:
+        diagnostics = [
+            {
+                "verdict": "needs_correction",
+                "issue": "unsupported_answer",
+                "status": "unsupported_answer",
+                "reason": "Réponse non étayée.",
+                "suggested_correction": "Retirer l'affirmation.",
+            },
+            {
+                "verdict": "acceptable",
+                "issue": "none",
+                "status": "acceptable",
+                "reason": "Réponse corrigée.",
+            },
+        ]
+
+        def generate(_client, _question, _model, _retrieval, _sources, trace, _prompt):
+            trace.update({"action": "answer", "source_indexes": [1]})
+            return "Réponse initiale" if generator.call_count == 1 else "Réponse corrigée"
+
+        with (
+            patch.object(
+                api,
+                "orchestrate_request",
+                return_value=(
+                    "",
+                    [_source()],
+                    {
+                        "route": "rag",
+                        "answer_model": "answer-model",
+                        "contextual_question": "Question",
+                    },
+                ),
+            ),
+            patch.object(api, "get_llm_client", return_value=object()),
+            patch.object(api, "generate_final_answer", side_effect=generate) as generator,
+            patch.object(api, "evaluate_answer_shadow", side_effect=diagnostics) as evaluator,
+            patch.object(
+                api,
+                "select_answer_sources",
+                side_effect=lambda answer, sources, _indexes: (answer, sources),
+            ),
+            patch.object(api, "store_chat_message", return_value=(3, 9)),
+            patch.object(api, "remember_conversation_turn", return_value={}),
+            patch.object(api, "current_trace_id", return_value="trace-1"),
+            patch.object(api, "telemetry_status", return_value={"project": "test"}),
+        ):
+            result = api.RAG_RESPONSE_GRAPH.invoke(
+                {
+                    "payload": RagRequest(
+                        question="Question",
+                        conversationId=3,
+                    ).model_dump()
+                },
+                context=api.RagResponseContext(
+                    shadow_evaluation_enabled_override=True,
+                    correction_loop_enabled_override=True,
+                ),
+            )
+
+        self.assertEqual(result["answer"], "Réponse corrigée")
+        self.assertEqual(result["correction_count"], 1)
+        self.assertEqual(result["shadow_evaluation"]["verdict"], "acceptable")
+        self.assertEqual(generator.call_count, 2)
+        self.assertEqual(evaluator.call_count, 2)
 
     def test_shadow_evaluator_uses_a_strict_structured_response(self) -> None:
         client = _Client(

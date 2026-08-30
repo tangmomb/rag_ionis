@@ -95,6 +95,7 @@ class RunPhoenixExperimentTests(unittest.TestCase):
                 kwargs["shadow_evaluation_model_override"],
                 run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
             )
+            self.assertFalse(kwargs["correction_loop_enabled_override"])
             kwargs["shadow_evaluation_sink"].update(
                 {
                     "status": "acceptable",
@@ -194,6 +195,19 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
         self.assertEqual(args.llm_timeout, 60)
         self.assertEqual(args.llm_max_retries, 0)
+
+    def test_parser_enables_bounded_correction_explicitly(self) -> None:
+        args = run_phoenix_experiment.build_parser().parse_args(
+            [
+                "--dataset",
+                "questions-rag",
+                "--shadow-evaluation",
+                "--correction-loop",
+            ]
+        )
+
+        self.assertTrue(args.shadow_evaluation)
+        self.assertTrue(args.correction_loop)
 
     def test_builtin_evaluators_handle_failed_task_output(self) -> None:
         self.assertFalse(run_phoenix_experiment.response_nonempty(None))

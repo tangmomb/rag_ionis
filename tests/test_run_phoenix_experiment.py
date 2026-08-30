@@ -227,6 +227,39 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             "not_run",
         )
 
+    def test_correction_evaluators_report_attempt_and_strategy(self) -> None:
+        output = {
+            "diagnostics": {
+                "correction": {
+                    "attempted": True,
+                    "count": 1,
+                    "succeeded": True,
+                    "strategy": "regenerate_answer",
+                    "issue": "unsupported_answer",
+                }
+            }
+        }
+
+        self.assertEqual(
+            run_phoenix_experiment.correction_outcome(output)["label"],
+            "succeeded",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.correction_count(output),
+            (1.0, "attempted"),
+        )
+        output["diagnostics"]["shadow_evaluation"] = {
+            "verdict": "acceptable"
+        }
+        self.assertEqual(
+            run_phoenix_experiment.correction_effectiveness(output)["label"],
+            "effective",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.correction_outcome(None)["label"],
+            "not_attempted",
+        )
+
     def test_parser_supports_single_example_dry_run(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args(
             ["--dataset", "questions-rag", "--dry-run"]

@@ -365,6 +365,18 @@ class RagResponseGraphTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Réponse initiale")
         self.assertFalse(result["retrieval"]["correction"]["succeeded"])
 
+    def test_finalize_removes_postgresql_nul_characters(self) -> None:
+        result = api._finalize_response(
+            {
+                "answer": "Réponse\x00 corrigée",
+                "sources": [],
+                "retrieval": {},
+                "answer_trace": {"action": "answer"},
+            }
+        )
+
+        self.assertEqual(result["answer"], "Réponse corrigée")
+
     def test_graph_runs_one_correction_then_finalizes(self) -> None:
         diagnostics = [
             {
@@ -429,6 +441,7 @@ class RagResponseGraphTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Réponse corrigée")
         self.assertEqual(result["correction_count"], 1)
         self.assertEqual(result["shadow_evaluation"]["verdict"], "acceptable")
+        self.assertEqual(len(result["retrieval"]["shadow_evaluation_history"]), 1)
         self.assertEqual(generator.call_count, 2)
         self.assertEqual(evaluator.call_count, 2)
 

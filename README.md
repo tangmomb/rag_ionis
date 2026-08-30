@@ -1575,6 +1575,11 @@ seconde évaluation. `unsupported_answer` régénère avec les mêmes sources,
 la réponse initiale est conservée.
 Pour une expérience isolée, utiliser `--shadow-evaluation --correction-loop` ;
 ce réglage est transmis uniquement au contexte LangGraph de la campagne.
+Phoenix publie alors aussi `correction_outcome`, `correction_count` et
+`correction_effectiveness` afin de comparer les réponses finales et le coût des
+corrections avec une baseline. L'activation en production doit rester
+désactivée tant qu'une campagne labellisée montre une régression de
+`answer_action_match`, même si le grounding s'améliore.
 
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :

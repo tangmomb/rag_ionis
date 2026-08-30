@@ -359,6 +359,9 @@ def compact_experiment_output(
             "source_evaluation": retrieval.get("source_evaluation"),
             "shadow_evaluation": dict(shadow_evaluation or {}),
             "correction": retrieval.get("correction"),
+            "shadow_evaluation_history": retrieval.get(
+                "shadow_evaluation_history", []
+            ),
         },
     }
 
@@ -405,6 +408,53 @@ def answer_action_match(
         "match" if matches else "mismatch",
         f"attendu={expected_action}; obtenu={actual_action}",
     )
+
+
+def _correction_diagnostic(output: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    output = output or {}
+    diagnostics = output.get("diagnostics") or {}
+    if not isinstance(diagnostics, Mapping):
+        return {}
+    correction = diagnostics.get("correction") or {}
+    return correction if isinstance(correction, Mapping) else {}
+
+
+def correction_outcome(output: Mapping[str, Any] | None) -> dict[str, str]:
+    correction = _correction_diagnostic(output)
+    if not correction.get("attempted"):
+        return {"label": "not_attempted"}
+    succeeded = bool(correction.get("succeeded"))
+    return {
+        "label": "succeeded" if succeeded else "failed",
+        "explanation": str(
+            correction.get("error")
+            or f"strategy={correction.get('strategy')}; issue={correction.get('issue')}"
+        ),
+    }
+
+
+def correction_count(output: Mapping[str, Any] | None) -> tuple[float, str]:
+    correction = _correction_diagnostic(output)
+    count = int(correction.get("count") or 0)
+    return float(count), "attempted" if count else "not_attempted"
+
+
+def correction_effectiveness(output: Mapping[str, Any] | None) -> dict[str, str]:
+    correction = _correction_diagnostic(output)
+    if not correction.get("attempted"):
+        return {"label": "not_attempted"}
+    if not correction.get("succeeded"):
+        return {
+            "label": "failed",
+            "explanation": str(correction.get("error") or "Correction échouée."),
+        }
+    verdict = str(_shadow_diagnostic(output).get("verdict") or "not_run")
+    return {
+        "label": "effective" if verdict == "acceptable" else "ineffective",
+        "explanation": f"final_verdict={verdict}",
+    }
+
+
 def _shadow_diagnostic(
     output: Mapping[str, Any] | None,
 ) -> Mapping[str, Any]:
@@ -956,6 +1006,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "shadow_retrieval_quality": shadow_retrieval_quality,
                     "shadow_verdict_match": shadow_verdict_match,
                     "shadow_issue_match": shadow_issue_match,
+                }
+            )
+        if settings.correction_loop:
+            evaluators.update(
+                {
+                    "correction_outcome": correction_outcome,
+                    "correction_count": correction_count,
+                    "correction_effectiveness": correction_effectiveness,
                 }
             )
         experiment = client.experiments.run_experiment(

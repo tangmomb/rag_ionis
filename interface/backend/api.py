@@ -468,7 +468,7 @@ def _post_retrieval_route(
 
 
 def _finalize_response(state: RagResponseState) -> dict[str, Any]:
-    answer = state["answer"]
+    answer = state["answer"].replace("\x00", "")
     sources = state["sources"]
     retrieval = state["retrieval"]
     answer_trace = state["answer_trace"]
@@ -485,6 +485,10 @@ def _finalize_response(state: RagResponseState) -> dict[str, Any]:
     retrieval["answer_source_indexes"] = [
         index for index, source in enumerate(sources, start=1) if source in carousel_sources
     ]
+    if state.get("shadow_evaluation_history"):
+        retrieval["shadow_evaluation_history"] = state[
+            "shadow_evaluation_history"
+        ]
     return {
         "answer": answer,
         "answer_action": answer_action,

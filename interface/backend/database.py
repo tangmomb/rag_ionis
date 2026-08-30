@@ -287,6 +287,9 @@ def store_chat_message(
     topic_id: int | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
+    user_message = user_message.replace("\x00", "")
+    answer_message = answer_message.replace("\x00", "")
+    trace_id = trace_id.replace("\x00", "") if trace_id is not None else None
 
     with connect_database() as connection:
         resolved_conversation_id = ensure_conversation(connection, conversation_id)

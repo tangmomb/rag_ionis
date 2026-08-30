@@ -46,6 +46,8 @@ class RagResponseGraphTests(unittest.TestCase):
                 "accept_precomputed",
                 "evaluate",
                 "correct",
+                "retry_retrieval",
+                "expand_retrieval",
                 "finalize",
                 "persist",
             }.issubset(graph.nodes)
@@ -194,6 +196,111 @@ class RagResponseGraphTests(unittest.TestCase):
         self.assertFalse(second["correction_requested"])
         self.assertEqual(api._post_evaluation_route(first), "correct")
         self.assertEqual(api._post_evaluation_route(second), "finalize")
+
+    def test_correction_route_depends_on_evaluation_issue(self) -> None:
+        base_state = {"correction_requested": True}
+
+        self.assertEqual(
+            api._post_evaluation_route(
+                {
+                    **base_state,
+                    "shadow_evaluation": {"issue": "unsupported_answer"},
+                }
+            ),
+            "correct",
+        )
+        self.assertEqual(
+            api._post_evaluation_route(
+                {
+                    **base_state,
+                    "shadow_evaluation": {"issue": "bad_retrieval"},
+                }
+            ),
+            "retry_retrieval",
+        )
+        self.assertEqual(
+            api._post_evaluation_route(
+                {
+                    **base_state,
+                    "shadow_evaluation": {"issue": "insufficient_sources"},
+                }
+            ),
+            "expand_retrieval",
+        )
+
+    def test_insufficient_sources_expands_retrieval_limits(self) -> None:
+        state = {
+            "payload": RagRequest(
+                question="Question",
+                topK=20,
+                finalK=5,
+                plannerPrompt="Prompt planner",
+            ).model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "insufficient_sources",
+                "reason": "Il manque une source.",
+            },
+        }
+
+        def orchestrate(payload):
+            self.assertEqual(payload.topK, api.MAX_TOP_K)
+            self.assertEqual(payload.finalK, api.MAX_FINAL_K)
+            self.assertIn("plus large", payload.plannerPrompt)
+            return "", [_source(), {**_source(), "chunk_id": 8}], {
+                "route": "rag",
+                "answer_model": "answer-model",
+            }
+
+        with patch.object(api, "orchestrate_request", side_effect=orchestrate):
+            result = api._expand_retrieval(state)
+
+        self.assertEqual(result["correction_count"], 1)
+        self.assertEqual(len(result["sources"]), 2)
+        correction = result["retrieval"]["correction"]
+        self.assertEqual(correction["strategy"], "expand_retrieval")
+        self.assertTrue(correction["succeeded"])
+        self.assertEqual(api._post_retrieval_route(result), "generate")
+
+    def test_bad_retrieval_uses_a_precise_new_planner_request(self) -> None:
+        state = {
+            "payload": RagRequest(
+                question="Question",
+                topK=10,
+                finalK=3,
+            ).model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "bad_retrieval",
+                "reason": "Sources hors sujet.",
+            },
+        }
+
+        def orchestrate(payload):
+            self.assertEqual(payload.topK, 20)
+            self.assertEqual(payload.finalK, 8)
+            self.assertIn("plus précise", payload.plannerPrompt)
+            return "", [_source()], {
+                "route": "rag",
+                "answer_model": "answer-model",
+            }
+
+        with patch.object(api, "orchestrate_request", side_effect=orchestrate):
+            result = api._retry_retrieval(state)
+
+        self.assertEqual(
+            result["retrieval"]["correction"]["strategy"],
+            "retry_retrieval",
+        )
+        self.assertEqual(api._post_retrieval_route(result), "generate")
 
     def test_correction_regenerates_with_same_sources_and_records_attempt(self) -> None:
         state = {

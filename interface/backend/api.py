@@ -23,6 +23,8 @@ from interface.backend.config import (
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PLANNER_MODEL,
     DEFAULT_REFORMULATION_MODEL,
+    MAX_FINAL_K,
+    MAX_TOP_K,
 )
 from interface.backend.conversation_memory import remember_conversation_turn
 from interface.backend.generation import (
@@ -123,7 +125,7 @@ def _generate_response(
             retrieval,
             sources,
             answer_trace,
-            payload.answerPrompt,
+            retrieval.get("answer_prompt_override") or payload.answerPrompt,
         )
         generation_span.set_output(
             {
@@ -283,6 +285,7 @@ def _correct_response(
         "attempted": True,
         "count": correction_count,
         "issue": evaluation.get("issue"),
+        "strategy": "regenerate_answer",
     }
     with trace_operation(
         "rag.correction",
@@ -334,8 +337,134 @@ def _correct_response(
 
 def _post_evaluation_route(
     state: RagResponseState,
-) -> Literal["correct", "finalize"]:
-    return "correct" if state.get("correction_requested", False) else "finalize"
+) -> Literal["correct", "retry_retrieval", "expand_retrieval", "finalize"]:
+    if not state.get("correction_requested", False):
+        return "finalize"
+    issue = state.get("shadow_evaluation", {}).get("issue")
+    if issue == "bad_retrieval":
+        return "retry_retrieval"
+    if issue == "insufficient_sources":
+        return "expand_retrieval"
+    return "correct"
+
+
+def _retrieval_correction_prompt(
+    base_prompt: str | None,
+    strategy: str,
+    evaluation: dict[str, Any],
+) -> str:
+    if strategy == "retry_retrieval":
+        instruction = (
+            "Le retrieval précédent était hors sujet. Produis une requête de "
+            "recherche différente, plus précise, tout en conservant exactement "
+            "le sens de la question utilisateur."
+        )
+    else:
+        instruction = (
+            "Les sources précédentes étaient incomplètes. Produis une requête de "
+            "recherche plus large couvrant toutes les facettes de la question, "
+            "sans en modifier le sens."
+        )
+    return (
+        f"{base_prompt or ''}\n\n{instruction}\n"
+        f"Diagnostic interne : issue={evaluation.get('issue')}; "
+        f"reason={evaluation.get('reason')}; "
+        f"suggestion={evaluation.get('suggested_correction')}"
+    ).strip()
+
+
+def _retrieve_for_correction(
+    state: RagResponseState,
+    strategy: Literal["retry_retrieval", "expand_retrieval"],
+) -> dict[str, Any]:
+    payload = _response_payload(state)
+    evaluation = dict(state["shadow_evaluation"])
+    correction_count = state.get("correction_count", 0) + 1
+    if strategy == "expand_retrieval":
+        top_k = MAX_TOP_K
+        final_k = MAX_FINAL_K
+    else:
+        top_k = min(MAX_TOP_K, max(payload.topK + 10, payload.topK * 2))
+        final_k = min(MAX_FINAL_K, max(payload.finalK + 5, payload.finalK * 2))
+    corrected_payload = payload.model_copy(
+        update={
+            "topK": top_k,
+            "finalK": final_k,
+            "plannerPrompt": _retrieval_correction_prompt(
+                payload.plannerPrompt,
+                strategy,
+                evaluation,
+            ),
+        }
+    )
+    correction_metadata: dict[str, Any] = {
+        "attempted": True,
+        "count": correction_count,
+        "issue": evaluation.get("issue"),
+        "strategy": strategy,
+        "top_k": top_k,
+        "final_k": final_k,
+    }
+    with trace_operation(
+        f"rag.correction.{strategy}",
+        kind="RETRIEVER",
+        input_value={
+            "question": payload.question,
+            "evaluation": evaluation,
+            "top_k": top_k,
+            "final_k": final_k,
+        },
+    ) as correction_span:
+        try:
+            answer, sources, retrieval = orchestrate_request(corrected_payload)
+            retrieval = dict(retrieval)
+            retrieval["answer_prompt_override"] = _correction_prompt(
+                payload.answerPrompt,
+                evaluation,
+                state["answer"],
+            )
+            correction_metadata["succeeded"] = True
+        except Exception as exc:  # Le retrieval correctif ne bloque jamais la réponse.
+            answer = state["answer"]
+            sources = state["sources"]
+            retrieval = dict(state["retrieval"])
+            correction_metadata.update({"succeeded": False, "error": str(exc)})
+        retrieval["correction"] = correction_metadata
+        correction_span.set_output(
+            {
+                "succeeded": correction_metadata["succeeded"],
+                "answer_provided": bool(answer),
+                "source_count": len(sources),
+            }
+        )
+    return {
+        "answer": answer,
+        "sources": sources,
+        "retrieval": retrieval,
+        "correction_count": correction_count,
+        "correction_requested": False,
+        "shadow_evaluation_history": [
+            *state.get("shadow_evaluation_history", []),
+            evaluation,
+        ],
+    }
+
+
+def _retry_retrieval(state: RagResponseState) -> dict[str, Any]:
+    return _retrieve_for_correction(state, "retry_retrieval")
+
+
+def _expand_retrieval(state: RagResponseState) -> dict[str, Any]:
+    return _retrieve_for_correction(state, "expand_retrieval")
+
+
+def _post_retrieval_route(
+    state: RagResponseState,
+) -> Literal["generate", "accept_precomputed", "evaluate"]:
+    correction = state.get("retrieval", {}).get("correction", {})
+    if not correction.get("succeeded", False):
+        return "evaluate"
+    return _generation_route(state)
 
 
 def _finalize_response(state: RagResponseState) -> dict[str, Any]:
@@ -431,6 +560,8 @@ def build_rag_response_graph():
     graph.add_node("accept_precomputed", _accept_precomputed_response)
     graph.add_node("evaluate", _evaluate_response)
     graph.add_node("correct", _correct_response)
+    graph.add_node("retry_retrieval", _retry_retrieval)
+    graph.add_node("expand_retrieval", _expand_retrieval)
     graph.add_node("finalize", _finalize_response)
     graph.add_node("persist", _persist_response)
     graph.add_edge(START, "orchestrate")
@@ -439,6 +570,8 @@ def build_rag_response_graph():
     graph.add_edge("accept_precomputed", "evaluate")
     graph.add_conditional_edges("evaluate", _post_evaluation_route)
     graph.add_edge("correct", "evaluate")
+    graph.add_conditional_edges("retry_retrieval", _post_retrieval_route)
+    graph.add_conditional_edges("expand_retrieval", _post_retrieval_route)
     graph.add_edge("finalize", "persist")
     graph.add_edge("persist", END)
     return graph.compile()

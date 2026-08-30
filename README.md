@@ -1568,9 +1568,11 @@ En dehors des expériences, les mêmes limites peuvent être configurées avec
 
 La première boucle de correction LangGraph est disponible avec
 `RAG_CORRECTION_LOOP_ENABLED=true`. Elle est désactivée par défaut, ne traite
-que `verdict=needs_correction` et effectue au maximum une régénération avec les
-mêmes sources avant une seconde évaluation. Si la régénération échoue, la
-réponse initiale est conservée.
+que `verdict=needs_correction` et effectue au maximum une correction avant une
+seconde évaluation. `unsupported_answer` régénère avec les mêmes sources,
+`bad_retrieval` relance une recherche plus précise, et `insufficient_sources`
+élargit la recherche jusqu'aux limites configurées. Si la correction échoue,
+la réponse initiale est conservée.
 Pour une expérience isolée, utiliser `--shadow-evaluation --correction-loop` ;
 ce réglage est transmis uniquement au contexte LangGraph de la campagne.
 

@@ -286,7 +286,11 @@ class RagModelSelectionTests(unittest.TestCase):
             query_text="Y a-t-il des commentaires ?",
             sql_main_source=True,
         )
-        empty_sql_trace = {"sql": "SELECT ...", "params": [], "result_count": 0}
+        empty_sql_trace = {
+            "mode": "analytics",
+            "strategy": "deterministic_entity_stats",
+            "result_count": 0,
+        }
         with (
             patch.object(orchestration, "get_llm_client", return_value=client),
             patch.object(orchestration, "reformulate_question", return_value=(payload.question, {})),
@@ -299,7 +303,7 @@ class RagModelSelectionTests(unittest.TestCase):
                     {"ambiguous": False, "suggestion_transcripts": []},
                 ),
             ),
-            patch.object(orchestration, "run_analytics_text_to_sql", return_value=([], empty_sql_trace)),
+            patch.object(orchestration, "run_deterministic_analytics", return_value=([], empty_sql_trace)),
             patch.object(orchestration, "retrieve_chunks") as retrieve_chunks,
         ):
             _answer, sources, retrieval = orchestration.orchestrate_request(payload)

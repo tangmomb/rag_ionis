@@ -206,6 +206,105 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertEqual(normalized["sql_sub_intent"], "analytics")
 
+    def test_deterministic_analytics_deduplicates_entity_videos_before_loading_stats(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Combien de vues pour Alice chez Acme ?",
+            query_text="Combien de vues pour Alice chez Acme ?",
+            query_text_bm25="vues Alice Acme",
+            title_hint="Vidéo Alice",
+            persons=["Alice Martin"],
+            companies=["acme"],
+            route="rag",
+            sql_sub_intent="analytics",
+            sql_main_source=True,
+        )
+        lookup_calls: list[dict] = []
+        recorded_spans: list[str] = []
+
+        @contextmanager
+        def record_trace(name: str, **_kwargs):
+            recorded_spans.append(name)
+            yield SimpleNamespace(set_output=lambda _value: None)
+
+        def lookup(entity, _query):
+            lookup_calls.append(entity)
+            return (
+                [
+                    {
+                        "video_id": 42,
+                        "video_title": "Vidéo Alice",
+                        "video_url": "https://example.test/alice",
+                        "thumbnail_medium_url": None,
+                    }
+                ],
+                {"sql": "SELECT ...", "params": [entity["value"]]},
+            )
+
+        source = {
+            "chunk_id": 42,
+            "video_title": "Vidéo Alice",
+            "video_url": "https://example.test/alice",
+            "text": "Historique complet des statistiques",
+            "stats": [{"snapshot_date": "2026-08-01", "view_count": 100}],
+        }
+        with (
+            patch.object(analytics_sql, "_lookup_analytics_entity_videos", side_effect=lookup),
+            patch.object(
+                analytics_sql,
+                "_analytics_stats_sources",
+                return_value=([source], {"video_count": 1, "snapshot_count": 1}),
+            ) as stats,
+            patch.object(analytics_sql, "trace_operation", side_effect=record_trace),
+        ):
+            sources, trace = analytics_sql.run_deterministic_analytics(query)
+
+        self.assertEqual([item["kind"] for item in lookup_calls], ["person", "company", "title"])
+        self.assertEqual(trace["candidate_video_count"], 1)
+        self.assertEqual(trace["result_count"], 1)
+        self.assertEqual(sources, [source])
+        self.assertEqual(stats.call_args.args[0], [42])
+        self.assertEqual(
+            recorded_spans,
+            ["analytics_entity_lookup", "analytics_entity_lookup", "analytics_entity_lookup", "analytics_all_video_stats"],
+        )
+
+    def test_entity_lookup_without_date_filter_builds_a_valid_where_clause(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object]] = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, sql, params=None) -> None:
+                self.calls.append((sql, params))
+
+            def fetchall(self):
+                return []
+
+        cursor = Cursor()
+        query = ExecutionPlan(
+            raw_question="Question",
+            query_text="Question",
+            query_text_bm25="Question",
+        )
+        with patch.object(
+            analytics_sql,
+            "connect_analytics_database",
+            return_value=_Connection(cursor),
+        ):
+            videos, _trace = analytics_sql._lookup_analytics_entity_videos(
+                {"kind": "person", "value": "Lou-Ann Corveddu"}, query
+            )
+
+        sql = cursor.calls[-1][0]
+        self.assertEqual(videos, [])
+        self.assertIn("WHERE EXISTS", sql)
+        self.assertNotIn("\n          TRUE", sql)
+
     def test_text_to_sql_is_validated_explained_executed_and_traced(self) -> None:
         sql = (
             "SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, "

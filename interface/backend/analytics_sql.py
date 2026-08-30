@@ -531,3 +531,222 @@ def run_analytics_text_to_sql(
         }
     )
     return sources, trace
+
+
+def _analytics_text(value_sql: str) -> str:
+    return (
+        "btrim(regexp_replace("
+        f"unaccent(lower(coalesce({value_sql}, ''))), "
+        "'[^[:alnum:]]+', ' ', 'g'))"
+    )
+
+
+def _analytics_video_date_filters(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if query.published_after:
+        clauses.append("v.published_at >= %s::timestamptz")
+        params.append(query.published_after)
+    if query.published_before:
+        clauses.append("v.published_at <= %s::timestamptz")
+        params.append(query.published_before)
+    return clauses, params
+
+
+def _resolved_analytics_entities(
+    query: ExecutionPlan,
+    database_persons: list[str] | None,
+    database_companies: list[str] | None,
+) -> list[dict[str, str]]:
+    entities: list[dict[str, str]] = []
+    for kind, values in (
+        ("person", database_persons or query.persons),
+        ("company", database_companies or query.companies),
+        ("title", [query.title_hint] if query.title_hint else []),
+    ):
+        for value in values:
+            cleaned = str(value or "").strip()
+            entity = {"kind": kind, "value": cleaned}
+            if cleaned and entity not in entities:
+                entities.append(entity)
+    return entities
+
+
+def _lookup_analytics_entity_videos(
+    entity: dict[str, str],
+    query: ExecutionPlan,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kind, value = entity["kind"], entity["value"]
+    date_clauses, date_params = _analytics_video_date_filters(query)
+    if kind == "person":
+        entity_clause = (
+            "EXISTS (SELECT 1 FROM video_speakers vs "
+            "JOIN speakers sp ON sp.id = vs.speaker_id "
+            "WHERE vs.video_id = v.id "
+            f"AND {_analytics_text('sp.name')} = {_analytics_text('%s')})"
+        )
+    elif kind == "company":
+        entity_clause = (
+            "EXISTS (SELECT 1 FROM video_speakers vs "
+            "JOIN speakers sp ON sp.id = vs.speaker_id "
+            "WHERE vs.video_id = v.id AND sp.title IS NOT NULL "
+            f"AND {_analytics_text('sp.title')} LIKE "
+            f"concat(chr(37), {_analytics_text('%s')}, chr(37)))"
+        )
+    else:
+        entity_clause = f"{_analytics_text('v.title')} = {_analytics_text('%s')}"
+
+    where_clauses = [entity_clause, *date_clauses]
+    sql = f"""
+        SELECT DISTINCT v.id, v.title, v.url, v.thumbnail_medium_url
+        FROM videos v
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY v.id ASC
+        LIMIT {MAX_ANALYTICS_ROWS}
+    """
+    params = [value, *date_params]
+    with connect_analytics_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(
+                f"SET LOCAL statement_timeout = '{ANALYTICS_STATEMENT_TIMEOUT_MS}ms'"
+            )
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+    videos = [
+        {
+            "video_id": int(row[0]),
+            "video_title": str(row[1] or ""),
+            "video_url": str(row[2] or ""),
+            "thumbnail_medium_url": str(row[3] or "").strip() or None,
+        }
+        for row in rows
+    ]
+    return videos, {"sql": format_sql_for_trace(sql), "params": params}
+
+
+def _analytics_stats_sources(video_ids: list[int]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not video_ids:
+        return [], {"sql": None, "params": [], "video_count": 0, "snapshot_count": 0}
+    sql = """
+        SELECT
+            v.id AS video_id,
+            v.title AS video_title,
+            v.url AS video_url,
+            v.thumbnail_medium_url,
+            v.video_type,
+            v.published_at,
+            s.snapshot_date,
+            s.view_count,
+            s.like_count,
+            s.comment_count
+        FROM videos v
+        LEFT JOIN stats s ON s.video_id = v.id
+        WHERE v.id = ANY(%s)
+        ORDER BY v.id ASC, s.snapshot_date ASC NULLS LAST
+    """
+    with connect_analytics_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(
+                f"SET LOCAL statement_timeout = '{ANALYTICS_STATEMENT_TIMEOUT_MS}ms'"
+            )
+            cursor.execute(sql, [video_ids])
+            rows = cursor.fetchall()
+
+    videos: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        video_id = int(row[0])
+        video = videos.setdefault(
+            video_id,
+            {
+                "chunk_id": video_id,
+                "video_title": str(row[1] or ""),
+                "video_url": str(row[2] or ""),
+                "thumbnail_medium_url": str(row[3] or "").strip() or None,
+                "chunk_index": 0,
+                "persons": [],
+                "bm25_score": None,
+                "video_type": str(row[4] or "") or None,
+                "published_at": _json_compatible(row[5]),
+                "stats": [],
+            },
+        )
+        if row[6] is not None:
+            video["stats"].append(
+                {
+                    "snapshot_date": _json_compatible(row[6]),
+                    "view_count": _json_compatible(row[7]),
+                    "like_count": _json_compatible(row[8]),
+                    "comment_count": _json_compatible(row[9]),
+                }
+            )
+
+    sources = []
+    for video_id in video_ids:
+        video = videos.get(video_id)
+        if video is None:
+            continue
+        snapshots = video["stats"]
+        stats_lines = [
+            "- " + ", ".join(
+                f"{key}: {value}" for key, value in snapshot.items() if value is not None
+            )
+            for snapshot in snapshots
+        ]
+        video["text"] = "Historique complet des statistiques:\n" + (
+            "\n".join(stats_lines) or "- Aucune statistique disponible"
+        )
+        sources.append(video)
+    return sources, {
+        "sql": format_sql_for_trace(sql),
+        "params": [video_ids],
+        "video_count": len(sources),
+        "snapshot_count": sum(len(source["stats"]) for source in sources),
+    }
+
+
+def run_deterministic_analytics(
+    query: ExecutionPlan,
+    *,
+    database_persons: list[str] | None = None,
+    database_companies: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Resolve entities to videos, then load every available stats snapshot."""
+    entities = _resolved_analytics_entities(
+        query, database_persons, database_companies
+    )
+    trace: dict[str, Any] = {
+        "mode": "analytics",
+        "strategy": "deterministic_entity_stats",
+        "entities": entities,
+        "entity_lookups": [],
+        "candidate_video_count": 0,
+        "result_count": 0,
+    }
+    videos_by_id: dict[int, dict[str, Any]] = {}
+    for entity in entities:
+        with trace_operation(
+            "analytics_entity_lookup",
+            kind="RETRIEVER",
+            input_value=entity,
+        ) as entity_span:
+            videos, lookup_trace = _lookup_analytics_entity_videos(entity, query)
+            entity_output = {**entity, "result_count": len(videos), "results": videos}
+            entity_span.set_output(entity_output)
+        trace["entity_lookups"].append({**entity, **lookup_trace, "result_count": len(videos), "results": videos})
+        for video in videos:
+            videos_by_id.setdefault(int(video["video_id"]), video)
+
+    video_ids = list(videos_by_id)
+    trace["candidate_video_count"] = len(video_ids)
+    with trace_operation(
+        "analytics_all_video_stats",
+        kind="RETRIEVER",
+        input_value={"video_ids": video_ids},
+    ) as stats_span:
+        sources, stats_trace = _analytics_stats_sources(video_ids)
+        stats_span.set_output({**stats_trace, "results": sources})
+    trace["stats"] = stats_trace
+    trace["result_count"] = len(sources)
+    return sources, trace

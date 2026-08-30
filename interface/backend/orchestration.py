@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from interface.backend.analytics_sql import run_analytics_text_to_sql
+from interface.backend.analytics_sql import run_deterministic_analytics
 from interface.backend.config import (
     DEFAULT_ANALYTICS_SQL_MODEL,
     DEFAULT_EMBEDDING_MODEL,

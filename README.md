@@ -1494,6 +1494,14 @@ sont convertis en dictionnaires entre les nœuds, tandis que les clients LLM son
 injectés par le contexte d'exécution LangGraph. Les graphes sont ainsi prêts à
 recevoir un checkpointer sans tenter de persister des connexions clientes.
 
+Un nœud `evaluate` est placé entre la génération et la finalisation. Il fonctionne
+uniquement en mode shadow : son diagnostic est enregistré dans le span Phoenix
+`rag.shadow_evaluation`, mais il ne modifie jamais la réponse, l'action ou les
+sources retournées. Il est désactivé par défaut ; définir
+`RAG_SHADOW_EVALUATION_ENABLED=true` active l'appel LLM d'observation. Les réponses
+directes ne sont pas évaluées et une erreur de l'évaluateur n'interrompt jamais la
+requête utilisateur.
+
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
 `section` parente puis son résumé `global` lorsqu'ils existent. Ces parents

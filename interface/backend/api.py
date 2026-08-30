@@ -7,6 +7,10 @@ from fastapi import APIRouter, HTTPException
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
+from interface.backend.answer_evaluation import (
+    evaluate_answer_shadow,
+    shadow_evaluation_enabled,
+)
 from interface.backend.database import (
     ConversationNotFoundError,
     connect_database,
@@ -45,6 +49,7 @@ class RagResponseState(TypedDict, total=False):
     sources: list[dict[str, Any]]
     retrieval: dict[str, Any]
     answer_trace: dict[str, Any]
+    shadow_evaluation: dict[str, Any]
     answer_action: str
     carousel_sources: list[dict[str, Any]]
     conversation_id: int
@@ -135,6 +140,73 @@ def _accept_precomputed_response(
 
 def _generation_route(state: RagResponseState) -> Literal["generate", "accept_precomputed"]:
     return "accept_precomputed" if state["answer"] else "generate"
+
+
+def _evaluate_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
+    payload = _response_payload(state)
+    retrieval = state["retrieval"]
+    route = retrieval.get("route") or retrieval.get("retrieval_mode")
+    input_value = {
+        "mode": "shadow",
+        "enabled": shadow_evaluation_enabled(),
+        "route": route,
+        "question": retrieval.get("contextual_question", payload.question),
+        "action": state["answer_trace"].get("action", "abstain"),
+        "source_count": len(state["sources"]),
+    }
+    with trace_operation(
+        "rag.shadow_evaluation",
+        kind="EVALUATOR",
+        input_value=input_value,
+    ) as evaluation_span:
+        if not input_value["enabled"]:
+            evaluation = {
+                "enabled": False,
+                "mode": "shadow",
+                "status": "not_run",
+                "reason": "disabled",
+            }
+        elif route == "direct":
+            evaluation = {
+                "enabled": True,
+                "mode": "shadow",
+                "status": "not_applicable",
+                "reason": "direct_answer",
+            }
+        elif runtime.context.answer_client is None or not retrieval.get("answer_model"):
+            evaluation = {
+                "enabled": True,
+                "mode": "shadow",
+                "status": "not_run",
+                "reason": "missing_client_or_model",
+            }
+        else:
+            try:
+                evaluation = evaluate_answer_shadow(
+                    runtime.context.answer_client,
+                    retrieval["answer_model"],
+                    retrieval.get("contextual_question", payload.question),
+                    state["answer"],
+                    state["answer_trace"].get("action", "abstain"),
+                    state["sources"],
+                )
+            except Exception as exc:  # Le mode shadow ne bloque jamais la réponse.
+                evaluation = {
+                    "enabled": True,
+                    "mode": "shadow",
+                    "status": "error",
+                    "reason": str(exc),
+                }
+        evaluation_span.set_output(evaluation)
+    checkpoint_evaluation = {
+        key: value
+        for key, value in evaluation.items()
+        if key not in {"prompt", "response_raw"}
+    }
+    return {"shadow_evaluation": checkpoint_evaluation}
 
 
 def _finalize_response(state: RagResponseState) -> dict[str, Any]:
@@ -228,12 +300,14 @@ def build_rag_response_graph():
     graph.add_node("orchestrate", _orchestrate_response)
     graph.add_node("generate", _generate_response)
     graph.add_node("accept_precomputed", _accept_precomputed_response)
+    graph.add_node("evaluate", _evaluate_response)
     graph.add_node("finalize", _finalize_response)
     graph.add_node("persist", _persist_response)
     graph.add_edge(START, "orchestrate")
     graph.add_conditional_edges("orchestrate", _generation_route)
-    graph.add_edge("generate", "finalize")
-    graph.add_edge("accept_precomputed", "finalize")
+    graph.add_edge("generate", "evaluate")
+    graph.add_edge("accept_precomputed", "evaluate")
+    graph.add_edge("evaluate", "finalize")
     graph.add_edge("finalize", "persist")
     graph.add_edge("persist", END)
     return graph.compile()

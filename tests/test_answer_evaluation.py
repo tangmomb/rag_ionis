@@ -6,8 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.runtime import Runtime
 
 from interface.backend import api
+from interface.backend.answer_evaluation import evaluate_answer_shadow
 from interface.backend.generation import (
     generate_answer,
     generate_person_clarification_answer,
@@ -42,6 +44,7 @@ class RagResponseGraphTests(unittest.TestCase):
                 "orchestrate",
                 "generate",
                 "accept_precomputed",
+                "evaluate",
                 "finalize",
                 "persist",
             }.issubset(graph.nodes)
@@ -62,6 +65,115 @@ class RagResponseGraphTests(unittest.TestCase):
 
         self.assertEqual(restored["payload"]["question"], "Question")
         self.assertEqual(restored["answer_trace"]["action"], "answer")
+
+    def test_shadow_evaluation_records_a_diagnostic_without_mutating_the_answer(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse inchangée",
+            "sources": [_source()],
+            "retrieval": {
+                "route": "rag",
+                "answer_model": "mistral-medium-latest",
+                "contextual_question": "Question",
+            },
+            "answer_trace": {"action": "answer"},
+        }
+        diagnostic = {
+            "enabled": True,
+            "mode": "shadow",
+            "status": "acceptable",
+            "reason": "Réponse étayée",
+        }
+        with (
+            patch.object(api, "shadow_evaluation_enabled", return_value=True),
+            patch.object(
+                api,
+                "evaluate_answer_shadow",
+                return_value=diagnostic,
+            ) as evaluator,
+        ):
+            result = api._evaluate_response(
+                state,
+                Runtime(context=api.RagResponseContext(answer_client=object())),
+            )
+
+        self.assertEqual(result, {"shadow_evaluation": diagnostic})
+        self.assertEqual(state["answer"], "Réponse inchangée")
+        evaluator.assert_called_once()
+
+    def test_shadow_evaluation_error_does_not_escape_the_node(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse inchangée",
+            "sources": [_source()],
+            "retrieval": {
+                "route": "rag",
+                "answer_model": "mistral-medium-latest",
+            },
+            "answer_trace": {"action": "answer"},
+        }
+        with (
+            patch.object(api, "shadow_evaluation_enabled", return_value=True),
+            patch.object(
+                api,
+                "evaluate_answer_shadow",
+                side_effect=RuntimeError("échec évaluateur"),
+            ),
+        ):
+            result = api._evaluate_response(
+                state,
+                Runtime(context=api.RagResponseContext(answer_client=object())),
+            )
+
+        self.assertEqual(result["shadow_evaluation"]["status"], "error")
+        self.assertEqual(state["answer"], "Réponse inchangée")
+
+    def test_direct_answer_is_not_submitted_to_shadow_evaluation(self) -> None:
+        state = {
+            "payload": RagRequest(question="Bonjour").model_dump(),
+            "answer": "Bonjour !",
+            "sources": [],
+            "retrieval": {"route": "direct", "answer_model": None},
+            "answer_trace": {"action": "answer"},
+        }
+        with (
+            patch.object(api, "shadow_evaluation_enabled", return_value=True),
+            patch.object(api, "evaluate_answer_shadow") as evaluator,
+        ):
+            result = api._evaluate_response(
+                state,
+                Runtime(context=api.RagResponseContext(answer_client=object())),
+            )
+
+        self.assertEqual(result["shadow_evaluation"]["status"], "not_applicable")
+        evaluator.assert_not_called()
+
+    def test_shadow_evaluator_uses_a_strict_structured_response(self) -> None:
+        client = _Client(
+            [
+                {
+                    "status": "acceptable",
+                    "reason": "Réponse étayée",
+                    "retrieval_quality": 0.9,
+                    "answer_grounded": True,
+                    "suggested_correction": None,
+                }
+            ]
+        )
+
+        result = evaluate_answer_shadow(
+            client,
+            "mistral-medium-latest",
+            "Question",
+            "Réponse",
+            "answer",
+            [_source()],
+        )
+
+        self.assertEqual(result["status"], "acceptable")
+        self.assertTrue(result["answer_grounded"])
+        self.assertEqual(len(client.responses.calls), 1)
+        self.assertIn("response_schema", client.responses.calls[0])
 
 
 def _source() -> dict:

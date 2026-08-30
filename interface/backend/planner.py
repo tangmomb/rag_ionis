@@ -834,7 +834,8 @@ suffit pas. Conserve tous les référents réellement demandés.
 
 Ne change pas le sens. `reformulated_question` doit être concis, autonome, en texte normal, sans Markdown.
 
-Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre."""
+Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre.
+Si l'historique évoque des personnes ou des vidéos précises auxquelles le dernier message fait référence, leurs noms ou titres précis doivent apparaître dans la question reformulée."""
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     memory = memory_context or {}
     active_topic = memory.get("active_topic") or {}
@@ -999,9 +1000,9 @@ def reformulate_question(
         system_prompt_override,
         memory_context,
     )
-    reformulation_prompt = f"{system_prompt}\n\n{user_prompt}"
     reformulation_input = [
-        {"role": "user", "content": reformulation_prompt},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
     ]
     trace["prompt"] = json.dumps(
         {"model": model, "input": reformulation_input},

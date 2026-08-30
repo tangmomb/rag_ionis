@@ -179,15 +179,16 @@ class RagModelSelectionTests(unittest.TestCase):
             client.responses.calls[0]["response_schema"],
             planner.REFORMULATION_RESPONSE_SCHEMA,
         )
-        self.assertEqual(len(client.responses.calls[0]["input"]), 1)
-        self.assertEqual(client.responses.calls[0]["input"][0]["role"], "user")
+        self.assertEqual(len(client.responses.calls[0]["input"]), 2)
+        self.assertEqual(client.responses.calls[0]["input"][0]["role"], "system")
         self.assertIn(
             "Reformule le dernier message utilisateur",
             client.responses.calls[0]["input"][0]["content"],
         )
+        self.assertEqual(client.responses.calls[0]["input"][1]["role"], "user")
         self.assertIn(
             "Message actuel : Question",
-            client.responses.calls[0]["input"][0]["content"],
+            client.responses.calls[0]["input"][1]["content"],
         )
         self.assertIn('"model": "gpt-5.6-luna"', trace["prompt"])
 

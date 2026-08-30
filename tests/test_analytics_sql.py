@@ -302,7 +302,10 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         sql = cursor.calls[-1][0]
         self.assertEqual(videos, [])
-        self.assertIn("WHERE EXISTS", sql)
+        self.assertIn("WHERE (EXISTS", sql)
+        self.assertIn("FROM transcripts transcript_row", sql)
+        self.assertIn("transcript_row.transcript_enriched IS NOT NULL", sql)
+        self.assertEqual(cursor.calls[-1][1], ["Lou-Ann Corveddu", "Lou-Ann Corveddu"])
         self.assertNotIn("\n          TRUE", sql)
 
     def test_text_to_sql_is_validated_explained_executed_and_traced(self) -> None:

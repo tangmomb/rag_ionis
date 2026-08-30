@@ -66,7 +66,7 @@ class InterfaceAppTests(unittest.TestCase):
 
     def test_llm_steps_use_the_configured_models(self) -> None:
         self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-luna")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-terra")
         self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "gpt-5.6-luna")
         self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-luna")
 
@@ -120,6 +120,10 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("Conserve tous les référents", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
         self.assertIn("Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre", system_prompt)
+        self.assertIn(
+            "leurs noms ou titres précis doivent apparaître dans la question reformulée",
+            system_prompt,
+        )
         self.assertIn(
             "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
             "prioritaire) :\n\nuser: Que dit Alice Martin ?",
@@ -290,8 +294,17 @@ class InterfaceAppTests(unittest.TestCase):
             211,
             limit=planner.REFORMULATION_HISTORY_EXCHANGES,
         )
-        self.assertEqual(len(calls[0]["input"]), 1)
-        reformulation_prompt = calls[0]["input"][0]["content"]
+        self.assertEqual(
+            calls[0]["input"][0],
+            {
+                "role": "system",
+                "content": planner.build_question_reformulation_prompt(
+                    "Des points communs avec Yassin ?", [],
+                )[0],
+            },
+        )
+        self.assertEqual(calls[0]["input"][1]["role"], "user")
+        reformulation_prompt = calls[0]["input"][1]["content"]
         self.assertNotIn("Emric", reformulation_prompt)
         self.assertIn("Fadila Ouro Sama", reformulation_prompt)
         self.assertIn("Hugo Gérardin", reformulation_prompt)
@@ -340,8 +353,9 @@ class InterfaceAppTests(unittest.TestCase):
                 client,
             )
 
-        self.assertEqual(len(calls[0]["input"]), 1)
-        reformulation_prompt = calls[0]["input"][0]["content"]
+        self.assertEqual(calls[0]["input"][0]["role"], "system")
+        self.assertEqual(calls[0]["input"][1]["role"], "user")
+        reformulation_prompt = calls[0]["input"][1]["content"]
         self.assertNotIn("Sophie Vanderpol", reformulation_prompt)
         self.assertIn("Loucif", reformulation_prompt)
         self.assertIn("Sophie Ollivier", reformulation_prompt)
@@ -1052,7 +1066,7 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(
             data["defaults"],
             {
-                "reformulationModel": "gpt-5.6-luna",
+                "reformulationModel": "gpt-5.6-terra",
                 "plannerModel": "gpt-5.6-luna",
                 "answerModel": "gpt-5.6-luna",
             },

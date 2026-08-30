@@ -580,10 +580,17 @@ def _lookup_analytics_entity_videos(
     date_clauses, date_params = _analytics_video_date_filters(query)
     if kind == "person":
         entity_clause = (
-            "EXISTS (SELECT 1 FROM video_speakers vs "
+            "(EXISTS (SELECT 1 FROM video_speakers vs "
             "JOIN speakers sp ON sp.id = vs.speaker_id "
             "WHERE vs.video_id = v.id "
-            f"AND {_analytics_text('sp.name')} = {_analytics_text('%s')})"
+            f"AND {_analytics_text('sp.name')} = {_analytics_text('%s')}) "
+            "OR EXISTS (SELECT 1 FROM transcripts transcript_row "
+            "WHERE transcript_row.video_id = v.id "
+            "AND transcript_row.transcript_enriched IS NOT NULL "
+            "AND concat(' ', "
+            f"{_analytics_text('transcript_row.transcript_enriched')}, ' ') "
+            "LIKE concat(chr(37), ' ', "
+            f"{_analytics_text('%s')}, ' ', chr(37))))"
         )
     elif kind == "company":
         entity_clause = (
@@ -604,7 +611,7 @@ def _lookup_analytics_entity_videos(
         ORDER BY v.id ASC
         LIMIT {MAX_ANALYTICS_ROWS}
     """
-    params = [value, *date_params]
+    params = [value, value, *date_params] if kind == "person" else [value, *date_params]
     with connect_analytics_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute("SET TRANSACTION READ ONLY")

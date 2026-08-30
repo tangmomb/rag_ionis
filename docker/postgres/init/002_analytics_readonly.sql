@@ -60,6 +60,11 @@ GRANT SELECT (
 ) ON data.video_speakers TO rag_ionis_analytics;
 
 GRANT SELECT (
+    video_id,
+    transcript_enriched
+) ON data.transcripts TO rag_ionis_analytics;
+
+GRANT SELECT (
     id,
     video_id,
     parent_comment_id,

@@ -161,7 +161,8 @@ class RagResponseGraphTests(unittest.TestCase):
         client = _Client(
             [
                 {
-                    "status": "acceptable",
+                    "verdict": "acceptable",
+                    "issue": "none",
                     "reason": "Réponse étayée",
                     "retrieval_quality": 0.9,
                     "answer_grounded": True,
@@ -180,9 +181,38 @@ class RagResponseGraphTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "acceptable")
+        self.assertEqual(result["verdict"], "acceptable")
+        self.assertEqual(result["issue"], "none")
         self.assertTrue(result["answer_grounded"])
         self.assertEqual(len(client.responses.calls), 1)
         self.assertIn("response_schema", client.responses.calls[0])
+
+    def test_correct_clarification_is_acceptable_despite_ambiguity(self) -> None:
+        client = _Client(
+            [
+                {
+                    "verdict": "acceptable",
+                    "issue": "ambiguous_question",
+                    "reason": "La réponse demande la précision nécessaire.",
+                    "retrieval_quality": 1.0,
+                    "answer_grounded": True,
+                    "suggested_correction": None,
+                }
+            ]
+        )
+
+        result = evaluate_answer_shadow(
+            client,
+            "judge-model",
+            "Je cherche la vidéo de Camille",
+            "De quelle Camille parlez-vous ?",
+            "clarify",
+            [],
+        )
+
+        self.assertEqual(result["verdict"], "acceptable")
+        self.assertEqual(result["issue"], "ambiguous_question")
+        self.assertEqual(result["status"], "acceptable")
 
 
 def _source() -> dict:

@@ -12,8 +12,8 @@ class ImportPhoenixDatasetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = Path(directory) / "cases.csv"
             csv_path.write_text(
-                "question,difficulty,expected_action,shadow_status\n"
-                "Question ?,easy,clarify,ambiguous_question\n",
+                "question,difficulty,expected_action,shadow_verdict,shadow_issue\n"
+                "Question ?,easy,clarify,acceptable,ambiguous_question\n",
                 encoding="utf-8",
             )
 
@@ -22,7 +22,11 @@ class ImportPhoenixDatasetTests(unittest.TestCase):
         self.assertEqual(examples[0]["input"], {"question": "Question ?"})
         self.assertEqual(
             examples[0]["output"],
-            {"action": "clarify", "shadow_status": "ambiguous_question"},
+            {
+                "action": "clarify",
+                "shadow_verdict": "acceptable",
+                "shadow_issue": "ambiguous_question",
+            },
         )
         self.assertEqual(examples[0]["metadata"], {"difficulty": "easy"})
 
@@ -30,12 +34,12 @@ class ImportPhoenixDatasetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = Path(directory) / "cases.csv"
             csv_path.write_text(
-                "question,difficulty,expected_action,shadow_status\n"
-                "Question ?,easy,answer,unknown\n",
+                "question,difficulty,expected_action,shadow_verdict,shadow_issue\n"
+                "Question ?,easy,answer,acceptable,unknown\n",
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "shadow_status invalide"):
+            with self.assertRaisesRegex(ValueError, "shadow_issue invalide"):
                 load_examples(csv_path)
 
 

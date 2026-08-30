@@ -17,6 +17,8 @@ VALID_SHADOW_STATUSES = {
     "unsupported_answer",
     "ambiguous_question",
 }
+VALID_SHADOW_VERDICTS = {"acceptable", "needs_correction"}
+VALID_SHADOW_ISSUES = {"none", *VALID_SHADOW_STATUSES - {"acceptable"}}
 
 
 def load_examples(csv_path: Path) -> list[dict[str, Any]]:
@@ -27,23 +29,29 @@ def load_examples(csv_path: Path) -> list[dict[str, Any]]:
     for row_number, row in enumerate(rows, start=2):
         question = str(row.get("question") or "").strip()
         action = str(row.get("expected_action") or "").strip()
-        shadow_status = str(row.get("shadow_status") or "").strip()
+        shadow_verdict = str(row.get("shadow_verdict") or "").strip()
+        shadow_issue = str(row.get("shadow_issue") or "").strip()
         if not question:
             raise ValueError(f"Ligne {row_number}: question vide.")
         if action not in VALID_ACTIONS:
             raise ValueError(
                 f"Ligne {row_number}: expected_action invalide: {action!r}."
             )
-        if shadow_status not in VALID_SHADOW_STATUSES:
+        if shadow_verdict not in VALID_SHADOW_VERDICTS:
             raise ValueError(
-                f"Ligne {row_number}: shadow_status invalide: {shadow_status!r}."
+                f"Ligne {row_number}: shadow_verdict invalide: {shadow_verdict!r}."
+            )
+        if shadow_issue not in VALID_SHADOW_ISSUES:
+            raise ValueError(
+                f"Ligne {row_number}: shadow_issue invalide: {shadow_issue!r}."
             )
         examples.append(
             {
                 "input": {"question": question},
                 "output": {
                     "action": action,
-                    "shadow_status": shadow_status,
+                    "shadow_verdict": shadow_verdict,
+                    "shadow_issue": shadow_issue,
                 },
                 "metadata": {
                     "difficulty": str(row.get("difficulty") or "").strip(),

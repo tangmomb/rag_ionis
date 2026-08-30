@@ -178,6 +178,8 @@ def _evaluate_response(
             evaluation = {
                 "enabled": False,
                 "mode": "shadow",
+                "verdict": "not_run",
+                "issue": "none",
                 "status": "not_run",
                 "reason": "disabled",
             }
@@ -185,6 +187,8 @@ def _evaluate_response(
             evaluation = {
                 "enabled": True,
                 "mode": "shadow",
+                "verdict": "not_applicable",
+                "issue": "none",
                 "status": "not_applicable",
                 "reason": "direct_answer",
             }
@@ -192,6 +196,8 @@ def _evaluate_response(
             evaluation = {
                 "enabled": True,
                 "mode": "shadow",
+                "verdict": "not_run",
+                "issue": "none",
                 "status": "not_run",
                 "reason": "missing_client_or_model",
             }
@@ -209,6 +215,8 @@ def _evaluate_response(
                 evaluation = {
                     "enabled": True,
                     "mode": "shadow",
+                    "verdict": "error",
+                    "issue": "none",
                     "status": "error",
                     "reason": str(exc),
                 }

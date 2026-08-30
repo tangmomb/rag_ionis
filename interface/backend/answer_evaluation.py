@@ -11,10 +11,14 @@ from interface.backend.utilities import safe_json_loads, serialize_openai_respon
 SHADOW_EVALUATION_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "status": {
+        "verdict": {
+            "type": "string",
+            "enum": ["acceptable", "needs_correction"],
+        },
+        "issue": {
             "type": "string",
             "enum": [
-                "acceptable",
+                "none",
                 "bad_retrieval",
                 "insufficient_sources",
                 "unsupported_answer",
@@ -29,7 +33,8 @@ SHADOW_EVALUATION_RESPONSE_SCHEMA: dict[str, Any] = {
         },
     },
     "required": [
-        "status",
+        "verdict",
+        "issue",
         "reason",
         "retrieval_quality",
         "answer_grounded",
@@ -42,10 +47,14 @@ SHADOW_EVALUATION_RESPONSE_SCHEMA: dict[str, Any] = {
 SHADOW_EVALUATION_SYSTEM_PROMPT = (
     "Tu évalues une réponse RAG sans la réécrire. Vérifie si elle répond à la "
     "question et si chaque affirmation factuelle est soutenue par les sources. "
-    "Utilise acceptable si la réponse est suffisamment pertinente et étayée, "
-    "bad_retrieval si les sources sont hors sujet, insufficient_sources si elles "
-    "sont pertinentes mais incomplètes, unsupported_answer si la réponse dépasse "
-    "les sources, et ambiguous_question si la demande nécessite une précision. "
+    "Le verdict porte uniquement sur la réponse affichée : acceptable si elle "
+    "peut être conservée, needs_correction si elle doit être remplacée. Une "
+    "question ambiguë correctement traitée par une demande de précision a donc "
+    "verdict=acceptable et issue=ambiguous_question. Utilise issue=none en "
+    "l'absence de problème particulier, bad_retrieval si les sources sont hors "
+    "sujet, insufficient_sources si elles sont pertinentes mais incomplètes, "
+    "unsupported_answer si la réponse dépasse les sources, et ambiguous_question "
+    "si la demande nécessite une précision. "
     "Le diagnostic est interne et ne doit contenir aucun message destiné à l'utilisateur."
 )
 
@@ -104,15 +113,18 @@ def evaluate_answer_shadow(
     parsed = safe_json_loads(raw_output)
     if not isinstance(parsed, dict):
         raise ValueError("Le diagnostic shadow n'est pas un objet JSON.")
-    status = parsed.get("status")
-    if status not in {
-        "acceptable",
+    verdict = parsed.get("verdict")
+    if verdict not in {"acceptable", "needs_correction"}:
+        raise ValueError("Le diagnostic shadow contient un verdict invalide.")
+    issue = parsed.get("issue")
+    if issue not in {
+        "none",
         "bad_retrieval",
         "insufficient_sources",
         "unsupported_answer",
         "ambiguous_question",
     }:
-        raise ValueError("Le diagnostic shadow contient un statut invalide.")
+        raise ValueError("Le diagnostic shadow contient une cause invalide.")
     reason = parsed.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("Le diagnostic shadow doit fournir une raison.")
@@ -133,7 +145,13 @@ def evaluate_answer_shadow(
         "enabled": True,
         "mode": "shadow",
         "model": model,
-        "status": status,
+        "verdict": verdict,
+        "issue": issue,
+        "status": (
+            "acceptable"
+            if verdict == "acceptable"
+            else (issue if issue != "none" else "unsupported_answer")
+        ),
         "reason": reason.strip(),
         "retrieval_quality": float(retrieval_quality),
         "answer_grounded": answer_grounded,

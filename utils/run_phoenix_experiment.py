@@ -413,6 +413,22 @@ def shadow_status(output: Mapping[str, Any] | None) -> dict[str, str]:
     }
 
 
+def shadow_verdict(output: Mapping[str, Any] | None) -> dict[str, str]:
+    diagnostic = _shadow_diagnostic(output)
+    return {
+        "label": str(diagnostic.get("verdict") or "not_run"),
+        "explanation": str(diagnostic.get("reason") or "Diagnostic indisponible."),
+    }
+
+
+def shadow_issue(output: Mapping[str, Any] | None) -> dict[str, str]:
+    diagnostic = _shadow_diagnostic(output)
+    return {
+        "label": str(diagnostic.get("issue") or "none"),
+        "explanation": str(diagnostic.get("reason") or "Diagnostic indisponible."),
+    }
+
+
 def shadow_grounded(
     output: Mapping[str, Any] | None,
 ) -> tuple[float | None, str, str]:
@@ -451,6 +467,38 @@ def shadow_status_match(
         float(matches),
         "match" if matches else "mismatch",
         f"attendu={expected_status}; obtenu={actual_status}",
+    )
+
+
+def shadow_verdict_match(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    expected_verdict = str((expected or {}).get("shadow_verdict") or "").strip()
+    actual_verdict = str(_shadow_diagnostic(output).get("verdict") or "not_run")
+    if not expected_verdict:
+        return None, "unlabeled", "Le dataset ne fournit pas expected.shadow_verdict."
+    matches = actual_verdict == expected_verdict
+    return (
+        float(matches),
+        "match" if matches else "mismatch",
+        f"attendu={expected_verdict}; obtenu={actual_verdict}",
+    )
+
+
+def shadow_issue_match(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    expected_issue = str((expected or {}).get("shadow_issue") or "").strip()
+    actual_issue = str(_shadow_diagnostic(output).get("issue") or "none")
+    if not expected_issue:
+        return None, "unlabeled", "Le dataset ne fournit pas expected.shadow_issue."
+    matches = actual_issue == expected_issue
+    return (
+        float(matches),
+        "match" if matches else "mismatch",
+        f"attendu={expected_issue}; obtenu={actual_issue}",
     )
 
 
@@ -890,9 +938,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             evaluators.update(
                 {
                     "shadow_status": shadow_status,
+                    "shadow_verdict": shadow_verdict,
+                    "shadow_issue": shadow_issue,
                     "shadow_grounded": shadow_grounded,
                     "shadow_retrieval_quality": shadow_retrieval_quality,
-                    "shadow_status_match": shadow_status_match,
+                    "shadow_verdict_match": shadow_verdict_match,
+                    "shadow_issue_match": shadow_issue_match,
                 }
             )
         experiment = client.experiments.run_experiment(

@@ -1,17 +1,17 @@
-question,difficulty,expected_action,shadow_status
-Je cherche la vidéo de mathiue,easy,clarify,ambiguous_question
-Je cherche la vidéo de camille,easy,clarify,ambiguous_question
-chez qui travaille lou ann,easy,answer,acceptable
-je cherche quelqu'un qui a bossé chez safran,easy,answer,acceptable
-je cherche l'itw de qq qui est dev ops,easy,answer,acceptable
-je cherche la vidéo avec quelqu'un de chez desigual,easy,answer,acceptable
-qu dit eric modesto dans la vidéo ?,easy,answer,acceptable
-quels points communs entre les vidéos de mathieu et paula ?,medium,clarify,ambiguous_question
-combien de vidéo de type itw sur la chaine ?,easy,answer,acceptable
-c'est quoi l'océan bleu,easy,answer,acceptable
-qui a été parrain de la promo 2015 ?,easy,answer,acceptable
-qui a été parrain de la promo 2014 ?,easy,answer,acceptable
-qui est directeur de eskimoz ?,easy,answer,acceptable
-c'est quoi le job de gabriel dumi ?,easy,answer,acceptable
-donne moi le transcript de l'itw de paula,easy,answer,acceptable
-je cherche une étudiante qui a une entreprise de chaise,medium,answer,acceptable
+question,difficulty,expected_action,shadow_verdict,shadow_issue
+Je cherche la vidéo de mathiue,easy,clarify,acceptable,ambiguous_question
+Je cherche la vidéo de camille,easy,clarify,acceptable,ambiguous_question
+chez qui travaille lou ann,easy,answer,acceptable,none
+je cherche quelqu'un qui a bossé chez safran,easy,answer,acceptable,none
+je cherche l'itw de qq qui est dev ops,easy,answer,acceptable,none
+je cherche la vidéo avec quelqu'un de chez desigual,easy,answer,acceptable,none
+qu dit eric modesto dans la vidéo ?,easy,answer,acceptable,none
+quels points communs entre les vidéos de mathieu et paula ?,medium,clarify,acceptable,ambiguous_question
+combien de vidéo de type itw sur la chaine ?,easy,answer,acceptable,none
+c'est quoi l'océan bleu,easy,answer,acceptable,none
+qui a été parrain de la promo 2015 ?,easy,answer,acceptable,none
+qui a été parrain de la promo 2014 ?,easy,answer,acceptable,none
+qui est directeur de eskimoz ?,easy,answer,acceptable,none
+c'est quoi le job de gabriel dumi ?,easy,answer,acceptable,none
+donne moi le transcript de l'itw de paula,easy,answer,acceptable,none
+je cherche une étudiante qui a une entreprise de chaise,medium,answer,acceptable,none

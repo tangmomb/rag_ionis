@@ -125,6 +125,8 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             "action": "clarify",
             "diagnostics": {
                 "shadow_evaluation": {
+                    "verdict": "acceptable",
+                    "issue": "none",
                     "status": "acceptable",
                     "reason": "Réponse étayée",
                     "retrieval_quality": 0.85,
@@ -150,6 +152,14 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             "acceptable",
         )
         self.assertEqual(
+            run_phoenix_experiment.shadow_verdict(output)["label"],
+            "acceptable",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_issue(output)["label"],
+            "none",
+        )
+        self.assertEqual(
             run_phoenix_experiment.shadow_grounded(output)[0],
             1.0,
         )
@@ -158,9 +168,16 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             0.85,
         )
         self.assertEqual(
-            run_phoenix_experiment.shadow_status_match(
+            run_phoenix_experiment.shadow_verdict_match(
                 output,
-                {"shadow_status": "acceptable"},
+                {"shadow_verdict": "acceptable"},
+            )[1],
+            "match",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_issue_match(
+                output,
+                {"shadow_issue": "none"},
             )[1],
             "match",
         )

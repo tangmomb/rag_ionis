@@ -1544,13 +1544,19 @@ correction automatique :
   --llm-max-retries 0
 ```
 
-L'import place `expected.action` et `expected.shadow_status` dans chaque
-exemple. L'expérience publie `answer_action_match`, `shadow_status`,
-`shadow_grounded`, `shadow_retrieval_quality` et `shadow_status_match`. Ces
+L'import place `expected.action`, `expected.shadow_verdict` et
+`expected.shadow_issue` dans chaque exemple. L'expérience publie
+`answer_action_match`, `shadow_verdict`, `shadow_issue`, `shadow_grounded`,
+`shadow_retrieval_quality`, `shadow_verdict_match` et `shadow_issue_match`. Ces
 labels mesurent le résultat de bout en bout attendu pour les cas versionnés.
 Une mesure stricte des faux positifs et faux négatifs du juge nécessite en plus
 une annotation humaine des réponses générées, car leur contenu peut changer
 d'une campagne à l'autre.
+
+Le verdict indique uniquement si la réponse affichée peut être conservée ou
+doit être corrigée. La cause est indépendante : une demande de précision bien
+formulée produit par exemple `verdict=acceptable` avec
+`issue=ambiguous_question`.
 
 Le modèle du juge est indépendant du modèle de réponse. En production, il peut
 être défini avec `RAG_SHADOW_EVALUATION_MODEL`; sans cette variable, le juge

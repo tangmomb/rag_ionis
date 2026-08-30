@@ -65,10 +65,10 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(selected_sources, [sources[1]])
 
     def test_llm_steps_use_the_configured_models(self) -> None:
-        self.assertEqual(DEFAULT_PLANNER_MODEL, "mistral-medium-latest")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-terra")
-        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "mistral-medium-latest")
-        self.assertEqual(DEFAULT_GENERATION_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-luna")
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
@@ -1052,9 +1052,9 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(
             data["defaults"],
             {
-                "reformulationModel": "gpt-5.6-terra",
-                "plannerModel": "mistral-medium-latest",
-                "answerModel": "mistral-medium-latest",
+                "reformulationModel": "gpt-5.6-luna",
+                "plannerModel": "gpt-5.6-luna",
+                "answerModel": "gpt-5.6-luna",
             },
         )
         self.assertIn(

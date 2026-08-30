@@ -25,6 +25,7 @@ from interface.backend.planner import (
     reformulate_question,
     resolve_company_filters,
     resolve_person_filters,
+    resolve_title_hint,
     run_planner,
     sanitize_video_title_hint,
 )

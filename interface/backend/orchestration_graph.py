@@ -16,6 +16,7 @@ from interface.backend.config import (
     DEFAULT_RERANK_MODEL,
 )
 from interface.backend.conversation_memory import TOPIC_MATCH_MAX_COSINE_DISTANCE
+from interface.backend.planner import PERSON_NAME_PART_SIMILARITY_THRESHOLD
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 
 
@@ -35,6 +36,8 @@ class RagOrchestrationState(TypedDict, total=False):
     person_resolution: dict[str, Any]
     database_company: list[str]
     company_resolution: dict[str, Any]
+    resolved_title_hint: str | None
+    title_resolution: dict[str, Any]
     execution_plan: dict[str, Any]
     base_retrieval: dict[str, Any]
     answer: str
@@ -44,7 +47,12 @@ class RagOrchestrationState(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class RagOrchestrationContext:
-    client: Any
+    client: Any = None
+
+
+def _runtime_client(runtime: Runtime[RagOrchestrationContext]) -> Any:
+    context = runtime.context
+    return context.client if context is not None and context.client is not None else services.get_llm_client()
 
 
 def _payload(state: RagOrchestrationState) -> RagRequest:
@@ -57,6 +65,46 @@ def _planner_plan(state: RagOrchestrationState) -> PlannerPlan:
 
 def _execution_plan(state: RagOrchestrationState) -> ExecutionPlan:
     return ExecutionPlan.model_validate(state["execution_plan"])
+
+
+def _execution_plan_trace(
+    execution_plan: ExecutionPlan,
+) -> dict[str, Any]:
+    """Serialize the executable plan, whose persons are already canonical."""
+    return execution_plan.model_dump()
+
+
+def _resolved_plan_persons(state: RagOrchestrationState) -> list[str]:
+    """Merge confident speaker and transcript matches into one SQL input list."""
+    persons: list[str] = []
+    for person in [
+        *state.get("database_persons", []),
+        *[
+            str(item["person"])
+            for item in state.get("person_resolution", {}).get(
+                "suggestion_transcripts", []
+            )
+            if float(item.get("score", 0)) > PERSON_NAME_PART_SIMILARITY_THRESHOLD
+        ],
+    ]:
+        if person not in persons:
+            persons.append(person)
+    return persons
+
+
+def _resolved_plan_companies(state: RagOrchestrationState) -> list[str]:
+    """Use only confident company suggestions as executable SQL filters."""
+    return [
+        str(item["company"])
+        for item in state.get("company_resolution", {}).get(
+            "suggestion_companies", [])
+        if float(item.get("score", 0)) >= 0.85
+    ]
+
+
+def _resolved_plan_title_hint(state: RagOrchestrationState) -> str | None:
+    """Use the highest-scoring canonical video title as the SQL title filter."""
+    return state.get("resolved_title_hint")
 
 
 def initialize(state: RagOrchestrationState) -> dict[str, Any]:
@@ -79,7 +127,7 @@ def reformulate(
     runtime: Runtime[RagOrchestrationContext],
 ) -> dict[str, Any]:
     payload = _payload(state)
-    client = runtime.context.client
+    client = _runtime_client(runtime)
     reformulation_model = state["reformulation_model"]
     with services.trace_operation(
         "rag.reformulation",
@@ -223,7 +271,7 @@ def plan(
         planner_plan, planner_prompt, planner_raw, pydantic_verification = (
             services.run_planner(
                 contextual_question,
-                runtime.context.client,
+                _runtime_client(runtime),
                 planner_model,
                 payload.plannerPrompt,
             )
@@ -264,9 +312,8 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
         "applied": False,
         "ambiguous": False,
         "requested": [],
-        "suggestions": [],
-        "suggestion_scores": [],
-        "auto_resolved": False,
+        "suggestion_speakers": [],
+        "suggestion_transcripts": [],
         "reason": "no_planned_persons",
     }
     if planned_persons:
@@ -285,28 +332,43 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
     ]
     database_company: list[str] = []
     company_resolution: dict[str, Any] = {
-        "applied": False,
         "requested": [],
-        "resolved": [],
-        "matches": [],
-        "unresolved": [],
-        "reason": "no_planned_company",
+        "suggestion_companies": [],
     }
     if planned_companies:
         with services.trace_operation(
             "rag.company_resolution",
             kind="CHAIN",
-            input_value={"planned_company": planned_companies},
+            input_value={"planned_companies": planned_companies},
         ) as company_span:
             database_company, company_resolution = services.resolve_company_filters(
                 planned_companies
             )
             company_span.set_output(company_resolution)
+
+    planned_title_hint = planner_plan.title_hint
+    resolved_title_hint: str | None = None
+    title_resolution: dict[str, Any] = {
+        "requested": None,
+        "suggestion_titles": [],
+    }
+    if planned_title_hint:
+        with services.trace_operation(
+            "rag.title_resolution",
+            kind="CHAIN",
+            input_value={"planned_title_hint": planned_title_hint},
+        ) as title_span:
+            resolved_title_hint, title_resolution = services.resolve_title_hint(
+                planned_title_hint
+            )
+            title_span.set_output(title_resolution)
     return {
         "database_persons": database_persons,
         "person_resolution": person_resolution,
         "database_company": database_company,
         "company_resolution": company_resolution,
+        "resolved_title_hint": resolved_title_hint,
+        "title_resolution": title_resolution,
     }
 
 
@@ -314,6 +376,10 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     payload = _payload(state)
     planner_plan = _planner_plan(state)
     execution_plan = services.build_execution_plan(payload, planner_plan)
+    execution_plan.persons = _resolved_plan_persons(state)
+    execution_plan.companies = _resolved_plan_companies(state)
+    execution_plan.title_hint = _resolved_plan_title_hint(state)
+    execution_plan_trace = _execution_plan_trace(execution_plan)
     if not (
         execution_plan.sql_main_source
         and execution_plan.route in {"rag", "multi_source"}
@@ -323,7 +389,7 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
             kind="CHAIN",
             input_value={"planner_plan": planner_plan.model_dump()},
         ) as execution_plan_span:
-            execution_plan_span.set_output(execution_plan.model_dump())
+            execution_plan_span.set_output(execution_plan_trace)
 
     base_retrieval = {
         "route": execution_plan.route,
@@ -337,11 +403,11 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
         "planner_model": state["planner_model"],
         "analytics_sql_model": state["analytics_sql_model"],
         "planner_plan": planner_plan.model_dump(),
-        "execution_plan": execution_plan.model_dump(),
+        "execution_plan": execution_plan_trace,
         "validated_query": execution_plan.model_dump(),
         "person_resolution": state["person_resolution"],
         "company_resolution": state["company_resolution"],
-        "resolved_persons": state["database_persons"],
+        "title_resolution": state["title_resolution"],
         "resolved_companies": state["database_company"],
         "conversation_topic": state["topic_assignment"],
     }
@@ -416,22 +482,40 @@ def direct(state: RagOrchestrationState) -> dict[str, Any]:
     return {"answer": answer, "sources": sources, "retrieval": retrieval}
 
 
+def _structured_sql_parent_output(trace: dict[str, Any]) -> dict[str, Any]:
+    """Keep detailed SQL result rows, including transcripts, on child spans only."""
+    output = {
+        key: value
+        for key, value in trace.items()
+        if key not in {"query_results", "persons_table"}
+    }
+    persons_table = trace.get("persons_table")
+    if isinstance(persons_table, dict):
+        output["persons_table"] = {
+            key: value
+            for key, value in persons_table.items()
+            if key != "query_results"
+        }
+    return output
+
+
 def run_structured_lookup(
     state: RagOrchestrationState,
     client: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
     execution_plan = _execution_plan(state)
+    execution_plan_trace = _execution_plan_trace(execution_plan)
     sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
     with services.trace_operation(
         "rag.execution_plan",
         kind="CHAIN",
-        input_value={"execution_plan": execution_plan.model_dump()},
+        input_value={"execution_plan": execution_plan_trace},
     ) as execution_plan_span:
         with services.trace_operation(
             "rag.structured_sql",
             kind="CHAIN",
             input_value={
-                "execution_plan": execution_plan.model_dump(),
+                "execution_plan": execution_plan_trace,
                 "sql_sub_intent": sql_sub_intent,
             },
         ) as sql_span:
@@ -440,24 +524,22 @@ def run_structured_lookup(
                     execution_plan,
                     client,
                     state["analytics_sql_model"],
-                    database_persons=state["database_persons"],
+                    database_persons=execution_plan.persons,
                     database_companies=state["database_company"],
                 )
             else:
                 sources, direct_trace = services.lookup_video_document(
                     execution_plan,
                     sql_sub_intent,
-                    database_persons=state["database_persons"],
+                    database_persons=execution_plan.persons,
                     database_company=state["database_company"],
-                    transcript_persons=state["person_resolution"].get(
-                        "matched_in_transcripts", []
-                    ),
+                    transcript_persons=execution_plan.persons,
                 )
-            sql_span.set_output({**direct_trace, "results": sources})
+            sql_span.set_output(_structured_sql_parent_output(direct_trace))
             services.trace_formatted_sql("rag.structured_sql", direct_trace)
         execution_plan_span.set_output(
             {
-                "execution_plan": execution_plan.model_dump(),
+                "execution_plan": execution_plan_trace,
                 "source_count": len(sources),
             }
         )
@@ -471,7 +553,7 @@ def structured_sql(
     payload = _payload(state)
     execution_plan = _execution_plan(state)
     sources, direct_trace, sql_sub_intent = run_structured_lookup(
-        state, runtime.context.client
+        state, _runtime_client(runtime)
     )
     retrieval = {
         **state["base_retrieval"],
@@ -515,7 +597,7 @@ def multi_source(
     actions: list[dict[str, Any]] = []
     if execution_plan.sql_main_source:
         doc_sources, doc_trace, sql_sub_intent = run_structured_lookup(
-            state, runtime.context.client
+            state, _runtime_client(runtime)
         )
         actions.append(
             {

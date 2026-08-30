@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -80,6 +81,108 @@ class ConversationMemoryTests(unittest.TestCase):
                 "Réponse.",
             )
         self.assertFalse(result["available"])
+
+    def test_memory_embedding_is_traced_without_the_vector(self) -> None:
+        recorded: dict = {}
+
+        class Span:
+            def set_output(self, value: dict) -> None:
+                recorded["output"] = value
+
+        @contextmanager
+        def trace(name: str, **kwargs):
+            recorded["name"] = name
+            recorded.update(kwargs)
+            yield Span()
+
+        client = SimpleNamespace(
+            embeddings=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    data=[SimpleNamespace(embedding=[0.1, 0.2])]
+                )
+            )
+        )
+        with (
+            patch.object(conversation_memory, "get_openai_client", return_value=client),
+            patch.object(conversation_memory, "trace_operation", side_effect=trace),
+        ):
+            result = conversation_memory._embedding("Résumé du sujet")
+
+        self.assertEqual(result, [0.1, 0.2])
+        self.assertEqual(recorded["name"], "rag.conversation_memory.embedding")
+        self.assertEqual(recorded["kind"], "EMBEDDING")
+        self.assertEqual(recorded["input_value"]["purpose"], "topic_summary")
+        self.assertNotIn("text", recorded["input_value"])
+        self.assertEqual(recorded["output"]["status"], "completed")
+        self.assertEqual(recorded["output"]["dimensions"], 2)
+
+    def test_topic_similarity_search_has_its_own_span(self) -> None:
+        recorded: list[dict] = []
+
+        class Span:
+            def __init__(self, record: dict) -> None:
+                self.record = record
+
+            def set_output(self, value: dict) -> None:
+                self.record["output"] = value
+
+        @contextmanager
+        def trace(name: str, **kwargs):
+            record = {"name": name, **kwargs}
+            recorded.append(record)
+            yield Span(record)
+
+        class Cursor:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def execute(self, *_args) -> None:
+                self.calls += 1
+
+            def fetchone(self):
+                return (1, "Topic actif")
+
+            def fetchall(self):
+                return [(2, "Topic proche", 0.2)]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+        client = SimpleNamespace(
+            embeddings=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    data=[SimpleNamespace(embedding=[0.1, 0.2])]
+                )
+            )
+        )
+        with (
+            patch.object(conversation_memory, "fetch_conversation_history", return_value=([], {})),
+            patch.object(conversation_memory, "get_openai_client", return_value=client),
+            patch.object(conversation_memory, "connect_database", return_value=Connection()),
+            patch.object(conversation_memory, "trace_operation", side_effect=trace),
+        ):
+            memory = conversation_memory.load_reformulation_memory(
+                12, "Question sur le topic", include_episodes=False, embed_question=True
+            )
+
+        span = next(item for item in recorded if item["name"] == "topic_similarity_search")
+        self.assertEqual(span["kind"], "RETRIEVER")
+        self.assertEqual(span["output"]["result_count"], 1)
+        self.assertEqual(span["output"]["results"][0]["topic_id"], 2)
+        self.assertEqual(memory["related_topics"][0]["topic_id"], 2)
 
 
 if __name__ == "__main__":

@@ -69,6 +69,9 @@ class TraceOperationTests(unittest.TestCase):
             def set_output_text(self, value: str) -> None:
                 self.record["output"] = value
 
+            def set_output(self, value: dict[str, Any]) -> None:
+                self.record["output"] = value
+
         @contextmanager
         def record_trace(name: str, **kwargs):
             record = {"name": name, **kwargs}
@@ -78,9 +81,24 @@ class TraceOperationTests(unittest.TestCase):
         trace = {
             "sql": "SELECT transcript_enriched FROM transcripts WHERE video_id = %s",
             "params": [7],
+            "query_results": [
+                {
+                    "chunk_id": 7,
+                    "video_title": "Video transcript",
+                    "video_url": "https://example.test/transcript",
+                    "text": "Long transcript omitted from the span.",
+                }
+            ],
             "persons_table": {
                 "sql": "SELECT name FROM speakers WHERE id = %s",
                 "params": [3],
+                "query_results": [
+                    {
+                        "chunk_id": 3,
+                        "video_title": "Video speaker",
+                        "video_url": "https://example.test/speaker",
+                    }
+                ],
             },
         }
 
@@ -90,12 +108,24 @@ class TraceOperationTests(unittest.TestCase):
         self.assertEqual(
             [item["name"] for item in recorded],
             [
-                "rag.structured_sql.persons_table.sql_formatted",
-                "rag.structured_sql.transcript_enriched.sql_formatted",
+                "persons_in_speakers",
+                "persons_in_transcripts",
             ],
         )
         self.assertEqual(recorded[0]["input_value"]["params"], [3])
         self.assertEqual(recorded[1]["input_value"]["params"], [7])
+        self.assertEqual(recorded[0]["output"]["result_count"], 1)
+        self.assertEqual(
+            recorded[1]["output"]["results"],
+            [
+                {
+                    "chunk_id": 7,
+                    "video_title": "Video transcript",
+                    "video_url": "https://example.test/transcript",
+                    "text": "Long transcript omitted from the span.",
+                }
+            ],
+        )
 
 
 

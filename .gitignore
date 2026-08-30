@@ -1,4 +1,5 @@
 .venv/
+.venv-studio/
 __pycache__/
 *.py[cod]
 .env
@@ -8,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.langgraph_api/
 downloads/
 models/huggingface/
 models/faster-whisper-large-v3/

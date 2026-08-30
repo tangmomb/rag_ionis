@@ -9,6 +9,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.runtime import Runtime
 
 from interface.backend import api
+from interface.backend import orchestration_graph
 from interface.backend.answer_evaluation import evaluate_answer_shadow
 from interface.backend.generation import (
     generate_answer,
@@ -36,6 +37,20 @@ class _Client:
 
 
 class RagResponseGraphTests(unittest.TestCase):
+    def test_studio_runtime_can_fall_back_without_explicit_context(self) -> None:
+        runtime = Runtime(context=None)
+        self.assertIsInstance(
+            api._runtime_context(runtime),
+            api.RagResponseContext,
+        )
+        client = object()
+        with patch.object(
+            orchestration_graph.services,
+            "get_llm_client",
+            return_value=client,
+        ):
+            self.assertIs(orchestration_graph._runtime_client(runtime), client)
+
     def test_graph_exposes_the_existing_response_pipeline_steps(self) -> None:
         graph = api.RAG_RESPONSE_GRAPH.get_graph()
 

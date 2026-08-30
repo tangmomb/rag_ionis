@@ -72,6 +72,10 @@ class RagResponseContext:
     correction_loop_enabled_override: bool | None = None
 
 
+def _runtime_context(runtime: Runtime[RagResponseContext]) -> RagResponseContext:
+    return runtime.context or RagResponseContext()
+
+
 def _response_payload(state: RagResponseState) -> RagRequest:
     return RagRequest.model_validate(state["payload"])
 
@@ -107,7 +111,8 @@ def _generate_response(
     sources = state["sources"]
     answer = state["answer"]
     answer_client = get_llm_client()
-    runtime.context.answer_client = answer_client
+    context = _runtime_context(runtime)
+    context.answer_client = answer_client
     answer_trace: dict[str, Any] = {}
     with trace_operation(
         "rag.generation",
@@ -143,7 +148,7 @@ def _accept_precomputed_response(
     state: RagResponseState,
     runtime: Runtime[RagResponseContext],
 ) -> dict[str, Any]:
-    runtime.context.answer_client = get_llm_client()
+    _runtime_context(runtime).answer_client = get_llm_client()
     return {
         "answer_trace": {"action": "answer"},
     }
@@ -159,14 +164,17 @@ def _evaluate_response(
 ) -> dict[str, Any]:
     payload = _response_payload(state)
     retrieval = state["retrieval"]
+    context = _runtime_context(runtime)
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
-    evaluation_enabled = runtime.context.shadow_evaluation_enabled_override
+    evaluation_enabled = context.shadow_evaluation_enabled_override
     if evaluation_enabled is None:
         evaluation_enabled = shadow_evaluation_enabled()
     evaluation_model = (
-        runtime.context.shadow_evaluation_model_override
+        context.shadow_evaluation_model_override
         or shadow_evaluation_model(str(retrieval.get("answer_model") or ""))
     )
+    evaluation_client = context.answer_client or get_llm_client()
+    context.answer_client = evaluation_client
     input_value = {
         "mode": "shadow",
         "enabled": evaluation_enabled,
@@ -199,7 +207,7 @@ def _evaluate_response(
                 "status": "not_applicable",
                 "reason": "direct_answer",
             }
-        elif runtime.context.answer_client is None or not evaluation_model:
+        elif evaluation_client is None or not evaluation_model:
             evaluation = {
                 "enabled": True,
                 "mode": "shadow",
@@ -211,7 +219,7 @@ def _evaluate_response(
         else:
             try:
                 evaluation = evaluate_answer_shadow(
-                    runtime.context.answer_client,
+                    evaluation_client,
                     evaluation_model,
                     retrieval.get("contextual_question", payload.question),
                     state["answer"],
@@ -233,10 +241,10 @@ def _evaluate_response(
         for key, value in evaluation.items()
         if key not in {"prompt", "response_raw"}
     }
-    if runtime.context.shadow_evaluation_sink is not None:
-        runtime.context.shadow_evaluation_sink.clear()
-        runtime.context.shadow_evaluation_sink.update(checkpoint_evaluation)
-    correction_enabled = runtime.context.correction_loop_enabled_override
+    if context.shadow_evaluation_sink is not None:
+        context.shadow_evaluation_sink.clear()
+        context.shadow_evaluation_sink.update(checkpoint_evaluation)
+    correction_enabled = context.correction_loop_enabled_override
     if correction_enabled is None:
         correction_enabled = correction_loop_enabled()
     correction_requested = bool(
@@ -298,8 +306,9 @@ def _correct_response(
         },
     ) as correction_span:
         try:
-            answer_client = runtime.context.answer_client or get_llm_client()
-            runtime.context.answer_client = answer_client
+            context = _runtime_context(runtime)
+            answer_client = context.answer_client or get_llm_client()
+            context.answer_client = answer_client
             corrected_answer = generate_final_answer(
                 answer_client,
                 retrieval.get("contextual_question", payload.question),
@@ -503,7 +512,7 @@ def _persist_response(
     payload = _response_payload(state)
     answer = state["answer"]
     retrieval = state["retrieval"]
-    answer_client = runtime.context.answer_client
+    answer_client = _runtime_context(runtime).answer_client or get_llm_client()
     trace_id = current_trace_id()
     retrieval["telemetry"] = {
         "trace_id": trace_id,

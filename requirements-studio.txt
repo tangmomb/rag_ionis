@@ -1,0 +1,3 @@
+langgraph-cli[inmem]
+fastapi>=0.141.1
+psycopg[binary]>=3.3.4

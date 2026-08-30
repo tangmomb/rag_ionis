@@ -11,6 +11,7 @@ from typing import Any
 
 from interface.backend.config import DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL
 from interface.backend.database import connect_database, ensure_chat_schema, fetch_conversation_history
+from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import get_openai_client, normalize_text
 
 
@@ -48,20 +49,52 @@ def extract_memory_signals(*values: str) -> tuple[list[str], list[str]]:
     return sorted(_entities(text)), sorted(_tokens(text))[:48]
 
 
-def _embedding(text: str) -> list[float] | None:
-    """Embed a topic summary; the memory remains usable if this is unavailable."""
+def _embedding(
+    text: str,
+    *,
+    purpose: str = "topic_summary",
+    span_name: str = "rag.conversation_memory.embedding",
+) -> list[float] | None:
+    """Embed memory text and expose the outcome without recording its vector."""
     client = get_openai_client()
-    if client is None or not text.strip():
-        return None
-    try:
-        response = client.embeddings.create(
-            model=DEFAULT_EMBEDDING_MODEL,
-            dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
-            input=text[:12_000],
-        )
-        return list(response.data[0].embedding)
-    except Exception:
-        return None
+    with trace_operation(
+        span_name,
+        kind="EMBEDDING",
+        input_value={
+            "purpose": purpose,
+            "model": DEFAULT_EMBEDDING_MODEL,
+            "dimensions": DEFAULT_EMBEDDING_DIMENSIONS,
+            "text_length": len(text.strip()),
+        },
+    ) as embedding_span:
+        if client is None:
+            embedding_span.set_output(
+                {"status": "skipped", "reason": "openai_client_unavailable"}
+            )
+            return None
+        if not text.strip():
+            embedding_span.set_output({"status": "skipped", "reason": "empty_text"})
+            return None
+        try:
+            response = client.embeddings.create(
+                model=DEFAULT_EMBEDDING_MODEL,
+                dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
+                input=text[:12_000],
+            )
+            embedding = list(response.data[0].embedding)
+            embedding_span.set_output(
+                {
+                    "status": "completed",
+                    "model": DEFAULT_EMBEDDING_MODEL,
+                    "dimensions": len(embedding),
+                }
+            )
+            return embedding
+        except Exception as exc:
+            embedding_span.set_output(
+                {"status": "failed", "error_type": type(exc).__name__}
+            )
+            return None
 
 
 def _vector_literal(values: list[float] | None) -> str | None:
@@ -258,13 +291,22 @@ def load_reformulation_memory(
         immediate_history, history_trace = fetch_conversation_history(
             conversation_id,
             limit=IMMEDIATE_HISTORY_EXCHANGES,
+            latest_topic_only=True,
         )
     except Exception as exc:
         return {"available": False, "reason": str(exc), "immediate_history": [], "episodes": []}
     # This path is used only for a non-follow-up, between the light and final
     # reformulation calls. It makes the current question comparable to topic
     # summary embeddings before the second LLM call.
-    question_embedding = _embedding(question) if embed_question else None
+    question_embedding = (
+        _embedding(
+            question,
+            purpose="topic_match_query",
+            span_name="embedding",
+        )
+        if embed_question
+        else None
+    )
     try:
         with connect_database() as connection:
             with connection.cursor() as cursor:
@@ -281,26 +323,53 @@ def load_reformulation_memory(
                 )
                 active = cursor.fetchone()
                 if question_embedding:
-                    cursor.execute(
-                        """
-                        SELECT t.id, t.summary, t.embedding <=> %s::vector AS distance
-                        FROM chat.conversation_topics AS ct
-                        JOIN chat.topics AS t ON t.id = ct.topic_id
-                        WHERE ct.conversation_id = %s
-                          AND t.embedding IS NOT NULL
-                          AND (%s::bigint IS NULL OR t.id <> %s::bigint)
-                        ORDER BY t.embedding <=> %s::vector
-                        LIMIT 3
-                        """,
-                        (
-                            _vector_literal(question_embedding),
-                            conversation_id,
-                            exclude_topic_id,
-                            exclude_topic_id,
-                            _vector_literal(question_embedding),
-                        ),
-                    )
-                    related_topics = cursor.fetchall()
+                    with trace_operation(
+                        "topic_similarity_search",
+                        kind="RETRIEVER",
+                        input_value={
+                            "conversation_id": conversation_id,
+                            "excluded_topic_id": exclude_topic_id,
+                            "result_limit": 3,
+                            "match_max_cosine_distance": TOPIC_MATCH_MAX_COSINE_DISTANCE,
+                        },
+                    ) as similarity_span:
+                        cursor.execute(
+                            """
+                            SELECT t.id, t.summary, t.embedding <=> %s::vector AS distance
+                            FROM chat.conversation_topics AS ct
+                            JOIN chat.topics AS t ON t.id = ct.topic_id
+                            WHERE ct.conversation_id = %s
+                              AND t.embedding IS NOT NULL
+                              AND (%s::bigint IS NULL OR t.id <> %s::bigint)
+                            ORDER BY t.embedding <=> %s::vector
+                            LIMIT 3
+                            """,
+                            (
+                                _vector_literal(question_embedding),
+                                conversation_id,
+                                exclude_topic_id,
+                                exclude_topic_id,
+                                _vector_literal(question_embedding),
+                            ),
+                        )
+                        related_topics = cursor.fetchall()
+                        similarity_span.set_output(
+                            {
+                                "result_count": len(related_topics),
+                                "matching_topic_count": sum(
+                                    float(row[2]) <= TOPIC_MATCH_MAX_COSINE_DISTANCE
+                                    for row in related_topics
+                                ),
+                                "results": [
+                                    {
+                                        "topic_id": int(row[0]),
+                                        "summary": str(row[1] or ""),
+                                        "distance": round(float(row[2]), 4),
+                                    }
+                                    for row in related_topics
+                                ],
+                            }
+                        )
                 else:
                     related_topics = []
                 if include_episodes:

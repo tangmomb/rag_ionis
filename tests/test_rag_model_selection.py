@@ -291,7 +291,14 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(orchestration, "get_llm_client", return_value=client),
             patch.object(orchestration, "reformulate_question", return_value=(payload.question, {})),
             patch.object(orchestration, "run_planner", return_value=(plan, "prompt", "raw", True)),
-            patch.object(orchestration, "resolve_person_filters", return_value=([], {"ambiguous": False, "matched_in_transcripts": []})),
+            patch.object(
+                orchestration,
+                "resolve_person_filters",
+                return_value=(
+                    [],
+                    {"ambiguous": False, "suggestion_transcripts": []},
+                ),
+            ),
             patch.object(orchestration, "run_analytics_text_to_sql", return_value=([], empty_sql_trace)),
             patch.object(orchestration, "retrieve_chunks") as retrieve_chunks,
         ):

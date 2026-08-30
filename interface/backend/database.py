@@ -243,6 +243,8 @@ def create_conversation() -> int:
 def fetch_conversation_history(
     conversation_id: int | None,
     limit: int = 8,
+    *,
+    latest_topic_only: bool = False,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     if conversation_id is None:
         return [], {"applied": False, "reason": "no_conversation_id", "message_count": 0}
@@ -258,7 +260,38 @@ def fetch_conversation_history(
     """
     with connect_database() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(sql, (conversation_id, limit))
+            latest_topic_id: int | None = None
+            if latest_topic_only:
+                cursor.execute(
+                    """
+                    SELECT topic_id
+                    FROM chat.messages
+                    WHERE conversation_id = %s AND topic_id IS NOT NULL
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                )
+                latest_topic = cursor.fetchone()
+                if latest_topic is not None:
+                    latest_topic_id = int(latest_topic[0])
+                    sql = """
+                        SELECT user_message, answer_message
+                        FROM chat.messages
+                        WHERE conversation_id = %s AND topic_id = %s
+                        ORDER BY id DESC
+                        LIMIT %s
+                    """
+                    parameters: tuple[int, ...] = (
+                        conversation_id,
+                        latest_topic_id,
+                        limit,
+                    )
+                else:
+                    parameters = (conversation_id, limit)
+            else:
+                parameters = (conversation_id, limit)
+            cursor.execute(sql, parameters)
             rows = cursor.fetchall()
 
     items: list[dict[str, str]] = []
@@ -275,7 +308,9 @@ def fetch_conversation_history(
         "reason": None,
         "message_count": len(items),
         "sql": sql,
-        "params": [conversation_id, limit],
+        "params": list(parameters),
+        "latest_topic_only": latest_topic_only,
+        "topic_id": latest_topic_id,
     }
 
 

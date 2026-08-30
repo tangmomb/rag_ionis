@@ -1581,6 +1581,25 @@ corrections avec une baseline. L'activation en production doit rester
 désactivée tant qu'une campagne labellisée montre une régression de
 `answer_action_match`, même si le grounding s'améliore.
 
+### LangSmith Studio
+
+Les graphes `rag_response` et `rag_orchestration` sont déclarés dans
+`langgraph.json`. Pour les visualiser et les exécuter localement en mode graphe :
+
+```powershell
+python -m venv .venv-studio --system-site-packages
+.\.venv-studio\Scripts\python.exe -m pip install --no-cache-dir -r requirements-studio.txt
+.\.venv-studio\Scripts\langgraph.exe dev --no-browser
+```
+
+Ouvrir ensuite
+`https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024` et fournir
+les entrées en JSON brut, par exemple
+`{"payload":{"question":"Qui est directeur de Eskimoz ?","useSql":true}}`.
+Studio charge les variables applicatives depuis `.env.local`. Ajouter
+`LANGSMITH_API_KEY` dans ce fichier local si Studio le demande ; ne jamais
+commiter cette clé.
+
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :
 

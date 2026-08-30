@@ -41,6 +41,54 @@ class _Connection:
 
 
 class DatabaseTests(unittest.TestCase):
+
+    def test_history_can_be_limited_to_the_latest_topic(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def execute(self, sql, parameters) -> None:
+                self.calls.append((sql, parameters))
+
+            def fetchone(self):
+                return (42,)
+
+            def fetchall(self):
+                return [("Question du topic", "Réponse du topic")]
+
+        class Connection:
+            def __init__(self) -> None:
+                self.cursor_instance = Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def cursor(self):
+                return self.cursor_instance
+
+        connection = Connection()
+        with (
+            patch.object(database, "ensure_chat_schema"),
+            patch.object(database, "connect_database", return_value=connection),
+        ):
+            history, trace = database.fetch_conversation_history(
+                3, limit=3, latest_topic_only=True
+            )
+
+        self.assertEqual(connection.cursor_instance.calls[1][1], (3, 42, 3))
+        self.assertIn("topic_id = %s", connection.cursor_instance.calls[1][0])
+        self.assertEqual(history[0]["text"], "Question du topic")
+        self.assertEqual(trace["topic_id"], 42)
+
     def test_store_chat_message_strips_postgresql_nul_characters(self) -> None:
         connection = _Connection()
         with (

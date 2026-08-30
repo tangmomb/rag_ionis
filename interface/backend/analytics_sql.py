@@ -106,8 +106,7 @@ Exemple unique — comparaison de speakers :
     context = {
         "question": question,
         "title_hint": query.title_hint,
-        "persons_requested": query.persons,
-        "persons_resolved": database_persons or [],
+        "persons": database_persons or query.persons,
         "companies_requested": query.companies,
         "companies_resolved": database_companies or [],
         "published_after": query.published_after,

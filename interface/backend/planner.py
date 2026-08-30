@@ -88,7 +88,8 @@ REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
 # La correction tolère une faute légère dans un prénom ou un nom, sans faire
 # remonter des noms qui ne partagent qu'une syllabe courte.
 PERSON_NAME_PART_SIMILARITY_THRESHOLD = 0.85
-COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.90
+COMPANY_TITLE_SIMILARITY_THRESHOLD = 0.85
+VIDEO_TITLE_SIMILARITY_THRESHOLD = 0.85
 REFORMULATION_HISTORY_EXCHANGES = 3
 REFORMULATION_HISTORY_MAX_MESSAGES = REFORMULATION_HISTORY_EXCHANGES * 2
 REFORMULATION_HISTORY_MAX_CHARS_PER_MESSAGE = 1_600
@@ -511,7 +512,7 @@ def has_structured_sql_filters(query: ExecutionPlan) -> bool:
 def resolve_person_filters(
     requested_persons: list[str],
 ) -> tuple[list[str], dict[str, Any]]:
-    """Ne conserve que les personnes réellement présentes dans la table SQL."""
+    """Score every speaker suggestion and retain only confident SQL filters."""
     candidates = [
         str(value).strip()
         for value in requested_persons
@@ -523,21 +524,11 @@ def resolve_person_filters(
             "applied": False,
             "ambiguous": False,
             "requested": [],
-            "suggestions": [],
-            "suggestion_scores": [],
-            "auto_resolved": False,
-            "matched_in_speakers": [],
-            "matched_in_transcripts": [],
+            "suggestion_speakers": [],
+            "suggestion_transcripts": [],
         }
 
     resolved: list[str] = []
-    matched_in_speakers: list[str] = []
-    suggestions: list[str] = []
-    suggestion_scores: dict[str, float] = {}
-    auto_resolved = False
-    ambiguous_candidates: list[str] = []
-    ambiguous_suggestions: list[str] = []
-    ambiguous_suggestion_scores: dict[str, float] = {}
     unresolved_candidates: list[str] = []
     with connect_database() as connection:
         with connection.cursor() as cursor:
@@ -551,190 +542,105 @@ def resolve_person_filters(
             )
             database_persons = [str(row[0]).strip() for row in cursor.fetchall()]
 
-    matched_in_transcripts = find_persons_in_enriched_transcripts(candidates)
+    transcript_matches = find_persons_in_enriched_transcripts(candidates)
     transcript_match_keys = {
-        normalize_text(person) for person in matched_in_transcripts
+        normalize_text(person) for person in transcript_matches
     }
-    database_person_keys = {normalize_text(person) for person in database_persons}
-    fuzzy_candidate_count = sum(
-        1
-        for candidate in candidates
-        if normalize_text(candidate) not in database_person_keys
-    )
+    speaker_scores: dict[str, float] = {}
+
+    def person_similarity(candidate: str, person: str) -> float:
+        # Les tirets font partie de la graphie d'un prénom composé, mais
+        # l'utilisateur peut les omettre ("Lou Ann" / "Lou-Ann").
+        candidate_parts = re.sub(r"[-'’]", " ", normalize_text(candidate)).split()
+        person_parts = re.sub(r"[-'’]", " ", normalize_text(person)).split()
+        if not candidate_parts or not person_parts:
+            return 0.0
+
+        if len(candidate_parts) == 1:
+            # Une recherche sur un seul mot peut désigner le prénom ou le
+            # nom, mais jamais un mot intermédiaire arbitraire.
+            comparable_parts = (person_parts[0], person_parts[-1])
+            return max(
+                (SequenceMatcher(None, candidate_parts[0], part).ratio() for part in comparable_parts),
+                default=0.0,
+            )
+
+        # Pour un nom complet, prénom et nom doivent contribuer ensemble.
+        endpoint_score = (
+            SequenceMatcher(None, candidate_parts[0], person_parts[0]).ratio()
+            + SequenceMatcher(None, candidate_parts[-1], person_parts[-1]).ratio()
+        ) / 2
+
+        partial_scores = [endpoint_score]
+        if len(candidate_parts) < len(person_parts):
+            prefix_parts = person_parts[: len(candidate_parts)]
+            suffix_parts = person_parts[-len(candidate_parts) :]
+            partial_scores.extend(
+                sum(
+                    SequenceMatcher(None, candidate_part, person_part).ratio()
+                    for candidate_part, person_part in zip(
+                        candidate_parts,
+                        aligned_parts,
+                    )
+                )
+                / len(candidate_parts)
+                for aligned_parts in (prefix_parts, suffix_parts)
+            )
+        return max(partial_scores)
 
     for candidate in candidates:
         normalized_candidate = normalize_text(candidate)
-        exact_matches = [
-            person for person in database_persons
-            if normalize_text(person) == normalized_candidate
+        candidate_matches = [
+            (person_similarity(candidate, person), person)
+            for person in database_persons
         ]
-        if exact_matches:
-            for person in exact_matches:
+        confident_match = False
+        for score, person in candidate_matches:
+            speaker_scores[person] = max(speaker_scores.get(person, 0.0), score)
+            if score > PERSON_NAME_PART_SIMILARITY_THRESHOLD:
+                confident_match = True
                 if person not in resolved:
                     resolved.append(person)
-                if person not in matched_in_speakers:
-                    matched_in_speakers.append(person)
-            continue
-        def person_similarity(person: str) -> float:
-            # Les tirets font partie de la graphie d'un prénom composé, mais
-            # l'utilisateur peut les omettre ("Lou Ann" / "Lou-Ann").
-            candidate_parts = re.sub(r"[-'’]", " ", normalized_candidate).split()
-            person_parts = re.sub(r"[-'’]", " ", normalize_text(person)).split()
-            if not candidate_parts or not person_parts:
-                return 0.0
+        if not confident_match and normalized_candidate not in transcript_match_keys:
+            unresolved_candidates.append(candidate)
 
-            if len(candidate_parts) == 1:
-                # Une recherche sur un seul mot peut désigner le prénom ou le
-                # nom, mais jamais un mot intermédiaire arbitraire.
-                comparable_parts = (person_parts[0], person_parts[-1])
-                return max(
-                    (SequenceMatcher(None, candidate_parts[0], part).ratio() for part in comparable_parts),
-                    default=0.0,
-                )
-
-            # Pour un nom complet, prénom et nom doivent contribuer ensemble
-            # au score. Un nom de famille identique ne suffit donc plus à
-            # produire artificiellement un score de 1 si le prénom diffère.
-            endpoint_score = (
-                SequenceMatcher(None, candidate_parts[0], person_parts[0]).ratio()
-                + SequenceMatcher(None, candidate_parts[-1], person_parts[-1]).ratio()
-            ) / 2
-
-            # Une saisie peut ne contenir qu'un prénom composé ou une portion
-            # exacte du nom complet ("Lou Ann" pour "Lou-Ann Corveddu").
-            partial_scores = [endpoint_score]
-            if len(candidate_parts) < len(person_parts):
-                prefix_parts = person_parts[: len(candidate_parts)]
-                suffix_parts = person_parts[-len(candidate_parts) :]
-                partial_scores.extend(
-                    sum(
-                        SequenceMatcher(None, candidate_part, person_part).ratio()
-                        for candidate_part, person_part in zip(
-                            candidate_parts,
-                            aligned_parts,
-                        )
-                    )
-                    / len(candidate_parts)
-                    for aligned_parts in (prefix_parts, suffix_parts)
-                )
-            return max(partial_scores)
-
-        ranked = sorted(
-            [
-                (
-                    person_similarity(person),
-                    person,
-                )
-                for person in database_persons
-            ],
-            reverse=True,
+    suggestion_speakers = [
+        {"person": person, "score": round(score, 3)}
+        for person, score in sorted(
+            speaker_scores.items(), key=lambda item: (-item[1], item[0])
         )
-        close_matches = [
-            (score, person)
-            for score, person in ranked
-            if score >= PERSON_NAME_PART_SIMILARITY_THRESHOLD
-        ][:3]
-        if close_matches:
-            top_score = close_matches[0][0]
-            best_matches = [
-                (score, person)
-                for score, person in close_matches
-                if top_score - score <= 0.02
-            ]
-            if (
-                fuzzy_candidate_count == 1
-                and len(best_matches) == 1
-                and best_matches[0][0] > 0.9
-            ):
-                score, person = best_matches[0]
-                resolved.append(person)
-                suggestions.append(person)
-                suggestion_scores[person] = score
-                auto_resolved = True
-                continue
-
-            ambiguous_candidates.append(candidate)
-            for score, person in best_matches:
-                if person not in ambiguous_suggestions:
-                    ambiguous_suggestions.append(person)
-                ambiguous_suggestion_scores[person] = max(
-                    ambiguous_suggestion_scores.get(person, 0.0),
-                    score,
-                )
-        else:
-            # Une personne mentionnée dans un transcript, mais absente de la table
-            # speakers, reste une cible valide pour la recherche transcript. On ne
-            # la déclare inconnue que si aucune des deux sources ne la connaît.
-            if normalized_candidate not in transcript_match_keys:
-                unresolved_candidates.append(candidate)
-
-    if ambiguous_candidates:
-        unique_suggestions = ambiguous_suggestions[:3]
-        return resolved, {
-            "applied": True,
-            "ambiguous": True,
-            "requested": candidates,
-            "ambiguous_requests": ambiguous_candidates,
-            "suggestions": unique_suggestions,
-            "suggestion_scores": [
-                {
-                    "person": person,
-                    "score": round(ambiguous_suggestion_scores[person], 3),
-                }
-                for person in unique_suggestions
-            ],
-            "auto_resolved": auto_resolved,
-            "matched_in_speakers": matched_in_speakers,
-            "matched_in_transcripts": matched_in_transcripts,
-            "message": (
-                "Vous parlez de " + ", ".join(unique_suggestions) + " ?"
-                if unique_suggestions
-                else "Peux-tu préciser le nom de l'intervenant ?"
-            ),
-        }
+        if score > PERSON_NAME_PART_SIMILARITY_THRESHOLD
+    ]
+    suggestion_transcripts = [
+        {"person": person, "score": 1.0}
+        for person in transcript_matches
+    ]
 
     if unresolved_candidates:
-        unique_suggestions = suggestions[:3]
         return resolved, {
             "applied": True,
             "ambiguous": True,
             "requested": candidates,
             "ambiguous_requests": unresolved_candidates,
             "unresolved_requests": unresolved_candidates,
-            "suggestions": unique_suggestions,
-            "suggestion_scores": [
-                {"person": person, "score": round(suggestion_scores[person], 3)}
-                for person in unique_suggestions
-            ],
-            "auto_resolved": auto_resolved,
-            "matched_in_speakers": matched_in_speakers,
-            "matched_in_transcripts": matched_in_transcripts,
-            "message": (
-                "Vous parlez de " + ", ".join(unique_suggestions) + " ?"
-                if unique_suggestions
-                else "Peux-tu préciser le nom de l'intervenant ?"
-            ),
+            "suggestion_speakers": suggestion_speakers,
+            "suggestion_transcripts": suggestion_transcripts,
+            "message": "Peux-tu préciser le nom de l'intervenant ?",
         }
 
     return resolved, {
         "applied": True,
         "ambiguous": False,
         "requested": candidates,
-        "suggestions": suggestions,
-        "suggestion_scores": [
-            {"person": person, "score": round(suggestion_scores[person], 3)}
-            for person in suggestions
-        ],
-        "auto_resolved": auto_resolved,
-        "matched_in_speakers": matched_in_speakers,
-        "matched_in_transcripts": matched_in_transcripts,
+        "suggestion_speakers": suggestion_speakers,
+        "suggestion_transcripts": suggestion_transcripts,
     }
 
 
 def resolve_company_filters(
     requested_companies: list[str],
 ) -> tuple[list[str], dict[str, Any]]:
-    """Résout les entreprises vers des termes réellement contenus dans title."""
+    """Suggest confident company terms found in speaker titles."""
     candidates = [
         str(value).strip()
         for value in requested_companies
@@ -742,11 +648,8 @@ def resolve_company_filters(
     ]
     if not candidates:
         return [], {
-            "applied": False,
             "requested": [],
-            "resolved": [],
-            "matches": [],
-            "unresolved": [],
+            "suggestion_companies": [],
         }
 
     with connect_database() as connection:
@@ -761,17 +664,13 @@ def resolve_company_filters(
             )
             database_titles = [str(row[0]).strip() for row in cursor.fetchall()]
 
-    resolved: list[str] = []
-    matches: list[dict[str, Any]] = []
-    unresolved: list[str] = []
+    company_scores: dict[str, float] = {}
     for candidate in candidates:
         candidate_tokens = re.findall(r"\w+", normalize_text(candidate))
         if not candidate_tokens:
-            unresolved.append(candidate)
             continue
 
         phrase_size = len(candidate_tokens)
-        ranked: list[tuple[float, str, str]] = []
         for title in database_titles:
             title_tokens = re.findall(r"\w+", normalize_text(title))
             for index in range(0, len(title_tokens) - phrase_size + 1):
@@ -781,33 +680,55 @@ def resolve_company_filters(
                     " ".join(candidate_tokens),
                     phrase,
                 ).ratio()
-                ranked.append((score, phrase, title))
+                company_scores[phrase] = max(company_scores.get(phrase, 0.0), score)
 
-        ranked.sort(reverse=True)
-        if not ranked or ranked[0][0] < COMPANY_TITLE_SIMILARITY_THRESHOLD:
-            unresolved.append(candidate)
-            continue
-
-        score, matched_term, matched_title = ranked[0]
-        if matched_term not in resolved:
-            resolved.append(matched_term)
-        matches.append(
-            {
-                "requested": candidate,
-                "resolved": matched_term,
-                "title": matched_title,
-                "score": round(score, 3),
-            }
+    suggestion_companies = [
+        {"company": company, "score": round(score, 3)}
+        for company, score in sorted(
+            company_scores.items(), key=lambda item: (-item[1], item[0])
         )
+        if score >= COMPANY_TITLE_SIMILARITY_THRESHOLD
+    ]
+    resolved = [item["company"] for item in suggestion_companies]
 
     return resolved, {
-        "applied": True,
         "requested": candidates,
-        "resolved": resolved,
-        "matches": matches,
-        "unresolved": unresolved,
-        "similarity_threshold": COMPANY_TITLE_SIMILARITY_THRESHOLD,
+        "suggestion_companies": suggestion_companies,
     }
+
+
+def resolve_title_hint(title_hint: str | None) -> tuple[str | None, dict[str, Any]]:
+    """Suggest confident canonical video titles for an explicit title hint."""
+    requested = str(title_hint or "").strip()
+    if not requested:
+        return None, {"requested": None, "suggestion_titles": []}
+
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT title
+                FROM videos
+                WHERE title IS NOT NULL AND btrim(title) <> ''
+                ORDER BY title
+                """
+            )
+            database_titles = [str(row[0]).strip() for row in cursor.fetchall()]
+
+    normalized_requested = normalize_text(requested)
+    suggestions = [
+        {"title": title, "score": round(score, 3)}
+        for score, title in sorted(
+            (
+                (SequenceMatcher(None, normalized_requested, normalize_text(title)).ratio(), title)
+                for title in database_titles
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        if score >= VIDEO_TITLE_SIMILARITY_THRESHOLD
+    ]
+    resolved = str(suggestions[0]["title"]) if suggestions else None
+    return resolved, {"requested": requested, "suggestion_titles": suggestions}
 
 
 def extract_video_title_hint(question: str) -> str | None:

@@ -89,11 +89,11 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
     persons_table = trace.get("persons_table")
     sql_entries: list[tuple[str | None, dict[str, Any]]] = []
     if isinstance(persons_table, dict) and persons_table.get("sql"):
-        sql_entries.append(("persons_table", persons_table))
+        sql_entries.append(("persons_in_speakers", persons_table))
     if trace.get("sql"):
         sql_entries.append(
             (
-                "transcript_enriched" if sql_entries else None,
+                "persons_in_transcripts" if sql_entries else None,
                 trace,
             )
         )
@@ -103,7 +103,7 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
         if formatted_sql is None:
             continue
         formatted_span_name = (
-            f"{span_name}.{label}.sql_formatted"
+            label
             if label
             else f"{span_name}.sql_formatted"
         )
@@ -112,7 +112,38 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
             kind="CHAIN",
             input_value={"params": sql_trace.get("params", [])},
         ) as sql_span:
-            sql_span.set_output_text(formatted_sql)
+            query_results = sql_trace.get("query_results")
+            if isinstance(query_results, list):
+                sql_span.set_output(
+                    {
+                        "sql": formatted_sql,
+                        "result_count": sql_trace.get(
+                            "query_result_count", len(query_results)
+                        ),
+                        "results": summarize_sql_results(query_results),
+                    }
+                )
+            else:
+                sql_span.set_output_text(formatted_sql)
+
+
+def summarize_sql_results(results: list[Any]) -> list[dict[str, Any]]:
+    """Serialize each SQL query result for its Phoenix span."""
+    fields = (
+        "chunk_id",
+        "video_title",
+        "video_url",
+        "thumbnail_medium_url",
+        "persons",
+        "person_details",
+        "video_type",
+        "text",
+    )
+    return [
+        {field: result[field] for field in fields if field in result}
+        for result in results
+        if isinstance(result, dict)
+    ]
 
 
 def append_person_filter_clauses(clauses: list[str], params: list[Any], persons: list[str]) -> None:
@@ -425,9 +456,10 @@ def lookup_video_document(
             transcript_rows,
             transcript_persons=transcript_search_persons,
         )
+        person_results = format_lookup_rows(person_rows)
         results_by_video = {
             result["chunk_id"]: result
-            for result in format_lookup_rows(person_rows)
+            for result in person_results
         }
         for result in transcript_results:
             results_by_video.setdefault(result["chunk_id"], result)
@@ -442,10 +474,13 @@ def lookup_video_document(
             "sql": format_sql_for_trace(transcript_sql),
             "params": transcript_params,
             "result_count": len(results),
+            "query_result_count": len(transcript_results),
+            "query_results": transcript_results,
             "persons_table": {
                 "sql": format_sql_for_trace(person_sql),
                 "params": person_params,
                 "result_count": len(person_rows),
+                "query_results": person_results,
             },
         }
 

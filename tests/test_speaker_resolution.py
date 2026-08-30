@@ -114,8 +114,8 @@ class PersonResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved, [])
         self.assertTrue(resolution["ambiguous"])
-        self.assertEqual(resolution["matched_in_speakers"], [])
-        self.assertEqual(resolution["matched_in_transcripts"], [])
+        self.assertEqual(resolution["suggestion_transcripts"], [])
+        self.assertEqual(resolution["suggestion_speakers"], [])
         self.assertNotIn("fallback_to_transcripts", resolution)
         self.assertNotIn("transcript_matches", resolution)
         self.assertEqual(resolution["unresolved_requests"], ["Zoé Inconnue"])
@@ -144,8 +144,10 @@ class PersonResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved, [])
         self.assertFalse(resolution["ambiguous"])
-        self.assertEqual(resolution["matched_in_speakers"], [])
-        self.assertEqual(resolution["matched_in_transcripts"], ["Zoé Inconnue"])
+        self.assertEqual(
+            resolution["suggestion_transcripts"],
+            [{"person": "Zoé Inconnue", "score": 1.0}],
+        )
 
     def test_exact_speaker_also_keeps_exact_enriched_transcript_match(self) -> None:
         class SpeakerAndTranscriptCursor(_Cursor):
@@ -167,8 +169,8 @@ class PersonResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved, ["Déborah Martin"])
         self.assertFalse(resolution["ambiguous"])
-        self.assertEqual(resolution["matched_in_speakers"], ["Déborah Martin"])
-        self.assertEqual(resolution["matched_in_transcripts"], ["deborah martin"])
+        self.assertEqual(resolution["suggestion_speakers"][0], {"person": "Déborah Martin", "score": 1.0})
+        self.assertEqual(resolution["suggestion_transcripts"], [{"person": "deborah martin", "score": 1.0}])
 
     def test_company_typo_is_resolved_to_close_term_contained_in_title(self) -> None:
         class TitleCursor(_Cursor):
@@ -190,8 +192,40 @@ class PersonResolutionTests(unittest.TestCase):
             resolved, resolution = planner.resolve_company_filters(["Bouygue"])
 
         self.assertEqual(resolved, ["bouygues"])
-        self.assertEqual(resolution["matches"][0]["title"], "Responsable affaires Bouygues")
-        self.assertGreaterEqual(resolution["matches"][0]["score"], 0.9)
+        self.assertEqual(resolution["requested"], ["Bouygue"])
+        self.assertEqual(
+            resolution["suggestion_companies"],
+            [{"company": "bouygues", "score": 0.933}],
+        )
+
+    def test_title_hint_is_resolved_to_a_confident_canonical_video_title(self) -> None:
+        class VideoTitleCursor(_Cursor):
+            def fetchall(self):
+                return [
+                    ("Rendez-vous de la double compétence : Le manager parfait existe-t-il ?",),
+                    ("Une autre vidéo",),
+                ]
+
+        class VideoTitleConnection(_Connection):
+            def cursor(self):
+                return VideoTitleCursor()
+
+        with patch.object(
+            planner, "connect_database", return_value=VideoTitleConnection()
+        ):
+            resolved, resolution = planner.resolve_title_hint(
+                "Rendez vous de la double competence : le manager parfait existe t il"
+            )
+
+        self.assertEqual(
+            resolved,
+            "Rendez-vous de la double compétence : Le manager parfait existe-t-il ?",
+        )
+        self.assertEqual(
+            resolution["requested"],
+            "Rendez vous de la double competence : le manager parfait existe t il",
+        )
+        self.assertGreaterEqual(resolution["suggestion_titles"][0]["score"], 0.85)
 
     def test_company_lookup_filters_person_title_with_resolved_term(self) -> None:
         query = ExecutionPlan(
@@ -387,18 +421,16 @@ class PersonResolutionTests(unittest.TestCase):
         )
         self.assertEqual(executed[1][1], ["Alice Martin", "Bob Durand"])
 
-    def test_single_high_confidence_compound_first_name_is_auto_resolved(self) -> None:
+    def test_single_high_confidence_compound_first_name_is_selected_for_sql(self) -> None:
         plan = PlannerPlan(route="rag", query_text="Lou Ann", persons=["Lou Ann"])
         with patch.object(planner, "connect_database", return_value=_Connection()):
             resolved, resolution = planner.resolve_person_filters(plan.persons)
 
         self.assertEqual(resolved, ["Lou-Ann Corveddu"])
         self.assertFalse(resolution["ambiguous"])
-        self.assertTrue(resolution["auto_resolved"])
-        self.assertEqual(resolution["suggestions"], ["Lou-Ann Corveddu"])
         self.assertEqual(
-            resolution["suggestion_scores"],
-            [{"person": "Lou-Ann Corveddu", "score": 1.0}],
+            resolution["suggestion_speakers"][0],
+            {"person": "Lou-Ann Corveddu", "score": 1.0},
         )
 
     def test_transcript_match_does_not_skip_canonical_speaker_resolution(self) -> None:
@@ -420,17 +452,16 @@ class PersonResolutionTests(unittest.TestCase):
             resolved, resolution = planner.resolve_person_filters(["Lou Ann"])
 
         self.assertEqual(resolved, ["Lou-Ann Corveddu"])
-        self.assertTrue(resolution["auto_resolved"])
-        self.assertEqual(resolution["matched_in_transcripts"], ["Lou Ann"])
+        self.assertEqual(resolution["suggestion_transcripts"], [{"person": "Lou Ann", "score": 1.0}])
 
     def test_single_name_can_match_a_surname(self) -> None:
         plan = PlannerPlan(route="rag", query_text="Ouyaiha", persons=["Ouyaiha"])
         with patch.object(planner, "connect_database", return_value=_Connection()):
             _, resolution = planner.resolve_person_filters(plan.persons)
 
-        self.assertTrue(resolution["ambiguous"])
-        self.assertEqual(resolution["suggestions"], ["Loucif Ouyahia"])
-        self.assertGreaterEqual(resolution["suggestion_scores"][0]["score"], 0.85)
+        self.assertFalse(resolution["ambiguous"])
+        self.assertEqual(resolution["suggestion_speakers"][0]["person"], "Loucif Ouyahia")
+        self.assertGreater(resolution["suggestion_speakers"][0]["score"], 0.85)
 
     def test_exact_surname_does_not_hide_a_first_name_spelling_difference(self) -> None:
         class MatthieuCursor(_Cursor):
@@ -454,13 +485,11 @@ class PersonResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved, ["Matthieu Dumontier"])
         self.assertFalse(resolution["ambiguous"])
-        self.assertTrue(resolution["auto_resolved"])
-        self.assertEqual(resolution["matched_in_speakers"], [])
-        self.assertEqual(resolution["suggestions"], ["Matthieu Dumontier"])
-        self.assertGreater(resolution["suggestion_scores"][0]["score"], 0.9)
-        self.assertLess(resolution["suggestion_scores"][0]["score"], 1.0)
+        self.assertEqual(resolution["suggestion_speakers"][0]["person"], "Matthieu Dumontier")
+        self.assertGreater(resolution["suggestion_speakers"][0]["score"], 0.9)
+        self.assertLess(resolution["suggestion_speakers"][0]["score"], 1.0)
 
-    def test_one_fuzzy_person_is_auto_resolved_beside_an_exact_person(self) -> None:
+    def test_one_fuzzy_person_is_selected_beside_an_exact_person(self) -> None:
         class TwoPersonsCursor(_Cursor):
             def fetchall(self):
                 if "FROM transcripts" in self.sql:
@@ -488,15 +517,10 @@ class PersonResolutionTests(unittest.TestCase):
             ["Matthieu Dumontier", "Paula Ventura Pinkasz"],
         )
         self.assertFalse(resolution["ambiguous"])
-        self.assertTrue(resolution["auto_resolved"])
-        self.assertEqual(
-            resolution["matched_in_speakers"],
-            ["Paula Ventura Pinkasz"],
-        )
-        self.assertEqual(resolution["suggestions"], ["Matthieu Dumontier"])
-        self.assertGreater(resolution["suggestion_scores"][0]["score"], 0.9)
+        self.assertEqual(resolution["suggestion_speakers"][0]["person"], "Paula Ventura Pinkasz")
+        self.assertGreater(resolution["suggestion_speakers"][1]["score"], 0.9)
 
-    def test_multiple_fuzzy_persons_require_clarification(self) -> None:
+    def test_multiple_confident_people_are_all_selected_for_sql(self) -> None:
         plan = PlannerPlan(
             route="multi_source",
             query_text="Ouyaiha Montessi",
@@ -505,15 +529,10 @@ class PersonResolutionTests(unittest.TestCase):
         with patch.object(planner, "connect_database", return_value=_Connection()):
             resolved, resolution = planner.resolve_person_filters(plan.persons)
 
-        self.assertEqual(resolved, [])
-        self.assertTrue(resolution["ambiguous"])
-        self.assertFalse(resolution["auto_resolved"])
-        self.assertEqual(
-            resolution["suggestions"],
-            ["Loucif Ouyahia", "Yannick Montesi"],
-        )
+        self.assertEqual(resolved, ["Loucif Ouyahia", "Yannick Montesi"])
+        self.assertFalse(resolution["ambiguous"])
 
-    def test_multiple_matches_still_require_clarification(self) -> None:
+    def test_multiple_confident_matches_are_all_selected_for_sql(self) -> None:
         class TwoLouAnnCursor(_Cursor):
             def fetchall(self):
                 return [("Lou-Ann Corveddu",), ("Lou-Ann Martin",)]
@@ -526,15 +545,10 @@ class PersonResolutionTests(unittest.TestCase):
         with patch.object(planner, "connect_database", return_value=TwoLouAnnConnection()):
             resolved, resolution = planner.resolve_person_filters(plan.persons)
 
-        self.assertEqual(resolved, [])
-        self.assertTrue(resolution["ambiguous"])
-        self.assertEqual(resolution["suggestions"], ["Lou-Ann Martin", "Lou-Ann Corveddu"])
-        self.assertEqual(
-            resolution["message"],
-            "Vous parlez de Lou-Ann Martin, Lou-Ann Corveddu ?",
-        )
+        self.assertEqual(resolved, ["Lou-Ann Corveddu", "Lou-Ann Martin"])
+        self.assertFalse(resolution["ambiguous"])
 
-    def test_ambiguous_person_does_not_discard_exact_matches(self) -> None:
+    def test_confident_people_are_not_discarded_when_an_exact_match_exists(self) -> None:
         class MixedCursor(_Cursor):
             def fetchall(self):
                 return [
@@ -552,6 +566,5 @@ class PersonResolutionTests(unittest.TestCase):
                 ["Alice Martin", "Lou Ann"],
             )
 
-        self.assertEqual(resolved, ["Alice Martin"])
-        self.assertTrue(resolution["ambiguous"])
-        self.assertEqual(resolution["ambiguous_requests"], ["Lou Ann"])
+        self.assertEqual(resolved, ["Alice Martin", "Lou-Ann Corveddu", "Lou-Ann Martin"])
+        self.assertFalse(resolution["ambiguous"])

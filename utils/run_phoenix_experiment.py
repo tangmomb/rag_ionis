@@ -97,6 +97,7 @@ class RagExperimentSettings:
     final_k: int = DEFAULT_FINAL_K
     openai_service_tier: str | None = None
     shadow_evaluation: bool = False
+    shadow_evaluation_model: str = DEFAULT_REFORMULATION_MODEL
 
 
 @dataclass(frozen=True)
@@ -215,6 +216,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Active l'evaluateur shadow et publie ses diagnostics comme metriques "
             "de calibration Phoenix, sans corriger les reponses."
+        ),
+    )
+    parser.add_argument(
+        "--shadow-evaluation-model",
+        default=DEFAULT_REFORMULATION_MODEL,
+        help=(
+            "Modele dedie au juge shadow (defaut: modele de reformulation). "
+            "Il ne modifie jamais la reponse utilisateur."
         ),
     )
     parser.add_argument("--top-k", type=positive_integer, default=DEFAULT_TOP_K)
@@ -337,6 +346,7 @@ def build_rag_task(settings: RagExperimentSettings):
         response = rag(
             request,
             shadow_evaluation_enabled_override=settings.shadow_evaluation,
+            shadow_evaluation_model_override=settings.shadow_evaluation_model,
             shadow_evaluation_sink=shadow_diagnostic,
         )
         return compact_experiment_output(response, shadow_diagnostic)
@@ -839,6 +849,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         final_k=args.final_k,
         openai_service_tier=args.openai_service_tier,
         shadow_evaluation=args.shadow_evaluation,
+        shadow_evaluation_model=normalize_model_name(
+            args.shadow_evaluation_model,
+            DEFAULT_REFORMULATION_MODEL,
+        ),
     )
 
     ensure_chat_schema()
@@ -897,6 +911,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "final_k": settings.final_k,
                 "openai_service_tier": settings.openai_service_tier,
                 "shadow_evaluation": settings.shadow_evaluation,
+                "shadow_evaluation_model": settings.shadow_evaluation_model,
+                "shadow_evaluation_provider": model_provider_name(
+                    settings.shadow_evaluation_model
+                ),
             },
             dry_run=args.dry_run or False,
             timeout=args.timeout,

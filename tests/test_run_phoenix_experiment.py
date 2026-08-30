@@ -91,6 +91,10 @@ class RunPhoenixExperimentTests(unittest.TestCase):
 
         def run_with_shadow(_request, **kwargs):
             self.assertTrue(kwargs["shadow_evaluation_enabled_override"])
+            self.assertEqual(
+                kwargs["shadow_evaluation_model_override"],
+                run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
+            )
             kwargs["shadow_evaluation_sink"].update(
                 {
                     "status": "acceptable",
@@ -167,6 +171,10 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
 
         self.assertTrue(args.shadow_evaluation)
+        self.assertEqual(
+            args.shadow_evaluation_model,
+            run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
+        )
 
     def test_builtin_evaluators_handle_failed_task_output(self) -> None:
         self.assertFalse(run_phoenix_experiment.response_nonempty(None))

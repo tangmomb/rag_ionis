@@ -98,6 +98,7 @@ class RagResponseGraphTests(unittest.TestCase):
                 Runtime(
                     context=api.RagResponseContext(
                         answer_client=object(),
+                        shadow_evaluation_model_override="judge-model",
                         shadow_evaluation_sink=sink,
                     )
                 ),
@@ -107,6 +108,7 @@ class RagResponseGraphTests(unittest.TestCase):
         self.assertEqual(sink, diagnostic)
         self.assertEqual(state["answer"], "Réponse inchangée")
         evaluator.assert_called_once()
+        self.assertEqual(evaluator.call_args.args[1], "judge-model")
 
     def test_shadow_evaluation_error_does_not_escape_the_node(self) -> None:
         state = {

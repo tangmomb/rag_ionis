@@ -58,6 +58,10 @@ def shadow_evaluation_enabled() -> bool:
     }
 
 
+def shadow_evaluation_model(default_model: str) -> str:
+    return os.getenv("RAG_SHADOW_EVALUATION_MODEL", "").strip() or default_model
+
+
 def _source_excerpt(source: dict[str, Any]) -> dict[str, Any]:
     return {
         "video_title": source.get("video_title"),

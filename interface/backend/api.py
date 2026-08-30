@@ -10,6 +10,7 @@ from langgraph.runtime import Runtime
 from interface.backend.answer_evaluation import (
     evaluate_answer_shadow,
     shadow_evaluation_enabled,
+    shadow_evaluation_model,
 )
 from interface.backend.database import (
     ConversationNotFoundError,
@@ -60,6 +61,7 @@ class RagResponseState(TypedDict, total=False):
 class RagResponseContext:
     answer_client: Any = None
     shadow_evaluation_enabled_override: bool | None = None
+    shadow_evaluation_model_override: str | None = None
     shadow_evaluation_sink: dict[str, Any] | None = None
 
 
@@ -154,9 +156,14 @@ def _evaluate_response(
     evaluation_enabled = runtime.context.shadow_evaluation_enabled_override
     if evaluation_enabled is None:
         evaluation_enabled = shadow_evaluation_enabled()
+    evaluation_model = (
+        runtime.context.shadow_evaluation_model_override
+        or shadow_evaluation_model(str(retrieval.get("answer_model") or ""))
+    )
     input_value = {
         "mode": "shadow",
         "enabled": evaluation_enabled,
+        "model": evaluation_model,
         "route": route,
         "question": retrieval.get("contextual_question", payload.question),
         "action": state["answer_trace"].get("action", "abstain"),
@@ -181,7 +188,7 @@ def _evaluate_response(
                 "status": "not_applicable",
                 "reason": "direct_answer",
             }
-        elif runtime.context.answer_client is None or not retrieval.get("answer_model"):
+        elif runtime.context.answer_client is None or not evaluation_model:
             evaluation = {
                 "enabled": True,
                 "mode": "shadow",
@@ -192,7 +199,7 @@ def _evaluate_response(
             try:
                 evaluation = evaluate_answer_shadow(
                     runtime.context.answer_client,
-                    retrieval["answer_model"],
+                    evaluation_model,
                     retrieval.get("contextual_question", payload.question),
                     state["answer"],
                     state["answer_trace"].get("action", "abstain"),
@@ -368,6 +375,7 @@ def execute_rag(
     payload: RagRequest,
     *,
     shadow_evaluation_enabled_override: bool | None = None,
+    shadow_evaluation_model_override: str | None = None,
     shadow_evaluation_sink: dict[str, Any] | None = None,
 ) -> RagResponse:
     if not payload.useSql:
@@ -381,6 +389,9 @@ def execute_rag(
             context=RagResponseContext(
                 shadow_evaluation_enabled_override=(
                     shadow_evaluation_enabled_override
+                ),
+                shadow_evaluation_model_override=(
+                    shadow_evaluation_model_override
                 ),
                 shadow_evaluation_sink=shadow_evaluation_sink,
             ),
@@ -406,6 +417,7 @@ def run_rag(
     payload: RagRequest,
     *,
     shadow_evaluation_enabled_override: bool | None = None,
+    shadow_evaluation_model_override: str | None = None,
     shadow_evaluation_sink: dict[str, Any] | None = None,
 ) -> RagResponse:
     with trace_operation(
@@ -428,6 +440,9 @@ def run_rag(
             payload,
             shadow_evaluation_enabled_override=(
                 shadow_evaluation_enabled_override
+            ),
+            shadow_evaluation_model_override=(
+                shadow_evaluation_model_override
             ),
             shadow_evaluation_sink=shadow_evaluation_sink,
         )

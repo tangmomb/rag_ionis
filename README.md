@@ -1538,7 +1538,8 @@ correction automatique :
 .\.venv\Scripts\python.exe utils/run_phoenix_experiment.py `
   --dataset cases_phoenix `
   --experiment-name rag-shadow-calibration `
-  --shadow-evaluation
+  --shadow-evaluation `
+  --shadow-evaluation-model gpt-5.6-terra
 ```
 
 L'import place `expected.action` et `expected.shadow_status` dans chaque
@@ -1548,6 +1549,10 @@ labels mesurent le résultat de bout en bout attendu pour les cas versionnés.
 Une mesure stricte des faux positifs et faux négatifs du juge nécessite en plus
 une annotation humaine des réponses générées, car leur contenu peut changer
 d'une campagne à l'autre.
+
+Le modèle du juge est indépendant du modèle de réponse. En production, il peut
+être défini avec `RAG_SHADOW_EVALUATION_MODEL`; sans cette variable, le juge
+conserve le modèle de réponse pour préserver le comportement historique.
 
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :

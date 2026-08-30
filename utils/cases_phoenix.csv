@@ -1,17 +1,17 @@
-question,difficulty
-Je cherche la vidéo de mathiue,easy
-Je cherche la vidéo de camille,easy
-chez qui travaille lou ann,easy
-je cherche quelqu'un qui a bossé chez safran,easy
-je cherche l'itw de qq qui est dev ops,easy
-je cherche la vidéo avec quelqu'un de chez desigual,easy
-qu dit eric modesto dans la vidéo ?,easy
-quels points communs entre les vidéos de mathieu et paula ?,medium
-combien de vidéo de type itw sur la chaine ?,easy
-c'est quoi l'océan bleu,easy
-qui a été parrain de la promo 2015 ?,easy
-qui a été parrain de la promo 2014 ?,easy
-qui est directeur de eskimoz ?,easy
-c'est quoi le job de gabriel dumi ?,easy
-donne moi le transcript de l'itw de paula,easy
-je cherche une étudiante qui a une entreprise de chaise,medium
+question,difficulty,expected_action,shadow_status
+Je cherche la vidéo de mathiue,easy,clarify,ambiguous_question
+Je cherche la vidéo de camille,easy,clarify,ambiguous_question
+chez qui travaille lou ann,easy,answer,acceptable
+je cherche quelqu'un qui a bossé chez safran,easy,answer,acceptable
+je cherche l'itw de qq qui est dev ops,easy,answer,acceptable
+je cherche la vidéo avec quelqu'un de chez desigual,easy,answer,acceptable
+qu dit eric modesto dans la vidéo ?,easy,answer,acceptable
+quels points communs entre les vidéos de mathieu et paula ?,medium,clarify,ambiguous_question
+combien de vidéo de type itw sur la chaine ?,easy,answer,acceptable
+c'est quoi l'océan bleu,easy,answer,acceptable
+qui a été parrain de la promo 2015 ?,easy,answer,acceptable
+qui a été parrain de la promo 2014 ?,easy,answer,acceptable
+qui est directeur de eskimoz ?,easy,answer,acceptable
+c'est quoi le job de gabriel dumi ?,easy,answer,acceptable
+donne moi le transcript de l'itw de paula,easy,answer,acceptable
+je cherche une étudiante qui a une entreprise de chaise,medium,answer,acceptable

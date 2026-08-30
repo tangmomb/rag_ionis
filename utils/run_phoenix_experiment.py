@@ -344,16 +344,38 @@ def build_rag_task(settings: RagExperimentSettings):
     return rag_ionis_task
 
 
-def response_nonempty(output: Mapping[str, Any]) -> bool:
+def response_nonempty(output: Mapping[str, Any] | None) -> bool:
+    output = output or {}
     return bool(str(output.get("answer") or "").strip())
 
 
-def answer_action(output: Mapping[str, Any]) -> dict[str, str]:
+def answer_action(output: Mapping[str, Any] | None) -> dict[str, str]:
+    output = output or {}
     action = str(output.get("action") or "unknown")
     return {"label": action}
 
 
-def _shadow_diagnostic(output: Mapping[str, Any]) -> Mapping[str, Any]:
+def answer_action_match(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    output = output or {}
+    expected_action = str((expected or {}).get("action") or "").strip()
+    actual_action = str(output.get("action") or "unknown")
+    if not expected_action:
+        return None, "unlabeled", "Le dataset ne fournit pas expected.action."
+    matches = actual_action == expected_action
+    return (
+        float(matches),
+        "match" if matches else "mismatch",
+        f"attendu={expected_action}; obtenu={actual_action}",
+    )
+
+
+def _shadow_diagnostic(
+    output: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    output = output or {}
     diagnostics = output.get("diagnostics") or {}
     if not isinstance(diagnostics, Mapping):
         return {}
@@ -361,7 +383,7 @@ def _shadow_diagnostic(output: Mapping[str, Any]) -> Mapping[str, Any]:
     return shadow if isinstance(shadow, Mapping) else {}
 
 
-def shadow_status(output: Mapping[str, Any]) -> dict[str, str]:
+def shadow_status(output: Mapping[str, Any] | None) -> dict[str, str]:
     diagnostic = _shadow_diagnostic(output)
     return {
         "label": str(diagnostic.get("status") or "not_run"),
@@ -369,7 +391,9 @@ def shadow_status(output: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def shadow_grounded(output: Mapping[str, Any]) -> tuple[float | None, str, str]:
+def shadow_grounded(
+    output: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
     diagnostic = _shadow_diagnostic(output)
     grounded = diagnostic.get("answer_grounded")
     if not isinstance(grounded, bool):
@@ -382,7 +406,7 @@ def shadow_grounded(output: Mapping[str, Any]) -> tuple[float | None, str, str]:
 
 
 def shadow_retrieval_quality(
-    output: Mapping[str, Any],
+    output: Mapping[str, Any] | None,
 ) -> tuple[float | None, str, str]:
     diagnostic = _shadow_diagnostic(output)
     quality = diagnostic.get("retrieval_quality")
@@ -393,7 +417,7 @@ def shadow_retrieval_quality(
 
 
 def shadow_status_match(
-    output: Mapping[str, Any],
+    output: Mapping[str, Any] | None,
     expected: Mapping[str, Any] | None,
 ) -> tuple[float | None, str, str]:
     expected_status = str((expected or {}).get("shadow_status") or "").strip()
@@ -830,6 +854,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         evaluators = {
             "response_nonempty": response_nonempty,
             "answer_action": answer_action,
+            "answer_action_match": answer_action_match,
         }
         if settings.shadow_evaluation:
             evaluators.update(

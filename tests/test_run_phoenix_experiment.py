@@ -135,6 +135,13 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             {"label": "clarify"},
         )
         self.assertEqual(
+            run_phoenix_experiment.answer_action_match(
+                output,
+                {"action": "clarify"},
+            )[1],
+            "match",
+        )
+        self.assertEqual(
             run_phoenix_experiment.shadow_status(output)["label"],
             "acceptable",
         )
@@ -160,6 +167,24 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
 
         self.assertTrue(args.shadow_evaluation)
+
+    def test_builtin_evaluators_handle_failed_task_output(self) -> None:
+        self.assertFalse(run_phoenix_experiment.response_nonempty(None))
+        self.assertEqual(
+            run_phoenix_experiment.answer_action(None),
+            {"label": "unknown"},
+        )
+        self.assertEqual(
+            run_phoenix_experiment.answer_action_match(
+                None,
+                {"action": "answer"},
+            )[1],
+            "mismatch",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_status(None)["label"],
+            "not_run",
+        )
 
     def test_parser_supports_single_example_dry_run(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args(

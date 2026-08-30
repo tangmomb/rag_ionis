@@ -96,6 +96,7 @@ class RagExperimentSettings:
     top_k: int = DEFAULT_TOP_K
     final_k: int = DEFAULT_FINAL_K
     openai_service_tier: str | None = None
+    shadow_evaluation: bool = False
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Desactive le reranking Cohere.",
     )
+    parser.add_argument(
+        "--shadow-evaluation",
+        action="store_true",
+        help=(
+            "Active l'evaluateur shadow et publie ses diagnostics comme metriques "
+            "de calibration Phoenix, sans corriger les reponses."
+        ),
+    )
     parser.add_argument("--top-k", type=positive_integer, default=DEFAULT_TOP_K)
     parser.add_argument("--final-k", type=positive_integer, default=DEFAULT_FINAL_K)
     parser.add_argument(
@@ -275,7 +284,10 @@ def build_rag_request(
     )
 
 
-def compact_experiment_output(response: RagResponse) -> dict[str, Any]:
+def compact_experiment_output(
+    response: RagResponse,
+    shadow_evaluation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     retrieval = response.retrieval
     execution_plan = retrieval.get("execution_plan") or {}
     telemetry = retrieval.get("telemetry") or {}
@@ -313,6 +325,7 @@ def compact_experiment_output(response: RagResponse) -> dict[str, Any]:
             "retrieval_mode": retrieval.get("retrieval_mode"),
             "used_rerank": retrieval.get("used_rerank"),
             "source_evaluation": retrieval.get("source_evaluation"),
+            "shadow_evaluation": dict(shadow_evaluation or {}),
         },
     }
 
@@ -320,7 +333,13 @@ def compact_experiment_output(response: RagResponse) -> dict[str, Any]:
 def build_rag_task(settings: RagExperimentSettings):
     def rag_ionis_task(input: Mapping[str, Any]) -> dict[str, Any]:
         request = build_rag_request(input, settings)
-        return compact_experiment_output(rag(request))
+        shadow_diagnostic: dict[str, Any] = {}
+        response = rag(
+            request,
+            shadow_evaluation_enabled_override=settings.shadow_evaluation,
+            shadow_evaluation_sink=shadow_diagnostic,
+        )
+        return compact_experiment_output(response, shadow_diagnostic)
 
     return rag_ionis_task
 
@@ -332,6 +351,61 @@ def response_nonempty(output: Mapping[str, Any]) -> bool:
 def answer_action(output: Mapping[str, Any]) -> dict[str, str]:
     action = str(output.get("action") or "unknown")
     return {"label": action}
+
+
+def _shadow_diagnostic(output: Mapping[str, Any]) -> Mapping[str, Any]:
+    diagnostics = output.get("diagnostics") or {}
+    if not isinstance(diagnostics, Mapping):
+        return {}
+    shadow = diagnostics.get("shadow_evaluation") or {}
+    return shadow if isinstance(shadow, Mapping) else {}
+
+
+def shadow_status(output: Mapping[str, Any]) -> dict[str, str]:
+    diagnostic = _shadow_diagnostic(output)
+    return {
+        "label": str(diagnostic.get("status") or "not_run"),
+        "explanation": str(diagnostic.get("reason") or "Diagnostic indisponible."),
+    }
+
+
+def shadow_grounded(output: Mapping[str, Any]) -> tuple[float | None, str, str]:
+    diagnostic = _shadow_diagnostic(output)
+    grounded = diagnostic.get("answer_grounded")
+    if not isinstance(grounded, bool):
+        return None, "not_run", "Diagnostic answer_grounded indisponible."
+    return (
+        float(grounded),
+        "grounded" if grounded else "not_grounded",
+        str(diagnostic.get("reason") or ""),
+    )
+
+
+def shadow_retrieval_quality(
+    output: Mapping[str, Any],
+) -> tuple[float | None, str, str]:
+    diagnostic = _shadow_diagnostic(output)
+    quality = diagnostic.get("retrieval_quality")
+    if not isinstance(quality, (int, float)) or isinstance(quality, bool):
+        return None, "not_run", "Diagnostic retrieval_quality indisponible."
+    score = float(quality)
+    return score, "measured", str(diagnostic.get("reason") or "")
+
+
+def shadow_status_match(
+    output: Mapping[str, Any],
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    expected_status = str((expected or {}).get("shadow_status") or "").strip()
+    actual_status = str(_shadow_diagnostic(output).get("status") or "not_run")
+    if not expected_status:
+        return None, "unlabeled", "Le dataset ne fournit pas expected.shadow_status."
+    matches = actual_status == expected_status
+    return (
+        float(matches),
+        "match" if matches else "mismatch",
+        f"attendu={expected_status}; obtenu={actual_status}",
+    )
 
 
 def default_experiment_name() -> str:
@@ -740,6 +814,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         top_k=args.top_k,
         final_k=args.final_k,
         openai_service_tier=args.openai_service_tier,
+        shadow_evaluation=args.shadow_evaluation,
     )
 
     ensure_chat_schema()
@@ -752,13 +827,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if settings.openai_service_tier is not None:
         os.environ[OPENAI_SERVICE_TIER_ENV] = settings.openai_service_tier
     try:
+        evaluators = {
+            "response_nonempty": response_nonempty,
+            "answer_action": answer_action,
+        }
+        if settings.shadow_evaluation:
+            evaluators.update(
+                {
+                    "shadow_status": shadow_status,
+                    "shadow_grounded": shadow_grounded,
+                    "shadow_retrieval_quality": shadow_retrieval_quality,
+                    "shadow_status_match": shadow_status_match,
+                }
+            )
         experiment = client.experiments.run_experiment(
             dataset=dataset,
             task=build_rag_task(settings),
-            evaluators={
-                "response_nonempty": response_nonempty,
-                "answer_action": answer_action,
-            },
+            evaluators=evaluators,
             experiment_name=experiment_name,
             experiment_description=args.description,
             experiment_metadata={
@@ -786,6 +871,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "top_k": settings.top_k,
                 "final_k": settings.final_k,
                 "openai_service_tier": settings.openai_service_tier,
+                "shadow_evaluation": settings.shadow_evaluation,
             },
             dry_run=args.dry_run or False,
             timeout=args.timeout,
@@ -810,6 +896,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure_stdout):
+        reconfigure_stdout(errors="replace")
     load_project_env(PROJECT_DIR, override=True)
     args = build_parser().parse_args(argv)
     if not args.dataset:

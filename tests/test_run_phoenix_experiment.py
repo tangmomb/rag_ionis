@@ -86,10 +86,20 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             },
         )
         task = run_phoenix_experiment.build_rag_task(
-            run_phoenix_experiment.RagExperimentSettings()
+            run_phoenix_experiment.RagExperimentSettings(shadow_evaluation=True)
         )
 
-        with patch.object(run_phoenix_experiment, "rag", return_value=response):
+        def run_with_shadow(_request, **kwargs):
+            self.assertTrue(kwargs["shadow_evaluation_enabled_override"])
+            kwargs["shadow_evaluation_sink"].update(
+                {
+                    "status": "acceptable",
+                    "reason": "Réponse étayée",
+                }
+            )
+            return response
+
+        with patch.object(run_phoenix_experiment, "rag", side_effect=run_with_shadow):
             output = task({"question": "Question"})
 
         self.assertEqual(output["answer"], "Une reponse.")
@@ -100,15 +110,56 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             output["diagnostics"]["reformulation_provider"],
             None,
         )
+        self.assertEqual(
+            output["diagnostics"]["shadow_evaluation"]["status"],
+            "acceptable",
+        )
 
     def test_builtin_evaluators_capture_transport_quality_and_action(self) -> None:
-        output = {"answer": "Reponse", "action": "clarify"}
+        output = {
+            "answer": "Reponse",
+            "action": "clarify",
+            "diagnostics": {
+                "shadow_evaluation": {
+                    "status": "acceptable",
+                    "reason": "Réponse étayée",
+                    "retrieval_quality": 0.85,
+                    "answer_grounded": True,
+                }
+            },
+        }
 
         self.assertTrue(run_phoenix_experiment.response_nonempty(output))
         self.assertEqual(
             run_phoenix_experiment.answer_action(output),
             {"label": "clarify"},
         )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_status(output)["label"],
+            "acceptable",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_grounded(output)[0],
+            1.0,
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_retrieval_quality(output)[0],
+            0.85,
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_status_match(
+                output,
+                {"shadow_status": "acceptable"},
+            )[1],
+            "match",
+        )
+
+    def test_parser_enables_shadow_calibration_explicitly(self) -> None:
+        args = run_phoenix_experiment.build_parser().parse_args(
+            ["--dataset", "questions-rag", "--shadow-evaluation"]
+        )
+
+        self.assertTrue(args.shadow_evaluation)
 
     def test_parser_supports_single_example_dry_run(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args(

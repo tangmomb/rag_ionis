@@ -92,12 +92,19 @@ class RagResponseGraphTests(unittest.TestCase):
                 return_value=diagnostic,
             ) as evaluator,
         ):
+            sink: dict = {}
             result = api._evaluate_response(
                 state,
-                Runtime(context=api.RagResponseContext(answer_client=object())),
+                Runtime(
+                    context=api.RagResponseContext(
+                        answer_client=object(),
+                        shadow_evaluation_sink=sink,
+                    )
+                ),
             )
 
         self.assertEqual(result, {"shadow_evaluation": diagnostic})
+        self.assertEqual(sink, diagnostic)
         self.assertEqual(state["answer"], "Réponse inchangée")
         evaluator.assert_called_once()
 
@@ -282,6 +289,7 @@ class AnswerActionTests(unittest.TestCase):
             return "Le 12 avril 2022."
 
         with (
+            patch.object(api, "create_conversation", return_value=3),
             patch.object(api, "orchestrate_request", return_value=("", [_source()], retrieval)),
             patch.object(api, "get_llm_client", return_value=object()),
             patch.object(api, "generate_final_answer", side_effect=generate) as generator,
@@ -313,6 +321,7 @@ class AnswerActionTests(unittest.TestCase):
             return "Parles-tu de cette Sophie ?"
 
         with (
+            patch.object(api, "create_conversation", return_value=3),
             patch.object(api, "orchestrate_request", return_value=("", [source], retrieval)),
             patch.object(api, "get_llm_client", return_value=object()),
             patch.object(api, "generate_final_answer", side_effect=generate),
@@ -337,6 +346,7 @@ class AnswerActionTests(unittest.TestCase):
             "answer_model": None,
         }
         with (
+            patch.object(api, "create_conversation", return_value=3),
             patch.object(
                 api,
                 "orchestrate_request",

@@ -59,6 +59,8 @@ class RagResponseState(TypedDict, total=False):
 @dataclass
 class RagResponseContext:
     answer_client: Any = None
+    shadow_evaluation_enabled_override: bool | None = None
+    shadow_evaluation_sink: dict[str, Any] | None = None
 
 
 def _response_payload(state: RagResponseState) -> RagRequest:
@@ -149,9 +151,12 @@ def _evaluate_response(
     payload = _response_payload(state)
     retrieval = state["retrieval"]
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
+    evaluation_enabled = runtime.context.shadow_evaluation_enabled_override
+    if evaluation_enabled is None:
+        evaluation_enabled = shadow_evaluation_enabled()
     input_value = {
         "mode": "shadow",
-        "enabled": shadow_evaluation_enabled(),
+        "enabled": evaluation_enabled,
         "route": route,
         "question": retrieval.get("contextual_question", payload.question),
         "action": state["answer_trace"].get("action", "abstain"),
@@ -206,6 +211,9 @@ def _evaluate_response(
         for key, value in evaluation.items()
         if key not in {"prompt", "response_raw"}
     }
+    if runtime.context.shadow_evaluation_sink is not None:
+        runtime.context.shadow_evaluation_sink.clear()
+        runtime.context.shadow_evaluation_sink.update(checkpoint_evaluation)
     return {"shadow_evaluation": checkpoint_evaluation}
 
 
@@ -356,7 +364,12 @@ def video_thumbnails() -> list[str]:
             return [row[0] for row in cursor.fetchall()]
 
 
-def execute_rag(payload: RagRequest) -> RagResponse:
+def execute_rag(
+    payload: RagRequest,
+    *,
+    shadow_evaluation_enabled_override: bool | None = None,
+    shadow_evaluation_sink: dict[str, Any] | None = None,
+) -> RagResponse:
     if not payload.useSql:
         raise HTTPException(status_code=400, detail="Le backend actuel attend useSql=true pour interroger la base.")
 
@@ -365,7 +378,12 @@ def execute_rag(payload: RagRequest) -> RagResponse:
             payload.conversationId = create_conversation()
         result = RAG_RESPONSE_GRAPH.invoke(
             {"payload": payload.model_dump()},
-            context=RagResponseContext(),
+            context=RagResponseContext(
+                shadow_evaluation_enabled_override=(
+                    shadow_evaluation_enabled_override
+                ),
+                shadow_evaluation_sink=shadow_evaluation_sink,
+            ),
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -384,7 +402,12 @@ def execute_rag(payload: RagRequest) -> RagResponse:
     )
 
 
-def run_rag(payload: RagRequest) -> RagResponse:
+def run_rag(
+    payload: RagRequest,
+    *,
+    shadow_evaluation_enabled_override: bool | None = None,
+    shadow_evaluation_sink: dict[str, Any] | None = None,
+) -> RagResponse:
     with trace_operation(
         "rag.request",
         kind="CHAIN",
@@ -401,7 +424,13 @@ def run_rag(payload: RagRequest) -> RagResponse:
         },
     ) as request_span:
         request_span.set_session_id(payload.conversationId)
-        response = execute_rag(payload)
+        response = execute_rag(
+            payload,
+            shadow_evaluation_enabled_override=(
+                shadow_evaluation_enabled_override
+            ),
+            shadow_evaluation_sink=shadow_evaluation_sink,
+        )
         request_span.set_session_id(response.conversation_id)
         request_span.set_attribute("rag.action", response.action)
         request_span.set_attribute("rag.source_count", len(response.sources))

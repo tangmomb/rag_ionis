@@ -1528,6 +1528,23 @@ Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix 
 .\.venv\Scripts\python.exe utils/run_phoenix_experiment.py
 ```
 
+Pour calibrer l'évaluateur shadow sur un dataset Phoenix sans activer de
+correction automatique :
+
+```powershell
+.\.venv\Scripts\python.exe utils/run_phoenix_experiment.py `
+  --dataset cases_phoenix `
+  --experiment-name rag-shadow-calibration `
+  --shadow-evaluation
+```
+
+L'expérience publie `shadow_status`, `shadow_grounded`,
+`shadow_retrieval_quality` et `shadow_status_match`. Pour mesurer les faux
+positifs et faux négatifs, la sortie attendue d'un exemple peut contenir
+`{"shadow_status": "acceptable"}` ou l'un des autres statuts du contrat. Sans
+ce label, `shadow_status_match` vaut `unlabeled` et les autres métriques restent
+disponibles pour l'analyse exploratoire.
+
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :
 

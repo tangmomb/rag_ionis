@@ -278,6 +278,34 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(client.invoke.call_args.args[0][0]["role"], "system")
         self.assertEqual(response.raw_payload, raw)
 
+    def test_mistral_runtime_limits_are_configurable(self) -> None:
+        sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: {})
+        client = Mock()
+        client.invoke.return_value = sdk_response
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MISTRAL_API_KEY": "secret",
+                    llm_providers.LLM_REQUEST_TIMEOUT_ENV: "45",
+                    llm_providers.LLM_MAX_RETRIES_ENV: "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                llm_providers,
+                "ChatMistralAI",
+                return_value=client,
+            ) as mistral,
+        ):
+            llm_providers.create_llm_response(
+                model="mistral-medium-latest",
+                input=[{"role": "user", "content": "Bonjour"}],
+            )
+
+        self.assertEqual(mistral.call_args.kwargs["timeout"], 45.0)
+        self.assertEqual(mistral.call_args.kwargs["max_retries"], 0)
+
     def test_google_uses_langchain_chat_model(self) -> None:
         raw = {"id": "google-response"}
         sdk_response = SimpleNamespace(content="Google", model_dump=lambda mode: raw)

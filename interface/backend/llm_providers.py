@@ -14,6 +14,8 @@ from interface.backend.telemetry import trace_operation
 
 LLMProvider = Literal["openai", "mistral", "google"]
 REQUEST_TIMEOUT_SECONDS = 300
+LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
+LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
 OPENAI_SERVICE_TIERS = frozenset(
     {"auto", "default", "flex", "scale", "priority", "fast"}
@@ -70,6 +72,35 @@ class LLMProviderError(RuntimeError):
         self.provider = provider
         self.status_code = status_code
         self.payload = payload
+
+
+def configured_request_timeout_seconds() -> float:
+    raw_value = os.getenv(LLM_REQUEST_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return float(REQUEST_TIMEOUT_SECONDS)
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return float(REQUEST_TIMEOUT_SECONDS)
+    return value if value > 0 else float(REQUEST_TIMEOUT_SECONDS)
+
+
+def configured_max_retries() -> int | None:
+    raw_value = os.getenv(LLM_MAX_RETRIES_ENV, "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def add_runtime_limits(options: dict[str, Any]) -> dict[str, Any]:
+    retries = configured_max_retries()
+    if retries is not None:
+        options["max_retries"] = retries
+    return options
 
 
 @dataclass(frozen=True)
@@ -329,7 +360,13 @@ def call_openai(
     store: bool | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    options: dict[str, Any] = {"model": model, "api_key": api_key, "timeout": REQUEST_TIMEOUT_SECONDS}
+    options: dict[str, Any] = add_runtime_limits(
+        {
+            "model": model,
+            "api_key": api_key,
+            "timeout": configured_request_timeout_seconds(),
+        }
+    )
     service_tier = configured_openai_service_tier()
     if service_tier is not None:
         options["service_tier"] = service_tier
@@ -385,11 +422,13 @@ def call_mistral(
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    options: dict[str, Any] = {
-        "model_name": model,
-        "api_key": api_key,
-        "timeout": REQUEST_TIMEOUT_SECONDS,
-    }
+    options: dict[str, Any] = add_runtime_limits(
+        {
+            "model_name": model,
+            "api_key": api_key,
+            "timeout": configured_request_timeout_seconds(),
+        }
+    )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
     try:
@@ -447,11 +486,13 @@ def call_google(
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    options: dict[str, Any] = {
-        "model": model.removeprefix("models/"),
-        "api_key": api_key,
-        "request_timeout": REQUEST_TIMEOUT_SECONDS,
-    }
+    options: dict[str, Any] = add_runtime_limits(
+        {
+            "model": model.removeprefix("models/"),
+            "api_key": api_key,
+            "request_timeout": configured_request_timeout_seconds(),
+        }
+    )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
     try:

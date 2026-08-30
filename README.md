@@ -1539,7 +1539,9 @@ correction automatique :
   --dataset cases_phoenix `
   --experiment-name rag-shadow-calibration `
   --shadow-evaluation `
-  --shadow-evaluation-model gpt-5.6-terra
+  --shadow-evaluation-model gpt-5.6-terra `
+  --llm-timeout 60 `
+  --llm-max-retries 0
 ```
 
 L'import place `expected.action` et `expected.shadow_status` dans chaque
@@ -1553,6 +1555,10 @@ d'une campagne à l'autre.
 Le modèle du juge est indépendant du modèle de réponse. En production, il peut
 être défini avec `RAG_SHADOW_EVALUATION_MODEL`; sans cette variable, le juge
 conserve le modèle de réponse pour préserver le comportement historique.
+Les options `--llm-timeout` et `--llm-max-retries` bornent chaque appel de la
+campagne indépendamment des reprises d'exemples configurées par `--retries`.
+En dehors des expériences, les mêmes limites peuvent être configurées avec
+`RAG_LLM_REQUEST_TIMEOUT_SECONDS` et `RAG_LLM_MAX_RETRIES`.
 
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :

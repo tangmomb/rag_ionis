@@ -175,6 +175,8 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             args.shadow_evaluation_model,
             run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
         )
+        self.assertEqual(args.llm_timeout, 60)
+        self.assertEqual(args.llm_max_retries, 0)
 
     def test_builtin_evaluators_handle_failed_task_output(self) -> None:
         self.assertFalse(run_phoenix_experiment.response_nonempty(None))

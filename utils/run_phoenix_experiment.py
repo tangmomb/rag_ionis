@@ -28,8 +28,10 @@ from interface.backend.config import (
 from interface.backend.database import ensure_chat_schema
 from interface.backend.generation import DEFAULT_ANSWER_PROMPT_TEMPLATE
 from interface.backend.llm_providers import (
+    LLM_MAX_RETRIES_ENV,
     LLM_MODEL_CATALOG,
     LLMProviderError,
+    LLM_REQUEST_TIMEOUT_ENV,
     OPENAI_SERVICE_TIER_ENV,
     provider_for_model,
 )
@@ -251,6 +253,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Nombre de nouvelles tentatives en cas d'echec (defaut: 0).",
     )
+    parser.add_argument(
+        "--llm-timeout",
+        type=positive_integer,
+        default=60,
+        help="Timeout de chaque appel LLM en secondes (defaut: 60).",
+    )
+    parser.add_argument(
+        "--llm-max-retries",
+        type=non_negative_integer,
+        default=0,
+        help="Reprises internes de chaque client LLM (defaut: 0).",
+    )
     return parser
 
 
@@ -380,8 +394,6 @@ def answer_action_match(
         "match" if matches else "mismatch",
         f"attendu={expected_action}; obtenu={actual_action}",
     )
-
-
 def _shadow_diagnostic(
     output: Mapping[str, Any] | None,
 ) -> Mapping[str, Any]:
@@ -862,6 +874,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         settings,
     )
     previous_openai_service_tier = os.environ.get(OPENAI_SERVICE_TIER_ENV)
+    previous_llm_timeout = os.environ.get(LLM_REQUEST_TIMEOUT_ENV)
+    previous_llm_max_retries = os.environ.get(LLM_MAX_RETRIES_ENV)
+    os.environ[LLM_REQUEST_TIMEOUT_ENV] = str(args.llm_timeout)
+    os.environ[LLM_MAX_RETRIES_ENV] = str(args.llm_max_retries)
     if settings.openai_service_tier is not None:
         os.environ[OPENAI_SERVICE_TIER_ENV] = settings.openai_service_tier
     try:
@@ -915,6 +931,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "shadow_evaluation_provider": model_provider_name(
                     settings.shadow_evaluation_model
                 ),
+                "llm_timeout_seconds": args.llm_timeout,
+                "llm_max_retries": args.llm_max_retries,
             },
             dry_run=args.dry_run or False,
             timeout=args.timeout,
@@ -927,6 +945,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             os.environ[OPENAI_SERVICE_TIER_ENV] = (
                 previous_openai_service_tier
             )
+        if previous_llm_timeout is None:
+            os.environ.pop(LLM_REQUEST_TIMEOUT_ENV, None)
+        else:
+            os.environ[LLM_REQUEST_TIMEOUT_ENV] = previous_llm_timeout
+        if previous_llm_max_retries is None:
+            os.environ.pop(LLM_MAX_RETRIES_ENV, None)
+        else:
+            os.environ[LLM_MAX_RETRIES_ENV] = previous_llm_max_retries
         shutdown_telemetry()
 
     result = dict(experiment)

@@ -359,6 +359,10 @@ def call_openai(
     max_output_tokens: int | None,
     store: bool | None,
     response_schema: dict[str, Any] | None,
+    reasoning_effort: str | None,
+    verbosity: str | None,
+    base_url: str | None,
+    service_tier_override: str | None,
 ) -> LLMResponse:
     options: dict[str, Any] = add_runtime_limits(
         {
@@ -367,13 +371,23 @@ def call_openai(
             "timeout": configured_request_timeout_seconds(),
         }
     )
-    service_tier = configured_openai_service_tier()
+    service_tier = service_tier_override or configured_openai_service_tier()
     if service_tier is not None:
         options["service_tier"] = service_tier
     if max_output_tokens is not None:
         options["max_completion_tokens"] = max_output_tokens
     if store is not None:
         options["store"] = store
+    if reasoning_effort is not None:
+        options["reasoning_effort"] = reasoning_effort
+    if verbosity is not None:
+        options["verbosity"] = verbosity
+    if base_url is not None:
+        options["base_url"] = base_url
+    if reasoning_effort is not None or verbosity is not None:
+        # These controls are Responses API fields: LangChain serializes them as
+        # reasoning={"effort": ...} and text={"verbosity": ...}.
+        options["use_responses_api"] = True
     try:
         chat = ChatOpenAI(**options)
         if response_schema is not None:
@@ -421,6 +435,7 @@ def call_mistral(
     api_key: str,
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
+    base_url: str | None,
 ) -> LLMResponse:
     options: dict[str, Any] = add_runtime_limits(
         {
@@ -431,6 +446,8 @@ def call_mistral(
     )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
+    if base_url is not None:
+        options["base_url"] = base_url
     try:
         chat = ChatMistralAI(**options)
         if response_schema is not None:
@@ -485,6 +502,7 @@ def call_google(
     api_key: str,
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
+    thinking_budget: int | None,
 ) -> LLMResponse:
     options: dict[str, Any] = add_runtime_limits(
         {
@@ -495,6 +513,8 @@ def call_google(
     )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
+    if thinking_budget is not None:
+        options["thinking_budget"] = thinking_budget
     try:
         chat = ChatGoogleGenerativeAI(**options)
         if response_schema is not None:
@@ -543,6 +563,12 @@ def create_llm_response(
     max_output_tokens: int | None = None,
     store: bool | None = None,
     response_schema: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    thinking_budget: int | None = None,
+    mistral_base_url: str | None = None,
+    openai_base_url: str | None = None,
+    openai_service_tier: str | None = None,
 ) -> LLMResponse:
     selected_provider = provider or provider_for_model(model)
     api_key = provider_api_key(selected_provider)
@@ -563,6 +589,10 @@ def create_llm_response(
             max_output_tokens,
             store,
             response_schema,
+            reasoning_effort,
+            verbosity,
+            openai_base_url,
+            openai_service_tier,
         )
     if selected_provider == "mistral":
         return call_mistral(
@@ -571,6 +601,7 @@ def create_llm_response(
             api_key,
             max_output_tokens,
             response_schema,
+            mistral_base_url,
         )
     return call_google(
         model,
@@ -578,6 +609,7 @@ def create_llm_response(
         api_key,
         max_output_tokens,
         response_schema,
+        thinking_budget,
     )
 
 

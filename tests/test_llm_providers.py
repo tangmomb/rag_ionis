@@ -211,6 +211,62 @@ class LlmProviderTests(unittest.TestCase):
         self.assertFalse(request["store"])
         self.assertNotIn("service_tier", request)
 
+    def test_openai_forwards_reasoning_and_verbosity(self) -> None:
+        sdk_response = SimpleNamespace(content="OpenAI", model_dump=lambda mode: {})
+        client = Mock()
+        client.invoke.return_value = sdk_response
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "ChatOpenAI", return_value=client) as chat_openai,
+        ):
+            llm_providers.create_llm_response(
+                model="gpt-5.6-luna",
+                input="Bonjour",
+                reasoning_effort="none",
+                verbosity="low",
+            )
+
+        request = chat_openai.call_args.kwargs
+        self.assertEqual(request["reasoning_effort"], "none")
+        self.assertEqual(request["verbosity"], "low")
+        self.assertTrue(request["use_responses_api"])
+
+    def test_openai_uses_configured_regional_base_url(self) -> None:
+        sdk_response = SimpleNamespace(content="OpenAI", model_dump=lambda mode: {})
+        client = Mock()
+        client.invoke.return_value = sdk_response
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "ChatOpenAI", return_value=client) as chat_openai,
+        ):
+            llm_providers.create_llm_response(
+                model="gpt-5.6-sol",
+                input="Bonjour",
+                openai_base_url="https://eu.api.openai.com/v1",
+            )
+
+        self.assertEqual(chat_openai.call_args.kwargs["base_url"], "https://eu.api.openai.com/v1")
+
+    def test_openai_request_tier_overrides_environment_tier(self) -> None:
+        sdk_response = SimpleNamespace(content="OpenAI", model_dump=lambda mode: {})
+        client = Mock()
+        client.invoke.return_value = sdk_response
+        with (
+            patch.dict(
+                os.environ,
+                {"OPENAI_API_KEY": "secret", "OPENAI_SERVICE_TIER": "default"},
+                clear=False,
+            ),
+            patch.object(llm_providers, "ChatOpenAI", return_value=client) as chat_openai,
+        ):
+            llm_providers.create_llm_response(
+                model="gpt-5.6-sol",
+                input="Bonjour",
+                openai_service_tier="fast",
+            )
+
+        self.assertEqual(chat_openai.call_args.kwargs["service_tier"], "fast")
+
     def test_openai_uses_configured_fast_service_tier(self) -> None:
         sdk_response = SimpleNamespace(content="OpenAI", model_dump=lambda mode: {"service_tier": "priority"})
         client = Mock()
@@ -306,6 +362,22 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(mistral.call_args.kwargs["timeout"], 45.0)
         self.assertEqual(mistral.call_args.kwargs["max_retries"], 0)
 
+    def test_mistral_uses_configured_regional_base_url(self) -> None:
+        sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: {})
+        client = Mock()
+        client.invoke.return_value = sdk_response
+        with (
+            patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "ChatMistralAI", return_value=client) as mistral,
+        ):
+            llm_providers.create_llm_response(
+                model="mistral-large-latest",
+                input="Bonjour",
+                mistral_base_url="https://api.eu.mistral.ai/v1",
+            )
+
+        self.assertEqual(mistral.call_args.kwargs["base_url"], "https://api.eu.mistral.ai/v1")
+
     def test_google_uses_langchain_chat_model(self) -> None:
         raw = {"id": "google-response"}
         sdk_response = SimpleNamespace(content="Google", model_dump=lambda mode: raw)
@@ -328,6 +400,22 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(chat_google.call_args.kwargs["model"], "gemini-3.6-flash")
         self.assertEqual(chat_google.call_args.kwargs["max_tokens"], 400)
         self.assertEqual(client.invoke.call_args.args[0][0]["role"], "system")
+
+    def test_google_forwards_thinking_budget(self) -> None:
+        sdk_response = SimpleNamespace(content="Google", model_dump=lambda mode: {})
+        client = Mock()
+        client.invoke.return_value = sdk_response
+        with (
+            patch.dict(os.environ, {"GOOGLE_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "ChatGoogleGenerativeAI", return_value=client) as chat_google,
+        ):
+            llm_providers.create_llm_response(
+                model="gemini-3.6-flash",
+                input="Bonjour",
+                thinking_budget=1024,
+            )
+
+        self.assertEqual(chat_google.call_args.kwargs["thinking_budget"], 1024)
 
     def test_normalized_response_is_serializable_for_phoenix_traces(self) -> None:
         response = llm_providers.LLMResponse(

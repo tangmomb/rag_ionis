@@ -9,7 +9,7 @@
     >
     <title>LLM Tester — RAG IONIS</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=3">
   </head>
   <body>
     <main class="shell">
@@ -18,7 +18,7 @@
           <span class="brand-mark" aria-hidden="true">LLM</span>
           <span>
             <strong>Response tester</strong>
-            <small>Mistral</small>
+              <small>OpenAI · Mistral · Gemini</small>
           </span>
         </a>
         <div class="connection-state" id="connection-state">
@@ -33,8 +33,8 @@
           <h1>Un prompt.<br><em>Le payload complet.</em></h1>
         </div>
         <p class="intro-copy">
-          Envoie une requête à Mistral. Lis le texte extrait et inspecte, à
-          côté, le JSON réellement renvoyé.
+          Envoie une requête à OpenAI, Mistral ou Gemini. Lis le texte extrait
+          et inspecte, à côté, le JSON réellement renvoyé.
         </p>
       </section>
 
@@ -78,7 +78,57 @@
               <small>tokens</small>
             </div>
           </label>
+
+          <label id="reasoning-field" class="field generation-field" hidden>
+            <span>Reasoning</span>
+            <select id="reasoning-effort" name="reasoningEffort"></select>
+            <small id="reasoning-help"></small>
+          </label>
+
+          <label id="verbosity-field" class="field generation-field" hidden>
+            <span>Verbosity</span>
+            <select id="verbosity" name="verbosity"></select>
+            <small id="verbosity-help"></small>
+          </label>
+
+          <label id="thinking-budget-field" class="field generation-field" hidden>
+            <span>Budget de réflexion</span>
+            <input
+              id="thinking-budget"
+              name="thinkingBudget"
+              type="number"
+              min="-1"
+              max="32768"
+              step="1"
+              placeholder="Valeur fournisseur"
+            >
+            <small>Disponible pour les modèles Gemini 2.5. <code>0</code> désactive la réflexion ; <code>-1</code> laisse Gemini choisir.</small>
+          </label>
+
+          <label id="region-field" class="field generation-field" hidden>
+            <span>Lieu d’inférence</span>
+            <select id="region" name="region"></select>
+            <small>Le choix détermine l’endpoint du fournisseur utilisé.</small>
+          </label>
+
+          <label id="service-tier-field" class="field generation-field" hidden>
+            <span>Mode de latence</span>
+            <select id="service-tier" name="serviceTier"></select>
+            <small>Option OpenAI : Fast réduit la latence si ton projet y est éligible.</small>
+          </label>
         </div>
+
+        <label class="prompt-field system-field">
+          <span>System</span>
+          <textarea
+            id="system-message"
+            name="systemMessage"
+            rows="3"
+            maxlength="200000"
+            placeholder="Instructions système facultatives…"
+          ></textarea>
+          <small>Envoyé avec le rôle <code>system</code>, avant le message utilisateur.</small>
+        </label>
 
         <label class="prompt-field">
           <span>Message</span>
@@ -144,6 +194,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite">Copié</div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=8"></script>
   </body>
 </html>

@@ -1,5 +1,7 @@
 const providerColors = {
+  openai: "#10a37f",
   mistral: "#f97316",
+  google: "#4285f4",
 };
 
 const state = {
@@ -13,8 +15,21 @@ const elements = {
   providerRow: document.querySelector("#provider-row"),
   model: document.querySelector("#model"),
   customModel: document.querySelector("#custom-model"),
+  systemMessage: document.querySelector("#system-message"),
   message: document.querySelector("#message"),
   maxOutputTokens: document.querySelector("#max-output-tokens"),
+  reasoningField: document.querySelector("#reasoning-field"),
+  reasoningEffort: document.querySelector("#reasoning-effort"),
+  reasoningHelp: document.querySelector("#reasoning-help"),
+  verbosityField: document.querySelector("#verbosity-field"),
+  verbosity: document.querySelector("#verbosity"),
+  verbosityHelp: document.querySelector("#verbosity-help"),
+  thinkingBudgetField: document.querySelector("#thinking-budget-field"),
+  thinkingBudget: document.querySelector("#thinking-budget"),
+  regionField: document.querySelector("#region-field"),
+  region: document.querySelector("#region"),
+  serviceTierField: document.querySelector("#service-tier-field"),
+  serviceTier: document.querySelector("#service-tier"),
   characterCount: document.querySelector("#character-count"),
   formMessage: document.querySelector("#form-message"),
   submitButton: document.querySelector("#submit-button"),
@@ -77,6 +92,74 @@ function renderModels() {
   elements.model.value = provider.defaultModel;
   elements.customModel.value = "";
   elements.customModel.hidden = true;
+  renderGenerationControls(provider, elements.model.value);
+}
+
+function renderGenerationControls(provider, model) {
+  const controls = provider.generationControls;
+  renderGenerationControl(
+    elements.reasoningField,
+    elements.reasoningEffort,
+    elements.reasoningHelp,
+    controls.reasoning,
+    "Valeur par défaut du fournisseur",
+  );
+  elements.thinkingBudgetField.hidden = !model.startsWith(
+    controls.thinkingBudgetModelPrefix || "__unsupported__",
+  );
+  elements.thinkingBudget.value = "";
+  renderGenerationControl(
+    elements.verbosityField,
+    elements.verbosity,
+    elements.verbosityHelp,
+    controls.verbosity,
+    "Valeur par défaut du fournisseur",
+  );
+  renderRegions(provider);
+  renderServiceTiers(provider);
+}
+
+function renderRegions(provider) {
+  const regions = provider.regions || [];
+  elements.regionField.hidden = regions.length === 0;
+  elements.region.replaceChildren(
+    ...regions.map((region) => {
+      const option = document.createElement("option");
+      option.value = region.id;
+      option.textContent = region.label;
+      return option;
+    }),
+  );
+}
+
+function renderServiceTiers(provider) {
+  const tiers = provider.generationControls.serviceTiers || [];
+  elements.serviceTierField.hidden = tiers.length === 0;
+  elements.serviceTier.replaceChildren(
+    ...tiers.map((tier) => {
+      const option = document.createElement("option");
+      option.value = tier.id;
+      option.textContent = tier.label;
+      return option;
+    }),
+  );
+}
+
+function renderGenerationControl(field, select, help, levels, defaultLabel) {
+  field.hidden = levels.length === 0;
+  select.replaceChildren();
+  if (!levels.length) return;
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = defaultLabel;
+  select.append(defaultOption);
+  levels.forEach((level) => {
+    const option = document.createElement("option");
+    option.value = level;
+    option.textContent = level;
+    select.append(option);
+  });
+  help.textContent = "Option envoyée uniquement si elle est choisie.";
 }
 
 function selectedModel() {
@@ -92,6 +175,12 @@ function toggleCustomModel() {
   if (custom) {
     elements.customModel.focus();
   }
+}
+
+function handleModelChange() {
+  toggleCustomModel();
+  const provider = selectedProvider();
+  if (provider) renderGenerationControls(provider, elements.model.value);
 }
 
 function selectProvider(providerId) {
@@ -158,7 +247,18 @@ async function submitRequest(event) {
         provider: state.selectedProvider,
         model,
         message,
+        system_message: elements.systemMessage.value.trim() || null,
         max_output_tokens: Number(elements.maxOutputTokens.value),
+        reasoning_effort: elements.reasoningEffort.value || null,
+        verbosity: elements.verbosity.value || null,
+        thinking_budget: elements.thinkingBudget.value === ""
+          ? null
+          : Number(elements.thinkingBudget.value),
+        mistral_region: state.selectedProvider === "mistral" ? elements.region.value : "global",
+        openai_region: state.selectedProvider === "openai" ? elements.region.value : "global",
+        openai_service_tier: state.selectedProvider === "openai"
+          ? elements.serviceTier.value
+          : null,
       }),
     });
     const payload = await response.json();
@@ -215,7 +315,13 @@ async function loadConfig() {
 }
 
 elements.form.addEventListener("submit", submitRequest);
-elements.model.addEventListener("change", toggleCustomModel);
+elements.model.addEventListener("change", handleModelChange);
+elements.customModel.addEventListener("input", () => {
+  const provider = selectedProvider();
+  if (provider && elements.model.value === "__custom__") {
+    renderGenerationControls(provider, elements.customModel.value.trim());
+  }
+});
 elements.message.addEventListener("input", updateCharacterCount);
 elements.message.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key === "Enter") {

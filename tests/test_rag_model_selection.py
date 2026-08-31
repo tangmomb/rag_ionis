@@ -213,7 +213,7 @@ class RagModelSelectionTests(unittest.TestCase):
             "follow_up", client.responses.calls[0]["input"][0]["content"]
         )
 
-    def test_orchestration_passes_independent_models_to_each_step(self) -> None:
+    def test_orchestration_uses_mistral_medium_for_every_step(self) -> None:
         client = object()
         payload = RagRequest(
             question="Question",
@@ -252,18 +252,18 @@ class RagModelSelectionTests(unittest.TestCase):
             "Question",
             None,
             client,
-            "gpt-5.6-terra",
+            "mistral-medium-latest",
             "Prompt reformulation personnalise",
         )
         run_planner.assert_called_once_with(
             "Question reformulee",
             client,
-            "gpt-5.6-luna",
+            "mistral-medium-latest",
             "Prompt planner personnalise",
         )
-        self.assertEqual(retrieval["reformulation_model"], "gpt-5.6-terra")
-        self.assertEqual(retrieval["planner_model"], "gpt-5.6-luna")
-        self.assertEqual(retrieval["answer_model"], "gpt-5.6-terra")
+        self.assertEqual(retrieval["reformulation_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["planner_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["answer_model"], "mistral-medium-latest")
 
     def test_orchestration_uses_light_then_final_reformulation_with_memory(self) -> None:
         client = object()

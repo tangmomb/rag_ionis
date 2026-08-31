@@ -9,17 +9,15 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
 load_project_env(PROJECT_DIR)
 
-DEFAULT_RAG_LLM_MODEL = "gpt-5.6-luna"
-# Configuration des LLM par étape. Change uniquement ces trois constantes pour
-# répartir les étapes entre Mistral, OpenAI ou Google.
-DEFAULT_REFORMULATION_MODEL = "gpt-5.6-terra"
+DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
+# Toutes les étapes d'inférence du RAG utilisent Mistral Medium. L'adaptateur
+# Mistral route ces appels vers l'endpoint européen.
+DEFAULT_REFORMULATION_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_ANALYTICS_SQL_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_GENERATION_MODEL = DEFAULT_RAG_LLM_MODEL
 RAG_LLM_MODEL_CHOICES = (
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
+    DEFAULT_RAG_LLM_MODEL,
 )
 DEFAULT_RERANK_MODEL = "cohere-rerank"
 DEFAULT_COHERE_RERANK_MODEL = "rerank-v4.0-fast"

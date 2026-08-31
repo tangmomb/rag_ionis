@@ -327,6 +327,7 @@ class LlmProviderTests(unittest.TestCase):
             api_key="secret",
             timeout=llm_providers.REQUEST_TIMEOUT_SECONDS,
             max_tokens=300,
+            base_url=llm_providers.MISTRAL_EU_BASE_URL,
         )
         request = mistral.call_args.kwargs
         self.assertEqual(request["model_name"], "mistral-medium-latest")
@@ -362,7 +363,7 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(mistral.call_args.kwargs["timeout"], 45.0)
         self.assertEqual(mistral.call_args.kwargs["max_retries"], 0)
 
-    def test_mistral_uses_configured_regional_base_url(self) -> None:
+    def test_mistral_uses_explicit_regional_base_url(self) -> None:
         sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: {})
         client = Mock()
         client.invoke.return_value = sdk_response

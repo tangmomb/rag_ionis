@@ -44,6 +44,14 @@ class RagRequest(BaseModel):
     topK: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     finalK: int = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 
+    @model_validator(mode="after")
+    def _force_mistral_medium_for_rag_inference(self) -> "RagRequest":
+        """Keep every RAG inference stage on the configured EU Mistral model."""
+        self.reformulationModel = DEFAULT_REFORMULATION_MODEL
+        self.plannerModel = DEFAULT_PLANNER_MODEL
+        self.answerModel = DEFAULT_GENERATION_MODEL
+        return self
+
 
 class PlannerPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")

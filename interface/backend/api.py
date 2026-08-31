@@ -622,17 +622,15 @@ RAG_RESPONSE_GRAPH = build_rag_response_graph()
 
 @router.get("/llm-models")
 def llm_models() -> dict[str, Any]:
-    models = []
-    for provider, provider_config in LLM_MODEL_CATALOG.items():
-        models.extend(
-            {
-                "provider": provider,
-                "provider_label": provider_config["label"],
-                "label": model_label,
-                "id": model_id,
-            }
-            for model_label, model_id in provider_config["models"]
-        )
+    provider_config = LLM_MODEL_CATALOG["mistral"]
+    models = [
+        {
+            "provider": "mistral",
+            "provider_label": provider_config["label"],
+            "label": "Medium (inférence UE)",
+            "id": DEFAULT_GENERATION_MODEL,
+        }
+    ]
     return {
         "models": models,
         "defaults": {
@@ -751,7 +749,7 @@ def run_rag(
 
 
 def validate_step_models(payload: RagRequest) -> None:
-    """Normalize and validate each independently configured RAG LLM."""
+    """Validate the single Mistral model used by every RAG inference stage."""
     defaults = {
         "reformulationModel": DEFAULT_REFORMULATION_MODEL,
         "plannerModel": DEFAULT_PLANNER_MODEL,
@@ -759,6 +757,14 @@ def validate_step_models(payload: RagRequest) -> None:
     }
     for field_name, default in defaults.items():
         model = normalize_model_name(getattr(payload, field_name), default)
+        if model != default:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Le RAG utilise uniquement mistral-medium-latest "
+                    "sur l'endpoint d'inférence UE."
+                ),
+            )
         try:
             provider_for_model(model)
         except LLMProviderError as exc:

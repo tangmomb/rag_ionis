@@ -16,6 +16,7 @@ LLMProvider = Literal["openai", "mistral", "google"]
 REQUEST_TIMEOUT_SECONDS = 300
 LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
 LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
+MISTRAL_EU_BASE_URL = "https://api.eu.mistral.ai/v1"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
 OPENAI_SERVICE_TIERS = frozenset(
     {"auto", "default", "flex", "scale", "priority", "fast"}
@@ -446,8 +447,10 @@ def call_mistral(
     )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
-    if base_url is not None:
-        options["base_url"] = base_url
+    # Le RAG est hébergé pour une inférence Mistral dans l'Union européenne.
+    # Un appel explicite (notamment depuis le testeur de modèles) reste libre
+    # de choisir un autre endpoint.
+    options["base_url"] = base_url or MISTRAL_EU_BASE_URL
     try:
         chat = ChatMistralAI(**options)
         if response_schema is not None:
@@ -624,6 +627,8 @@ class RoutedLLMClient:
 
 
 def get_llm_client() -> RoutedLLMClient | None:
-    if not configured_llm_provider_exists():
+    # Le client exposé au RAG ne doit être disponible qu'avec la clé du seul
+    # fournisseur d'inférence autorisé.
+    if not provider_api_key("mistral"):
         return None
     return RoutedLLMClient()

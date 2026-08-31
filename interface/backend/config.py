@@ -9,9 +9,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
 load_project_env(PROJECT_DIR)
 
-DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
-# Toutes les étapes d'inférence du RAG utilisent Mistral Medium. L'adaptateur
-# Mistral route ces appels vers l'endpoint européen.
+DEFAULT_RAG_LLM_MODEL = "gpt-5.6-terra"
+# Toutes les étapes d'inférence du RAG utilisent GPT-5.6 Terra.
 DEFAULT_REFORMULATION_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_ANALYTICS_SQL_MODEL = DEFAULT_RAG_LLM_MODEL

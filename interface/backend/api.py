@@ -622,12 +622,12 @@ RAG_RESPONSE_GRAPH = build_rag_response_graph()
 
 @router.get("/llm-models")
 def llm_models() -> dict[str, Any]:
-    provider_config = LLM_MODEL_CATALOG["mistral"]
+    provider_config = LLM_MODEL_CATALOG["openai"]
     models = [
         {
-            "provider": "mistral",
+            "provider": "openai",
             "provider_label": provider_config["label"],
-            "label": "Medium (inférence UE)",
+            "label": "Terra",
             "id": DEFAULT_GENERATION_MODEL,
         }
     ]
@@ -749,7 +749,7 @@ def run_rag(
 
 
 def validate_step_models(payload: RagRequest) -> None:
-    """Validate the single Mistral model used by every RAG inference stage."""
+    """Validate the single OpenAI model used by every RAG inference stage."""
     defaults = {
         "reformulationModel": DEFAULT_REFORMULATION_MODEL,
         "plannerModel": DEFAULT_PLANNER_MODEL,
@@ -761,8 +761,7 @@ def validate_step_models(payload: RagRequest) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Le RAG utilise uniquement mistral-medium-latest "
-                    "sur l'endpoint d'inférence UE."
+                    "Le RAG utilise uniquement gpt-5.6-terra."
                 ),
             )
         try:

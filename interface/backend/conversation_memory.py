@@ -9,7 +9,11 @@ import json
 import re
 from typing import Any
 
-from interface.backend.config import DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL
+from interface.backend.config import (
+    DEFAULT_EMBEDDING_DIMENSIONS,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+)
 from interface.backend.database import connect_database, ensure_chat_schema, fetch_conversation_history
 from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import get_openai_client, normalize_text
@@ -315,7 +319,7 @@ def remember_conversation_turn(
     answer: str,
     *,
     summary_client: Any = None,
-    summary_model: str = "mistral-medium-latest",
+    summary_model: str = DEFAULT_GENERATION_MODEL,
     topic_id: int | None = None,
 ) -> dict[str, Any]:
     """Update the compact summary of the topic assigned before the answer."""

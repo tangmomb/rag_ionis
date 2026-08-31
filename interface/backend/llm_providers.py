@@ -629,6 +629,6 @@ class RoutedLLMClient:
 def get_llm_client() -> RoutedLLMClient | None:
     # Le client exposé au RAG ne doit être disponible qu'avec la clé du seul
     # fournisseur d'inférence autorisé.
-    if not provider_api_key("mistral"):
+    if not provider_api_key("openai"):
         return None
     return RoutedLLMClient()

@@ -84,6 +84,15 @@ REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+FINAL_REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "reformulated_question": {"type": "string"},
+    },
+    "required": ["reformulated_question"],
+    "additionalProperties": False,
+}
+
 
 # La correction tolère une faute légère dans un prénom ou un nom, sans faire
 # remonter des noms qui ne partagent qu'une syllabe courte.
@@ -821,12 +830,19 @@ def build_question_reformulation_prompt(
     history_items: list[dict[str, str]],
     system_prompt_override: str | None = None,
     memory_context: dict[str, Any] | None = None,
+    *,
+    include_follow_up: bool = True,
 ) -> tuple[str, str]:
     history = "\n\n".join(
         f"{item['role']}: {item['text']}" for item in history_items
     )
-    default_system_prompt = """Reformule le dernier message utilisateur sans y répondre.
-Indique dans `follow_up` s'il dépend de l'historique ; il peut aussi changer de sujet.
+    follow_up_instruction = (
+        "Indique dans `follow_up` s'il dépend de l'historique ; il peut aussi changer de sujet.\n\n"
+        if include_follow_up
+        else ""
+    )
+    default_system_prompt = f"""Reformule le dernier message utilisateur sans y répondre.
+{follow_up_instruction}
 
 Si nécessaire, remplace tout pronom, ordinal ou référence implicite par le nom, titre
 ou objet exact. Priorité au dernier échange ; ne consulte les précédents que s'il ne
@@ -994,11 +1010,13 @@ def reformulate_question(
         trace["reason"] = "no_openai_client"
         return question, trace
 
+    include_follow_up = phase != "final"
     system_prompt, user_prompt = build_question_reformulation_prompt(
         question,
         prompt_history_items,
         system_prompt_override,
         memory_context,
+        include_follow_up=include_follow_up,
     )
     reformulation_input = [
         {"role": "system", "content": system_prompt},
@@ -1012,7 +1030,11 @@ def reformulate_question(
         response = client.responses.create(
             model=model,
             input=reformulation_input,
-            response_schema=REFORMULATION_RESPONSE_SCHEMA,
+            response_schema=(
+                REFORMULATION_RESPONSE_SCHEMA
+                if include_follow_up
+                else FINAL_REFORMULATION_RESPONSE_SCHEMA
+            ),
         )
         trace["response_raw"] = serialize_openai_response(response)
         raw_output = (getattr(response, "output_text", "") or "").strip()
@@ -1022,21 +1044,22 @@ def reformulate_question(
         # Évite qu'une réponse accidentellement multi-ligne devienne une nouvelle consigne.
         try:
             parsed = safe_json_loads(raw_output)
-            follow_up = bool(parsed.get("follow_up", False))
             reformulated = str(parsed.get("reformulated_question") or question).strip()
         except (TypeError, ValueError, json.JSONDecodeError):
             trace["reason"] = "invalid_json_response"
             return question, trace
 
-        repaired = repair_video_clarification_follow_up(question, history_items)
-        if repaired:
-            reformulated = repaired
-            follow_up = True
-            trace["reason"] = "video_followup_intent_preserved"
-        elif not follow_up and is_obvious_follow_up(question, history_items):
-            follow_up = True
-            trace["reason"] = "deterministic_follow_up_detected"
-        trace["follow_up"] = follow_up
+        if include_follow_up:
+            follow_up = bool(parsed.get("follow_up", False))
+            repaired = repair_video_clarification_follow_up(question, history_items)
+            if repaired:
+                reformulated = repaired
+                follow_up = True
+                trace["reason"] = "video_followup_intent_preserved"
+            elif not follow_up and is_obvious_follow_up(question, history_items):
+                follow_up = True
+                trace["reason"] = "deterministic_follow_up_detected"
+            trace["follow_up"] = follow_up
         trace["applied"] = reformulated != question.strip()
         trace["reformulated_question"] = reformulated
         return reformulated or question, trace

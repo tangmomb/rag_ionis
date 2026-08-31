@@ -192,6 +192,27 @@ class RagModelSelectionTests(unittest.TestCase):
         )
         self.assertIn('"model": "gpt-5.6-luna"', trace["prompt"])
 
+    def test_final_reformulation_only_requests_the_rewritten_question(self) -> None:
+        client = _Client({"reformulated_question": "Question contextualisee"})
+        with patch.object(
+            planner,
+            "fetch_conversation_history",
+            return_value=([], {"conversation_id": None}),
+        ):
+            reformulated, trace = planner.reformulate_question(
+                "Question", None, client, phase="final"
+            )
+
+        self.assertEqual(reformulated, "Question contextualisee")
+        self.assertNotIn("follow_up", trace)
+        self.assertEqual(
+            client.responses.calls[0]["response_schema"],
+            planner.FINAL_REFORMULATION_RESPONSE_SCHEMA,
+        )
+        self.assertNotIn(
+            "follow_up", client.responses.calls[0]["input"][0]["content"]
+        )
+
     def test_orchestration_passes_independent_models_to_each_step(self) -> None:
         client = object()
         payload = RagRequest(

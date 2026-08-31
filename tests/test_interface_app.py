@@ -76,6 +76,7 @@ class InterfaceAppTests(unittest.TestCase):
 
         schemas = (
             planner.REFORMULATION_RESPONSE_SCHEMA,
+            planner.FINAL_REFORMULATION_RESPONSE_SCHEMA,
             planner.PLANNER_RESPONSE_SCHEMA,
             ANALYTICS_SQL_RESPONSE_SCHEMA,
             generation.ANSWER_RESPONSE_SCHEMA,

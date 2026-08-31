@@ -116,6 +116,19 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     """
+                    UPDATE chat.topics
+                    SET topic_videos = COALESCE(
+                        (
+                            SELECT jsonb_agg(video - 'source_index')
+                            FROM jsonb_array_elements(topic_videos) AS video
+                        ),
+                        '[]'::jsonb
+                    )
+                    WHERE topic_videos::text LIKE '%"source_index"%'
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS chat.conversation_topics (
                         conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
                         topic_id BIGINT NOT NULL REFERENCES chat.topics(id) ON DELETE CASCADE,

@@ -41,8 +41,9 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
         },
         "query_text": {"type": "string"},
         "query_text_bm25": {"type": "string"},
-        "title_hint": {
-            "anyOf": [{"type": "string"}, {"type": "null"}],
+        "title_hints": {
+            "type": "array",
+            "items": {"type": "string"},
         },
         "persons": {
             "type": "array",
@@ -64,7 +65,7 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
         "sql_sub_intent",
         "query_text",
         "query_text_bm25",
-        "title_hint",
+        "title_hints",
         "persons",
         "companies",
         "published_after",
@@ -163,7 +164,7 @@ def build_planner_prompt(
         "Tu planifies la requete d'un assistant RAG sans y repondre. "
         "Première étape, identifier les personnes ou entreprises mentionnées dans la question. Les stocker dans persons et companies. "
         "Deuxième étape, identifier les dates de publication mentionnées dans la question. Les stocker dans published_after et published_before sous forme de chaînes ISO 8601 (YYYY-MM-DD). "
-        "Troisième étape, identifier un titre de video mentionné dans la question. Le stocker dans title_hint. "
+        "Troisième étape, identifier les titres de vidéos mentionnés dans la question. Les stocker dans title_hints. "
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
         "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'analytics', 'description', 'transcript_verbatim' ou 'null'. "
         "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='rag' pour toute question qui demande une information. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
@@ -203,6 +204,11 @@ def build_social_answer(question: str) -> str:
 def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalise uniquement les choix sémantiques; les sources sont dérivées ensuite."""
     normalized = dict(payload)
+    if "title_hints" not in normalized:
+        legacy_title_hint = normalized.pop("title_hint", None)
+        normalized["title_hints"] = [legacy_title_hint] if legacy_title_hint else []
+    elif not isinstance(normalized["title_hints"], list):
+        normalized["title_hints"] = [normalized["title_hints"]]
     if "companies" not in normalized and "company" in normalized:
         normalized["companies"] = normalized.pop("company")
     route = str(normalized.get("route") or "").strip()
@@ -349,7 +355,7 @@ def build_execution_plan(
         raw_question=payload.question,
         query_text=(planner_plan.query_text or payload.question).strip() or payload.question,
         query_text_bm25=bm25_query,
-        title_hint=planner_plan.title_hint,
+        title_hints=planner_plan.title_hints,
         persons=planner_plan.persons,
         companies=planner_plan.companies,
         published_after=planner_plan.published_after,
@@ -475,7 +481,7 @@ def apply_deterministic_sql_policy(
         return policy_correction
 
     if has_document_content_request(question):
-        if planner_plan.title_hint:
+        if planner_plan.title_hints:
             planner_plan.sql_sub_intent = "transcript_qa"
         else:
             planner_plan.sql_sub_intent = None
@@ -509,7 +515,7 @@ def apply_deterministic_sql_policy(
 def has_structured_sql_filters(query: ExecutionPlan) -> bool:
     return any(
         [
-            bool(query.title_hint),
+            bool(query.title_hints),
             bool(query.persons),
             bool(query.companies),
             bool(query.published_after),
@@ -740,6 +746,18 @@ def resolve_title_hint(title_hint: str | None) -> tuple[str | None, dict[str, An
     return resolved, {"requested": requested, "suggestion_titles": suggestions}
 
 
+def resolve_title_hints(title_hints: list[str]) -> tuple[list[str], dict[str, Any]]:
+    """Resolve every explicit title hint while preserving their input order."""
+    resolved_titles: list[str] = []
+    resolutions: list[dict[str, Any]] = []
+    for title_hint in title_hints:
+        resolved, resolution = resolve_title_hint(title_hint)
+        resolutions.append(resolution)
+        if resolved and resolved not in resolved_titles:
+            resolved_titles.append(resolved)
+    return resolved_titles, {"requested": title_hints, "resolutions": resolutions}
+
+
 def extract_video_title_hint(question: str) -> str | None:
     """Extrait un titre explicitement fourni par l'utilisateur."""
     video_quoted_match = re.search(
@@ -777,6 +795,16 @@ def sanitize_video_title_hint(question: str, title_hint: str | None) -> str | No
     ):
         return None
     return title_hint.strip() or None
+
+
+def sanitize_video_title_hints(question: str, title_hints: list[str]) -> list[str]:
+    """Keep distinct, explicit title hints only."""
+    sanitized: list[str] = []
+    for title_hint in title_hints:
+        title = sanitize_video_title_hint(question, str(title_hint or ""))
+        if title and title not in sanitized:
+            sanitized.append(title)
+    return sanitized
 
 
 def is_prior_video_comparison(question: str) -> bool:

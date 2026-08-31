@@ -36,7 +36,7 @@ class RagOrchestrationState(TypedDict, total=False):
     person_resolution: dict[str, Any]
     database_company: list[str]
     company_resolution: dict[str, Any]
-    resolved_title_hint: str | None
+    resolved_title_hints: list[str]
     title_resolution: dict[str, Any]
     execution_plan: dict[str, Any]
     base_retrieval: dict[str, Any]
@@ -102,9 +102,19 @@ def _resolved_plan_companies(state: RagOrchestrationState) -> list[str]:
     ]
 
 
+def _resolved_plan_title_hints(state: RagOrchestrationState) -> list[str]:
+    """Use all confident canonical video titles as SQL title filters."""
+    titles = state.get("resolved_title_hints")
+    if isinstance(titles, list):
+        return titles
+    legacy_title = state.get("resolved_title_hint")
+    return [legacy_title] if isinstance(legacy_title, str) and legacy_title else []
+
+
 def _resolved_plan_title_hint(state: RagOrchestrationState) -> str | None:
-    """Use the highest-scoring canonical video title as the SQL title filter."""
-    return state.get("resolved_title_hint")
+    """Compatibility helper for callers that only support one canonical title."""
+    titles = _resolved_plan_title_hints(state)
+    return titles[0] if titles else None
 
 
 def initialize(state: RagOrchestrationState) -> dict[str, Any]:
@@ -280,10 +290,10 @@ def plan(
                 payload.plannerPrompt,
             )
         )
-        planner_plan.title_hint = services.sanitize_video_title_hint(
+        explicit_title_hint = services.extract_video_title_hint(contextual_question)
+        planner_plan.title_hints = services.sanitize_video_title_hints(
             contextual_question,
-            services.extract_video_title_hint(contextual_question)
-            or planner_plan.title_hint,
+            [*([explicit_title_hint] if explicit_title_hint else []), *planner_plan.title_hints],
         )
         policy_correction = services.apply_deterministic_sql_policy(
             contextual_question,
@@ -350,20 +360,20 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
             )
             company_span.set_output(company_resolution)
 
-    planned_title_hint = planner_plan.title_hint
-    resolved_title_hint: str | None = None
+    planned_title_hints = planner_plan.title_hints
+    resolved_title_hints: list[str] = []
     title_resolution: dict[str, Any] = {
         "requested": None,
         "suggestion_titles": [],
     }
-    if planned_title_hint:
+    if planned_title_hints:
         with services.trace_operation(
             "rag.title_resolution",
             kind="CHAIN",
-            input_value={"planned_title_hint": planned_title_hint},
+            input_value={"planned_title_hints": planned_title_hints},
         ) as title_span:
-            resolved_title_hint, title_resolution = services.resolve_title_hint(
-                planned_title_hint
+            resolved_title_hints, title_resolution = services.resolve_title_hints(
+                planned_title_hints
             )
             title_span.set_output(title_resolution)
     return {
@@ -371,7 +381,7 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
         "person_resolution": person_resolution,
         "database_company": database_company,
         "company_resolution": company_resolution,
-        "resolved_title_hint": resolved_title_hint,
+        "resolved_title_hints": resolved_title_hints,
         "title_resolution": title_resolution,
     }
 
@@ -382,7 +392,19 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     execution_plan = services.build_execution_plan(payload, planner_plan)
     execution_plan.persons = _resolved_plan_persons(state)
     execution_plan.companies = _resolved_plan_companies(state)
-    execution_plan.title_hint = _resolved_plan_title_hint(state)
+    execution_plan.title_hints = _resolved_plan_title_hints(state)
+    topic_videos = (
+        state["reformulation_trace"].get("memory", {}).get("light", {}).get("topic_videos", [])
+        if state["reformulation_trace"].get("follow_up")
+        else []
+    )
+    execution_plan.topic_videos = (
+        [video for video in topic_videos if isinstance(video, dict)]
+        if execution_plan.sql_sub_intent != "analytics"
+        else []
+    )
+    if execution_plan.topic_videos:
+        execution_plan.title_hints = []
     execution_plan_trace = _execution_plan_trace(execution_plan)
     if not (
         execution_plan.sql_main_source

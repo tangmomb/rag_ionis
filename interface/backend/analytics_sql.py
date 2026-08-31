@@ -90,7 +90,7 @@ Règles :
 - Toute valeur utilisateur va dans params via %s, dans le même ordre. Pas de SELECT *.
 - Pour les stats actuelles, prends le dernier snapshot de chaque vidéo avec un LIMIT 1
   corrélé (`WHERE stats.video_id = v.id`), jamais un LIMIT 1 global.
-- `title_hint` nul signifie aucun filtre `v.title`; sinon filtre avec `v.title ILIKE %s`.
+- `title_hints` vide signifie aucun filtre `v.title`; sinon filtre avec l'un des titres fournis.
   N'invente jamais un titre depuis une description. Une interview impose
   `v.video_type = %s` avec `interview`.
 - Toute liste de vidéos retourne `video_id`, `video_title`, `video_url` et
@@ -105,7 +105,7 @@ Exemple unique — comparaison de speakers :
 """
     context = {
         "question": question,
-        "title_hint": query.title_hint,
+        "title_hints": query.title_hints,
         "persons": database_persons or query.persons,
         "companies_requested": query.companies,
         "companies_resolved": database_companies or [],
@@ -562,7 +562,7 @@ def _resolved_analytics_entities(
     for kind, values in (
         ("person", database_persons or query.persons),
         ("company", database_companies or query.companies),
-        ("title", [query.title_hint] if query.title_hint else []),
+        ("title", query.title_hints),
     ):
         for value in values:
             cleaned = str(value or "").strip()
@@ -720,9 +720,7 @@ def run_deterministic_analytics(
     database_companies: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Resolve entities to videos, then load every available stats snapshot."""
-    entities = _resolved_analytics_entities(
-        query, database_persons, database_companies
-    )
+    entities = _resolved_analytics_entities(query, database_persons, database_companies)
     trace: dict[str, Any] = {
         "mode": "analytics",
         "strategy": "deterministic_entity_stats",
@@ -747,6 +745,17 @@ def run_deterministic_analytics(
 
     video_ids = list(videos_by_id)
     trace["candidate_video_count"] = len(video_ids)
+    with trace_operation(
+        "analytics_total_videos",
+        kind="CHAIN",
+        input_value={"entity_count": len(entities)},
+    ) as total_videos_span:
+        total_videos_span.set_output(
+            {
+                "candidate_video_count": len(video_ids),
+                "video_ids": video_ids,
+            }
+        )
     with trace_operation(
         "analytics_all_video_stats",
         kind="RETRIEVER",

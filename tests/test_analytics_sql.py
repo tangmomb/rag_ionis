@@ -86,8 +86,7 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertIn("jamais AND", system_prompt)
         self.assertIn("WHERE sp.name ILIKE %s OR sp.name ILIKE %s", system_prompt)
         self.assertIn("thumbnail_medium_url AS thumbnail_medium_url", system_prompt)
-        self.assertIn("v.title ILIKE %s", system_prompt)
-        self.assertIn("title_hint` nul signifie aucun filtre", system_prompt)
+        self.assertIn("title_hints` vide signifie aucun filtre", system_prompt)
         self.assertIn("invente jamais un titre", system_prompt)
         self.assertIn("v.id AS video_id", system_prompt)
         self.assertIn("SELECT", system_prompt)
@@ -265,7 +264,13 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertEqual(stats.call_args.args[0], [42])
         self.assertEqual(
             recorded_spans,
-            ["analytics_entity_lookup", "analytics_entity_lookup", "analytics_entity_lookup", "analytics_all_video_stats"],
+            [
+                "analytics_entity_lookup",
+                "analytics_entity_lookup",
+                "analytics_entity_lookup",
+                "analytics_total_videos",
+                "analytics_all_video_stats",
+            ],
         )
 
     def test_entity_lookup_without_date_filter_builds_a_valid_where_clause(self) -> None:

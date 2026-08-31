@@ -892,10 +892,28 @@ class InterfaceAppTests(unittest.TestCase):
             title_hint="Titre exact",
         )
         clauses, params = retrieval.build_prefilter_conditions(query)
-        self.assertEqual(clauses, [retrieval.TITLE_CONTAINS_SQL])
+        self.assertEqual(clauses, [retrieval.TITLE_HINTS_CONTAINS_SQL])
         self.assertIn("regexp_replace", clauses[0])
         self.assertIn("concat(chr(37)", clauses[0])
-        self.assertEqual(params, ["Titre exact"])
+        self.assertEqual(params, [["Titre exact"]])
+
+    def test_topic_videos_restrict_the_rag_prefilter_to_the_discussed_videos(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Laquelle a le plus de vues ?",
+            query_text="Laquelle a le plus de vues ?",
+            query_text_bm25="laquelle plus vues",
+            topic_videos=[
+                {"video_title": "Vidéo A", "video_url": "https://example.test/a"},
+                {"video_title": "Vidéo B", "video_url": "https://example.test/b"},
+            ],
+        )
+        clauses, params = retrieval.build_prefilter_conditions(query)
+
+        self.assertEqual(clauses, ["(v.url = ANY(%s) OR v.title = ANY(%s))"])
+        self.assertEqual(
+            params,
+            [["https://example.test/a", "https://example.test/b"], ["Vidéo A", "Vidéo B"]],
+        )
 
     def test_bm25_search_is_limited_to_detail_chunks(self) -> None:
         class Cursor:

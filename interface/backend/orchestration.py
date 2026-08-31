@@ -25,9 +25,9 @@ from interface.backend.planner import (
     reformulate_question,
     resolve_company_filters,
     resolve_person_filters,
-    resolve_title_hint,
+    resolve_title_hints,
     run_planner,
-    sanitize_video_title_hint,
+    sanitize_video_title_hints,
 )
 from interface.backend.retrieval import lookup_video_document, retrieve_chunks, trace_formatted_sql
 from interface.backend.schemas import RagRequest

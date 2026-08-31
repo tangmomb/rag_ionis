@@ -83,6 +83,11 @@ TITLE_CONTAINS_SQL = (
     f"{normalized_sql_text('v.title')} LIKE "
     f"concat(chr(37), {normalized_sql_text('%s')}, chr(37))"
 )
+TITLE_HINTS_CONTAINS_SQL = (
+    f"{normalized_sql_text('v.title')} LIKE ANY(ARRAY("
+    f"SELECT concat(chr(37), {normalized_sql_text('title_hint')}, chr(37)) "
+    "FROM unnest(%s::text[]) AS title_hint))"
+)
 
 
 def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
@@ -201,9 +206,10 @@ def append_company_filter_clauses(
 def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    if query.title_hint:
-        clauses.append(TITLE_CONTAINS_SQL)
-        params.append(query.title_hint)
+    append_topic_video_filter_clauses(clauses, params, query.topic_videos)
+    if query.title_hints:
+        clauses.append(TITLE_HINTS_CONTAINS_SQL)
+        params.append(query.title_hints)
     if query.published_after:
         clauses.append("v.published_at >= %s::timestamptz")
         params.append(query.published_after)
@@ -211,6 +217,37 @@ def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[An
         clauses.append("v.published_at <= %s::timestamptz")
         params.append(query.published_before)
     return clauses, params
+
+
+def append_topic_video_filter_clauses(
+    clauses: list[str],
+    params: list[Any],
+    topic_videos: list[dict[str, Any]],
+) -> None:
+    """Restrict a follow-up to the videos explicitly retained in its topic."""
+    urls = list(
+        dict.fromkeys(
+            str(video.get("video_url") or "").strip()
+            for video in topic_videos
+            if isinstance(video, dict) and str(video.get("video_url") or "").strip()
+        )
+    )
+    titles = list(
+        dict.fromkeys(
+            str(video.get("video_title") or "").strip()
+            for video in topic_videos
+            if isinstance(video, dict) and str(video.get("video_title") or "").strip()
+        )
+    )
+    video_clauses: list[str] = []
+    if urls:
+        video_clauses.append("v.url = ANY(%s)")
+        params.append(urls)
+    if titles:
+        video_clauses.append("v.title = ANY(%s)")
+        params.append(titles)
+    if video_clauses:
+        clauses.append("(" + " OR ".join(video_clauses) + ")")
 
 
 def prefilter_candidate_chunk_ids(query: ExecutionPlan) -> tuple[list[int] | None, dict[str, Any]]:
@@ -273,10 +310,11 @@ def build_video_lookup_conditions(
 ) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    title_hint = query.title_hint
-    if title_hint:
-        clauses.append(TITLE_CONTAINS_SQL)
-        params.append(title_hint)
+    append_topic_video_filter_clauses(clauses, params, query.topic_videos)
+    title_hints = query.title_hints
+    if title_hints:
+        clauses.append(TITLE_HINTS_CONTAINS_SQL)
+        params.append(title_hints)
     if database_persons:
         append_person_filter_clauses(clauses, params, database_persons)
     if database_company:
@@ -533,7 +571,7 @@ def lookup_video_document(
 
     clauses, params = build_video_lookup_conditions(query)
     terms = query.query_text_bm25.strip() or query.query_text.strip() or query.raw_question
-    if not query.title_hint:
+    if not query.title_hints:
         clauses.append(
             f"""
             to_tsvector('french', coalesce(v.title, '') || ' ' || coalesce({document_expr}, ''))

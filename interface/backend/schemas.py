@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
@@ -52,13 +52,25 @@ class PlannerPlan(BaseModel):
     sql_sub_intent: SqlSubIntent | None = None
     query_text: str
     query_text_bm25: str | None = None
-    title_hint: str | None = None
+    title_hints: list[str] = Field(default_factory=list)
     persons: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
     use_rag: bool = False
     sql_main_source: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_title_hint(cls, value: object) -> object:
+        if isinstance(value, dict) and "title_hints" not in value and "title_hint" in value:
+            value = {**value, "title_hints": [value["title_hint"]] if value["title_hint"] else []}
+            value.pop("title_hint", None)
+        return value
+
+    @property
+    def title_hint(self) -> str | None:
+        return self.title_hints[0] if self.title_hints else None
 
 
 class ExecutionPlan(BaseModel):
@@ -69,7 +81,8 @@ class ExecutionPlan(BaseModel):
     raw_question: str
     query_text: str
     query_text_bm25: str
-    title_hint: str | None = None
+    title_hints: list[str] = Field(default_factory=list)
+    topic_videos: list[dict[str, Any]] = Field(default_factory=list)
     persons: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
@@ -78,6 +91,18 @@ class ExecutionPlan(BaseModel):
     sql_main_source: bool = False
     top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     final_k: int | None = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_title_hint(cls, value: object) -> object:
+        if isinstance(value, dict) and "title_hints" not in value and "title_hint" in value:
+            value = {**value, "title_hints": [value["title_hint"]] if value["title_hint"] else []}
+            value.pop("title_hint", None)
+        return value
+
+    @property
+    def title_hint(self) -> str | None:
+        return self.title_hints[0] if self.title_hints else None
 
 
 class ChunkSource(BaseModel):

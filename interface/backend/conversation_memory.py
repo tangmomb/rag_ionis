@@ -170,7 +170,13 @@ def remember_topic_videos(
                     if identity in seen:
                         continue
                     seen.add(identity)
-                    merged.append(video)
+                    merged.append(
+                        {
+                            key: value
+                            for key, value in video.items()
+                            if key != "source_index"
+                        }
+                    )
                 cursor.execute(
                     "UPDATE chat.topics SET topic_videos = %s::jsonb, updated_at = now() WHERE id = %s",
                     (json.dumps(merged, ensure_ascii=False), topic_id),

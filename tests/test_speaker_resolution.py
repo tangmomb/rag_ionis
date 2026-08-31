@@ -261,14 +261,14 @@ class PersonResolutionTests(unittest.TestCase):
 
         clauses, params = retrieval.build_video_lookup_conditions(query)
 
-        self.assertEqual(clauses, [retrieval.TITLE_CONTAINS_SQL])
+        self.assertEqual(clauses, [retrieval.TITLE_HINTS_CONTAINS_SQL])
         self.assertIn("[^[:alnum:]]+", clauses[0])
         self.assertEqual(
             params,
-            [
+            [[
                 "Rendez-vous de la double compétence : "
                 "Le manager parfait existe-t-il ?"
-            ],
+            ]],
         )
 
     def test_lookup_falls_back_from_persons_table_to_transcripts(self) -> None:

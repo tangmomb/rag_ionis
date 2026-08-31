@@ -104,11 +104,15 @@ def ensure_chat_schema() -> None:
                     CREATE TABLE IF NOT EXISTS chat.topics (
                         id BIGSERIAL PRIMARY KEY,
                         summary TEXT NOT NULL DEFAULT '',
+                        topic_videos JSONB NOT NULL DEFAULT '[]'::jsonb,
                         embedding vector(2000),
                         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
                     """
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.topics ADD COLUMN IF NOT EXISTS topic_videos JSONB NOT NULL DEFAULT '[]'::jsonb"
                 )
                 cursor.execute(
                     """

@@ -151,6 +151,10 @@ def reformulate(
                 reformulation_model,
                 payload.reformulationPrompt,
                 history_override=memory.get("immediate_history", []),
+                memory_context={
+                    "active_topic": memory.get("active_topic"),
+                    "topic_videos": memory.get("topic_videos", []),
+                },
                 phase="light",
             )
             follows_active_topic = bool(light_trace.get("follow_up"))

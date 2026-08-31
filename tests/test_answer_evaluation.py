@@ -64,6 +64,7 @@ class RagResponseGraphTests(unittest.TestCase):
                 "retry_retrieval",
                 "expand_retrieval",
                 "finalize",
+                "topic_videos",
                 "persist",
             }.issubset(graph.nodes)
         )
@@ -391,6 +392,40 @@ class RagResponseGraphTests(unittest.TestCase):
         )
 
         self.assertEqual(result["answer"], "Réponse corrigée")
+
+    def test_topic_video_stage_links_selected_source_indexes_to_titles(self) -> None:
+        state = {
+            "answer_action": "answer",
+            "carousel_sources": [
+                {
+                    "video_title": "Vidéo A",
+                    "video_url": "https://youtu.be/a",
+                },
+                {
+                    "video_title": "Vidéo B",
+                    "video_url": "https://youtu.be/b",
+                },
+            ],
+            "retrieval": {
+                "conversation_topic": {"topic_id": 8},
+                "answer_source_indexes": [1, 3],
+            },
+        }
+        with patch.object(
+            api,
+            "remember_topic_videos",
+            return_value={"available": True, "topic_id": 8, "topic_videos": []},
+        ) as remember:
+            result = api._remember_topic_videos(state)
+
+        self.assertEqual(
+            result["topic_videos"],
+            [
+                {"source_index": 1, "video_title": "Vidéo A", "video_url": "https://youtu.be/a"},
+                {"source_index": 3, "video_title": "Vidéo B", "video_url": "https://youtu.be/b"},
+            ],
+        )
+        remember.assert_called_once_with(8, result["topic_videos"])
 
     def test_graph_runs_one_correction_then_finalizes(self) -> None:
         diagnostics = [

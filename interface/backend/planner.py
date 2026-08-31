@@ -855,6 +855,7 @@ Si l'historique évoque des personnes ou des vidéos précises auxquelles le der
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     memory = memory_context or {}
     active_topic = memory.get("active_topic") or {}
+    topic_videos = memory.get("topic_videos") or []
     related_topics = memory.get("related_topics") or []
     episodes = memory.get("episodes") or []
     memory_sections: list[str] = []
@@ -863,6 +864,18 @@ Si l'historique évoque des personnes ou des vidéos précises auxquelles le der
             "Sujet actif (résumé compact, prioritaire pour les pronoms singuliers) :\n"
             + str(active_topic)
         )
+    if topic_videos:
+        rendered_videos = "\n".join(
+            f"Vidéo {index} : {video.get('video_title') or '(sans titre)'}"
+            + (f" — {video.get('video_url')}" if video.get("video_url") else "")
+            for index, video in enumerate(topic_videos, start=1)
+            if isinstance(video, dict)
+        )
+        if rendered_videos:
+            memory_sections.append(
+                "Vidéos déjà discutées dans le sujet actif (références fiables pour les relances) :\n"
+                + rendered_videos
+            )
     if related_topics:
         rendered_topics = "\n".join(
             f"Sujet {index} : {topic.get('summary', '')}"
@@ -1003,6 +1016,7 @@ def reformulate_question(
         "phase": phase,
         "memory": {
             "active_topic": bool((memory_context or {}).get("active_topic")),
+            "topic_video_count": len((memory_context or {}).get("topic_videos") or []),
             "episode_count": len((memory_context or {}).get("episodes") or []),
         },
     }

@@ -103,6 +103,84 @@ def _vector_literal(values: list[float] | None) -> str | None:
     return "[" + ",".join(str(value) for value in values) + "]"
 
 
+def topic_videos_from_sources(
+    sources: list[dict[str, Any]],
+    source_indexes: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Keep the videos explicitly selected by generation, with their source order."""
+    videos: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for position, source in enumerate(sources, start=1):
+        source_index = (
+            source_indexes[position - 1]
+            if source_indexes and position <= len(source_indexes)
+            else position
+        )
+        title = str(source.get("video_title") or "").strip()
+        url = str(source.get("video_url") or "").strip()
+        if not title and not url:
+            continue
+        identity = ("url", url.casefold()) if url else ("title", title.casefold())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        video = {
+            "source_index": source_index,
+            "video_title": title,
+            "video_url": url,
+        }
+        thumbnail = str(source.get("thumbnail_medium_url") or "").strip()
+        if thumbnail:
+            video["thumbnail_medium_url"] = thumbnail
+        videos.append(video)
+    return videos
+
+
+def remember_topic_videos(
+    topic_id: int | None,
+    topic_videos: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge generation-selected videos into the persistent active-topic memory."""
+    if topic_id is None:
+        return {"available": False, "reason": "no_topic_id", "topic_videos": []}
+    if not topic_videos:
+        return {"available": True, "topic_id": topic_id, "updated": False, "topic_videos": []}
+    try:
+        ensure_chat_schema()
+        with connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT topic_videos FROM chat.topics WHERE id = %s",
+                    (topic_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise RuntimeError(f"Topic introuvable: {topic_id}")
+                existing = row[0] if isinstance(row[0], list) else []
+                merged: list[dict[str, Any]] = []
+                seen: set[tuple[str, str]] = set()
+                for video in [*existing, *topic_videos]:
+                    if not isinstance(video, dict):
+                        continue
+                    title = str(video.get("video_title") or "").strip()
+                    url = str(video.get("video_url") or "").strip()
+                    if not title and not url:
+                        continue
+                    identity = ("url", url.casefold()) if url else ("title", title.casefold())
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    merged.append(video)
+                cursor.execute(
+                    "UPDATE chat.topics SET topic_videos = %s::jsonb, updated_at = now() WHERE id = %s",
+                    (json.dumps(merged, ensure_ascii=False), topic_id),
+                )
+            connection.commit()
+        return {"available": True, "topic_id": topic_id, "updated": True, "topic_videos": merged}
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "topic_videos": topic_videos}
+
+
 MEMORY_SUMMARY_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"summary": {"type": "string"}},
@@ -312,7 +390,7 @@ def load_reformulation_memory(
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT t.id, t.summary
+                    SELECT t.id, t.summary, t.topic_videos
                     FROM chat.conversation_topics AS ct
                     JOIN chat.topics AS t ON t.id = ct.topic_id
                     WHERE ct.conversation_id = %s
@@ -391,6 +469,11 @@ def load_reformulation_memory(
 
     active_id = int(active[0]) if active else None
     active_summary = str(active[1] or "") if active else ""
+    active_topic_videos = (
+        active[2]
+        if active and len(active) > 2 and isinstance(active[2], list)
+        else []
+    )
     selected, used_chars = [], 0
     for row in rows:
         content = f"Question : {str(row[2] or '').strip()}\nRéponse : {str(row[3] or '').strip()}"
@@ -410,6 +493,7 @@ def load_reformulation_memory(
         "available": True,
         "active_topic": active_summary,
         "active_topic_id": active_id,
+        "topic_videos": active_topic_videos,
         "related_topics": matching_topics,
         "immediate_history": immediate_history,
         "episodes": selected,

@@ -35,6 +35,32 @@ class ConversationMemoryTests(unittest.TestCase):
         self.assertFalse(memory["available"])
         self.assertEqual(memory["reason"], "no_conversation_id")
 
+    def test_topic_videos_keep_generation_source_indexes_and_deduplicate_by_url(self) -> None:
+        videos = conversation_memory.topic_videos_from_sources(
+            [
+                {"video_title": "Interview Alice", "video_url": "https://youtu.be/a"},
+                {"video_title": "Interview Alice - extrait", "video_url": "https://youtu.be/a"},
+                {"video_title": "Interview Bob", "video_url": "https://youtu.be/b"},
+            ],
+            [2, 4, 5],
+        )
+
+        self.assertEqual(
+            videos,
+            [
+                {
+                    "source_index": 2,
+                    "video_title": "Interview Alice",
+                    "video_url": "https://youtu.be/a",
+                },
+                {
+                    "source_index": 5,
+                    "video_title": "Interview Bob",
+                    "video_url": "https://youtu.be/b",
+                },
+            ],
+        )
+
     def test_memory_failure_keeps_the_request_available(self) -> None:
         with patch.object(
             conversation_memory,

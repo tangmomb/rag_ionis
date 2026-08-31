@@ -294,7 +294,13 @@ class RagModelSelectionTests(unittest.TestCase):
         assign_topic.assert_called_once_with(46, False)
         self.assertEqual(load_memory.call_args_list[0].kwargs["include_episodes"], False)
         self.assertEqual(load_memory.call_args_list[1].args[1], "Elle a plus de vues qu'eux ?")
-        self.assertNotIn("memory_context", reformulate.call_args_list[0].kwargs)
+        self.assertEqual(
+            reformulate.call_args_list[0].kwargs["memory_context"],
+            {
+                "active_topic": memory["active_topic"],
+                "topic_videos": [],
+            },
+        )
         self.assertEqual(reformulate.call_args_list[0].kwargs["phase"], "light")
         self.assertEqual(reformulate.call_args_list[1].kwargs["phase"], "final")
         self.assertEqual(retrieval["question_reformulation"]["strategy"], "light_rewrite+topic_match+final_rewrite")

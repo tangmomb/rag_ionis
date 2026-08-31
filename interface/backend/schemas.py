@@ -24,6 +24,9 @@ SqlSubIntent = Literal[
     "transcript_verbatim",
     "transcript_qa",
 ]
+AnalyticsScope = Literal["global", "specific"]
+AnalyticsMetric = Literal["all", "views", "likes", "comments"]
+AnalyticsOrder = Literal["asc", "desc"]
 AnswerAction = Literal["answer", "clarify", "abstain"]
 
 
@@ -45,7 +48,7 @@ class RagRequest(BaseModel):
     finalK: int = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 
     @model_validator(mode="after")
-    def _force_gpt_terra_for_rag_inference(self) -> "RagRequest":
+    def _force_gpt_luna_for_rag_inference(self) -> "RagRequest":
         """Keep every RAG inference stage on the configured OpenAI model."""
         self.reformulationModel = DEFAULT_REFORMULATION_MODEL
         self.plannerModel = DEFAULT_PLANNER_MODEL
@@ -58,6 +61,11 @@ class PlannerPlan(BaseModel):
 
     route: PlannerRoute = "rag"
     sql_sub_intent: SqlSubIntent | None = None
+    analytics_scope: AnalyticsScope | None = None
+    analytics_metric: AnalyticsMetric | None = None
+    analytics_order: AnalyticsOrder | None = None
+    analytics_rank_start: int | None = Field(default=None, ge=1, le=100)
+    analytics_rank_end: int | None = Field(default=None, ge=1, le=100)
     query_text: str
     query_text_bm25: str | None = None
     title_hints: list[str] = Field(default_factory=list)
@@ -76,6 +84,31 @@ class PlannerPlan(BaseModel):
             value.pop("title_hint", None)
         return value
 
+    @model_validator(mode="after")
+    def _validate_analytics_scope(self) -> "PlannerPlan":
+        if self.sql_sub_intent == "analytics":
+            # Compatibilité avec les plans historiques et les chemins de repli
+            # sans LLM. La réponse structurée du planner, elle, l'exige.
+            self.analytics_scope = self.analytics_scope or "specific"
+            if self.analytics_scope == "global":
+                self.analytics_metric = self.analytics_metric or "all"
+                self.analytics_rank_start = self.analytics_rank_start or 1
+                self.analytics_rank_end = self.analytics_rank_end or 3
+            else:
+                self.analytics_metric = None
+                self.analytics_order = None
+                self.analytics_rank_start = None
+                self.analytics_rank_end = None
+        else:
+            self.analytics_scope = None
+            self.analytics_metric = None
+            self.analytics_order = None
+            self.analytics_rank_start = None
+            self.analytics_rank_end = None
+        if self.analytics_rank_start and self.analytics_rank_end and self.analytics_rank_start > self.analytics_rank_end:
+            raise ValueError("analytics_rank_start doit être inférieur ou égal à analytics_rank_end.")
+        return self
+
     @property
     def title_hint(self) -> str | None:
         return self.title_hints[0] if self.title_hints else None
@@ -86,6 +119,11 @@ class ExecutionPlan(BaseModel):
 
     route: PlannerRoute = "rag"
     sql_sub_intent: SqlSubIntent | None = None
+    analytics_scope: AnalyticsScope | None = None
+    analytics_metric: AnalyticsMetric | None = None
+    analytics_order: AnalyticsOrder | None = None
+    analytics_rank_start: int | None = Field(default=None, ge=1, le=100)
+    analytics_rank_end: int | None = Field(default=None, ge=1, le=100)
     raw_question: str
     query_text: str
     query_text_bm25: str
@@ -107,6 +145,29 @@ class ExecutionPlan(BaseModel):
             value = {**value, "title_hints": [value["title_hint"]] if value["title_hint"] else []}
             value.pop("title_hint", None)
         return value
+
+    @model_validator(mode="after")
+    def _validate_analytics_scope(self) -> "ExecutionPlan":
+        if self.sql_sub_intent == "analytics":
+            self.analytics_scope = self.analytics_scope or "specific"
+            if self.analytics_scope == "global":
+                self.analytics_metric = self.analytics_metric or "all"
+                self.analytics_rank_start = self.analytics_rank_start or 1
+                self.analytics_rank_end = self.analytics_rank_end or 3
+            else:
+                self.analytics_metric = None
+                self.analytics_order = None
+                self.analytics_rank_start = None
+                self.analytics_rank_end = None
+        else:
+            self.analytics_scope = None
+            self.analytics_metric = None
+            self.analytics_order = None
+            self.analytics_rank_start = None
+            self.analytics_rank_end = None
+        if self.analytics_rank_start and self.analytics_rank_end and self.analytics_rank_start > self.analytics_rank_end:
+            raise ValueError("analytics_rank_start doit être inférieur ou égal à analytics_rank_end.")
+        return self
 
     @property
     def title_hint(self) -> str | None:

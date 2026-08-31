@@ -627,7 +627,7 @@ def llm_models() -> dict[str, Any]:
         {
             "provider": "openai",
             "provider_label": provider_config["label"],
-            "label": "Terra",
+            "label": "Luna",
             "id": DEFAULT_GENERATION_MODEL,
         }
     ]
@@ -761,7 +761,7 @@ def validate_step_models(payload: RagRequest) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Le RAG utilise uniquement gpt-5.6-terra."
+                    "Le RAG utilise uniquement gpt-5.6-luna."
                 ),
             )
         try:

@@ -39,6 +39,20 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
                 {"type": "null"},
             ],
         },
+        "analytics_scope": {
+            "anyOf": [
+                {"type": "string", "enum": ["global", "specific"]},
+                {"type": "null"},
+            ],
+        },
+        "analytics_metric": {
+            "anyOf": [{"type": "string", "enum": ["all", "views", "likes", "comments"]}, {"type": "null"}],
+        },
+        "analytics_order": {
+            "anyOf": [{"type": "string", "enum": ["asc", "desc"]}, {"type": "null"}],
+        },
+        "analytics_rank_start": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 100}, {"type": "null"}]},
+        "analytics_rank_end": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 100}, {"type": "null"}]},
         "query_text": {"type": "string"},
         "query_text_bm25": {"type": "string"},
         "title_hints": {
@@ -63,6 +77,11 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
     "required": [
         "route",
         "sql_sub_intent",
+        "analytics_scope",
+        "analytics_metric",
+        "analytics_order",
+        "analytics_rank_start",
+        "analytics_rank_end",
         "query_text",
         "query_text_bm25",
         "title_hints",
@@ -168,7 +187,7 @@ def build_planner_prompt(
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
         "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'analytics', 'description', 'transcript_verbatim' ou 'null'. "
         "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='rag' pour toute question qui demande une information. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
-        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question, sauf si elle demande une analyse structurée. sql_sub_intent='analytics' pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
+        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question, sauf si elle demande une analyse structurée. sql_sub_intent='analytics' pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. Si sql_sub_intent='analytics', analytics_scope est obligatoire : 'global' pour une statistique sur l'ensemble de la chaîne ou du corpus ; 'specific' pour une statistique limitée à une vidéo, une personne, une entreprise ou un titre. Pour analytics_scope='global', fournis analytics_metric ('views', 'likes', 'comments' ou 'all'), analytics_rank_start et analytics_rank_end. Pour un classement explicite, analytics_metric cible la mesure, analytics_order vaut 'desc' pour les plus élevés et 'asc' pour les moins élevés ; les deux rangs décrivent la fenêtre demandée, par exemple 10 à 20. Sans classement explicite, utilise analytics_metric='all', analytics_order=null et les rangs 1 à 3. Hors scope global, ces quatre champs doivent être null. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
         "Toutes les valeurs textuelles doivent être en texte normal, sans Markdown."
 
     )
@@ -252,6 +271,18 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
 
     normalized["route"] = route
     normalized["sql_sub_intent"] = sql_sub_intent
+    analytics_scope = str(normalized.get("analytics_scope") or "").strip().lower() or None
+    normalized["analytics_scope"] = (
+        analytics_scope if sql_sub_intent == "analytics" and analytics_scope in {"global", "specific"} else None
+    )
+    if normalized["analytics_scope"] == "global":
+        metric = str(normalized.get("analytics_metric") or "").strip().lower()
+        order = str(normalized.get("analytics_order") or "").strip().lower() or None
+        normalized["analytics_metric"] = metric if metric in {"all", "views", "likes", "comments"} else None
+        normalized["analytics_order"] = order if order in {"asc", "desc"} else None
+    else:
+        for key in ("analytics_metric", "analytics_order", "analytics_rank_start", "analytics_rank_end"):
+            normalized[key] = None
     for derived_key in ("use_sql", "use_rag", "sql_main_source"):
         normalized.pop(derived_key, None)
     return normalized
@@ -323,6 +354,25 @@ def run_planner(
 
     try:
         parsed = normalize_planner_output(safe_json_loads(raw))
+        if (
+            parsed.get("sql_sub_intent") == "analytics"
+            and parsed.get("analytics_scope") not in {"global", "specific"}
+        ):
+            raise ValueError("analytics_scope manquant ou invalide pour une intention analytics")
+        if parsed.get("analytics_scope") == "global" and (
+            parsed.get("analytics_metric") not in {"all", "views", "likes", "comments"}
+            or not isinstance(parsed.get("analytics_rank_start"), int)
+            or not isinstance(parsed.get("analytics_rank_end"), int)
+            or (
+                parsed.get("analytics_metric") != "all"
+                and parsed.get("analytics_order") not in {"asc", "desc"}
+            )
+            or (
+                parsed.get("analytics_metric") == "all"
+                and parsed.get("analytics_order") is not None
+            )
+        ):
+            raise ValueError("fenêtre de classement manquante ou invalide pour une intention analytics globale")
         if not parsed.get("route"):
             parsed["route"] = "rag"
         if not parsed.get("query_text"):
@@ -352,6 +402,11 @@ def build_execution_plan(
     return ExecutionPlan(
         route=planner_plan.route or "rag",
         sql_sub_intent=planner_plan.sql_sub_intent,
+        analytics_scope=planner_plan.analytics_scope,
+        analytics_metric=planner_plan.analytics_metric,
+        analytics_order=planner_plan.analytics_order,
+        analytics_rank_start=planner_plan.analytics_rank_start,
+        analytics_rank_end=planner_plan.analytics_rank_end,
         raw_question=payload.question,
         query_text=(planner_plan.query_text or payload.question).strip() or payload.question,
         query_text_bm25=bm25_query,
@@ -462,6 +517,7 @@ def apply_deterministic_sql_policy(
 
     if planner_plan.sql_sub_intent == "analytics" or has_analytics_request(question):
         planner_plan.sql_sub_intent = "analytics"
+        planner_plan.analytics_scope = planner_plan.analytics_scope or "specific"
         derive_plan_sources(planner_plan)
         return policy_correction
 

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from interface.backend import analytics_sql, planner
+from interface.backend import analytics_sql, generation, planner
 from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
@@ -205,6 +205,19 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertEqual(normalized["sql_sub_intent"], "analytics")
 
+    def test_planner_schema_requires_analytics_scope_for_analytics(self) -> None:
+        client = SimpleNamespace(responses=_Responses(
+            '{"route":"rag","sql_sub_intent":"analytics",'
+            '"analytics_scope":null,"query_text":"Quelle vidéo a le plus de vues ?",'
+            '"query_text_bm25":"plus de vues","title_hints":[],"persons":[],'
+            '"companies":[],"published_after":null,"published_before":null}'
+        ))
+
+        plan, _prompt, _raw, verified = planner.run_planner("Quelle vidéo a le plus de vues ?", client)
+
+        self.assertFalse(verified)
+        self.assertEqual(plan.sql_sub_intent, None)
+
     def test_deterministic_analytics_deduplicates_entity_videos_before_loading_stats(self) -> None:
         query = ExecutionPlan(
             raw_question="Combien de vues pour Alice chez Acme ?",
@@ -272,6 +285,90 @@ class AnalyticsSqlTests(unittest.TestCase):
                 "analytics_all_video_stats",
             ],
         )
+
+    def test_global_analytics_uses_rankings_without_entity_lookup(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Quelle vidéo a le plus de vues sur la chaîne ?",
+            query_text="Quelle vidéo a le plus de vues sur la chaîne ?",
+            query_text_bm25="plus de vues chaîne",
+            title_hints=["Vidéo de contexte"],
+            persons=["Alice Martin"],
+            route="rag",
+            sql_sub_intent="analytics",
+            analytics_scope="global",
+            sql_main_source=True,
+        )
+        source = {"chunk_id": 1, "video_title": "La plus vue", "video_url": "https://example.test/1", "text": "stats", "stats": []}
+        with (
+            patch.object(analytics_sql, "_lookup_analytics_entity_videos") as entity_lookup,
+            patch.object(
+                analytics_sql,
+                "_global_analytics_ranking_sources",
+                return_value=([source], {"sql": "SELECT rankings", "params": [], "population_video_count": 42, "ranking_result_count": 1}),
+            ) as global_rankings,
+            patch.object(analytics_sql, "_analytics_stats_sources") as stats,
+        ):
+            sources, trace = analytics_sql.run_deterministic_analytics(query)
+
+        entity_lookup.assert_not_called()
+        global_rankings.assert_called_once_with(query)
+        stats.assert_not_called()
+        self.assertEqual(sources, [source])
+        self.assertEqual(trace["analytics_scope"], "global")
+        self.assertEqual(trace["candidate_video_count"], 42)
+
+    def test_global_rankings_include_the_analysed_video_count_in_source_text(self) -> None:
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, _sql, _params=None):
+                return None
+
+            def fetchall(self):
+                return [
+                    (1, "Vidéo", "https://example.test/1", None, "interview", None,
+                     "2026-08-01", 50, 4, 2, 12, "2020-01-01", "2026-08-01",
+                     1, 1, 1, 1, 1, 1, "views", "top", 1)
+                ]
+
+        with patch.object(
+            analytics_sql,
+            "connect_analytics_database",
+            return_value=_Connection(Cursor()),
+        ):
+            sources, trace = analytics_sql._global_analytics_ranking_sources(
+                ExecutionPlan(raw_question="test", query_text="test", query_text_bm25="test")
+            )
+
+        self.assertEqual(trace["population_video_count"], 12)
+        self.assertIn("Population analysée : 12 vidéos", sources[0]["text"])
+        self.assertIn("Première publication : 2020-01-01", sources[0]["text"])
+        self.assertIn("Dernière publication : 2026-08-01", sources[0]["text"])
+
+    def test_global_answer_context_is_grouped_by_metric_and_direction(self) -> None:
+        sources = [
+            {
+                "video_title": "Vidéo A", "video_url": "https://example.test/a",
+                "text": "Population analysée : 12 vidéos. Première publication : 2020-01-01. Dernière publication : 2026-08-01.",
+                "global_ranking": {"metric": "views", "direction": "top", "rank": 1, "value": 500},
+            },
+            {
+                "video_title": "Vidéo B", "video_url": "https://example.test/b", "text": "",
+                "global_ranking": {"metric": "likes", "direction": "bottom", "rank": 1, "value": 0},
+            },
+        ]
+
+        context = generation.format_answer_sources(sources)
+
+        self.assertIn("Données analytiques globales de la chaîne en question", context)
+        self.assertIn("## Population analysée", context)
+        self.assertIn("## Vidéos les plus vues (rang 1)", context)
+        self.assertIn("## Vidéos avec le moins de likes (rang 1)", context)
+        self.assertNotIn("Source 1 :", context)
 
     def test_entity_lookup_without_date_filter_builds_a_valid_where_clause(self) -> None:
         class Cursor:

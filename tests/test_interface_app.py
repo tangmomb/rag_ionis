@@ -65,10 +65,10 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(selected_sources, [sources[1]])
 
     def test_llm_steps_use_the_configured_models(self) -> None:
-        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-terra")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-terra")
-        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "gpt-5.6-terra")
-        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-terra")
+        self.assertEqual(DEFAULT_PLANNER_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "gpt-5.6-luna")
+        self.assertEqual(DEFAULT_GENERATION_MODEL, "gpt-5.6-luna")
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
@@ -790,7 +790,7 @@ class InterfaceAppTests(unittest.TestCase):
         generation.generate_sql_answer(
             SimpleNamespace(responses=Responses()),
             "Donne-moi les chiffres de cette vidéo.",
-            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "analytics",
             [
                 {
@@ -812,7 +812,7 @@ class InterfaceAppTests(unittest.TestCase):
         generation.generate_multi_source_answer(
             SimpleNamespace(responses=Responses()),
             "Compare ces personnes.",
-            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "multi_source",
             [
                 {
@@ -1085,23 +1085,23 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(
             data["defaults"],
             {
-                "reformulationModel": "gpt-5.6-terra",
-                "plannerModel": "gpt-5.6-terra",
-                "answerModel": "gpt-5.6-terra",
+                "reformulationModel": "gpt-5.6-luna",
+                "plannerModel": "gpt-5.6-luna",
+                "answerModel": "gpt-5.6-luna",
             },
         )
         self.assertEqual(data["models"], [{
             "provider": "openai",
             "provider_label": "OpenAI",
-            "label": "Terra",
-            "id": "gpt-5.6-terra",
+            "label": "Luna",
+            "id": "gpt-5.6-luna",
         }])
 
-    def test_public_rag_endpoint_forces_gpt_terra_for_every_step(self) -> None:
+    def test_public_rag_endpoint_forces_gpt_luna_for_every_step(self) -> None:
         request = {
             "question": "Bonjour",
             "reformulationModel": "gpt-5.6-luna",
-            "plannerModel": "gpt-5.6-terra",
+            "plannerModel": "gpt-5.6-luna",
             "answerModel": "gemini-3.6-flash",
         }
         with patch.object(
@@ -1120,9 +1120,9 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         validated = run_rag.call_args.args[0]
-        self.assertEqual(validated.reformulationModel, "gpt-5.6-terra")
-        self.assertEqual(validated.plannerModel, "gpt-5.6-terra")
-        self.assertEqual(validated.answerModel, "gpt-5.6-terra")
+        self.assertEqual(validated.reformulationModel, "gpt-5.6-luna")
+        self.assertEqual(validated.plannerModel, "gpt-5.6-luna")
+        self.assertEqual(validated.answerModel, "gpt-5.6-luna")
 
     def test_request_schema_remains_available_from_app(self) -> None:
         payload = RagRequest(question="Bonjour")

@@ -632,6 +632,131 @@ def _lookup_analytics_entity_videos(
     return videos, {"sql": format_sql_for_trace(sql), "params": params}
 
 
+def _global_analytics_ranking_sources(
+    query: ExecutionPlan,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return the planner-requested global ranking window from one SQL query."""
+    date_clauses, params = _analytics_video_date_filters(query)
+    where_clause = f"WHERE {' AND '.join(date_clauses)}" if date_clauses else ""
+    ranking_columns = {
+        ("views", "desc"): ("view_count", "views_top_rank", "views", "top"),
+        ("views", "asc"): ("view_count", "views_bottom_rank", "views", "bottom"),
+        ("likes", "desc"): ("like_count", "likes_top_rank", "likes", "top"),
+        ("likes", "asc"): ("like_count", "likes_bottom_rank", "likes", "bottom"),
+        ("comments", "desc"): ("comment_count", "comments_top_rank", "comments", "top"),
+        ("comments", "asc"): ("comment_count", "comments_bottom_rank", "comments", "bottom"),
+    }
+    metric = query.analytics_metric or "all"
+    rank_start, rank_end = query.analytics_rank_start or 1, query.analytics_rank_end or 3
+    sql = f"""
+        WITH ranked AS (
+            SELECT
+                v.id AS video_id,
+                v.title AS video_title,
+                v.url AS video_url,
+                v.thumbnail_medium_url,
+                v.video_type,
+                v.published_at,
+                latest.snapshot_date,
+                latest.view_count,
+                latest.like_count,
+                latest.comment_count,
+                COUNT(*) OVER () AS population_video_count,
+                MIN(v.published_at) OVER () AS first_published_at,
+                MAX(v.published_at) OVER () AS last_published_at,
+                row_number() OVER (ORDER BY latest.view_count DESC NULLS LAST, v.id ASC) AS views_top_rank,
+                row_number() OVER (ORDER BY latest.view_count ASC NULLS LAST, v.id ASC) AS views_bottom_rank,
+                row_number() OVER (ORDER BY latest.like_count DESC NULLS LAST, v.id ASC) AS likes_top_rank,
+                row_number() OVER (ORDER BY latest.like_count ASC NULLS LAST, v.id ASC) AS likes_bottom_rank,
+                row_number() OVER (ORDER BY latest.comment_count DESC NULLS LAST, v.id ASC) AS comments_top_rank,
+                row_number() OVER (ORDER BY latest.comment_count ASC NULLS LAST, v.id ASC) AS comments_bottom_rank
+            FROM videos v
+            JOIN LATERAL (
+                SELECT snapshot_date, view_count, like_count, comment_count
+                FROM stats
+                WHERE video_id = v.id
+                ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC
+                LIMIT 1
+            ) latest ON TRUE
+            {where_clause}
+        )
+        {{ranking_query}}
+        ORDER BY metric, direction, ranking
+    """
+    ranking_queries: list[str] = []
+    ranking_params: list[Any] = []
+    selected_rankings = (
+        list(ranking_columns.values())
+        if metric == "all"
+        else [ranking_columns[(metric, query.analytics_order or "desc")]]
+    )
+    for value_column, rank_column, metric_label, direction in selected_rankings:
+        ranking_queries.append(
+            f"SELECT *, '{metric_label}' AS metric, '{direction}' AS direction, {rank_column} AS ranking "
+            f"FROM ranked WHERE {value_column} IS NOT NULL AND {rank_column} BETWEEN %s AND %s"
+        )
+        ranking_params.extend([rank_start, rank_end])
+    sql = sql.replace("{ranking_query}", "\n        UNION ALL\n        ".join(ranking_queries))
+    with connect_analytics_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(
+                f"SET LOCAL statement_timeout = '{ANALYTICS_STATEMENT_TIMEOUT_MS}ms'"
+            )
+            cursor.execute(sql, [*params, *ranking_params])
+            rows = cursor.fetchall()
+    sources: list[dict[str, Any]] = []
+    population_video_count = int(rows[0][10]) if rows else 0
+    first_published_at = _json_compatible(rows[0][11]) if rows else None
+    last_published_at = _json_compatible(rows[0][12]) if rows else None
+    for row in rows:
+        metric, direction, ranking = str(row[19]), str(row[20]), int(row[21])
+        value_index = {"views": 7, "likes": 8, "comments": 9}[metric]
+        value = _json_compatible(row[value_index])
+        snapshot = {
+            "snapshot_date": _json_compatible(row[6]),
+            "view_count": _json_compatible(row[7]),
+            "like_count": _json_compatible(row[8]),
+            "comment_count": _json_compatible(row[9]),
+        }
+        label = {"views": "vues", "likes": "likes", "comments": "commentaires"}[metric]
+        direction_label = "plus élevées" if direction == "top" else "plus faibles"
+        sources.append(
+            {
+                "chunk_id": int(row[0]),
+                "video_title": str(row[1] or ""),
+                "video_url": str(row[2] or ""),
+                "thumbnail_medium_url": str(row[3] or "").strip() or None,
+                "chunk_index": 0,
+                "persons": [],
+                "bm25_score": None,
+                "video_type": str(row[4] or "") or None,
+                "published_at": _json_compatible(row[5]),
+                "stats": [snapshot],
+                "global_ranking": {"metric": metric, "direction": direction, "rank": ranking, "value": value},
+                "text": (
+                    f"Population analysée : {population_video_count} vidéos. "
+                    f"Première publication : {first_published_at or 'inconnue'}. "
+                    f"Dernière publication : {last_published_at or 'inconnue'}. "
+                    f"Classement global — {label} {direction_label}, rang {ranking}: "
+                    f"{value} ({snapshot['snapshot_date']})."
+                ),
+            }
+        )
+    return sources, {
+        "sql": format_sql_for_trace(sql),
+        "params": [*params, *ranking_params],
+        "population_video_count": population_video_count,
+        "first_published_at": first_published_at,
+        "last_published_at": last_published_at,
+        "ranking_result_count": len(sources),
+        "analytics_metric": metric,
+        "analytics_order": query.analytics_order,
+        "analytics_rank_start": rank_start,
+        "analytics_rank_end": rank_end,
+    }
+
+
 def _analytics_stats_sources(video_ids: list[int]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not video_ids:
         return [], {"sql": None, "params": [], "video_count": 0, "snapshot_count": 0}
@@ -719,29 +844,44 @@ def run_deterministic_analytics(
     database_persons: list[str] | None = None,
     database_companies: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Resolve entities to videos, then load every available stats snapshot."""
+    """Load stats for either an entity-filtered or complete analytics population."""
     entities = _resolved_analytics_entities(query, database_persons, database_companies)
+    analytics_scope = query.analytics_scope or "specific"
     trace: dict[str, Any] = {
         "mode": "analytics",
-        "strategy": "deterministic_entity_stats",
+        "strategy": f"deterministic_{analytics_scope}_stats",
+        "analytics_scope": analytics_scope,
         "entities": entities,
         "entity_lookups": [],
         "candidate_video_count": 0,
         "result_count": 0,
     }
     videos_by_id: dict[int, dict[str, Any]] = {}
-    for entity in entities:
+    if analytics_scope == "global":
         with trace_operation(
-            "analytics_entity_lookup",
+            "analytics_global_rankings",
             kind="RETRIEVER",
-            input_value=entity,
-        ) as entity_span:
-            videos, lookup_trace = _lookup_analytics_entity_videos(entity, query)
-            entity_output = {**entity, "result_count": len(videos), "results": videos}
-            entity_span.set_output(entity_output)
-        trace["entity_lookups"].append({**entity, **lookup_trace, "result_count": len(videos), "results": videos})
-        for video in videos:
-            videos_by_id.setdefault(int(video["video_id"]), video)
+            input_value={"published_after": query.published_after, "published_before": query.published_before},
+        ) as global_span:
+            sources, rankings_trace = _global_analytics_ranking_sources(query)
+            global_span.set_output({**rankings_trace, "results": sources})
+        trace["global_rankings"] = rankings_trace
+        trace["candidate_video_count"] = rankings_trace["population_video_count"]
+        trace["result_count"] = len(sources)
+        return sources, trace
+    else:
+        for entity in entities:
+            with trace_operation(
+                "analytics_entity_lookup",
+                kind="RETRIEVER",
+                input_value=entity,
+            ) as entity_span:
+                videos, lookup_trace = _lookup_analytics_entity_videos(entity, query)
+                entity_output = {**entity, "result_count": len(videos), "results": videos}
+                entity_span.set_output(entity_output)
+            trace["entity_lookups"].append({**entity, **lookup_trace, "result_count": len(videos), "results": videos})
+            for video in videos:
+                videos_by_id.setdefault(int(video["video_id"]), video)
 
     video_ids = list(videos_by_id)
     trace["candidate_video_count"] = len(video_ids)

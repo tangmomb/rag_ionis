@@ -190,6 +190,75 @@ def source_context_text(source: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def format_global_analytics_context(sources: list[dict[str, Any]]) -> str | None:
+    """Turn flat SQL ranking rows into one readable prompt section."""
+    ranking_sources = [
+        (index, source)
+        for index, source in enumerate(sources, start=1)
+        if isinstance(source.get("global_ranking"), dict)
+    ]
+    if not ranking_sources:
+        return None
+
+    first_source = ranking_sources[0][1]
+    first_text = str(first_source.get("text") or "")
+    population_match = re.search(r"Population analysée : ([^.]+)\.", first_text)
+    first_publication_match = re.search(r"Première publication : ([^.]+)\.", first_text)
+    last_publication_match = re.search(r"Dernière publication : ([^.]+)\.", first_text)
+    overview = ["## Population analysée"]
+    if population_match:
+        overview.append(f"- Vidéos : {population_match.group(1)}")
+    if first_publication_match:
+        overview.append(f"- Première publication : {first_publication_match.group(1)}")
+    if last_publication_match:
+        overview.append(f"- Dernière publication : {last_publication_match.group(1)}")
+
+    labels = {
+        ("views", "top"): "Vidéos les plus vues",
+        ("views", "bottom"): "Vidéos les moins vues",
+        ("likes", "top"): "Vidéos avec le plus de likes",
+        ("likes", "bottom"): "Vidéos avec le moins de likes",
+        ("comments", "top"): "Vidéos avec le plus de commentaires",
+        ("comments", "bottom"): "Vidéos avec le moins de commentaires",
+    }
+    metric_labels = {"views": "vues", "likes": "likes", "comments": "commentaires"}
+    sections = ["\n".join(overview)]
+    for key, heading in labels.items():
+        rows = []
+        for index, source in ranking_sources:
+            ranking = source["global_ranking"]
+            if (ranking.get("metric"), ranking.get("direction")) != key:
+                continue
+            rows.append(
+                f"{ranking.get('rank')}. {source.get('video_title') or 'Sans titre'} — "
+                f"{ranking.get('value')} {metric_labels[key[0]]} "
+                f"(source {index})"
+            )
+        if rows:
+            ranks = [int(source["global_ranking"].get("rank") or 0) for _index, source in ranking_sources if (source["global_ranking"].get("metric"), source["global_ranking"].get("direction")) == key]
+            rank_label = f"rang {min(ranks)}" if len(ranks) == 1 else f"rangs {min(ranks)} à {max(ranks)}"
+            sections.append("## " + heading + f" ({rank_label})\n" + "\n".join(rows))
+    return "\n\n".join(sections)
+
+
+def format_answer_sources(sources: list[dict[str, Any]]) -> str:
+    """Use a compact semantic layout for global analytics, otherwise source cards."""
+    global_context = format_global_analytics_context(sources)
+    if global_context is not None:
+        return "Données analytiques globales de la chaîne en question :\n\n" + global_context
+    return "\n\n".join(
+        "\n".join(
+            [
+                f"Source {index} :",
+                f"Titre: {source['video_title']}",
+                f"URL: {source['video_url']}",
+                f"Texte: {source['text']}",
+            ]
+        )
+        for index, source in enumerate(sources, start=1)
+    )
+
+
 def generate_answer(
     client: LLMClientProtocol | None,
     question: str,
@@ -268,6 +337,8 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
             "Tu réponds à une demande analytique à partir du résultat SQL fourni. "
             "Respecte exactement l'opération demandée : comptage, agrégation, classement, extremum ou statistiques d'une vidéo. "
             "Présente uniquement les valeurs et entités présentes dans le résultat, sans extrapoler au-delà de son périmètre. "
+            "Si le contexte contient des données analytiques globales, il est organisé en population puis en six classements. "
+            "Utilise seulement le ou les classements nécessaires à la question ; ne récite pas les autres. "
             "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
         )
     if sql_sub_intent == "description":
@@ -320,20 +391,7 @@ def generate_multi_source_answer(
         )
         return source_text
 
-    source_blocks = []
-    for index, source in enumerate(sources, start=1):
-        source_blocks.append(
-            "\n".join(
-                [
-                    f"Source {index} :",
-                    f"Titre: {source['video_title']}",
-                    f"URL: {source['video_url']}",
-                    f"Chunk: {source['chunk_index']}",
-                    f"Texte: {source['text']}",
-                ]
-            )
-        )
-    source_block = "\n\n".join(source_blocks) or "Aucune source documentaire exploitable."
+    source_block = format_answer_sources(sources) or "Aucune source documentaire exploitable."
     source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
 
     input_messages = [
@@ -387,19 +445,6 @@ def generate_sql_answer(
             return "\n".join(lines)
         return f"[S1] {sources[0]['text']}"
 
-    context_blocks = []
-    for index, source in enumerate(sources, start=1):
-        context_blocks.append(
-            "\n".join(
-                [
-                    f"Source {index} :",
-                    f"Titre: {source['video_title']}",
-                    f"URL: {source['video_url']}",
-                    f"Texte: {source['text']}",
-                ]
-            )
-        )
-
     task_prompt = build_sql_sub_intent_prompt(sql_sub_intent)
     source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
     system_prompt = render_answer_system_prompt(
@@ -415,7 +460,7 @@ def generate_sql_answer(
                 "role": "user",
                 "content": (
                     f"Question: {question}\n\nSources pour répondre :\n\n"
-                    + ("\n\n".join(context_blocks) or "Aucun résultat SQL exploitable.")
+                    + (format_answer_sources(sources) or "Aucun résultat SQL exploitable.")
                 ),
             },
         ]

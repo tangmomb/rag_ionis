@@ -15,7 +15,7 @@ for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
 )
 
 set "API_PYTHON=.\.venv\Scripts\python.exe"
-set "STUDIO_CLI=.\.venv-studio\Scripts\langgraph.exe"
+set "STUDIO_CLI=.\.venv-studio-py313\Scripts\langgraph.exe"
 
 if not exist "%API_PYTHON%" (
   echo Python du venv introuvable. Cree .venv avec requirements.txt.
@@ -23,7 +23,7 @@ if not exist "%API_PYTHON%" (
 )
 
 if not exist "%STUDIO_CLI%" (
-  echo LangGraph CLI introuvable. Installe-le avec requirements-studio.txt dans .venv-studio.
+  echo LangGraph CLI introuvable. Installe-le avec requirements-studio.txt dans .venv-studio-py313.
   exit /b 1
 )
 

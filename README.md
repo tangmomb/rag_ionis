@@ -1587,9 +1587,10 @@ Les graphes `rag_response` et `rag_orchestration` sont déclarés dans
 `langgraph.json`. Pour les visualiser et les exécuter localement en mode graphe :
 
 ```powershell
-python -m venv .venv-studio --system-site-packages
-.\.venv-studio\Scripts\python.exe -m pip install --no-cache-dir -r requirements-studio.txt
-.\.venv-studio\Scripts\langgraph.exe dev --no-browser
+C:\Users\rgb\AppData\Local\Programs\Python\Python313\python.exe -m venv .venv-studio-py313
+.\.venv-studio-py313\Scripts\python.exe -m pip install --no-cache-dir -r requirements-studio.txt
+.\.venv-studio-py313\Scripts\python.exe -m pip install --no-cache-dir openai mistralai langchain-openai langchain-mistralai langchain-google-genai
+.\.venv-studio-py313\Scripts\langgraph.exe dev --no-browser
 ```
 
 Ouvrir ensuite

@@ -14,6 +14,7 @@ from interface.backend.config import (
 from interface.backend.conversation_memory import (
     TOPIC_MATCH_MAX_COSINE_DISTANCE,
     assign_topic_id,
+    load_conversation_memory,
     load_reformulation_memory,
 )
 from interface.backend.planner import (

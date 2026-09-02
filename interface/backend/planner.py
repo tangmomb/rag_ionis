@@ -99,8 +99,9 @@ REFORMULATION_RESPONSE_SCHEMA: dict[str, Any] = {
     "properties": {
         "follow_up": {"type": "boolean"},
         "reformulated_question": {"type": "string"},
+        "topic": {"type": "string"},
     },
-    "required": ["follow_up", "reformulated_question"],
+    "required": ["follow_up", "reformulated_question", "topic"],
     "additionalProperties": False,
 }
 
@@ -921,7 +922,9 @@ def build_question_reformulation_prompt(
         f"{item['role']}: {item['text']}" for item in history_items
     )
     follow_up_instruction = (
-        "Indique dans `follow_up` s'il dépend de l'historique ; il peut aussi changer de sujet.\n\n"
+        "Indique dans `follow_up` s'il dépend de l'historique ou du sujet actif ; il peut aussi changer de sujet. "
+        "Mets `false` quand il ouvre un nouveau sujet. "
+        "Dans `topic`, fournis le libellé court du sujet actif ou du nouveau sujet.\n\n"
         if include_follow_up
         else ""
     )
@@ -936,30 +939,24 @@ Ne change pas le sens. `reformulated_question` doit être concis, autonome, en t
 
 Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre.
 Si l'historique évoque des personnes ou des vidéos précises auxquelles le dernier message fait référence, leurs noms ou titres précis doivent apparaître dans la question reformulée."""
-    system_prompt = (system_prompt_override or "").strip() or default_system_prompt
+    custom_system_prompt = (system_prompt_override or "").strip()
+    system_prompt = custom_system_prompt or default_system_prompt
     memory = memory_context or {}
+    memory_sections: list[str] = []
+    conversation_memory = memory.get("conversation_memory")
+    if isinstance(conversation_memory, dict):
+        memory_sections.append(
+            "Mémoire complète de la conversation (JSON ; le sujet courant et ses messages sont prioritaires) :\n"
+            + json.dumps(conversation_memory, ensure_ascii=False)
+        )
     active_topic = memory.get("active_topic") or {}
-    topic_videos = memory.get("topic_videos") or []
     related_topics = memory.get("related_topics") or []
     episodes = memory.get("episodes") or []
-    memory_sections: list[str] = []
     if active_topic:
         memory_sections.append(
             "Sujet actif (résumé compact, prioritaire pour les pronoms singuliers) :\n"
             + str(active_topic)
         )
-    if topic_videos:
-        rendered_videos = "\n".join(
-            f"Vidéo {index} : {video.get('video_title') or '(sans titre)'}"
-            + (f" — {video.get('video_url')}" if video.get("video_url") else "")
-            for index, video in enumerate(topic_videos, start=1)
-            if isinstance(video, dict)
-        )
-        if rendered_videos:
-            memory_sections.append(
-                "Vidéos déjà discutées dans le sujet actif (références fiables pour les relances) :\n"
-                + rendered_videos
-            )
     if related_topics:
         rendered_topics = "\n".join(
             f"Sujet {index} : {topic.get('summary', '')}"
@@ -981,11 +978,17 @@ Si l'historique évoque des personnes ou des vidéos précises auxquelles le der
             + rendered_episodes
         )
     memory_text = "\n\n".join(memory_sections)
-    user_prompt = (
-        f"Message actuel : {question}\n\n"
-        "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
-        f"prioritaire) :\n\n{history or '(vide)'}"
-    )
+    user_prompt = f"Message actuel : {question}"
+    if history:
+        user_prompt += (
+            "\n\nHistorique récent (du plus vieux au plus récent ; le dernier bloc est "
+            f"prioritaire) :\n\n{history}"
+        )
+    if custom_system_prompt and include_follow_up:
+        user_prompt += (
+            "\n\nContrat obligatoire : `follow_up` vaut true seulement si le message "
+            "continue le sujet actif ; sinon il vaut false et `topic` nomme le nouveau sujet."
+        )
     if memory_text:
         user_prompt += f"\n\n{memory_text}"
     return system_prompt, user_prompt
@@ -1100,7 +1103,6 @@ def reformulate_question(
         "phase": phase,
         "memory": {
             "active_topic": bool((memory_context or {}).get("active_topic")),
-            "topic_video_count": len((memory_context or {}).get("topic_videos") or []),
             "episode_count": len((memory_context or {}).get("episodes") or []),
         },
     }
@@ -1149,6 +1151,7 @@ def reformulate_question(
 
         if include_follow_up:
             follow_up = bool(parsed.get("follow_up", False))
+            trace["topic"] = str(parsed.get("topic") or "").strip()
             repaired = repair_video_clarification_follow_up(question, history_items)
             if repaired:
                 reformulated = repaired

@@ -232,6 +232,14 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(orchestration, "get_llm_client", return_value=client),
             patch.object(
                 orchestration,
+                "load_conversation_memory",
+                return_value={
+                    "available": True,
+                    "memory": {"current_topic": {"topic": "", "messages": []}, "previous_topics": []},
+                },
+            ),
+            patch.object(
+                orchestration,
                 "reformulate_question",
                 return_value=("Question reformulee", {"applied": True}),
             ) as reformulate,
@@ -248,12 +256,13 @@ class RagModelSelectionTests(unittest.TestCase):
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
-        reformulate.assert_called_once_with(
-            "Question",
-            None,
-            client,
-            "gpt-5.6-luna",
-            "Prompt reformulation personnalise",
+        reformulate.assert_called_once()
+        self.assertEqual(reformulate.call_args.args[:5], (
+            "Question", None, client, "gpt-5.6-luna", "Prompt reformulation personnalise"
+        ))
+        self.assertEqual(
+            reformulate.call_args.kwargs["memory_context"]["conversation_memory"]["previous_topics"],
+            [],
         )
         run_planner.assert_called_once_with(
             "Question reformulee",
@@ -265,45 +274,36 @@ class RagModelSelectionTests(unittest.TestCase):
         self.assertEqual(retrieval["planner_model"], "gpt-5.6-luna")
         self.assertEqual(retrieval["answer_model"], "gpt-5.6-luna")
 
-    def test_orchestration_uses_light_then_final_reformulation_with_memory(self) -> None:
+    def test_orchestration_uses_one_reformulation_with_conversation_json(self) -> None:
         client = object()
         payload = RagRequest(question="Elle a plus de vues qu'eux ?", conversationId=46)
         plan = PlannerPlan(route="rag", query_text="Question autonome")
         memory = {
             "available": True,
-            "active_topic": {"objective": "Job de Lou-Ann", "entities": ["Lou-Ann"]},
-            "immediate_history": [{"role": "user", "text": "Je cherche le job de Lou-Ann."}],
-            "episodes": [{"content": "Question : Qui a le plus de vues ?\nRéponse : Déborah contre Simon."}],
-            "retrieval": {"selected_count": 1},
+            "memory": {
+                "current_topic": {"topic": "Job de Lou-Ann", "messages": [{"role": "user", "content": "Je cherche le job de Lou-Ann."}]},
+                "previous_topics": [{"topic": "Vues", "summary": "Déborah contre Simon."}],
+            },
         }
         with (
             patch.object(orchestration, "get_llm_client", return_value=client),
-            patch.object(orchestration, "load_reformulation_memory", side_effect=[memory, memory]) as load_memory,
-            patch.object(orchestration, "assign_topic_id", return_value={"topic_id": 47, "decision": "new_topic"}) as assign_topic,
+            patch.object(orchestration, "load_conversation_memory", return_value=memory) as load_memory,
             patch.object(
                 orchestration,
                 "reformulate_question",
-                side_effect=[("Elle a plus de vues qu'eux ?", {"phase": "light"}), ("Lou-Ann a-t-elle plus de vues que Déborah et Simon ?", {"phase": "final"})],
+                return_value=("Lou-Ann a-t-elle plus de vues que Déborah et Simon ?", {"follow_up": False, "topic": "Vues de Lou-Ann"}),
             ) as reformulate,
             patch.object(orchestration, "run_planner", return_value=(plan, "prompt", "raw", True)),
             patch.object(orchestration, "retrieve_chunks", return_value=([], {})),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
-        self.assertEqual(reformulate.call_count, 2)
-        assign_topic.assert_called_once_with(46, False)
-        self.assertEqual(load_memory.call_args_list[0].kwargs["include_episodes"], False)
-        self.assertEqual(load_memory.call_args_list[1].args[1], "Elle a plus de vues qu'eux ?")
+        reformulate.assert_called_once()
+        load_memory.assert_called_once_with(46)
         self.assertEqual(
-            reformulate.call_args_list[0].kwargs["memory_context"],
-            {
-                "active_topic": memory["active_topic"],
-                "topic_videos": [],
-            },
+            reformulate.call_args.kwargs["memory_context"]["conversation_memory"], memory["memory"]
         )
-        self.assertEqual(reformulate.call_args_list[0].kwargs["phase"], "light")
-        self.assertEqual(reformulate.call_args_list[1].kwargs["phase"], "final")
-        self.assertEqual(retrieval["question_reformulation"]["strategy"], "light_rewrite+topic_match+final_rewrite")
+        self.assertEqual(retrieval["question_reformulation"]["strategy"], "conversation_json_single_rewrite")
 
     def test_empty_structured_sql_does_not_fallback_to_rag(self) -> None:
         client = object()
@@ -341,20 +341,14 @@ class RagModelSelectionTests(unittest.TestCase):
         self.assertEqual(retrieval["direct_lookup"], empty_sql_trace)
         retrieve_chunks.assert_not_called()
 
-    def test_follow_up_skips_the_final_rewrite(self) -> None:
+    def test_follow_up_uses_the_same_single_rewrite(self) -> None:
         client = object()
         payload = RagRequest(question="Et elle ?", conversationId=46)
         plan = PlannerPlan(route="direct", query_text="Et elle ?")
-        memory = {
-            "available": True,
-            "active_topic": "Déborah Rolland : interview et questions posées.",
-            "immediate_history": [{"role": "user", "text": "Quelles questions à Déborah ?"}],
-            "episodes": [],
-        }
+        memory = {"available": True, "memory": {"current_topic": {"topic": "Déborah", "messages": []}, "previous_topics": []}}
         with (
             patch.object(orchestration, "get_llm_client", return_value=client),
-            patch.object(orchestration, "load_reformulation_memory", return_value=memory) as load_memory,
-            patch.object(orchestration, "assign_topic_id", return_value={"topic_id": 48, "decision": "current_topic"}) as assign_topic,
+            patch.object(orchestration, "load_conversation_memory", return_value=memory) as load_memory,
             patch.object(
                 orchestration,
                 "reformulate_question",
@@ -364,8 +358,7 @@ class RagModelSelectionTests(unittest.TestCase):
         ):
             orchestration.orchestrate_request(payload)
 
-        load_memory.assert_called_once()
-        assign_topic.assert_called_once_with(46, True)
+        load_memory.assert_called_once_with(46)
         reformulate.assert_called_once()
 
     def test_prompt_builders_accept_custom_system_prompts(self) -> None:

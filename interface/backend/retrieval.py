@@ -206,7 +206,6 @@ def append_company_filter_clauses(
 def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    append_topic_video_filter_clauses(clauses, params, query.topic_videos)
     if query.title_hints:
         clauses.append(TITLE_HINTS_CONTAINS_SQL)
         params.append(query.title_hints)
@@ -217,37 +216,6 @@ def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[An
         clauses.append("v.published_at <= %s::timestamptz")
         params.append(query.published_before)
     return clauses, params
-
-
-def append_topic_video_filter_clauses(
-    clauses: list[str],
-    params: list[Any],
-    topic_videos: list[dict[str, Any]],
-) -> None:
-    """Restrict a follow-up to the videos explicitly retained in its topic."""
-    urls = list(
-        dict.fromkeys(
-            str(video.get("video_url") or "").strip()
-            for video in topic_videos
-            if isinstance(video, dict) and str(video.get("video_url") or "").strip()
-        )
-    )
-    titles = list(
-        dict.fromkeys(
-            str(video.get("video_title") or "").strip()
-            for video in topic_videos
-            if isinstance(video, dict) and str(video.get("video_title") or "").strip()
-        )
-    )
-    video_clauses: list[str] = []
-    if urls:
-        video_clauses.append("v.url = ANY(%s)")
-        params.append(urls)
-    if titles:
-        video_clauses.append("v.title = ANY(%s)")
-        params.append(titles)
-    if video_clauses:
-        clauses.append("(" + " OR ".join(video_clauses) + ")")
 
 
 def prefilter_candidate_chunk_ids(query: ExecutionPlan) -> tuple[list[int] | None, dict[str, Any]]:
@@ -310,7 +278,6 @@ def build_video_lookup_conditions(
 ) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    append_topic_video_filter_clauses(clauses, params, query.topic_videos)
     title_hints = query.title_hints
     if title_hints:
         clauses.append(TITLE_HINTS_CONTAINS_SQL)

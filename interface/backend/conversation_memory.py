@@ -23,6 +23,7 @@ IMMEDIATE_HISTORY_EXCHANGES = 3
 MEMORY_MESSAGE_LIMIT = 3
 MEMORY_TOKEN_BUDGET_CHARS = 3_600
 MEMORY_SUMMARY_MAX_CHARS = 900
+TOPIC_COMPACTION_THRESHOLD = 10
 TOPIC_MATCH_MAX_COSINE_DISTANCE = 0.35
 _STOPWORDS = {
     "avec", "dans", "pour", "plus", "moins", "quel", "quelle", "quels", "elles",
@@ -107,96 +108,263 @@ def _vector_literal(values: list[float] | None) -> str | None:
     return "[" + ",".join(str(value) for value in values) + "]"
 
 
-def topic_videos_from_sources(
-    sources: list[dict[str, Any]],
-    source_indexes: list[int] | None = None,
-) -> list[dict[str, Any]]:
-    """Keep the videos explicitly selected by generation, with their source order."""
-    videos: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for position, source in enumerate(sources, start=1):
-        source_index = (
-            source_indexes[position - 1]
-            if source_indexes and position <= len(source_indexes)
-            else position
-        )
-        title = str(source.get("video_title") or "").strip()
-        url = str(source.get("video_url") or "").strip()
-        if not title and not url:
-            continue
-        identity = ("url", url.casefold()) if url else ("title", title.casefold())
-        if identity in seen:
-            continue
-        seen.add(identity)
-        video = {
-            "source_index": source_index,
-            "video_title": title,
-            "video_url": url,
-        }
-        thumbnail = str(source.get("thumbnail_medium_url") or "").strip()
-        if thumbnail:
-            video["thumbnail_medium_url"] = thumbnail
-        videos.append(video)
-    return videos
-
-
-def remember_topic_videos(
-    topic_id: int | None,
-    topic_videos: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Merge generation-selected videos into the persistent active-topic memory."""
-    if topic_id is None:
-        return {"available": False, "reason": "no_topic_id", "topic_videos": []}
-    if not topic_videos:
-        return {"available": True, "topic_id": topic_id, "updated": False, "topic_videos": []}
-    try:
-        ensure_chat_schema()
-        with connect_database() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT topic_videos FROM chat.topics WHERE id = %s",
-                    (topic_id,),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    raise RuntimeError(f"Topic introuvable: {topic_id}")
-                existing = row[0] if isinstance(row[0], list) else []
-                merged: list[dict[str, Any]] = []
-                seen: set[tuple[str, str]] = set()
-                for video in [*existing, *topic_videos]:
-                    if not isinstance(video, dict):
-                        continue
-                    title = str(video.get("video_title") or "").strip()
-                    url = str(video.get("video_url") or "").strip()
-                    if not title and not url:
-                        continue
-                    identity = ("url", url.casefold()) if url else ("title", title.casefold())
-                    if identity in seen:
-                        continue
-                    seen.add(identity)
-                    merged.append(
-                        {
-                            key: value
-                            for key, value in video.items()
-                            if key != "source_index"
-                        }
-                    )
-                cursor.execute(
-                    "UPDATE chat.topics SET topic_videos = %s::jsonb, updated_at = now() WHERE id = %s",
-                    (json.dumps(merged, ensure_ascii=False), topic_id),
-                )
-            connection.commit()
-        return {"available": True, "topic_id": topic_id, "updated": True, "topic_videos": merged}
-    except Exception as exc:
-        return {"available": False, "reason": str(exc), "topic_videos": topic_videos}
-
-
 MEMORY_SUMMARY_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"summary": {"type": "string"}},
     "required": ["summary"],
     "additionalProperties": False,
 }
+
+EMPTY_CONVERSATION_MEMORY: dict[str, Any] = {
+    "current_topic": {"id": 1, "topic": "", "messages": []},
+    "previous_topics": [],
+}
+
+
+def normalize_conversation_memory(value: Any) -> dict[str, Any]:
+    """Return the stable JSON shape persisted for one conversation."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = {}
+    value = value if isinstance(value, dict) else {}
+    current = value.get("current_topic")
+    current = current if isinstance(current, dict) else {}
+    messages = current.get("messages")
+    messages = messages if isinstance(messages, list) else []
+    normalized_messages = [
+        {
+            "role": str(message.get("role") or "user"),
+            "content": str(message.get("content") or "").strip(),
+        }
+        for message in messages
+        if isinstance(message, dict) and str(message.get("content") or "").strip()
+    ]
+    previous = value.get("previous_topics")
+    previous = previous if isinstance(previous, list) else []
+    normalized_previous = []
+    for index, topic in enumerate(previous, start=1):
+        if not isinstance(topic, dict) or not str(topic.get("summary") or "").strip():
+            continue
+        raw_id = topic.get("id")
+        topic_id = raw_id if isinstance(raw_id, int) and raw_id > 0 else index
+        normalized_previous.append(
+            {
+                "id": topic_id,
+                "topic": str(topic.get("topic") or "").strip(),
+                "summary": str(topic.get("summary") or "").strip(),
+            }
+        )
+    # Keep ordering deterministic even if a hand-edited or legacy JSON has duplicate ids.
+    for index, topic in enumerate(normalized_previous, start=1):
+        topic["id"] = index
+    raw_current_id = current.get("id")
+    current_id = (
+        raw_current_id
+        if isinstance(raw_current_id, int) and raw_current_id > len(normalized_previous)
+        else len(normalized_previous) + 1
+    )
+    # Accept the short-lived former name so existing conversation JSON is migrated
+    # transparently on its next update.
+    old_topics_summary = str(
+        value.get("old_topics_summary")
+        or value.get("old_topics")
+        or value.get("previous_topics_summary")
+        or ""
+    ).strip()
+    return {
+        "current_topic": {
+            "id": current_id,
+            "topic": str(current.get("topic") or "").strip(),
+            "messages": normalized_messages,
+        },
+        "previous_topics": normalized_previous,
+        **(
+            {"old_topics_summary": old_topics_summary}
+            if old_topics_summary
+            else {}
+        ),
+    }
+
+
+def load_conversation_memory(conversation_id: int | None) -> dict[str, Any]:
+    """Load the complete JSON memory passed to the reformulation model."""
+    if conversation_id is None:
+        return {"available": False, "reason": "no_conversation_id", "memory": normalize_conversation_memory({})}
+    try:
+        ensure_chat_schema()
+        with connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT memory_json FROM chat.conversations WHERE id = %s",
+                    (conversation_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return {"available": False, "reason": "conversation_not_found", "memory": normalize_conversation_memory({})}
+        return {"available": True, "memory": normalize_conversation_memory(row[0])}
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "memory": normalize_conversation_memory({})}
+
+
+def summarize_topic_messages(
+    client: Any,
+    model: str,
+    topic: str,
+    messages: list[dict[str, str]],
+) -> tuple[str, dict[str, Any]]:
+    """Compress a closed topic once, preserving the current JSON's useful facts."""
+    rendered_messages = json.dumps(messages, ensure_ascii=False)
+    fallback = (f"Sujet : {topic}\n" + "\n".join(
+        f"{item.get('role', 'user')} : {item.get('content', '')}" for item in messages
+    ))[:MEMORY_SUMMARY_MAX_CHARS]
+    if client is None:
+        return fallback, {"status": "fallback", "reason": "no_llm_client"}
+    system_prompt = (
+        "Résume un sujet de conversation clos. Conserve les entités, faits établis, "
+        "décisions et éléments nécessaires pour y revenir ultérieurement. "
+        f"Réponds avec un résumé concis de moins de {MEMORY_SUMMARY_MAX_CHARS} caractères."
+    )
+    user_prompt = (
+        f"Sujet : {topic or '(non libellé)'}\n\n"
+        f"Messages du sujet (JSON) :\n{rendered_messages}"
+    )
+    try:
+        response = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_schema=MEMORY_SUMMARY_RESPONSE_SCHEMA,
+        )
+        raw = str(getattr(response, "output_text", "") or "").strip()
+        summary = str(json.loads(raw).get("summary") or "").strip()
+        if not summary:
+            raise ValueError("empty_summary")
+        return summary[:MEMORY_SUMMARY_MAX_CHARS], {"status": "completed", "model": model, "response_raw": raw}
+    except Exception as exc:
+        return fallback, {"status": "fallback", "reason": str(exc)}
+
+
+def summarize_previous_topics(
+    client: Any,
+    model: str,
+    previous_topics: list[dict[str, Any]],
+    previous_summary: str = "",
+) -> tuple[str, dict[str, Any]]:
+    """Compress ten closed topics into the long-term conversation summary."""
+    payload = {
+        "old_topics_summary": previous_summary,
+        "previous_topics": previous_topics,
+    }
+    fallback = json.dumps(payload, ensure_ascii=False)[:MEMORY_SUMMARY_MAX_CHARS]
+    if client is None:
+        return fallback, {"status": "fallback", "reason": "no_llm_client"}
+    system_prompt = (
+        "Résume la mémoire longue d'une conversation. Fusionne le résumé existant "
+        "et les sujets clos ; conserve les entités, faits et décisions utiles pour "
+        "retrouver un ancien sujet. "
+        f"Réponds avec un résumé concis de moins de {MEMORY_SUMMARY_MAX_CHARS} caractères."
+    )
+    try:
+        response = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            response_schema=MEMORY_SUMMARY_RESPONSE_SCHEMA,
+        )
+        raw = str(getattr(response, "output_text", "") or "").strip()
+        summary = str(json.loads(raw).get("summary") or "").strip()
+        if not summary:
+            raise ValueError("empty_summary")
+        return summary[:MEMORY_SUMMARY_MAX_CHARS], {"status": "completed", "model": model, "response_raw": raw}
+    except Exception as exc:
+        return fallback, {"status": "fallback", "reason": str(exc)}
+
+
+def remember_conversation_json_turn(
+    conversation_id: int,
+    question: str,
+    answer: str,
+    reformulation: dict[str, Any],
+    *,
+    summary_client: Any = None,
+    summary_model: str = DEFAULT_GENERATION_MODEL,
+) -> dict[str, Any]:
+    """Append a turn, closing and summarising the prior topic only on a topic change."""
+    loaded = load_conversation_memory(conversation_id)
+    if not loaded["available"]:
+        return {"available": False, "reason": loaded.get("reason")}
+    memory = normalize_conversation_memory(loaded["memory"])
+    current = memory["current_topic"]
+    follow_up = bool(reformulation.get("follow_up", False))
+    requested_topic = str(reformulation.get("topic") or "").strip()
+    turn = [
+        {"role": "user", "content": question.strip()},
+        {"role": "assistant", "content": answer.strip()},
+    ]
+    summary_trace: dict[str, Any] | None = None
+    old_topics_summary_trace: dict[str, Any] | None = None
+    topic_changed = bool(current["messages"]) and not follow_up
+    if topic_changed:
+        summary, summary_trace = summarize_topic_messages(
+            summary_client, summary_model, current["topic"], current["messages"]
+        )
+        memory["previous_topics"].append(
+            {"id": current["id"], "topic": current["topic"], "summary": summary}
+        )
+        memory["current_topic"] = {
+            "id": current["id"] + 1,
+            "topic": requested_topic,
+            "messages": turn,
+        }
+        if (
+            memory["current_topic"]["id"] % TOPIC_COMPACTION_THRESHOLD == 0
+            and memory["previous_topics"]
+        ):
+            long_summary, old_topics_summary_trace = summarize_previous_topics(
+                summary_client,
+                summary_model,
+                memory["previous_topics"],
+                str(memory.get("old_topics_summary") or ""),
+            )
+            memory["old_topics_summary"] = long_summary
+            memory["previous_topics"] = []
+    else:
+        if requested_topic:
+            current["topic"] = requested_topic
+        current["messages"].extend(turn)
+    memory = normalize_conversation_memory(memory)
+    try:
+        with connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE chat.conversations SET memory_json = %s::jsonb WHERE id = %s",
+                    (json.dumps(memory, ensure_ascii=False), conversation_id),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("conversation_not_found")
+            connection.commit()
+        return {
+            "available": True,
+            "follow_up": follow_up,
+            "topic_changed": topic_changed,
+            "current_topic": memory["current_topic"]["topic"],
+            "previous_topic_count": len(memory["previous_topics"]),
+            "summary_trace": summary_trace,
+            "old_topics_summary_trace": old_topics_summary_trace,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "summary_trace": summary_trace,
+            "old_topics_summary_trace": old_topics_summary_trace,
+        }
 
 
 def summarize_topic_turn(
@@ -400,7 +568,7 @@ def load_reformulation_memory(
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT t.id, t.summary, t.topic_videos
+                    SELECT t.id, t.summary
                     FROM chat.conversation_topics AS ct
                     JOIN chat.topics AS t ON t.id = ct.topic_id
                     WHERE ct.conversation_id = %s
@@ -479,11 +647,6 @@ def load_reformulation_memory(
 
     active_id = int(active[0]) if active else None
     active_summary = str(active[1] or "") if active else ""
-    active_topic_videos = (
-        active[2]
-        if active and len(active) > 2 and isinstance(active[2], list)
-        else []
-    )
     selected, used_chars = [], 0
     for row in rows:
         content = f"Question : {str(row[2] or '').strip()}\nRéponse : {str(row[3] or '').strip()}"
@@ -503,7 +666,6 @@ def load_reformulation_memory(
         "available": True,
         "active_topic": active_summary,
         "active_topic_id": active_id,
-        "topic_videos": active_topic_videos,
         "related_topics": matching_topics,
         "immediate_history": immediate_history,
         "episodes": selected,

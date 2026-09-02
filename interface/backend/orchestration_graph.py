@@ -15,7 +15,6 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
-from interface.backend.conversation_memory import TOPIC_MATCH_MAX_COSINE_DISTANCE
 from interface.backend.planner import PERSON_NAME_PART_SIMILARITY_THRESHOLD
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
 
@@ -148,120 +147,23 @@ def reformulate(
             "model": reformulation_model,
         },
     ) as reformulation_span:
-        memory = services.load_reformulation_memory(
-            payload.conversationId,
+        memory_result = services.load_conversation_memory(payload.conversationId)
+        conversation_memory = memory_result["memory"]
+        contextual_question, reformulation_trace = services.reformulate_question(
             payload.question,
-            include_episodes=False,
+            payload.conversationId,
+            client,
+            reformulation_model,
+            payload.reformulationPrompt,
+            history_override=[],
+            memory_context={"conversation_memory": conversation_memory},
         )
-        if memory.get("available"):
-            light_question, light_trace = services.reformulate_question(
-                payload.question,
-                payload.conversationId,
-                client,
-                reformulation_model,
-                payload.reformulationPrompt,
-                history_override=memory.get("immediate_history", []),
-                memory_context={
-                    "active_topic": memory.get("active_topic"),
-                    "topic_videos": memory.get("topic_videos", []),
-                },
-                phase="light",
-            )
-            follows_active_topic = bool(light_trace.get("follow_up"))
-            with services.trace_operation(
-                "rag.conversation_memory.topic_assignment",
-                kind="TOOL",
-                input_value={
-                    "conversation_id": payload.conversationId,
-                    "follow_up": follows_active_topic,
-                },
-            ) as topic_span:
-                topic_assignment = services.assign_topic_id(
-                    payload.conversationId,
-                    follows_active_topic,
-                )
-                topic_span.set_output(topic_assignment)
-            if follows_active_topic:
-                long_memory = {
-                    "available": True,
-                    "strategy": "final_rewrite_skipped_for_follow_up",
-                    "episodes": [],
-                }
-                contextual_question = light_question
-                final_trace = {
-                    "phase": "final",
-                    "skipped": True,
-                    "reason": "follow_up_uses_light_rewrite",
-                }
-            else:
-                with services.trace_operation(
-                    "rag.conversation_memory.topic_match",
-                    kind="RETRIEVER",
-                    input_value={
-                        "conversation_id": payload.conversationId,
-                        "question": light_question,
-                        "excluded_topic_id": topic_assignment.get("topic_id"),
-                        "match_max_cosine_distance": TOPIC_MATCH_MAX_COSINE_DISTANCE,
-                    },
-                ) as topic_match_span:
-                    long_memory = services.load_reformulation_memory(
-                        payload.conversationId,
-                        light_question,
-                        include_episodes=False,
-                        embed_question=True,
-                        exclude_topic_id=topic_assignment.get("topic_id"),
-                    )
-                    topic_match_span.set_output(
-                        {
-                            "available": long_memory.get("available"),
-                            "related_topics": long_memory.get("related_topics", []),
-                            "retrieval": long_memory.get("retrieval", {}),
-                        }
-                    )
-                contextual_question, final_trace = services.reformulate_question(
-                    light_question,
-                    payload.conversationId,
-                    client,
-                    reformulation_model,
-                    payload.reformulationPrompt,
-                    history_override=[],
-                    memory_context={
-                        "related_topics": long_memory.get("related_topics", []),
-                    },
-                    phase="final",
-                )
-            reformulation_trace = {
-                "strategy": (
-                    "light_rewrite_only"
-                    if follows_active_topic
-                    else "light_rewrite+topic_match+final_rewrite"
-                ),
-                "follow_up": follows_active_topic,
-                "topic_assignment": topic_assignment,
-                "light": light_trace,
-                "final": final_trace,
-                "memory": {
-                    "light": {
-                        key: value
-                        for key, value in memory.items()
-                        if key != "immediate_history"
-                    },
-                    "long": {
-                        key: value
-                        for key, value in long_memory.items()
-                        if key != "immediate_history"
-                    },
-                },
-            }
-        else:
-            contextual_question, reformulation_trace = services.reformulate_question(
-                payload.question,
-                payload.conversationId,
-                client,
-                reformulation_model,
-                payload.reformulationPrompt,
-            )
-            topic_assignment = {"reason": "memory_unavailable"}
+        reformulation_trace["strategy"] = "conversation_json_single_rewrite"
+        reformulation_trace["memory_available"] = memory_result["available"]
+        topic_assignment = {
+            "follow_up": bool(reformulation_trace.get("follow_up", False)),
+            "topic": reformulation_trace.get("topic", ""),
+        }
         reformulation_span.set_output(reformulation_trace)
     return {
         "contextual_question": contextual_question,
@@ -393,18 +295,6 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     execution_plan.persons = _resolved_plan_persons(state)
     execution_plan.companies = _resolved_plan_companies(state)
     execution_plan.title_hints = _resolved_plan_title_hints(state)
-    topic_videos = (
-        state["reformulation_trace"].get("memory", {}).get("light", {}).get("topic_videos", [])
-        if state["reformulation_trace"].get("follow_up")
-        else []
-    )
-    execution_plan.topic_videos = (
-        [video for video in topic_videos if isinstance(video, dict)]
-        if execution_plan.sql_sub_intent != "analytics"
-        else []
-    )
-    if execution_plan.topic_videos:
-        execution_plan.title_hints = []
     execution_plan_trace = _execution_plan_trace(execution_plan)
     if not (
         execution_plan.sql_main_source

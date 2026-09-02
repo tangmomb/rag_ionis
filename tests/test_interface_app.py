@@ -897,23 +897,16 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("concat(chr(37)", clauses[0])
         self.assertEqual(params, [["Titre exact"]])
 
-    def test_topic_videos_restrict_the_rag_prefilter_to_the_discussed_videos(self) -> None:
+    def test_rag_prefilter_is_empty_without_explicit_filters(self) -> None:
         query = ExecutionPlan(
             raw_question="Laquelle a le plus de vues ?",
             query_text="Laquelle a le plus de vues ?",
             query_text_bm25="laquelle plus vues",
-            topic_videos=[
-                {"video_title": "Vidéo A", "video_url": "https://example.test/a"},
-                {"video_title": "Vidéo B", "video_url": "https://example.test/b"},
-            ],
         )
         clauses, params = retrieval.build_prefilter_conditions(query)
 
-        self.assertEqual(clauses, ["(v.url = ANY(%s) OR v.title = ANY(%s))"])
-        self.assertEqual(
-            params,
-            [["https://example.test/a", "https://example.test/b"], ["Vidéo A", "Vidéo B"]],
-        )
+        self.assertEqual(clauses, [])
+        self.assertEqual(params, [])
 
     def test_bm25_search_is_limited_to_detail_chunks(self) -> None:
         class Cursor:

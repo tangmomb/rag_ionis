@@ -128,7 +128,6 @@ class ExecutionPlan(BaseModel):
     query_text: str
     query_text_bm25: str
     title_hints: list[str] = Field(default_factory=list)
-    topic_videos: list[dict[str, Any]] = Field(default_factory=list)
     persons: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None

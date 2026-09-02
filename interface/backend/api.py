@@ -27,9 +27,7 @@ from interface.backend.config import (
     MAX_TOP_K,
 )
 from interface.backend.conversation_memory import (
-    remember_conversation_turn,
-    remember_topic_videos,
-    topic_videos_from_sources,
+    remember_conversation_json_turn,
 )
 from interface.backend.generation import (
     generate_final_answer,
@@ -60,7 +58,6 @@ class RagResponseState(TypedDict, total=False):
     shadow_evaluation: dict[str, Any]
     answer_action: str
     carousel_sources: list[dict[str, Any]]
-    topic_videos: list[dict[str, Any]]
     conversation_id: int
     message_id: int
     correction_count: int
@@ -536,10 +533,10 @@ def _persist_response(
             user_message=payload.question,
             answer_message=answer,
             trace_id=trace_id,
-            topic_id=(retrieval.get("conversation_topic") or {}).get("topic_id"),
+            topic_id=None,
         )
         with trace_operation(
-            "rag.conversation_memory.summary",
+            "rag.conversation_memory.update",
             kind="CHAIN",
             input_value={
                 "conversation_id": conversation_id,
@@ -547,14 +544,13 @@ def _persist_response(
                 "question": payload.question,
             },
         ) as memory_span:
-            memory_update = remember_conversation_turn(
+            memory_update = remember_conversation_json_turn(
                 conversation_id,
-                message_id,
                 payload.question,
                 answer,
+                retrieval.get("question_reformulation") or {},
                 summary_client=answer_client,
                 summary_model=retrieval.get("answer_model") or DEFAULT_GENERATION_MODEL,
-                topic_id=(retrieval.get("conversation_topic") or {}).get("topic_id"),
             )
             memory_span.set_output(memory_update)
         storage_span.set_session_id(conversation_id)
@@ -566,26 +562,6 @@ def _persist_response(
         "conversation_id": conversation_id,
         "message_id": message_id,
     }
-
-
-def _remember_topic_videos(state: RagResponseState) -> dict[str, Any]:
-    retrieval = state["retrieval"]
-    topic_id = (retrieval.get("conversation_topic") or {}).get("topic_id")
-    topic_videos = topic_videos_from_sources(
-        state.get("carousel_sources", [])
-        if state.get("answer_action") == "answer"
-        else [],
-        retrieval.get("answer_source_indexes", []),
-    )
-    with trace_operation(
-        "rag.conversation_memory.topic_videos",
-        kind="TOOL",
-        input_value={"topic_id": topic_id, "topic_videos": topic_videos},
-    ) as topic_videos_span:
-        topic_videos_update = remember_topic_videos(topic_id, topic_videos)
-        topic_videos_span.set_output(topic_videos_update)
-    retrieval["topic_videos"] = topic_videos_update.get("topic_videos", topic_videos)
-    return {"topic_videos": topic_videos}
 
 
 def build_rag_response_graph():
@@ -601,7 +577,6 @@ def build_rag_response_graph():
     graph.add_node("retry_retrieval", _retry_retrieval)
     graph.add_node("expand_retrieval", _expand_retrieval)
     graph.add_node("finalize", _finalize_response)
-    graph.add_node("topic_videos", _remember_topic_videos)
     graph.add_node("persist", _persist_response)
     graph.add_edge(START, "orchestrate")
     graph.add_conditional_edges("orchestrate", _generation_route)
@@ -611,8 +586,7 @@ def build_rag_response_graph():
     graph.add_edge("correct", "evaluate")
     graph.add_conditional_edges("retry_retrieval", _post_retrieval_route)
     graph.add_conditional_edges("expand_retrieval", _post_retrieval_route)
-    graph.add_edge("finalize", "topic_videos")
-    graph.add_edge("topic_videos", "persist")
+    graph.add_edge("finalize", "persist")
     graph.add_edge("persist", END)
     return graph.compile()
 

@@ -208,7 +208,7 @@ class RagModelSelectionTests(unittest.TestCase):
             "follow_up", client.responses.calls[0]["input"][0]["content"]
         )
 
-    def test_orchestration_uses_gpt_luna_for_every_step(self) -> None:
+    def test_orchestration_uses_mistral_medium_for_every_step(self) -> None:
         client = object()
         payload = RagRequest(
             question="Question",
@@ -246,14 +246,14 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(
                 orchestration,
                 "retrieve_chunks",
-                return_value=([], {"answer_model": "gpt-5.6-luna"}),
+                return_value=([], {"answer_model": "mistral-medium-latest"}),
             ),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
         reformulate.assert_called_once()
         self.assertEqual(reformulate.call_args.args[:5], (
-            "Question", None, client, "gpt-5.6-luna", "Prompt reformulation personnalise"
+            "Question", None, client, "mistral-medium-latest", "Prompt reformulation personnalise"
         ))
         self.assertEqual(
             reformulate.call_args.kwargs["memory_context"]["conversation_memory"]["previous_topics"],
@@ -262,12 +262,12 @@ class RagModelSelectionTests(unittest.TestCase):
         run_planner.assert_called_once_with(
             "Question reformulee",
             client,
-            "gpt-5.6-luna",
+            "mistral-medium-latest",
             "Prompt planner personnalise",
         )
-        self.assertEqual(retrieval["reformulation_model"], "gpt-5.6-luna")
-        self.assertEqual(retrieval["planner_model"], "gpt-5.6-luna")
-        self.assertEqual(retrieval["answer_model"], "gpt-5.6-luna")
+        self.assertEqual(retrieval["reformulation_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["planner_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["answer_model"], "mistral-medium-latest")
 
     def test_orchestration_uses_one_reformulation_with_conversation_json(self) -> None:
         client = object()

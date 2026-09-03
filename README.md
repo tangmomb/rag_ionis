@@ -1312,7 +1312,7 @@ boot :
 
 ```dotenv
 OPENAI_API_KEY=...
-OPENAI_SERVICE_TIER=auto
+OPENAI_SERVICE_TIER=fast
 HUGGINGFACE_TOKEN=...
 S3_BUCKET_NAME=...
 S3_REGION=eu-west-3
@@ -1457,6 +1457,8 @@ le planner et la génération finale utilisent tous `mistral-medium-latest`.
 Les quatre sorties structurées de ce pipeline — reformulation, planner,
 Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
 niveau de l'API Mistral.
+Toutes les inférences RAG Mistral sont adressées à l'endpoint européen
+`https://api.eu.mistral.ai/v1`.
 
 Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
 Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête

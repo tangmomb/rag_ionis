@@ -69,9 +69,7 @@ LLM_MODEL_LABELS_BY_ID = {
     model_id: label for label, model_id in LLM_MODEL_OPTIONS
 }
 LLM_MODEL_SHORT_NAMES = {
-    RAG_LLM_MODEL_CHOICES[0]: "sol",
-    RAG_LLM_MODEL_CHOICES[1]: "terra",
-    RAG_LLM_MODEL_CHOICES[2]: "luna",
+    RAG_LLM_MODEL_CHOICES[0]: "mistral-medium",
     "mistral-medium-latest": "mistral-medium",
     "mistral-small-latest": "mistral-small",
     "mistral-large-latest": "mistral-large",

@@ -209,7 +209,7 @@ class LlmProviderTests(unittest.TestCase):
         )
         self.assertEqual(request["max_completion_tokens"], 200)
         self.assertFalse(request["store"])
-        self.assertNotIn("service_tier", request)
+        self.assertEqual(request["service_tier"], "fast")
 
     def test_openai_forwards_reasoning_and_verbosity(self) -> None:
         sdk_response = SimpleNamespace(content="OpenAI", model_dump=lambda mode: {})

@@ -18,6 +18,7 @@ LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
 LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
 MISTRAL_EU_BASE_URL = "https://api.eu.mistral.ai/v1"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
+DEFAULT_OPENAI_SERVICE_TIER = "fast"
 OPENAI_SERVICE_TIERS = frozenset(
     {"auto", "default", "flex", "scale", "priority", "fast"}
 )
@@ -138,10 +139,10 @@ def provider_api_key(provider: LLMProvider) -> str | None:
     return None
 
 
-def configured_openai_service_tier() -> str | None:
+def configured_openai_service_tier() -> str:
     service_tier = os.getenv(OPENAI_SERVICE_TIER_ENV, "").strip().lower()
     if not service_tier:
-        return None
+        return DEFAULT_OPENAI_SERVICE_TIER
     if service_tier not in OPENAI_SERVICE_TIERS:
         choices = ", ".join(sorted(OPENAI_SERVICE_TIERS))
         raise LLMProviderError(
@@ -447,7 +448,8 @@ def call_mistral(
     )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
-    # Le RAG est hébergé pour une inférence Mistral dans l'Union européenne.
+    # Le RAG est hébergé pour une inférence Mistral dans l'Union européenne,
+    # via https://api.eu.mistral.ai/v1 (également enregistrée dans Phoenix).
     # Un appel explicite (notamment depuis le testeur de modèles) reste libre
     # de choisir un autre endpoint.
     options["base_url"] = base_url or MISTRAL_EU_BASE_URL
@@ -629,6 +631,6 @@ class RoutedLLMClient:
 def get_llm_client() -> RoutedLLMClient | None:
     # Le client exposé au RAG ne doit être disponible qu'avec la clé du seul
     # fournisseur d'inférence autorisé.
-    if not provider_api_key("openai"):
+    if not provider_api_key("mistral"):
         return None
     return RoutedLLMClient()

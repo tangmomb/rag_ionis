@@ -53,7 +53,7 @@ class LlmTesterTests(unittest.TestCase):
         self.assertIn("zai-glm-5-2", providers["mistral"]["models"])
         self.assertEqual(
             [region["id"] for region in providers["mistral"]["regions"]],
-            ["global", "eu", "us"],
+            [],
         )
         self.assertEqual(
             [region["id"] for region in providers["openai"]["regions"]],
@@ -250,7 +250,7 @@ class LlmTesterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(create.call_args.kwargs["thinking_budget"], 1024)
 
-    def test_mistral_region_is_forwarded_as_base_url(self) -> None:
+    def test_mistral_request_does_not_forward_an_inference_region(self) -> None:
         with (
             patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
             patch.object(
@@ -270,15 +270,11 @@ class LlmTesterTests(unittest.TestCase):
                     "provider": "mistral",
                     "model": "mistral-large-latest",
                     "message": "Bonjour",
-                    "mistral_region": "eu",
                 },
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            create.call_args.kwargs["mistral_base_url"],
-            "https://api.eu.mistral.ai/v1",
-        )
+        self.assertNotIn("mistral_base_url", create.call_args.kwargs)
 
     def test_openai_region_is_forwarded_as_base_url(self) -> None:
         with (

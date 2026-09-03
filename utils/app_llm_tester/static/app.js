@@ -6,7 +6,7 @@ const providerColors = {
 
 const state = {
   providers: [],
-  selectedProvider: "mistral",
+  selectedProvider: "google",
   loading: false,
 };
 
@@ -254,7 +254,6 @@ async function submitRequest(event) {
         thinking_budget: elements.thinkingBudget.value === ""
           ? null
           : Number(elements.thinkingBudget.value),
-        mistral_region: state.selectedProvider === "mistral" ? elements.region.value : "global",
         openai_region: state.selectedProvider === "openai" ? elements.region.value : "global",
         openai_service_tier: state.selectedProvider === "openai"
           ? elements.serviceTier.value

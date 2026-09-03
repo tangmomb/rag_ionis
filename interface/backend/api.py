@@ -251,7 +251,7 @@ def _evaluate_response(
         correction_enabled = correction_loop_enabled()
     correction_requested = bool(
         correction_enabled
-        and checkpoint_evaluation.get("verdict") == "needs_correction"
+        and state["answer_trace"].get("action") == "abstain"
         and state.get("correction_count", 0) < 1
         and route != "direct"
     )
@@ -351,6 +351,8 @@ def _post_evaluation_route(
 ) -> Literal["correct", "retry_retrieval", "expand_retrieval", "finalize"]:
     if not state.get("correction_requested", False):
         return "finalize"
+    if state.get("answer_trace", {}).get("action") == "abstain":
+        return "expand_retrieval"
     issue = state.get("shadow_evaluation", {}).get("issue")
     if issue == "bad_retrieval":
         return "retry_retrieval"
@@ -363,6 +365,7 @@ def _retrieval_correction_prompt(
     base_prompt: str | None,
     strategy: str,
     evaluation: dict[str, Any],
+    retry_query: str | None,
 ) -> str:
     if strategy == "retry_retrieval":
         instruction = (
@@ -378,6 +381,8 @@ def _retrieval_correction_prompt(
         )
     return (
         f"{base_prompt or ''}\n\n{instruction}\n"
+        f"Requête proposée par la génération : {retry_query or 'aucune'}. "
+        "Utilise cette proposition comme point de départ sans modifier le besoin utilisateur.\n"
         f"Diagnostic interne : issue={evaluation.get('issue')}; "
         f"reason={evaluation.get('reason')}; "
         f"suggestion={evaluation.get('suggested_correction')}"
@@ -390,6 +395,7 @@ def _retrieve_for_correction(
 ) -> dict[str, Any]:
     payload = _response_payload(state)
     evaluation = dict(state["shadow_evaluation"])
+    retry_query = state.get("answer_trace", {}).get("retry_query")
     correction_count = state.get("correction_count", 0) + 1
     if strategy == "expand_retrieval":
         top_k = MAX_TOP_K
@@ -405,6 +411,7 @@ def _retrieve_for_correction(
                 payload.plannerPrompt,
                 strategy,
                 evaluation,
+                retry_query if isinstance(retry_query, str) else None,
             ),
         }
     )
@@ -413,6 +420,7 @@ def _retrieve_for_correction(
         "count": correction_count,
         "issue": evaluation.get("issue"),
         "strategy": strategy,
+        "retry_query": retry_query,
         "top_k": top_k,
         "final_k": final_k,
     }
@@ -485,7 +493,7 @@ def _finalize_response(state: RagResponseState) -> dict[str, Any]:
     answer_trace = state["answer_trace"]
     answer_action = answer_trace.get("action", "abstain")
     retrieval["answer_action"] = answer_action
-    if answer_action in {"answer", "clarify"}:
+    if answer_action == "answer":
         answer, carousel_sources = select_answer_sources(
             answer,
             sources,
@@ -596,12 +604,12 @@ RAG_RESPONSE_GRAPH = build_rag_response_graph()
 
 @router.get("/llm-models")
 def llm_models() -> dict[str, Any]:
-    provider_config = LLM_MODEL_CATALOG["mistral"]
+    provider_config = LLM_MODEL_CATALOG["google"]
     models = [
         {
-            "provider": "mistral",
+            "provider": "google",
             "provider_label": provider_config["label"],
-            "label": "Medium",
+            "label": "Flash Lite",
             "id": DEFAULT_GENERATION_MODEL,
         }
     ]
@@ -723,7 +731,7 @@ def run_rag(
 
 
 def validate_step_models(payload: RagRequest) -> None:
-    """Validate the single Mistral model used by every RAG inference stage."""
+    """Validate the single Gemini model used by every RAG inference stage."""
     defaults = {
         "reformulationModel": DEFAULT_REFORMULATION_MODEL,
         "plannerModel": DEFAULT_PLANNER_MODEL,
@@ -735,7 +743,7 @@ def validate_step_models(payload: RagRequest) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Le RAG utilise uniquement mistral-medium-latest."
+                    "Le RAG utilise uniquement gemini-3.5-flash-lite."
                 ),
             )
         try:

@@ -16,7 +16,6 @@ LLMProvider = Literal["openai", "mistral", "google"]
 REQUEST_TIMEOUT_SECONDS = 300
 LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
 LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
-MISTRAL_EU_BASE_URL = "https://api.eu.mistral.ai/v1"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
 DEFAULT_OPENAI_SERVICE_TIER = "fast"
 OPENAI_SERVICE_TIERS = frozenset(
@@ -51,7 +50,7 @@ LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
         "label": "Google",
         "key_names": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         "default_model_env": "GOOGLE_LLM_TEST_MODEL",
-        "default_model": "gemini-3.6-flash",
+        "default_model": "gemini-3.5-flash-lite",
         "models": (
             ("Gemini 3.1 Flash-Lite", "gemini-3.1-flash-lite"),
             ("Gemini 3.6 Flash", "gemini-3.6-flash"),
@@ -437,7 +436,6 @@ def call_mistral(
     api_key: str,
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
-    base_url: str | None,
 ) -> LLMResponse:
     options: dict[str, Any] = add_runtime_limits(
         {
@@ -448,11 +446,6 @@ def call_mistral(
     )
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
-    # Le RAG est hébergé pour une inférence Mistral dans l'Union européenne,
-    # via https://api.eu.mistral.ai/v1 (également enregistrée dans Phoenix).
-    # Un appel explicite (notamment depuis le testeur de modèles) reste libre
-    # de choisir un autre endpoint.
-    options["base_url"] = base_url or MISTRAL_EU_BASE_URL
     try:
         chat = ChatMistralAI(**options)
         if response_schema is not None:
@@ -469,8 +462,10 @@ def call_mistral(
                     "response_format": "json_schema",
                 },
             )
-            parsed = result["parsed"]
+            parsed = result.get("parsed")
             response = result["raw"]
+            if not isinstance(parsed, dict):
+                raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
             output_text = json.dumps(parsed, ensure_ascii=False)
         else:
             response = invoke_langchain_model(
@@ -539,7 +534,10 @@ def call_google(
                 },
             )
             response = result["raw"]
-            output_text = json.dumps(result["parsed"], ensure_ascii=False)
+            parsed = result.get("parsed")
+            if not isinstance(parsed, dict):
+                raise ValueError("Gemini n'a pas renvoyé l'objet JSON structuré attendu.")
+            output_text = json.dumps(parsed, ensure_ascii=False)
         else:
             response = invoke_langchain_model(
                 "google",
@@ -571,7 +569,6 @@ def create_llm_response(
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
     thinking_budget: int | None = None,
-    mistral_base_url: str | None = None,
     openai_base_url: str | None = None,
     openai_service_tier: str | None = None,
 ) -> LLMResponse:
@@ -606,7 +603,6 @@ def create_llm_response(
             api_key,
             max_output_tokens,
             response_schema,
-            mistral_base_url,
         )
     return call_google(
         model,
@@ -631,6 +627,6 @@ class RoutedLLMClient:
 def get_llm_client() -> RoutedLLMClient | None:
     # Le client exposé au RAG ne doit être disponible qu'avec la clé du seul
     # fournisseur d'inférence autorisé.
-    if not provider_api_key("mistral"):
+    if not provider_api_key("google"):
         return None
     return RoutedLLMClient()

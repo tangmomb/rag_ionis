@@ -9,8 +9,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
 load_project_env(PROJECT_DIR)
 
-DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
-# Toutes les étapes d'inférence du RAG utilisent Mistral Medium via l'endpoint UE.
+DEFAULT_RAG_LLM_MODEL = "gemini-3.5-flash-lite"
+# Toutes les étapes d'inférence du RAG utilisent Gemini Flash Lite.
 DEFAULT_REFORMULATION_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_ANALYTICS_SQL_MODEL = DEFAULT_RAG_LLM_MODEL

@@ -23,14 +23,14 @@ Les modèles proposés par défaut peuvent être remplacés :
 ```dotenv
 MISTRAL_LLM_TEST_MODEL=mistral-large-latest
 OPENAI_LLM_TEST_MODEL=gpt-5.6-sol
-GOOGLE_LLM_TEST_MODEL=gemini-3.6-flash
+GOOGLE_LLM_TEST_MODEL=gemini-3.5-flash-lite
 ```
 
 Le champ « Modèle » reste éditable, même si l’identifiant n’est pas dans les
 suggestions.
 
-L'application utilise les mêmes adaptateurs OpenAI, Mistral et Google que le
-backend RAG.
+L'application utilise les mêmes adaptateurs OpenAI, Mistral et Google. Le RAG
+utilise exclusivement Gemini 3.5 Flash Lite.
 
 Le champ **System** est facultatif. Lorsqu'il est rempli, il est envoyé avant
 le champ **Message**, respectivement avec les rôles `system` et `user`.
@@ -45,12 +45,6 @@ le champ **Message**, respectivement avec les rôles `system` et `user`.
   Les modèles Gemini 3 utilisent un niveau de réflexion, non pris en charge par
   la version actuelle de l'intégration Google installée.
 - Mistral : ces deux paramètres ne sont pas exposés par l'adaptateur utilisé.
-
-## Inférence régionale Mistral
-
-Le sélecteur **Lieu d'inférence** permet de choisir l'endpoint global,
-européen ou américain. Les endpoints régionaux traitent l'inférence dans la
-géographie sélectionnée et comportent une majoration tarifaire de 10 %.
 
 ## Résidence des données OpenAI
 

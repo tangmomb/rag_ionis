@@ -18,25 +18,26 @@ FINAL_ANSWER_STYLE = (
     "place une courte formule de politesse au début. "
     "Quand action vaut answer, ne termine pas par une phrase indiquant qu'il manque "
     "des informations et ne parle pas de tes limites ni de la recherche effectuée. "
-    "Quand action vaut clarify ou abstain, formule uniquement la précision nécessaire "
-    "ou l'impossibilité factuelle de répondre avec les éléments fournis."
+    "Quand action vaut abstain, formule uniquement l'impossibilité factuelle de "
+    "répondre avec les éléments fournis."
 )
 
 
 SOURCE_SELECTION_INSTRUCTION = (
     "Renseigne `source_indexes` avec les numéros des sources réellement utilisées "
     "pour construire la réponse, par exemple [1, 3]. Utilise une liste vide si aucune "
-    "source n'est utilisée. N'ajoute aucun marqueur [S1] ou citation technique dans `answer`."
+    "source n'est utilisée. Utilise une liste vide avec action=abstain. N'ajoute aucun "
+    "marqueur [S1] ou citation technique dans `answer`."
 )
 
 
 ANSWER_ACTION_INSTRUCTION = (
-    "Choisis l'action answer, clarify ou abstain. Choisis answer uniquement si "
+    "Choisis l'action answer ou abstain. Choisis answer uniquement si "
     "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
-    "clarify si une ambiguïté empêche de savoir quelle information, personne ou vidéo est "
-    "demandée ; answer contient alors une seule question de précision. Choisis abstain si la "
-    "demande est claire mais que les éléments fournis ne permettent pas d'y répondre "
-    "fidèlement. Le champ `answer` contient uniquement le message final à afficher et "
+    "abstain si la demande est ambiguë ou que les éléments fournis ne permettent pas "
+    "d'y répondre fidèlement. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
+    "une requête de recherche courte, autonome et plus précise qui pourrait permettre de "
+    "répondre. Le champ `answer` contient uniquement le message final à afficher et "
     "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )
 
@@ -47,15 +48,16 @@ ANSWER_RESPONSE_SCHEMA: dict[str, Any] = {
         "answer": {"type": "string"},
         "action": {
             "type": "string",
-            "enum": ["answer", "clarify", "abstain"],
+            "enum": ["answer", "abstain"],
         },
         "source_indexes": {
             "type": "array",
             "items": {"type": "integer", "minimum": 1},
             "uniqueItems": True,
         },
+        "retry_query": {"type": ["string", "null"]},
     },
-    "required": ["answer", "action", "source_indexes"],
+    "required": ["answer", "action", "source_indexes", "retry_query"],
     "additionalProperties": False,
 }
 
@@ -98,7 +100,7 @@ def render_answer_system_prompt(
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
-    if "Choisis l'action answer, clarify ou abstain." not in rendered:
+    if "Choisis l'action answer ou abstain." not in rendered:
         rendered = f"{rendered}\n\n{ANSWER_ACTION_INSTRUCTION}"
     return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
@@ -127,16 +129,18 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
         if trace is not None:
             trace["action"] = fallback_action
             trace["source_indexes"] = []
+            trace["retry_query"] = None
         return raw_answer
 
     if not isinstance(payload, dict):
         if trace is not None:
             trace["action"] = fallback_action
             trace["source_indexes"] = []
+            trace["retry_query"] = None
         return raw_answer
 
     action = payload.get("action")
-    if action not in {"answer", "clarify", "abstain"}:
+    if action not in {"answer", "abstain"}:
         action = fallback_action
     if trace is not None:
         trace["action"] = action
@@ -148,6 +152,14 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
                 if isinstance(index, int) and not isinstance(index, bool) and index >= 1
             )
         ) if isinstance(raw_source_indexes, list) else []
+        raw_retry_query = payload.get("retry_query")
+        trace["retry_query"] = (
+            raw_retry_query.strip()
+            if action == "abstain"
+            and isinstance(raw_retry_query, str)
+            and raw_retry_query.strip()
+            else None
+        )
     answer = str(payload.get("answer") or "").strip()
     return answer or raw_answer
 
@@ -440,7 +452,7 @@ def generate_person_clarification_answer(
     )
     if client is None or not answer_model:
         if trace is not None:
-            trace["action"] = "clarify"
+            trace["action"] = "abstain"
         return fallback
 
     input_messages = [

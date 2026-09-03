@@ -57,8 +57,6 @@ SHADOW_EVALUATION_SYSTEM_PROMPT = (
     "si la demande nécessite une précision. "
     "Le diagnostic est interne et ne doit contenir aucun message destiné à l'utilisateur."
 )
-
-
 def shadow_evaluation_enabled() -> bool:
     return os.getenv("RAG_SHADOW_EVALUATION_ENABLED", "false").strip().lower() in {
         "1",

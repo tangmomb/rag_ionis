@@ -208,7 +208,7 @@ class RagModelSelectionTests(unittest.TestCase):
             "follow_up", client.responses.calls[0]["input"][0]["content"]
         )
 
-    def test_orchestration_uses_mistral_medium_for_every_step(self) -> None:
+    def test_orchestration_uses_gemini_flash_lite_for_every_step(self) -> None:
         client = object()
         payload = RagRequest(
             question="Question",
@@ -246,14 +246,14 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(
                 orchestration,
                 "retrieve_chunks",
-                return_value=([], {"answer_model": "mistral-medium-latest"}),
+                return_value=([], {"answer_model": "gemini-3.5-flash-lite"}),
             ),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
         reformulate.assert_called_once()
         self.assertEqual(reformulate.call_args.args[:5], (
-            "Question", None, client, "mistral-medium-latest", "Prompt reformulation personnalise"
+            "Question", None, client, "gemini-3.5-flash-lite", "Prompt reformulation personnalise"
         ))
         self.assertEqual(
             reformulate.call_args.kwargs["memory_context"]["conversation_memory"]["previous_topics"],
@@ -262,12 +262,12 @@ class RagModelSelectionTests(unittest.TestCase):
         run_planner.assert_called_once_with(
             "Question reformulee",
             client,
-            "mistral-medium-latest",
+            "gemini-3.5-flash-lite",
             "Prompt planner personnalise",
         )
-        self.assertEqual(retrieval["reformulation_model"], "mistral-medium-latest")
-        self.assertEqual(retrieval["planner_model"], "mistral-medium-latest")
-        self.assertEqual(retrieval["answer_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["reformulation_model"], "gemini-3.5-flash-lite")
+        self.assertEqual(retrieval["planner_model"], "gemini-3.5-flash-lite")
+        self.assertEqual(retrieval["answer_model"], "gemini-3.5-flash-lite")
 
     def test_orchestration_uses_one_reformulation_with_conversation_json(self) -> None:
         client = object()
@@ -377,12 +377,12 @@ class RagModelSelectionTests(unittest.TestCase):
         )
 
         self.assertIn("Instructions RAG", rendered)
-        self.assertIn("Choisis l'action answer, clarify ou abstain", rendered)
+        self.assertIn("Choisis l'action answer ou abstain", rendered)
         self.assertNotIn("{route_instructions}", rendered)
 
     def test_default_answer_prompt_displays_real_instructions(self) -> None:
         self.assertIn(
-            "Choisis l'action answer, clarify ou abstain",
+            "Choisis l'action answer ou abstain",
             DEFAULT_ANSWER_PROMPT_TEMPLATE,
         )
         self.assertIn("Markdown", DEFAULT_ANSWER_PROMPT_TEMPLATE)
@@ -396,7 +396,7 @@ class RagModelSelectionTests(unittest.TestCase):
         )
 
         self.assertIn("Réponds très brièvement.", rendered)
-        self.assertIn("Choisis l'action answer, clarify ou abstain", rendered)
+        self.assertIn("Choisis l'action answer ou abstain", rendered)
 
 
 if __name__ == "__main__":

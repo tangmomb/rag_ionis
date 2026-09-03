@@ -176,40 +176,33 @@ class RagResponseGraphTests(unittest.TestCase):
         self.assertEqual(result["shadow_evaluation"]["status"], "not_applicable")
         evaluator.assert_not_called()
 
-    def test_evaluation_requests_at_most_one_correction(self) -> None:
+    def test_generation_abstention_requests_at_most_one_correction(self) -> None:
         state = {
             "payload": RagRequest(question="Question").model_dump(),
             "answer": "Réponse initiale",
             "sources": [_source()],
             "retrieval": {"route": "rag", "answer_model": "answer-model"},
-            "answer_trace": {"action": "answer"},
+            "answer_trace": {"action": "abstain"},
             "correction_count": 0,
-        }
-        diagnostic = {
-            "enabled": True,
-            "mode": "shadow",
-            "verdict": "needs_correction",
-            "issue": "unsupported_answer",
-            "status": "unsupported_answer",
-            "reason": "Affirmation non étayée.",
         }
         runtime = Runtime(
             context=api.RagResponseContext(
                 answer_client=object(),
-                shadow_evaluation_enabled_override=True,
+                shadow_evaluation_enabled_override=False,
                 correction_loop_enabled_override=True,
             )
         )
-        with patch.object(api, "evaluate_answer_shadow", return_value=diagnostic):
-            first = api._evaluate_response(state, runtime)
-            second = api._evaluate_response(
-                {**state, "correction_count": 1},
-                runtime,
-            )
+        first = api._evaluate_response(state, runtime)
+        second = api._evaluate_response(
+            {**state, "correction_count": 1},
+            runtime,
+        )
 
         self.assertTrue(first["correction_requested"])
         self.assertFalse(second["correction_requested"])
-        self.assertEqual(api._post_evaluation_route(first), "correct")
+        self.assertEqual(
+            api._post_evaluation_route({**state, **first}), "expand_retrieval"
+        )
         self.assertEqual(api._post_evaluation_route(second), "finalize")
 
     def test_correction_route_depends_on_evaluation_issue(self) -> None:
@@ -254,7 +247,10 @@ class RagResponseGraphTests(unittest.TestCase):
             "answer": "Réponse initiale",
             "sources": [_source()],
             "retrieval": {"route": "rag", "answer_model": "answer-model"},
-            "answer_trace": {"action": "answer"},
+            "answer_trace": {
+                "action": "abstain",
+                "retry_query": "date de publication de la vidéo mentionnée",
+            },
             "shadow_evaluation": {
                 "verdict": "needs_correction",
                 "issue": "insufficient_sources",
@@ -266,6 +262,7 @@ class RagResponseGraphTests(unittest.TestCase):
             self.assertEqual(payload.topK, api.MAX_TOP_K)
             self.assertEqual(payload.finalK, api.MAX_FINAL_K)
             self.assertIn("plus large", payload.plannerPrompt)
+            self.assertIn("date de publication de la vidéo mentionnée", payload.plannerPrompt)
             return "", [_source(), {**_source(), "chunk_id": 8}], {
                 "route": "rag",
                 "answer_model": "answer-model",
@@ -509,7 +506,7 @@ class RagResponseGraphTests(unittest.TestCase):
             "judge-model",
             "Je cherche la vidéo de Camille",
             "De quelle Camille parlez-vous ?",
-            "clarify",
+            "abstain",
             [],
         )
 
@@ -548,13 +545,15 @@ class AnswerActionTests(unittest.TestCase):
         trace: dict[str, object] = {}
 
         answer = parse_answer_output(
-            '{"answer":"Peux-tu préciser la vidéo ?","action":"clarify","source_indexes":[2]}',
+            ('{"answer":"Peux-tu préciser la vidéo ?","action":"abstain",'
+             '"source_indexes":[],"retry_query":"identifier la vidéo concernée"}'),
             trace,
         )
 
         self.assertEqual(answer, "Peux-tu préciser la vidéo ?")
-        self.assertEqual(trace["action"], "clarify")
-        self.assertEqual(trace["source_indexes"], [2])
+        self.assertEqual(trace["action"], "abstain")
+        self.assertEqual(trace["source_indexes"], [])
+        self.assertEqual(trace["retry_query"], "identifier la vidéo concernée")
 
     def test_invalid_or_missing_action_falls_back_to_abstention(self) -> None:
         trace: dict[str, object] = {}
@@ -566,7 +565,7 @@ class AnswerActionTests(unittest.TestCase):
 
     def test_no_source_is_still_submitted_to_the_answer_model(self) -> None:
         client = _Client(
-            [{"answer": "De quelle vidéo parles-tu ?", "action": "clarify"}]
+            [{"answer": "De quelle vidéo parles-tu ?", "action": "abstain"}]
         )
         trace: dict[str, object] = {}
 
@@ -579,7 +578,7 @@ class AnswerActionTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "De quelle vidéo parles-tu ?")
-        self.assertEqual(trace["action"], "clarify")
+        self.assertEqual(trace["action"], "abstain")
         self.assertEqual(len(client.responses.calls), 1)
         self.assertIn(
             "Aucune source exploitable",
@@ -588,7 +587,7 @@ class AnswerActionTests(unittest.TestCase):
 
     def test_ambiguous_person_candidates_are_given_to_the_answer_model(self) -> None:
         client = _Client(
-            [{"answer": "Parles-tu d'Alice Martin ou d'Alice Durand ?", "action": "clarify"}]
+            [{"answer": "Parles-tu d'Alice Martin ou d'Alice Durand ?", "action": "abstain"}]
         )
         trace: dict[str, object] = {}
 
@@ -604,7 +603,7 @@ class AnswerActionTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "Parles-tu d'Alice Martin ou d'Alice Durand ?")
-        self.assertEqual(trace["action"], "clarify")
+        self.assertEqual(trace["action"], "abstain")
         prompt = client.responses.calls[0]["input"][1]["content"]
         self.assertIn("Alice Martin", prompt)
         self.assertIn("Alice Durand", prompt)
@@ -639,7 +638,7 @@ class AnswerActionTests(unittest.TestCase):
         self.assertNotIn("answer_evaluation", response.retrieval)
         generator.assert_called_once()
 
-    def test_execute_rag_keeps_cited_sources_for_clarification(self) -> None:
+    def test_execute_rag_hides_sources_for_abstention(self) -> None:
         retrieval = {
             "route": "rag",
             "retrieval_mode": "rag+sql",
@@ -651,7 +650,7 @@ class AnswerActionTests(unittest.TestCase):
 
         def generate(*args, **kwargs):
             trace = args[5]
-            trace["action"] = "clarify"
+            trace["action"] = "abstain"
             trace["source_indexes"] = [1]
             return "Parles-tu de cette Sophie ?"
 
@@ -664,14 +663,10 @@ class AnswerActionTests(unittest.TestCase):
         ):
             response = api.execute_rag(RagRequest(question="Video de Sophie ?"))
 
-        self.assertEqual(response.action, "clarify")
+        self.assertEqual(response.action, "abstain")
         self.assertEqual(response.answer, "Parles-tu de cette Sophie ?")
-        self.assertEqual(len(response.sources), 1)
-        self.assertEqual(
-            response.sources[0].thumbnail_medium_url,
-            "https://example.test/thumbnail.jpg",
-        )
-        self.assertEqual(response.retrieval["answer_source_indexes"], [1])
+        self.assertEqual(response.sources, [])
+        self.assertEqual(response.retrieval["answer_source_indexes"], [])
 
     def test_precomputed_direct_answer_keeps_answer_action(self) -> None:
         retrieval = {

@@ -58,7 +58,7 @@ class ConversationMemoryTests(unittest.TestCase):
         client = SimpleNamespace(responses=SimpleNamespace(create=create))
         summary, trace = conversation_memory.summarize_topic_turn(
             client,
-            "mistral-medium-latest",
+            "gemini-3.5-flash-lite",
             "Sujet précédent : Déborah.",
             "Et la vidéo de Lou Ann ?",
             "Je recherche la vidéo de Lou-Ann Corveddu.",

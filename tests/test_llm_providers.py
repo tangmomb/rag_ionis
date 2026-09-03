@@ -327,7 +327,6 @@ class LlmProviderTests(unittest.TestCase):
             api_key="secret",
             timeout=llm_providers.REQUEST_TIMEOUT_SECONDS,
             max_tokens=300,
-            base_url=llm_providers.MISTRAL_EU_BASE_URL,
         )
         request = mistral.call_args.kwargs
         self.assertEqual(request["model_name"], "mistral-medium-latest")
@@ -363,7 +362,7 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(mistral.call_args.kwargs["timeout"], 45.0)
         self.assertEqual(mistral.call_args.kwargs["max_retries"], 0)
 
-    def test_mistral_uses_explicit_regional_base_url(self) -> None:
+    def test_mistral_does_not_set_an_inference_region(self) -> None:
         sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: {})
         client = Mock()
         client.invoke.return_value = sdk_response
@@ -374,10 +373,30 @@ class LlmProviderTests(unittest.TestCase):
             llm_providers.create_llm_response(
                 model="mistral-large-latest",
                 input="Bonjour",
-                mistral_base_url="https://api.eu.mistral.ai/v1",
             )
 
-        self.assertEqual(mistral.call_args.kwargs["base_url"], "https://api.eu.mistral.ai/v1")
+        self.assertNotIn("base_url", mistral.call_args.kwargs)
+
+    def test_mistral_rejects_missing_structured_result(self) -> None:
+        raw = SimpleNamespace(content="texte non structure", model_dump=lambda mode: {})
+        client = Mock()
+        client.with_structured_output.return_value.invoke.return_value = {
+            "parsed": None,
+            "raw": raw,
+        }
+        with (
+            patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "ChatMistralAI", return_value=client),
+        ):
+            with self.assertRaisesRegex(
+                llm_providers.LLMProviderError,
+                "objet JSON structuré attendu",
+            ):
+                llm_providers.create_llm_response(
+                    model="mistral-medium-latest",
+                    input="Bonjour",
+                    response_schema={"type": "object"},
+                )
 
     def test_google_uses_langchain_chat_model(self) -> None:
         raw = {"id": "google-response"}

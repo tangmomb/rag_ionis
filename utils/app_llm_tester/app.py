@@ -23,11 +23,6 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 
-MISTRAL_REGIONS = {
-    "global": {"label": "Global", "base_url": None},
-    "eu": {"label": "Union européenne", "base_url": "https://api.eu.mistral.ai/v1"},
-    "us": {"label": "États-Unis", "base_url": "https://api.us.mistral.ai/v1"},
-}
 OPENAI_REGIONS = {
     "global": {"label": "Global", "base_url": None},
     "eu": {"label": "Union européenne", "base_url": "https://eu.api.openai.com/v1"},
@@ -49,7 +44,6 @@ class GenerateRequest(BaseModel):
     reasoning_effort: str | None = Field(default=None, max_length=10)
     verbosity: str | None = Field(default=None, max_length=10)
     thinking_budget: int | None = Field(default=None, ge=-1, le=32_768)
-    mistral_region: Literal["global", "eu", "us"] = "global"
     openai_region: Literal["global", "eu", "us"] = "global"
     openai_service_tier: Literal["default", "fast"] | None = None
 
@@ -104,8 +98,6 @@ class GenerateRequest(BaseModel):
             or self.thinking_budget is not None
             ):
                 raise ValueError("Mistral ne propose pas ces paramètres dans cet outil.")
-        if self.provider != "mistral" and self.mistral_region != "global":
-            raise ValueError("La région d'inférence est réservée à Mistral.")
         if self.provider != "openai" and self.openai_region != "global":
             raise ValueError("La région d'inférence est réservée à OpenAI.")
         if self.provider != "openai" and self.openai_service_tier is not None:
@@ -141,13 +133,7 @@ def provider_config(provider: str) -> dict[str, Any]:
         "generationControls": generation_controls(provider),
         "regions": [
             {"id": region, "label": config["label"]}
-            for region, config in (
-                MISTRAL_REGIONS.items()
-                if provider == "mistral"
-                else OPENAI_REGIONS.items()
-                if provider == "openai"
-                else []
-            )
+            for region, config in (OPENAI_REGIONS.items() if provider == "openai" else [])
         ],
     }
 
@@ -219,7 +205,6 @@ def generate(request: GenerateRequest) -> dict[str, Any]:
             reasoning_effort=request.reasoning_effort,
             verbosity=request.verbosity,
             thinking_budget=request.thinking_budget,
-            mistral_base_url=MISTRAL_REGIONS[request.mistral_region]["base_url"],
             openai_base_url=OPENAI_REGIONS[request.openai_region]["base_url"],
             openai_service_tier=request.openai_service_tier,
         )

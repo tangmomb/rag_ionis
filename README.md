@@ -1453,12 +1453,11 @@ et reranking. En production, toutes les requêtes RAG sont envoyées à Phoenix 
 forme de traces OpenTelemetry.
 
 L'interface utilisateur ne propose pas de sélecteur de LLM : la reformulation,
-le planner et la génération finale utilisent tous `mistral-medium-latest`.
+le planner et la génération finale utilisent tous `gemini-3.5-flash-lite`.
 Les quatre sorties structurées de ce pipeline — reformulation, planner,
 Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
-niveau de l'API Mistral.
-Toutes les inférences RAG Mistral sont adressées à l'endpoint européen
-`https://api.eu.mistral.ai/v1`.
+niveau de l'API Google.
+Toutes les inférences RAG sont adressées à Gemini.
 
 Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
 Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête
@@ -1471,10 +1470,10 @@ timeout et une limite de lignes. Phoenix expose séparément les spans
 `rag.analytics.sql_cost_validation` et `rag.analytics.sql_execution`.
 
 Le modèle de réponse produit en un seul appel un objet JSON contenant le message
-final et l'action `answer`, `clarify` ou `abstain`. Il choisit `answer` seulement
-si les sources permettent de répondre suffisamment, `clarify` si la cible de la
-question est ambiguë et `abstain` si la question est claire mais les preuves
-insuffisantes. Cette décision est enregistrée dans `rag.generation`; aucun appel
+final et l'action `answer` ou `abstain`. Il choisit `answer` seulement si les
+sources permettent de répondre suffisamment ; il choisit `abstain` si la demande
+est ambiguë ou les preuves insuffisantes. Cette décision est enregistrée dans
+`rag.generation`; aucun appel
 LLM d'évaluation ou de révision supplémentaire n'est effectué.
 
 Le pipeline de réponse est exécuté par un graphe LangGraph séquentiel :
@@ -1503,6 +1502,12 @@ sources retournées. Il est désactivé par défaut ; définir
 `RAG_SHADOW_EVALUATION_ENABLED=true` active l'appel LLM d'observation. Les réponses
 directes ne sont pas évaluées et une erreur de l'évaluateur n'interrompt jamais la
 requête utilisateur.
+
+Indépendamment du shadow, `RAG_CORRECTION_LOOP_ENABLED=true` déclenche une unique
+recherche élargie lorsque la génération répond `action=abstain`. La génération
+fournit alors une `retry_query` structurée, utilisée comme point de départ pour la
+nouvelle recherche avant de régénérer la réponse. Aucun appel LLM de juge n'est
+effectué.
 
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
@@ -1569,12 +1574,10 @@ En dehors des expériences, les mêmes limites peuvent être configurées avec
 `RAG_LLM_REQUEST_TIMEOUT_SECONDS` et `RAG_LLM_MAX_RETRIES`.
 
 La première boucle de correction LangGraph est disponible avec
-`RAG_CORRECTION_LOOP_ENABLED=true`. Elle est désactivée par défaut, ne traite
-que `verdict=needs_correction` et effectue au maximum une correction avant une
-seconde évaluation. `unsupported_answer` régénère avec les mêmes sources,
-`bad_retrieval` relance une recherche plus précise, et `insufficient_sources`
-élargit la recherche jusqu'aux limites configurées. Si la correction échoue,
-la réponse initiale est conservée.
+`RAG_CORRECTION_LOOP_ENABLED=true`. Elle est indépendante du shadow et ne traite
+que `action=abstain` : elle élargit la recherche jusqu'aux limites configurées,
+puis régénère une fois la réponse. Si la correction échoue, la réponse initiale
+est conservée.
 Pour une expérience isolée, utiliser `--shadow-evaluation --correction-loop` ;
 ce réglage est transmis uniquement au contexte LangGraph de la campagne.
 Phoenix publie alors aussi `correction_outcome`, `correction_count` et
@@ -1618,12 +1621,11 @@ nouvelle conversation. Le résultat apparaît dans le projet Phoenix comme une t
 `rag.replay`, avec un span `rag.replay.seed_history` et tous les spans RAG habituels.
 Ajouter `--dry-run` pour contrôler le contexte sans écrire en base ni appeler les LLM.
 
-La fenêtre permet de choisir séparément un modèle OpenAI, Mistral ou Google
-pour la reformulation, le planner et la réponse finale. Les payloads propres à
-chaque API sont traduits vers une réponse commune, tandis que le JSON brut reste
-enregistrable dans les traces Phoenix. Le schéma JSON strict `answer` / `action`
-est imposé au niveau de l'API uniquement pour Mistral ; dans les expériences
-Phoenix, OpenAI et Google conservent le contrat JSON défini dans le prompt.
+Le testeur de modèles permet de comparer OpenAI, Mistral et Google. Le RAG,
+lui, utilise exclusivement Gemini 3.5 Flash Lite pour la reformulation, le
+planner et la réponse finale. Les payloads propres à chaque API sont traduits
+vers une réponse commune, tandis que le JSON brut reste enregistrable dans les
+traces Phoenix.
 
 Les embeddings ne changent pas de fournisseur : ils doivent rester compatibles
 avec les vecteurs déjà présents en base et utilisent donc

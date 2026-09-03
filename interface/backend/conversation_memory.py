@@ -114,6 +114,7 @@ MEMORY_SUMMARY_RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["summary"],
     "additionalProperties": False,
 }
+MEMORY_SUMMARY_MAX_OUTPUT_TOKENS = 512
 
 EMPTY_CONVERSATION_MEMORY: dict[str, Any] = {
     "current_topic": {"id": 1, "topic": "", "messages": []},
@@ -233,6 +234,7 @@ def summarize_topic_messages(
                 {"role": "user", "content": user_prompt},
             ],
             response_schema=MEMORY_SUMMARY_RESPONSE_SCHEMA,
+            max_output_tokens=MEMORY_SUMMARY_MAX_OUTPUT_TOKENS,
         )
         raw = str(getattr(response, "output_text", "") or "").strip()
         summary = str(json.loads(raw).get("summary") or "").strip()
@@ -271,6 +273,7 @@ def summarize_previous_topics(
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
             response_schema=MEMORY_SUMMARY_RESPONSE_SCHEMA,
+            max_output_tokens=MEMORY_SUMMARY_MAX_OUTPUT_TOKENS,
         )
         raw = str(getattr(response, "output_text", "") or "").strip()
         summary = str(json.loads(raw).get("summary") or "").strip()
@@ -395,6 +398,7 @@ def summarize_topic_turn(
                 {"role": "user", "content": user_prompt},
             ],
             response_schema=MEMORY_SUMMARY_RESPONSE_SCHEMA,
+            max_output_tokens=MEMORY_SUMMARY_MAX_OUTPUT_TOKENS,
         )
         raw = str(getattr(response, "output_text", "") or "").strip()
         parsed = json.loads(raw)

@@ -372,53 +372,6 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
     )
 
 
-def generate_multi_source_answer(
-    client: LLMClientProtocol | None,
-    question: str,
-    answer_model: str | None,
-    route_name: str,
-    sources: list[dict[str, Any]],
-    sql_sub_intent: str | None = None,
-    trace: dict[str, Any] | None = None,
-    prompt_template: str | None = None,
-) -> str:
-    if client is None or not answer_model:
-        if trace is not None:
-            trace["action"] = "answer" if sources else "abstain"
-        source_text = "\n\n".join(
-            f"[S{index}] {source['text']}"
-            for index, source in enumerate(sources, start=1)
-        )
-        return source_text
-
-    source_block = format_answer_sources(sources) or "Aucune source documentaire exploitable."
-    source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
-
-    input_messages = [
-            {
-                "role": "system",
-                "content": render_answer_system_prompt(
-                    prompt_template,
-                    route_instructions=(
-                        "Tu synthétises plusieurs sources documentaires pour répondre en français. "
-                        + build_sql_sub_intent_prompt(sql_sub_intent)
-                    ),
-                    source_marker_instruction=source_marker_instruction,
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Question: {question}\n\nSources pour répondre :\n{source_block}",
-            },
-        ]
-    response = create_answer_response(client, answer_model, input_messages)
-    record_answer_trace(trace, answer_model, input_messages, response)
-    answer = getattr(response, "output_text", "").strip()
-    if answer:
-        return parse_answer_output(answer, trace)
-    raise RuntimeError(f"Le modele n'a pas renvoye de texte exploitable pour la route {route_name}.")
-
-
 def generate_sql_answer(
     client: LLMClientProtocol | None,
     question: str,
@@ -548,17 +501,17 @@ def generate_final_answer(
         if trace is not None:
             trace["action"] = "answer"
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
-    if route == "rag" and retrieval.get("retrieval_mode") == "rag+structured_sql":
+    if route == "search" and retrieval.get("retrieval_mode") == "search+sql":
         return generate_sql_answer(
             client,
             generation_question,
             answer_model,
-            retrieval.get("sql_sub_intent"),
+            "description" if retrieval.get("description_requested") else retrieval.get("sql_sub_intent"),
             sources,
             trace,
             prompt_template,
         )
-    if route == "rag":
+    if route == "search":
         return generate_answer(
             client, generation_question, answer_model, sources, trace, prompt_template
         )
@@ -569,17 +522,6 @@ def generate_final_answer(
             answer_model,
             retrieval.get("sql_sub_intent"),
             sources,
-            trace,
-            prompt_template,
-        )
-    if route == "multi_source":
-        return generate_multi_source_answer(
-            client,
-            generation_question,
-            answer_model,
-            route,
-            sources,
-            retrieval.get("sql_sub_intent"),
             trace,
             prompt_template,
         )

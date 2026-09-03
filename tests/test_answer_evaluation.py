@@ -612,7 +612,7 @@ class AnswerActionTests(unittest.TestCase):
     def test_execute_rag_uses_the_action_from_the_generation_call(self) -> None:
         retrieval = {
             "route": "rag",
-            "retrieval_mode": "rag+structured_sql",
+            "retrieval_mode": "rag+sql",
             "contextual_question": "Quand la vidéo a-t-elle été publiée ?",
             "answer_model": "mistral-medium-latest",
         }
@@ -642,7 +642,7 @@ class AnswerActionTests(unittest.TestCase):
     def test_execute_rag_keeps_cited_sources_for_clarification(self) -> None:
         retrieval = {
             "route": "rag",
-            "retrieval_mode": "rag+structured_sql",
+            "retrieval_mode": "rag+sql",
             "contextual_question": "Je cherche la video de Sophie",
             "answer_model": "mistral-medium-latest",
         }

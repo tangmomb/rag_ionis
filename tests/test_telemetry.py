@@ -100,20 +100,28 @@ class TraceOperationTests(unittest.TestCase):
                     }
                 ],
             },
+            "deduplication": {
+                "input_count": 2,
+                "duplicate_count": 1,
+                "output_count": 1,
+                "key": "video_id",
+            },
         }
 
         with patch.object(retrieval, "trace_operation", side_effect=record_trace):
-            retrieval.trace_formatted_sql("rag.structured_sql", trace)
+            retrieval.trace_formatted_sql("rag.sql", trace)
 
         self.assertEqual(
             [item["name"] for item in recorded],
             [
                 "persons_in_speakers",
                 "persons_in_transcripts",
+                "deduplicate_videos",
             ],
         )
         self.assertEqual(recorded[0]["input_value"]["params"], [3])
         self.assertEqual(recorded[1]["input_value"]["params"], [7])
+        self.assertEqual(recorded[2]["output"]["duplicate_count"], 1)
         self.assertEqual(recorded[0]["output"]["result_count"], 1)
         self.assertEqual(
             recorded[1]["output"]["results"],

@@ -7,7 +7,7 @@ from interface.backend.orchestration_graph import (
     _resolved_plan_companies,
     _resolved_plan_persons,
     _resolved_plan_title_hint,
-    _structured_sql_parent_output,
+    _sql_parent_output,
 )
 from interface.backend.schemas import ExecutionPlan
 
@@ -36,8 +36,8 @@ class ExecutionPlanTraceTests(unittest.TestCase):
             "Titre canonique",
         )
 
-    def test_structured_sql_parent_excludes_child_query_results(self) -> None:
-        output = _structured_sql_parent_output(
+    def test_sql_parent_excludes_child_query_results(self) -> None:
+        output = _sql_parent_output(
             {
                 "sql": "SELECT ...",
                 "result_count": 1,

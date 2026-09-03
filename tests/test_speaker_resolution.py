@@ -74,7 +74,7 @@ class PersonResolutionTests(unittest.TestCase):
         self.assertTrue(validated)
         self.assertEqual(plan.persons, ["Personne identifiée par le planner"])
 
-    def test_new_planner_keys_trigger_person_and_company_lookup(self) -> None:
+    def test_planner_person_and_company_keys_do_not_set_an_llm_sub_intent(self) -> None:
         client = _Client(
             {
                 "route": "multi_source",
@@ -97,8 +97,8 @@ class PersonResolutionTests(unittest.TestCase):
         self.assertTrue(validated)
         self.assertEqual(plan.persons, ["Gabriel Dumy"])
         self.assertEqual(plan.companies, ["Bouygues"])
-        self.assertEqual(plan.sql_sub_intent, "specific_persons")
-        self.assertTrue(plan.sql_main_source)
+        self.assertIsNone(plan.sql_sub_intent)
+        self.assertFalse(plan.sql_main_source)
 
     def test_empty_person_list_does_not_query_database(self) -> None:
         with patch.object(planner, "connect_database") as connect_database:
@@ -522,7 +522,7 @@ class PersonResolutionTests(unittest.TestCase):
 
     def test_multiple_confident_people_are_all_selected_for_sql(self) -> None:
         plan = PlannerPlan(
-            route="multi_source",
+            route="rag",
             query_text="Ouyaiha Montessi",
             persons=["Ouyaiha", "Montessi"],
         )

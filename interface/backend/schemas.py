@@ -16,14 +16,8 @@ from interface.backend.config import (
 )
 
 
-PlannerRoute = Literal["direct", "rag", "multi_source"]
-SqlSubIntent = Literal[
-    "specific_persons",
-    "analytics",
-    "description",
-    "transcript_verbatim",
-    "transcript_qa",
-]
+PlannerRoute = Literal["direct", "search"]
+SqlSubIntent = Literal["analytics"]
 AnalyticsScope = Literal["global", "specific"]
 AnalyticsMetric = Literal["all", "views", "likes", "comments"]
 AnalyticsOrder = Literal["asc", "desc"]
@@ -59,7 +53,7 @@ class RagRequest(BaseModel):
 class PlannerPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    route: PlannerRoute = "rag"
+    route: PlannerRoute = "search"
     sql_sub_intent: SqlSubIntent | None = None
     analytics_scope: AnalyticsScope | None = None
     analytics_metric: AnalyticsMetric | None = None
@@ -73,22 +67,13 @@ class PlannerPlan(BaseModel):
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
+    description_requested: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_title_hint(cls, value: object) -> object:
-        if isinstance(value, dict) and "title_hints" not in value and "title_hint" in value:
-            value = {**value, "title_hints": [value["title_hint"]] if value["title_hint"] else []}
-            value.pop("title_hint", None)
-        return value
 
     @model_validator(mode="after")
     def _validate_analytics_scope(self) -> "PlannerPlan":
         if self.sql_sub_intent == "analytics":
-            # Compatibilité avec les plans historiques et les chemins de repli
-            # sans LLM. La réponse structurée du planner, elle, l'exige.
             self.analytics_scope = self.analytics_scope or "specific"
             if self.analytics_scope == "global":
                 self.analytics_metric = self.analytics_metric or "all"
@@ -117,7 +102,7 @@ class PlannerPlan(BaseModel):
 class ExecutionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    route: PlannerRoute = "rag"
+    route: PlannerRoute = "search"
     sql_sub_intent: SqlSubIntent | None = None
     analytics_scope: AnalyticsScope | None = None
     analytics_metric: AnalyticsMetric | None = None
@@ -132,18 +117,11 @@ class ExecutionPlan(BaseModel):
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
+    description_requested: bool = False
     use_rag: bool = False
     sql_main_source: bool = False
     top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     final_k: int | None = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_title_hint(cls, value: object) -> object:
-        if isinstance(value, dict) and "title_hints" not in value and "title_hint" in value:
-            value = {**value, "title_hints": [value["title_hint"]] if value["title_hint"] else []}
-            value.pop("title_hint", None)
-        return value
 
     @model_validator(mode="after")
     def _validate_analytics_scope(self) -> "ExecutionPlan":

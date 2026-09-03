@@ -32,6 +32,11 @@ class _Client:
 
 
 class RagModelSelectionTests(unittest.TestCase):
+    def test_planner_llm_can_only_request_analytics_sql(self) -> None:
+        choices = planner.PLANNER_RESPONSE_SCHEMA["properties"]["sql_sub_intent"]["anyOf"][0]["enum"]
+
+        self.assertEqual(choices, ["analytics"])
+
     def test_orchestration_graph_exposes_existing_planning_and_retrieval_routes(self) -> None:
         graph = orchestration_graph.RAG_ORCHESTRATION_GRAPH.get_graph()
 
@@ -44,9 +49,8 @@ class RagModelSelectionTests(unittest.TestCase):
                 "build_execution_plan",
                 "person_clarification",
                 "direct",
-                "structured_sql",
-                "multi_source",
-                "rag",
+                "sql_search",
+                "vector_search",
             }.issubset(graph.nodes)
         )
 
@@ -83,29 +87,20 @@ class RagModelSelectionTests(unittest.TestCase):
                 {
                     "person_resolution": {"ambiguous": False},
                     "execution_plan": execution_plan(
-                        "rag", sql_main_source=True
+                        "search", sql_main_source=True
                     ).model_dump(),
                 }
             ),
-            "structured_sql",
+            "sql_search",
         )
         self.assertEqual(
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("multi_source").model_dump(),
+                    "execution_plan": execution_plan("search").model_dump(),
                 }
             ),
-            "multi_source",
-        )
-        self.assertEqual(
-            orchestration_graph.select_route(
-                {
-                    "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("rag").model_dump(),
-                }
-            ),
-            "rag",
+            "vector_search",
         )
 
     def test_orchestration_state_is_checkpoint_serializable(self) -> None:
@@ -223,8 +218,8 @@ class RagModelSelectionTests(unittest.TestCase):
             reformulationPrompt="Prompt reformulation personnalise",
             plannerPrompt="Prompt planner personnalise",
         )
-        multi_source_plan = PlannerPlan(
-            route="multi_source",
+        rag_plan = PlannerPlan(
+            route="search",
             query_text="Question reformulee",
         )
 
@@ -246,12 +241,12 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(
                 orchestration,
                 "run_planner",
-                return_value=(multi_source_plan, "prompt", "raw", True),
+                return_value=(rag_plan, "prompt", "raw", True),
             ) as run_planner,
             patch.object(
                 orchestration,
                 "retrieve_chunks",
-                return_value=([], {}),
+                return_value=([], {"answer_model": "gpt-5.6-luna"}),
             ),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
@@ -277,7 +272,7 @@ class RagModelSelectionTests(unittest.TestCase):
     def test_orchestration_uses_one_reformulation_with_conversation_json(self) -> None:
         client = object()
         payload = RagRequest(question="Elle a plus de vues qu'eux ?", conversationId=46)
-        plan = PlannerPlan(route="rag", query_text="Question autonome")
+        plan = PlannerPlan(route="search", query_text="Question autonome")
         memory = {
             "available": True,
             "memory": {
@@ -305,11 +300,11 @@ class RagModelSelectionTests(unittest.TestCase):
         )
         self.assertEqual(retrieval["question_reformulation"]["strategy"], "conversation_json_single_rewrite")
 
-    def test_empty_structured_sql_does_not_fallback_to_rag(self) -> None:
+    def test_empty_sql_does_not_fallback_to_rag(self) -> None:
         client = object()
         payload = RagRequest(question="Y a-t-il des commentaires ?")
         plan = PlannerPlan(
-            route="rag",
+            route="search",
             sql_sub_intent="analytics",
             query_text="Y a-t-il des commentaires ?",
             sql_main_source=True,
@@ -337,7 +332,7 @@ class RagModelSelectionTests(unittest.TestCase):
             _answer, sources, retrieval = orchestration.orchestrate_request(payload)
 
         self.assertEqual(sources, [])
-        self.assertEqual(retrieval["retrieval_mode"], "rag+structured_sql")
+        self.assertEqual(retrieval["retrieval_mode"], "search+sql")
         self.assertEqual(retrieval["direct_lookup"], empty_sql_trace)
         retrieve_chunks.assert_not_called()
 

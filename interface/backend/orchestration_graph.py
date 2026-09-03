@@ -295,10 +295,24 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     execution_plan.persons = _resolved_plan_persons(state)
     execution_plan.companies = _resolved_plan_companies(state)
     execution_plan.title_hints = _resolved_plan_title_hints(state)
+    # With no LLM SQL sub-intent, each resolved structured entity warrants the
+    # deterministic SQL lookup. This supplies complete enriched transcripts rather
+    # than relying on a few ranked search chunks.
+    if (
+        execution_plan.sql_sub_intent is None
+        and not execution_plan.description_requested
+        and (
+            execution_plan.persons
+            or execution_plan.companies
+            or execution_plan.title_hints
+        )
+    ):
+        execution_plan.sql_main_source = True
+        execution_plan.use_rag = False
     execution_plan_trace = _execution_plan_trace(execution_plan)
     if not (
         execution_plan.sql_main_source
-        and execution_plan.route in {"rag", "multi_source"}
+        and execution_plan.route == "search"
     ):
         with services.trace_operation(
             "rag.execution_plan",
@@ -338,20 +352,17 @@ def select_route(
 ) -> Literal[
     "person_clarification",
     "direct",
-    "structured_sql",
-    "multi_source",
-    "rag",
+    "sql_search",
+    "vector_search",
 ]:
     if state["person_resolution"].get("ambiguous"):
         return "person_clarification"
     execution_plan = _execution_plan(state)
     if execution_plan.route == "direct":
         return "direct"
-    if execution_plan.route == "rag" and execution_plan.sql_main_source:
-        return "structured_sql"
-    if execution_plan.route == "multi_source":
-        return "multi_source"
-    return "rag"
+    if execution_plan.route == "search" and execution_plan.sql_main_source:
+        return "sql_search"
+    return "vector_search"
 
 
 def person_clarification(state: RagOrchestrationState) -> dict[str, Any]:
@@ -398,7 +409,7 @@ def direct(state: RagOrchestrationState) -> dict[str, Any]:
     return {"answer": answer, "sources": sources, "retrieval": retrieval}
 
 
-def _structured_sql_parent_output(trace: dict[str, Any]) -> dict[str, Any]:
+def _sql_parent_output(trace: dict[str, Any]) -> dict[str, Any]:
     """Keep detailed SQL result rows, including transcripts, on child spans only."""
     output = {
         key: value
@@ -418,39 +429,126 @@ def _structured_sql_parent_output(trace: dict[str, Any]) -> dict[str, Any]:
 def run_structured_lookup(
     state: RagOrchestrationState,
     client: Any,
-) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
     execution_plan = _execution_plan(state)
     execution_plan_trace = _execution_plan_trace(execution_plan)
-    sql_sub_intent = execution_plan.sql_sub_intent or "specific_persons"
+    sql_sub_intent = execution_plan.sql_sub_intent
+    lookup_intent = (
+        "analytics"
+        if sql_sub_intent == "analytics"
+        else "description"
+        if execution_plan.description_requested
+        else "specific_persons"
+    )
     with services.trace_operation(
         "rag.execution_plan",
         kind="CHAIN",
         input_value={"execution_plan": execution_plan_trace},
     ) as execution_plan_span:
         with services.trace_operation(
-            "rag.structured_sql",
+            "rag.sql",
             kind="CHAIN",
             input_value={
                 "execution_plan": execution_plan_trace,
                 "sql_sub_intent": sql_sub_intent,
+                "lookup_intent": lookup_intent,
             },
         ) as sql_span:
-            if sql_sub_intent == "analytics":
+            if lookup_intent == "analytics":
                 sources, direct_trace = services.run_deterministic_analytics(
                     execution_plan,
                     database_persons=state["database_persons"],
                     database_companies=state["database_company"],
                 )
-            else:
+            elif lookup_intent == "description":
                 sources, direct_trace = services.lookup_video_document(
                     execution_plan,
-                    sql_sub_intent,
+                    lookup_intent,
                     database_persons=execution_plan.persons,
                     database_company=state["database_company"],
                     transcript_persons=execution_plan.persons,
                 )
-            sql_span.set_output(_structured_sql_parent_output(direct_trace))
-            services.trace_formatted_sql("rag.structured_sql", direct_trace)
+            else:
+                entity_queries: list[tuple[str, str, ExecutionPlan, dict[str, Any]]] = []
+                for person in execution_plan.persons:
+                    entity_queries.append(
+                        (
+                            "person",
+                            person,
+                            execution_plan.model_copy(
+                                update={"persons": [person], "companies": [], "title_hints": []}
+                            ),
+                            {"database_persons": [person], "database_company": [], "transcript_persons": [person]},
+                        )
+                    )
+                for company in execution_plan.companies:
+                    entity_queries.append(
+                        (
+                            "company",
+                            company,
+                            execution_plan.model_copy(
+                                update={"persons": [], "companies": [company], "title_hints": []}
+                            ),
+                            {"database_persons": [], "database_company": [company], "transcript_persons": []},
+                        )
+                    )
+                for title in execution_plan.title_hints:
+                    entity_queries.append(
+                        (
+                            "title",
+                            title,
+                            execution_plan.model_copy(
+                                update={"persons": [], "companies": [], "title_hints": [title]}
+                            ),
+                            {"database_persons": [], "database_company": [], "transcript_persons": []},
+                        )
+                    )
+
+                sources_by_video: dict[int, dict[str, Any]] = {}
+                entity_traces: list[dict[str, Any]] = []
+                input_count = 0
+                for entity_type, entity, entity_plan, filters in entity_queries:
+                    with services.trace_operation(
+                        "rag.sql.entity_lookup",
+                        kind="TOOL",
+                        input_value={"entity_type": entity_type, "entity": entity},
+                    ) as entity_span:
+                        entity_sources, entity_trace = services.lookup_video_document(
+                            entity_plan,
+                            "specific_persons",
+                            **filters,
+                        )
+                        entity_span.set_output(
+                            {
+                                "result_count": len(entity_sources),
+                                "lookup_strategy": entity_trace.get("lookup_strategy"),
+                            }
+                        )
+                    input_count += len(entity_sources)
+                    for source in entity_sources:
+                        sources_by_video.setdefault(int(source["chunk_id"]), source)
+                    entity_traces.append(
+                        {
+                            "entity_type": entity_type,
+                            "entity": entity,
+                            "result_count": len(entity_sources),
+                            "lookup_strategy": entity_trace.get("lookup_strategy"),
+                        }
+                    )
+                sources = list(sources_by_video.values())
+                direct_trace = {
+                    "mode": "specific_persons",
+                    "entity_queries": entity_traces,
+                    "result_count": len(sources),
+                    "deduplication": {
+                        "input_count": input_count,
+                        "duplicate_count": input_count - len(sources),
+                        "output_count": len(sources),
+                        "key": "video_id",
+                    },
+                }
+            sql_span.set_output(_sql_parent_output(direct_trace))
+            services.trace_formatted_sql("rag.sql", direct_trace)
         execution_plan_span.set_output(
             {
                 "execution_plan": execution_plan_trace,
@@ -460,7 +558,7 @@ def run_structured_lookup(
     return sources, direct_trace, sql_sub_intent
 
 
-def structured_sql(
+def sql_search(
     state: RagOrchestrationState,
     runtime: Runtime[RagOrchestrationContext],
 ) -> dict[str, Any]:
@@ -476,15 +574,15 @@ def structured_sql(
         ),
         "embedding_model": None,
         "rerank_model": None,
-        "retrieval_mode": "rag+structured_sql",
+        "retrieval_mode": "search+sql",
         "sql_main_source": True,
-        "sql_prefilters": services.has_structured_sql_filters(execution_plan),
+        "sql_prefilters": services.has_sql_filters(execution_plan),
         "bm25_top_k": 0,
         "vector_top_k": 0,
         "rrf_top_n": 0,
         "final_k": len(sources),
         "used_rerank": False,
-        "general_question_only": not services.has_structured_sql_filters(
+        "general_question_only": not services.has_sql_filters(
             execution_plan
         ),
         "sql_query": direct_trace.get("sql")
@@ -497,94 +595,16 @@ def structured_sql(
         "rerank": {},
         "direct_lookup": direct_trace,
         "sql_sub_intent": sql_sub_intent,
+        "description_requested": execution_plan.description_requested,
     }
     return {"answer": "", "sources": sources, "retrieval": retrieval}
 
 
-def multi_source(
-    state: RagOrchestrationState,
-    runtime: Runtime[RagOrchestrationContext],
-) -> dict[str, Any]:
-    payload = _payload(state)
-    execution_plan = _execution_plan(state)
-    doc_sources: list[dict[str, Any]] = []
-    doc_trace: dict[str, Any] = {}
-    actions: list[dict[str, Any]] = []
-    if execution_plan.sql_main_source:
-        doc_sources, doc_trace, sql_sub_intent = run_structured_lookup(
-            state, _runtime_client(runtime)
-        )
-        actions.append(
-            {
-                "action": 1,
-                "source": "sql",
-                "operation": "lookup_video_document",
-                "sub_intent": sql_sub_intent,
-                "status": "completed",
-                "request": {
-                    "sql": doc_trace.get("sql"),
-                    "params": doc_trace.get("params", []),
-                },
-                "response": doc_sources,
-                "result_count": len(doc_sources),
-            }
-        )
-    elif execution_plan.use_rag:
-        doc_sources, doc_trace = services.retrieve_chunks(payload, execution_plan)
-        actions.append(
-            {
-                "action": 1,
-                "source": "rag",
-                "operation": "retrieve_chunks",
-                "status": "completed",
-                "request": doc_trace,
-                "response": doc_sources,
-                "result_count": len(doc_sources),
-            }
-        )
-
-    retrieval = {
-        **state["base_retrieval"],
-        "answer_model": services.normalize_model_name(
-            payload.answerModel, DEFAULT_GENERATION_MODEL
-        ),
-        "embedding_model": doc_trace.get("embedding_model"),
-        "rerank_model": doc_trace.get("rerank_model"),
-        "retrieval_mode": execution_plan.route,
-        "sql_main_source": execution_plan.sql_main_source,
-        "bm25_top_k": doc_trace.get("bm25_top_k", 0),
-        "vector_top_k": doc_trace.get("vector_top_k", 0),
-        "rrf_top_n": doc_trace.get("rrf_top_n", 0),
-        "final_k": doc_trace.get("final_k", len(doc_sources)),
-        "used_rerank": doc_trace.get("used_rerank", False),
-        "sql_prefilters": doc_trace.get("sql_prefilters", False),
-        "general_question_only": doc_trace.get("general_question_only", True),
-        "sql_query": doc_trace.get("sql_query"),
-        "prefilter": (
-            doc_trace.get("prefilter", {})
-            if doc_trace.get("retrieval_mode") == "prefilter+bm25+vector+rrf"
-            else {}
-        ),
-        "sql_prefilters_trace": (
-            doc_trace.get("sql_prefilters_trace", {})
-            if doc_trace.get("retrieval_mode") == "prefilter+bm25+vector+rrf"
-            else {}
-        ),
-        "bm25": doc_trace.get("bm25", {}),
-        "vector": doc_trace.get("vector", {}),
-        "rrf": doc_trace.get("rrf", {}),
-        "rerank": doc_trace.get("rerank", {}),
-        "direct_lookup": doc_trace.get("direct_lookup", {}),
-        "multi_source_actions": actions,
-    }
-    return {"answer": "", "sources": doc_sources, "retrieval": retrieval}
-
-
-def rag(state: RagOrchestrationState) -> dict[str, Any]:
+def vector_search(state: RagOrchestrationState) -> dict[str, Any]:
     sources, retrieval = services.retrieve_chunks(
         _payload(state), _execution_plan(state)
     )
-    retrieval["route"] = "rag"
+    retrieval["route"] = "search"
     retrieval.update(state["base_retrieval"])
     return {"answer": "", "sources": sources, "retrieval": retrieval}
 
@@ -601,9 +621,8 @@ def build_graph():
     graph.add_node("build_execution_plan", build_execution_plan)
     graph.add_node("person_clarification", person_clarification)
     graph.add_node("direct", direct)
-    graph.add_node("structured_sql", structured_sql)
-    graph.add_node("multi_source", multi_source)
-    graph.add_node("rag", rag)
+    graph.add_node("sql_search", sql_search)
+    graph.add_node("vector_search", vector_search)
     graph.add_edge(START, "initialize")
     graph.add_edge("initialize", "reformulate")
     graph.add_edge("reformulate", "plan")
@@ -613,9 +632,8 @@ def build_graph():
     for route in (
         "person_clarification",
         "direct",
-        "structured_sql",
-        "multi_source",
-        "rag",
+        "sql_search",
+        "vector_search",
     ):
         graph.add_edge(route, END)
     return graph.compile()

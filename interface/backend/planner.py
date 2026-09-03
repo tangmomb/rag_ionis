@@ -23,18 +23,13 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
     "properties": {
         "route": {
             "type": "string",
-            "enum": ["direct", "rag", "multi_source"],
+            "enum": ["direct", "search"],
         },
         "sql_sub_intent": {
             "anyOf": [
                 {
                     "type": "string",
-                    "enum": [
-                        "specific_persons",
-                        "analytics",
-                        "description",
-                        "transcript_verbatim",
-                    ],
+                    "enum": ["analytics"],
                 },
                 {"type": "null"},
             ],
@@ -186,9 +181,9 @@ def build_planner_prompt(
         "Deuxième étape, identifier les dates de publication mentionnées dans la question. Les stocker dans published_after et published_before sous forme de chaînes ISO 8601 (YYYY-MM-DD). "
         "Troisième étape, identifier les titres de vidéos mentionnés dans la question. Les stocker dans title_hints. "
         "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
-        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct', 'rag' ou 'multi_source'. sql_sub_intent peut être 'specific_persons', 'analytics', 'description', 'transcript_verbatim' ou 'null'. "
-        "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='rag' pour toute question qui demande une information. route='multi_source' si tu as identifié plus d'une personne ou entreprise cumulées dans la question. (1 personne + 1 entreprise = 2)."
-        "sql_sub_intent='specific_persons' si tu as identifié des personnes ou entreprises dans la question, sauf si elle demande une analyse structurée. sql_sub_intent='analytics' pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. Si sql_sub_intent='analytics', analytics_scope est obligatoire : 'global' pour une statistique sur l'ensemble de la chaîne ou du corpus ; 'specific' pour une statistique limitée à une vidéo, une personne, une entreprise ou un titre. Pour analytics_scope='global', fournis analytics_metric ('views', 'likes', 'comments' ou 'all'), analytics_rank_start et analytics_rank_end. Pour un classement explicite, analytics_metric cible la mesure, analytics_order vaut 'desc' pour les plus élevés et 'asc' pour les moins élevés ; les deux rangs décrivent la fenêtre demandée, par exemple 10 à 20. Sans classement explicite, utilise analytics_metric='all', analytics_order=null et les rangs 1 à 3. Hors scope global, ces quatre champs doivent être null. sql_sub_intent='description' uniquement si le mot exact 'description' apparaît dans la question et demande la description d'une video. sql_sub_intent='transcript_verbatim' si la question demande explicitement le transcript complet d'une video. sql_sub_intent='null' si la question ne demande pas explicitement de données structurées. "
+        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct' ou 'search'. sql_sub_intent peut être 'analytics' ou 'null'. "
+        "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='search' pour toute question documentaire."
+        "sql_sub_intent='analytics' uniquement pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. Si sql_sub_intent='analytics', analytics_scope est obligatoire : 'global' pour une statistique sur l'ensemble de la chaîne ou du corpus ; 'specific' pour une statistique limitée à une vidéo, une personne, une entreprise ou un titre. Pour analytics_scope='global', fournis analytics_metric ('views', 'likes', 'comments' ou 'all'), analytics_rank_start et analytics_rank_end. Pour un classement explicite, analytics_metric cible la mesure, analytics_order vaut 'desc' pour les plus élevés et 'asc' pour les moins élevés ; les deux rangs décrivent la fenêtre demandée, par exemple 10 à 20. Sans classement explicite, utilise analytics_metric='all', analytics_order=null et les rangs 1 à 3. Hors scope global, ces quatre champs doivent être null. Dans tous les autres cas, sql_sub_intent vaut null. "
         "Toutes les valeurs textuelles doivent être en texte normal, sans Markdown."
 
     )
@@ -222,52 +217,15 @@ def build_social_answer(question: str) -> str:
 
 
 def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalise uniquement les choix sémantiques; les sources sont dérivées ensuite."""
+    """Validate the only planner choices retained by the current pipeline."""
     normalized = dict(payload)
-    if "title_hints" not in normalized:
-        legacy_title_hint = normalized.pop("title_hint", None)
-        normalized["title_hints"] = [legacy_title_hint] if legacy_title_hint else []
-    elif not isinstance(normalized["title_hints"], list):
-        normalized["title_hints"] = [normalized["title_hints"]]
-    if "companies" not in normalized and "company" in normalized:
-        normalized["companies"] = normalized.pop("company")
     route = str(normalized.get("route") or "").strip()
     sql_sub_intent = str(normalized.get("sql_sub_intent") or "").strip() or None
-    legacy_intent_map = {
-        "video_lookup": "specific_persons",
-        "lookup": "specific_persons",
-        "video_transcript": "transcript_verbatim",
-        "video_description": "description",
-        "video_stats": "analytics",
-        "stats": "analytics",
-    }
-    sql_intents = {
-        "specific_persons",
-        "analytics",
-        "description",
-        "transcript_verbatim",
-        "transcript_qa",
-    }
-    legacy_routes = {"rag_chunks": "rag", "sql_request": "rag", "social": "direct"}
-
-    if route in legacy_intent_map or route in sql_intents:
-        sql_sub_intent = legacy_intent_map.get(route, route)
-        route = "rag"
-    elif route == "sql":
-        route = "rag"
-        sql_sub_intent = (
-            legacy_intent_map.get(sql_sub_intent, sql_sub_intent)
-            or "specific_persons"
-        )
-    else:
-        route = legacy_routes.get(route, route)
-        sql_sub_intent = legacy_intent_map.get(sql_sub_intent, sql_sub_intent)
-
-    if route not in {"direct", "rag", "multi_source"}:
-        route = "rag"
+    if route not in {"direct", "search"}:
+        route = "search"
     if route == "direct":
         sql_sub_intent = None
-    elif sql_sub_intent not in sql_intents:
+    elif sql_sub_intent != "analytics":
         sql_sub_intent = None
 
     normalized["route"] = route
@@ -292,20 +250,13 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
 def derive_plan_sources(planner_plan: PlannerPlan) -> None:
     """Déduit les sources d'exécution sans demander ces booléens au LLM."""
     has_sql_intent = (
-        planner_plan.sql_sub_intent is not None
-        and not (
-            planner_plan.sql_sub_intent == "specific_persons"
-            and not (planner_plan.persons or planner_plan.companies)
-        )
+        planner_plan.sql_sub_intent == "analytics" or planner_plan.description_requested
     )
 
     if planner_plan.route == "direct":
         planner_plan.sql_sub_intent = None
         planner_plan.use_rag = False
         planner_plan.sql_main_source = False
-    elif planner_plan.route == "multi_source":
-        planner_plan.use_rag = not has_sql_intent
-        planner_plan.sql_main_source = has_sql_intent
     else:
         planner_plan.use_rag = True
         planner_plan.sql_main_source = has_sql_intent
@@ -332,7 +283,7 @@ def run_planner(
 
     if client is None:
         fallback = PlannerPlan(
-            route="rag",
+            route="search",
             query_text=question,
         )
         derive_plan_sources(fallback)
@@ -347,7 +298,7 @@ def run_planner(
     raw = getattr(response, "output_text", "").strip()
     if not raw:
         fallback = PlannerPlan(
-            route="rag",
+            route="search",
             query_text=question,
         )
         derive_plan_sources(fallback)
@@ -375,7 +326,7 @@ def run_planner(
         ):
             raise ValueError("fenêtre de classement manquante ou invalide pour une intention analytics globale")
         if not parsed.get("route"):
-            parsed["route"] = "rag"
+            parsed["route"] = "search"
         if not parsed.get("query_text"):
             parsed["query_text"] = question
         validated = PlannerPlan.model_validate(parsed)
@@ -383,7 +334,7 @@ def run_planner(
         return validated, raw_prompt, raw_response, True
     except Exception:
         fallback = PlannerPlan(
-            route="rag",
+            route="search",
             query_text=question,
         )
         derive_plan_sources(fallback)
@@ -401,7 +352,7 @@ def build_execution_plan(
 
     sql_main_source = planner_plan.sql_main_source
     return ExecutionPlan(
-        route=planner_plan.route or "rag",
+        route=planner_plan.route or "search",
         sql_sub_intent=planner_plan.sql_sub_intent,
         analytics_scope=planner_plan.analytics_scope,
         analytics_metric=planner_plan.analytics_metric,
@@ -416,6 +367,7 @@ def build_execution_plan(
         companies=planner_plan.companies,
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
+        description_requested=planner_plan.description_requested,
         use_rag=planner_plan.use_rag,
         sql_main_source=sql_main_source,
         top_k=None if sql_main_source else DEFAULT_BM25_LIMIT,
@@ -423,7 +375,7 @@ def build_execution_plan(
     )
 
 
-def has_explicit_structured_sql_request(question: str) -> bool:
+def has_explicit_sql_request(question: str) -> bool:
     normalized = "".join(
         char for char in unicodedata.normalize("NFD", question.lower()) if unicodedata.category(char) != "Mn"
     )
@@ -506,70 +458,31 @@ def apply_deterministic_sql_policy(
     policy_correction: str | None = None
     if planner_plan.route == "direct":
         if planner_plan.persons or planner_plan.companies:
-            planner_plan.route = "rag"
+            planner_plan.route = "search"
             policy_correction = "direct_with_entities_to_rag"
         elif not is_social_message(question):
-            planner_plan.route = "rag"
+            planner_plan.route = "search"
             policy_correction = "direct_non_social_to_rag"
         else:
             planner_plan.sql_sub_intent = None
             derive_plan_sources(planner_plan)
             return None
 
+    planner_plan.description_requested = bool(
+        re.search(r"\b(?:description|descriptif|decris)\b", normalize_text(question))
+    )
     if planner_plan.sql_sub_intent == "analytics" or has_analytics_request(question):
         planner_plan.sql_sub_intent = "analytics"
         planner_plan.analytics_scope = planner_plan.analytics_scope or "specific"
         derive_plan_sources(planner_plan)
         return policy_correction
 
-    if planner_plan.persons or planner_plan.companies:
-        planner_plan.sql_sub_intent = "specific_persons"
-        derive_plan_sources(planner_plan)
-        return policy_correction
-
-    if has_temporal_transcript_request(question):
-        planner_plan.sql_sub_intent = "transcript_qa"
-        derive_plan_sources(planner_plan)
-        return policy_correction
-
-    if has_person_title_request(question):
-        planner_plan.sql_sub_intent = "specific_persons"
-        derive_plan_sources(planner_plan)
-        return policy_correction
-
-    if has_document_content_request(question):
-        if planner_plan.title_hints:
-            planner_plan.sql_sub_intent = "transcript_qa"
-        else:
-            planner_plan.sql_sub_intent = None
-        derive_plan_sources(planner_plan)
-        return policy_correction
-
-    if not has_explicit_structured_sql_request(question):
-        # Le planner peut conserver SQL pour une question video complexe.
-        # Si la recherche structuree echoue, orchestrate_request tentera le RAG.
-        derive_plan_sources(planner_plan)
-        return policy_correction
-
-    normalized = normalize_text(question)
-    if has_analytics_request(question):
-        planner_plan.sql_sub_intent = "analytics"
-    elif re.search(r"\b(?:description|descriptif|decris)\b", normalized):
-        planner_plan.sql_sub_intent = "description"
-    elif any(term in normalized for term in ("transcript", "transcription", "verbatim", "timecode", "sous-titre")):
-        planner_plan.sql_sub_intent = "transcript_verbatim"
-    elif re.search(r"\b(?:intervenants?|speakers?|metier|profession|poste|fonction|role)\b", normalized) or re.search(
-        r"\bqui\s+(?:intervient|parle)\b",
-        normalized,
-    ):
-        planner_plan.sql_sub_intent = "specific_persons"
-    else:
-        planner_plan.sql_sub_intent = "specific_persons"
+    planner_plan.sql_sub_intent = None
     derive_plan_sources(planner_plan)
     return policy_correction
 
 
-def has_structured_sql_filters(query: ExecutionPlan) -> bool:
+def has_sql_filters(query: ExecutionPlan) -> bool:
     return any(
         [
             bool(query.title_hints),

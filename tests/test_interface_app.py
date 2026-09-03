@@ -655,13 +655,22 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("specific_persons", system_prompt)
         self.assertIn("personnes ou entreprises", system_prompt)
 
-    def test_planner_prompt_routes_multiple_persons_to_multi_source(self) -> None:
+    def test_description_is_deterministic_and_not_an_llm_sub_intent(self) -> None:
+        plan = PlannerPlan(route="rag", query_text="Quelle est la description de cette vidéo ?")
+
+        planner.apply_deterministic_sql_policy("Quelle est la description de cette vidéo ?", plan)
+
+        self.assertTrue(plan.description_requested)
+        self.assertIsNone(plan.sql_sub_intent)
+        self.assertTrue(plan.sql_main_source)
+
+    def test_planner_prompt_routes_multiple_persons_to_rag(self) -> None:
         system_prompt, _ = planner.build_planner_prompt(
             "Compare les interventions de Gabriel Dumy et Alice Martin."
         )
 
-        self.assertIn("plus d'une personne ou entreprise", system_prompt)
-        self.assertIn("multi_source", system_prompt)
+        self.assertIn("route peut être 'direct' ou 'rag'", system_prompt)
+        self.assertNotIn("multi_source", system_prompt)
 
     def test_planner_identifies_companies_in_dedicated_key(self) -> None:
         system_prompt, _ = planner.build_planner_prompt(
@@ -808,27 +817,6 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("Sources pour répondre :", messages[1]["content"])
         self.assertIn("Source 1 :", messages[1]["content"])
         self.assertNotIn("Resultat 1", messages[1]["content"])
-
-        generation.generate_multi_source_answer(
-            SimpleNamespace(responses=Responses()),
-            "Compare ces personnes.",
-            "gpt-5.6-luna",
-            "multi_source",
-            [
-                {
-                    "video_title": "Vidéo test",
-                    "video_url": "https://example.test/video",
-                    "chunk_index": 1,
-                    "text": "Information comparative",
-                }
-            ],
-        )
-
-        multi_source_user_prompt = calls[1]["input"][1]["content"]
-        self.assertNotIn("Route planifiee", multi_source_user_prompt)
-        self.assertNotIn("multi_source", multi_source_user_prompt)
-        self.assertIn("Sources pour répondre :", multi_source_user_prompt)
-        self.assertNotIn("Historique", multi_source_user_prompt)
 
     def test_answer_prompts_do_not_require_question_reformulation(self) -> None:
         prompts = [

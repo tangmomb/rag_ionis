@@ -131,6 +131,18 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
             else:
                 sql_span.set_output_text(formatted_sql)
 
+    deduplication = trace.get("deduplication")
+    if isinstance(deduplication, dict):
+        with trace_operation(
+            "deduplicate_videos",
+            kind="TOOL",
+            input_value={
+                "sources": ["persons_in_speakers", "persons_in_transcripts"],
+                "input_count": deduplication.get("input_count", 0),
+            },
+        ) as deduplication_span:
+            deduplication_span.set_output(deduplication)
+
 
 def summarize_sql_results(results: list[Any]) -> list[dict[str, Any]]:
     """Serialize each SQL query result for its Phoenix span."""
@@ -469,6 +481,7 @@ def lookup_video_document(
         for result in transcript_results:
             results_by_video.setdefault(result["chunk_id"], result)
         results = list(results_by_video.values())
+        input_count = len(person_results) + len(transcript_results)
         return results, {
             "mode": intent,
             "lookup_strategy": (
@@ -479,6 +492,14 @@ def lookup_video_document(
             "sql": format_sql_for_trace(transcript_sql),
             "params": transcript_params,
             "result_count": len(results),
+            "deduplication": {
+                "input_count": input_count,
+                "persons_in_speakers_count": len(person_results),
+                "persons_in_transcripts_count": len(transcript_results),
+                "duplicate_count": input_count - len(results),
+                "output_count": len(results),
+                "key": "video_id",
+            },
             "query_result_count": len(transcript_results),
             "query_results": transcript_results,
             "persons_table": {

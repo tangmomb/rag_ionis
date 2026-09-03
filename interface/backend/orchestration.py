@@ -22,7 +22,7 @@ from interface.backend.planner import (
     build_execution_plan,
     build_social_answer,
     extract_video_title_hint,
-    has_structured_sql_filters,
+    has_sql_filters,
     reformulate_question,
     resolve_company_filters,
     resolve_person_filters,

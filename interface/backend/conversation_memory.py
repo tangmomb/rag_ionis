@@ -156,7 +156,7 @@ def normalize_conversation_memory(value: Any) -> dict[str, Any]:
                 "summary": str(topic.get("summary") or "").strip(),
             }
         )
-    # Keep ordering deterministic even if a hand-edited or legacy JSON has duplicate ids.
+    # Keep ordering deterministic even if a hand-edited JSON has duplicate ids.
     for index, topic in enumerate(normalized_previous, start=1):
         topic["id"] = index
     raw_current_id = current.get("id")
@@ -165,13 +165,8 @@ def normalize_conversation_memory(value: Any) -> dict[str, Any]:
         if isinstance(raw_current_id, int) and raw_current_id > len(normalized_previous)
         else len(normalized_previous) + 1
     )
-    # Accept the short-lived former name so existing conversation JSON is migrated
-    # transparently on its next update.
     old_topics_summary = str(
-        value.get("old_topics_summary")
-        or value.get("old_topics")
-        or value.get("previous_topics_summary")
-        or ""
+        value.get("old_topics_summary") or ""
     ).strip()
     return {
         "current_topic": {

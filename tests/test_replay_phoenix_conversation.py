@@ -189,13 +189,13 @@ class ReplayPhoenixConversationTests(unittest.TestCase):
 
         self.assertEqual(
             recorded_names,
-            ["rag.replay", "rag.replay.seed_history"],
+            ["replay", "replay.seed_history"],
         )
         self.assertIn(444, recorded_sessions)
         self.assertEqual(result["replay_trace_id"], "replay-trace")
         self.assertEqual(result["replay_conversation_id"], 444)
         self.assertEqual(
-            recorded_outputs["rag.replay.seed_history"]["seeded_message_count"],
+            recorded_outputs["replay.seed_history"]["seeded_message_count"],
             1,
         )
         self.assertEqual(run_rag.call_args.args[0].conversationId, 444)

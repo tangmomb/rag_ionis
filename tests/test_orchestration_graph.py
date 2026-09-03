@@ -7,9 +7,11 @@ from interface.backend.orchestration_graph import (
     _resolved_plan_companies,
     _resolved_plan_persons,
     _resolved_plan_title_hint,
+    _resolved_plan_title_hints,
+    _resolved_transcript_persons,
     _sql_parent_output,
 )
-from interface.backend.schemas import ExecutionPlan
+from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class ExecutionPlanTraceTests(unittest.TestCase):
@@ -34,6 +36,35 @@ class ExecutionPlanTraceTests(unittest.TestCase):
                 {"resolved_title_hint": "Titre canonique"}
             ),
             "Titre canonique",
+        )
+
+    def test_plan_title_hints_keep_an_explicit_title_when_unresolved(self) -> None:
+        self.assertEqual(
+            _resolved_plan_title_hints(
+                {
+                    "resolved_title_hints": [],
+                    "planner_plan": PlannerPlan(
+                        query_text="Question",
+                        title_hints=["Titre fourni"],
+                    ).model_dump(),
+                }
+            ),
+            ["Titre fourni"],
+        )
+
+    def test_transcript_matches_remain_separate_from_speaker_matches(self) -> None:
+        self.assertEqual(
+            _resolved_transcript_persons(
+                {
+                    "database_persons": ["Marie Martin"],
+                    "person_resolution": {
+                        "suggestion_transcripts": [
+                            {"person": "Marie Martin", "score": 1.0},
+                        ]
+                    },
+                }
+            ),
+            ["Marie Martin"],
         )
 
     def test_sql_parent_excludes_child_query_results(self) -> None:

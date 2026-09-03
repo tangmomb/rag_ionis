@@ -85,7 +85,7 @@ def _response_payload(state: RagResponseState) -> RagRequest:
 def _orchestrate_response(state: RagResponseState) -> dict[str, Any]:
     payload = _response_payload(state)
     with trace_operation(
-        "rag.orchestration",
+        "orchestration",
         kind="AGENT",
         input_value=payload.model_dump(),
     ) as orchestration_span:
@@ -117,7 +117,7 @@ def _generate_response(
     context.answer_client = answer_client
     answer_trace: dict[str, Any] = {}
     with trace_operation(
-        "rag.generation",
+        "generation",
         kind="CHAIN",
         input_value={
             "question": retrieval.get("contextual_question", payload.question),
@@ -187,7 +187,7 @@ def _evaluate_response(
         "source_count": len(state["sources"]),
     }
     with trace_operation(
-        "rag.shadow_evaluation",
+        "shadow_evaluation",
         kind="EVALUATOR",
         input_value=input_value,
     ) as evaluation_span:
@@ -298,7 +298,7 @@ def _correct_response(
         "strategy": "regenerate_answer",
     }
     with trace_operation(
-        "rag.correction",
+        "correction",
         kind="CHAIN",
         input_value={
             "question": retrieval.get("contextual_question", payload.question),
@@ -425,7 +425,7 @@ def _retrieve_for_correction(
         "final_k": final_k,
     }
     with trace_operation(
-        f"rag.correction.{strategy}",
+        f"correction.{strategy}",
         kind="RETRIEVER",
         input_value={
             "question": payload.question,
@@ -529,7 +529,7 @@ def _persist_response(
         "project": telemetry_status().get("project"),
     }
     with trace_operation(
-        "rag.store_message",
+        "store_message",
         kind="TOOL",
         input_value={
             "conversation_id": payload.conversationId,
@@ -544,7 +544,7 @@ def _persist_response(
             topic_id=None,
         )
         with trace_operation(
-            "rag.conversation_memory.update",
+            "conversation_memory.update",
             kind="CHAIN",
             input_value={
                 "conversation_id": conversation_id,
@@ -695,7 +695,7 @@ def run_rag(
     correction_loop_enabled_override: bool | None = None,
 ) -> RagResponse:
     with trace_operation(
-        "rag.request",
+        "request",
         kind="CHAIN",
         input_value={
             "question": payload.question,
@@ -724,8 +724,8 @@ def run_rag(
             ),
         )
         request_span.set_session_id(response.conversation_id)
-        request_span.set_attribute("rag.action", response.action)
-        request_span.set_attribute("rag.source_count", len(response.sources))
+        request_span.set_attribute("action", response.action)
+        request_span.set_attribute("source_count", len(response.sources))
         request_span.set_output(response.model_dump())
         return response
 

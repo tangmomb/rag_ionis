@@ -513,7 +513,7 @@ def generate_final_answer(
         if trace is not None:
             trace["action"] = "answer"
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
-    if route == "search" and retrieval.get("retrieval_mode") == "search+sql":
+    if route == "sql_search":
         return generate_sql_answer(
             client,
             generation_question,
@@ -523,19 +523,9 @@ def generate_final_answer(
             trace,
             prompt_template,
         )
-    if route == "search":
+    if route == "vector_search":
         return generate_answer(
             client, generation_question, answer_model, sources, trace, prompt_template
-        )
-    if route == "sql":
-        return generate_sql_answer(
-            client,
-            generation_question,
-            answer_model,
-            retrieval.get("sql_sub_intent"),
-            sources,
-            trace,
-            prompt_template,
         )
     return generate_answer(
         client, generation_question, answer_model, sources, trace, prompt_template

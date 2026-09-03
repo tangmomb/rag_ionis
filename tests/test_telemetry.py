@@ -109,7 +109,7 @@ class TraceOperationTests(unittest.TestCase):
         }
 
         with patch.object(retrieval, "trace_operation", side_effect=record_trace):
-            retrieval.trace_formatted_sql("rag.sql", trace)
+            retrieval.trace_formatted_sql("sql", trace)
 
         self.assertEqual(
             [item["name"] for item in recorded],

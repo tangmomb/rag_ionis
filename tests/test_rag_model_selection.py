@@ -54,21 +54,20 @@ class RagModelSelectionTests(unittest.TestCase):
             }.issubset(graph.nodes)
         )
 
-    def test_orchestration_graph_preserves_route_precedence(self) -> None:
-        def execution_plan(route: str, *, sql_main_source: bool = False) -> ExecutionPlan:
+    def test_orchestration_graph_uses_the_final_execution_route(self) -> None:
+        def execution_plan(route: str) -> ExecutionPlan:
             return ExecutionPlan(
                 route=route,
                 raw_question="Question",
                 query_text="Question",
                 query_text_bm25="Question",
-                sql_main_source=sql_main_source,
             )
 
         self.assertEqual(
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": True},
-                    "execution_plan": execution_plan("direct").model_dump(),
+                    "execution_plan": execution_plan("person_clarification").model_dump(),
                 }
             ),
             "person_clarification",
@@ -86,9 +85,7 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan(
-                        "search", sql_main_source=True
-                    ).model_dump(),
+                    "execution_plan": execution_plan("sql_search").model_dump(),
                 }
             ),
             "sql_search",
@@ -97,7 +94,7 @@ class RagModelSelectionTests(unittest.TestCase):
             orchestration_graph.select_route(
                 {
                     "person_resolution": {"ambiguous": False},
-                    "execution_plan": execution_plan("search").model_dump(),
+                    "execution_plan": execution_plan("vector_search").model_dump(),
                 }
             ),
             "vector_search",
@@ -307,7 +304,6 @@ class RagModelSelectionTests(unittest.TestCase):
             route="search",
             sql_sub_intent="analytics",
             query_text="Y a-t-il des commentaires ?",
-            sql_main_source=True,
         )
         empty_sql_trace = {
             "mode": "analytics",

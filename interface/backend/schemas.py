@@ -17,6 +17,12 @@ from interface.backend.config import (
 
 
 PlannerRoute = Literal["direct", "search"]
+ExecutionRoute = Literal[
+    "person_clarification",
+    "direct",
+    "sql_search",
+    "vector_search",
+]
 SqlSubIntent = Literal["analytics"]
 AnalyticsScope = Literal["global", "specific"]
 AnalyticsMetric = Literal["all", "views", "likes", "comments"]
@@ -68,8 +74,6 @@ class PlannerPlan(BaseModel):
     published_after: str | None = None
     published_before: str | None = None
     description_requested: bool = False
-    use_rag: bool = False
-    sql_main_source: bool = False
 
     @model_validator(mode="after")
     def _validate_analytics_scope(self) -> "PlannerPlan":
@@ -102,7 +106,9 @@ class PlannerPlan(BaseModel):
 class ExecutionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    route: PlannerRoute = "search"
+    # This is the final, deterministic graph branch.  It deliberately differs
+    # from PlannerPlan.route, which is only the LLM's coarse direct/search intent.
+    route: ExecutionRoute = "vector_search"
     sql_sub_intent: SqlSubIntent | None = None
     analytics_scope: AnalyticsScope | None = None
     analytics_metric: AnalyticsMetric | None = None
@@ -118,8 +124,6 @@ class ExecutionPlan(BaseModel):
     published_after: str | None = None
     published_before: str | None = None
     description_requested: bool = False
-    use_rag: bool = False
-    sql_main_source: bool = False
     top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     final_k: int | None = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 

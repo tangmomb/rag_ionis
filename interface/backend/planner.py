@@ -248,18 +248,9 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def derive_plan_sources(planner_plan: PlannerPlan) -> None:
-    """Déduit les sources d'exécution sans demander ces booléens au LLM."""
-    has_sql_intent = (
-        planner_plan.sql_sub_intent == "analytics" or planner_plan.description_requested
-    )
-
+    """Normalise les seules contraintes de source encore portées par le planner."""
     if planner_plan.route == "direct":
         planner_plan.sql_sub_intent = None
-        planner_plan.use_rag = False
-        planner_plan.sql_main_source = False
-    else:
-        planner_plan.use_rag = True
-        planner_plan.sql_main_source = has_sql_intent
 
 
 def run_planner(
@@ -350,9 +341,18 @@ def build_execution_plan(
     if not bm25_query:
         bm25_query = (planner_plan.query_text or payload.question).strip() or payload.question
 
-    sql_main_source = planner_plan.sql_main_source
+    sql_search = (
+        planner_plan.sql_sub_intent == "analytics"
+        or planner_plan.description_requested
+    )
     return ExecutionPlan(
-        route=planner_plan.route or "search",
+        route=(
+            "direct"
+            if planner_plan.route == "direct"
+            else "sql_search"
+            if sql_search
+            else "vector_search"
+        ),
         sql_sub_intent=planner_plan.sql_sub_intent,
         analytics_scope=planner_plan.analytics_scope,
         analytics_metric=planner_plan.analytics_metric,
@@ -368,10 +368,8 @@ def build_execution_plan(
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
         description_requested=planner_plan.description_requested,
-        use_rag=planner_plan.use_rag,
-        sql_main_source=sql_main_source,
-        top_k=None if sql_main_source else DEFAULT_BM25_LIMIT,
-        final_k=None if sql_main_source else DEFAULT_FINAL_K,
+        top_k=None if sql_search else DEFAULT_BM25_LIMIT,
+        final_k=None if sql_search else DEFAULT_FINAL_K,
     )
 
 

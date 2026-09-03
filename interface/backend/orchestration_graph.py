@@ -16,7 +16,7 @@ from interface.backend.config import (
     DEFAULT_RERANK_MODEL,
 )
 from interface.backend.planner import PERSON_NAME_PART_SIMILARITY_THRESHOLD
-from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
+from interface.backend.schemas import ExecutionPlan, ExecutionRoute, PlannerPlan, RagRequest
 
 
 class RagOrchestrationState(TypedDict, total=False):
@@ -73,6 +73,19 @@ def _execution_plan_trace(
     return execution_plan.model_dump()
 
 
+def _set_execution_route(
+    execution_plan: ExecutionPlan,
+    route: ExecutionRoute,
+) -> None:
+    """Make the executable plan and its effective retrieval source agree."""
+    execution_plan.route = route
+    if route == "vector_search":
+        return
+
+    execution_plan.top_k = None
+    execution_plan.final_k = None
+
+
 def _resolved_plan_persons(state: RagOrchestrationState) -> list[str]:
     """Merge confident speaker and transcript matches into one SQL input list."""
     persons: list[str] = []
@@ -92,22 +105,36 @@ def _resolved_plan_persons(state: RagOrchestrationState) -> list[str]:
 
 
 def _resolved_plan_companies(state: RagOrchestrationState) -> list[str]:
-    """Use only confident company suggestions as executable SQL filters."""
-    return [
+    """Prefer canonical companies without dropping an explicit planner entity."""
+    companies = [
         str(item["company"])
         for item in state.get("company_resolution", {}).get(
             "suggestion_companies", [])
         if float(item.get("score", 0)) >= 0.85
     ]
+    return companies or _planner_plan(state).companies
 
 
 def _resolved_plan_title_hints(state: RagOrchestrationState) -> list[str]:
-    """Use all confident canonical video titles as SQL title filters."""
+    """Use canonical titles when available, otherwise retain explicit title hints."""
     titles = state.get("resolved_title_hints")
-    if isinstance(titles, list):
+    if isinstance(titles, list) and titles:
         return titles
     legacy_title = state.get("resolved_title_hint")
-    return [legacy_title] if isinstance(legacy_title, str) and legacy_title else []
+    if isinstance(legacy_title, str) and legacy_title:
+        return [legacy_title]
+    return _planner_plan(state).title_hints
+
+
+def _resolved_transcript_persons(state: RagOrchestrationState) -> list[str]:
+    """Keep transcript matches distinct from speaker-table matches for SQL."""
+    return [
+        str(item["person"])
+        for item in state.get("person_resolution", {}).get(
+            "suggestion_transcripts", []
+        )
+        if float(item.get("score", 0)) > PERSON_NAME_PART_SIMILARITY_THRESHOLD
+    ]
 
 
 def _resolved_plan_title_hint(state: RagOrchestrationState) -> str | None:
@@ -139,7 +166,7 @@ def reformulate(
     client = _runtime_client(runtime)
     reformulation_model = state["reformulation_model"]
     with services.trace_operation(
-        "rag.reformulation",
+        "reformulation",
         kind="CHAIN",
         input_value={
             "question": payload.question,
@@ -180,7 +207,7 @@ def plan(
     contextual_question = state["contextual_question"]
     planner_model = state["planner_model"]
     with services.trace_operation(
-        "rag.planner",
+        "planner",
         kind="AGENT",
         input_value={"question": contextual_question, "model": planner_model},
     ) as planner_span:
@@ -234,7 +261,7 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
     }
     if planned_persons:
         with services.trace_operation(
-            "rag.person_resolution",
+            "person_resolution",
             kind="CHAIN",
             input_value={"planned_persons": planned_persons},
         ) as person_span:
@@ -253,7 +280,7 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
     }
     if planned_companies:
         with services.trace_operation(
-            "rag.company_resolution",
+            "company_resolution",
             kind="CHAIN",
             input_value={"planned_companies": planned_companies},
         ) as company_span:
@@ -270,7 +297,7 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
     }
     if planned_title_hints:
         with services.trace_operation(
-            "rag.title_resolution",
+            "title_resolution",
             kind="CHAIN",
             input_value={"planned_title_hints": planned_title_hints},
         ) as title_span:
@@ -295,27 +322,33 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     execution_plan.persons = _resolved_plan_persons(state)
     execution_plan.companies = _resolved_plan_companies(state)
     execution_plan.title_hints = _resolved_plan_title_hints(state)
-    # With no LLM SQL sub-intent, each resolved structured entity warrants the
-    # deterministic SQL lookup. This supplies complete enriched transcripts rather
-    # than relying on a few ranked search chunks.
-    if (
-        execution_plan.sql_sub_intent is None
-        and not execution_plan.description_requested
-        and (
-            execution_plan.persons
-            or execution_plan.companies
-            or execution_plan.title_hints
+    # The LLM supplies only the coarse direct/search intent. Once entities have
+    # been resolved, expose the exact graph branch on the final execution plan.
+    if state["person_resolution"].get("ambiguous"):
+        _set_execution_route(execution_plan, "person_clarification")
+    elif execution_plan.route == "direct":
+        _set_execution_route(execution_plan, "direct")
+    elif (
+        execution_plan.route == "sql_search"
+        or (
+            execution_plan.sql_sub_intent is None
+            and not execution_plan.description_requested
+            and (
+                execution_plan.persons
+                or execution_plan.companies
+                or execution_plan.title_hints
+            )
         )
     ):
-        execution_plan.sql_main_source = True
-        execution_plan.use_rag = False
+        _set_execution_route(execution_plan, "sql_search")
+    else:
+        _set_execution_route(execution_plan, "vector_search")
     execution_plan_trace = _execution_plan_trace(execution_plan)
     if not (
-        execution_plan.sql_main_source
-        and execution_plan.route == "search"
+        execution_plan.route == "sql_search"
     ):
         with services.trace_operation(
-            "rag.execution_plan",
+            "execution_plan",
             kind="CHAIN",
             input_value={"planner_plan": planner_plan.model_dump()},
         ) as execution_plan_span:
@@ -349,20 +382,8 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
 
 def select_route(
     state: RagOrchestrationState,
-) -> Literal[
-    "person_clarification",
-    "direct",
-    "sql_search",
-    "vector_search",
-]:
-    if state["person_resolution"].get("ambiguous"):
-        return "person_clarification"
-    execution_plan = _execution_plan(state)
-    if execution_plan.route == "direct":
-        return "direct"
-    if execution_plan.route == "search" and execution_plan.sql_main_source:
-        return "sql_search"
-    return "vector_search"
+) -> ExecutionRoute:
+    return _execution_plan(state).route
 
 
 def person_clarification(state: RagOrchestrationState) -> dict[str, Any]:
@@ -380,7 +401,6 @@ def person_clarification(state: RagOrchestrationState) -> dict[str, Any]:
             payload.rerankModel or "", DEFAULT_RERANK_MODEL
         ),
         "retrieval_mode": "person_clarification",
-        "sql_main_source": execution_plan.sql_main_source,
         "sql_prefilters": False,
         "bm25_top_k": 0,
         "vector_top_k": 0,
@@ -441,12 +461,12 @@ def run_structured_lookup(
         else "specific_persons"
     )
     with services.trace_operation(
-        "rag.execution_plan",
+        "execution_plan",
         kind="CHAIN",
         input_value={"execution_plan": execution_plan_trace},
     ) as execution_plan_span:
         with services.trace_operation(
-            "rag.sql",
+            "sql",
             kind="CHAIN",
             input_value={
                 "execution_plan": execution_plan_trace,
@@ -470,15 +490,28 @@ def run_structured_lookup(
                 )
             else:
                 entity_queries: list[tuple[str, str, ExecutionPlan, dict[str, Any]]] = []
-                for person in execution_plan.persons:
+                # A speaker-table hit and a transcript hit are separate sources,
+                # even when they resolve to the same canonical display name.
+                for person in state["database_persons"]:
                     entity_queries.append(
                         (
-                            "person",
+                            "speaker",
+                            person,
+                            execution_plan.model_copy(
+                                update={"persons": [], "companies": [], "title_hints": []}
+                            ),
+                            {"database_persons": [person], "database_company": [], "transcript_persons": []},
+                        )
+                    )
+                for person in _resolved_transcript_persons(state):
+                    entity_queries.append(
+                        (
+                            "transcript",
                             person,
                             execution_plan.model_copy(
                                 update={"persons": [person], "companies": [], "title_hints": []}
                             ),
-                            {"database_persons": [person], "database_company": [], "transcript_persons": [person]},
+                            {"database_persons": [], "database_company": [], "transcript_persons": [person]},
                         )
                     )
                 for company in execution_plan.companies:
@@ -507,9 +540,15 @@ def run_structured_lookup(
                 sources_by_video: dict[int, dict[str, Any]] = {}
                 entity_traces: list[dict[str, Any]] = []
                 input_count = 0
+                lookup_span_names = {
+                    "speaker": "person_in_speaker_lookup",
+                    "transcript": "person_in_transcript_lookup",
+                    "title": "title_lookup",
+                    "company": "company_lookup",
+                }
                 for entity_type, entity, entity_plan, filters in entity_queries:
                     with services.trace_operation(
-                        "rag.sql.entity_lookup",
+                        lookup_span_names[entity_type],
                         kind="TOOL",
                         input_value={"entity_type": entity_type, "entity": entity},
                     ) as entity_span:
@@ -548,7 +587,7 @@ def run_structured_lookup(
                     },
                 }
             sql_span.set_output(_sql_parent_output(direct_trace))
-            services.trace_formatted_sql("rag.sql", direct_trace)
+            services.trace_formatted_sql("sql", direct_trace)
         execution_plan_span.set_output(
             {
                 "execution_plan": execution_plan_trace,
@@ -575,7 +614,6 @@ def sql_search(
         "embedding_model": None,
         "rerank_model": None,
         "retrieval_mode": "search+sql",
-        "sql_main_source": True,
         "sql_prefilters": services.has_sql_filters(execution_plan),
         "bm25_top_k": 0,
         "vector_top_k": 0,
@@ -604,7 +642,6 @@ def vector_search(state: RagOrchestrationState) -> dict[str, Any]:
     sources, retrieval = services.retrieve_chunks(
         _payload(state), _execution_plan(state)
     )
-    retrieval["route"] = "search"
     retrieval.update(state["base_retrieval"])
     return {"answer": "", "sources": sources, "retrieval": retrieval}
 

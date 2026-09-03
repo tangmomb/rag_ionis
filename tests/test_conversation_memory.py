@@ -207,7 +207,7 @@ class ConversationMemoryTests(unittest.TestCase):
             result = conversation_memory._embedding("Résumé du sujet")
 
         self.assertEqual(result, [0.1, 0.2])
-        self.assertEqual(recorded["name"], "rag.conversation_memory.embedding")
+        self.assertEqual(recorded["name"], "conversation_memory.embedding")
         self.assertEqual(recorded["kind"], "EMBEDDING")
         self.assertEqual(recorded["input_value"]["purpose"], "topic_summary")
         self.assertNotIn("text", recorded["input_value"])

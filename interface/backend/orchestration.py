@@ -44,7 +44,6 @@ def build_direct_retrieval(base_retrieval: dict[str, Any], answer: str, route_na
         "embedding_model": None,
         "rerank_model": None,
         "retrieval_mode": route_name,
-        "sql_main_source": False,
         "sql_prefilters": False,
         "bm25_top_k": 0,
         "vector_top_k": 0,

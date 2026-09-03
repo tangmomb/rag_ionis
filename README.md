@@ -1466,14 +1466,14 @@ privilèges du compte `rag_ionis_analytics` limitent également les tables et
 colonnes accessibles. La requête est passée dans `EXPLAIN`, rejetée si son coût
 dépasse `ANALYTICS_MAX_TOTAL_COST`, puis exécutée avec ce compte read-only, un
 timeout et une limite de lignes. Phoenix expose séparément les spans
-`rag.analytics.sql_generation`, `rag.analytics.sql_validation`,
-`rag.analytics.sql_cost_validation` et `rag.analytics.sql_execution`.
+`analytics.sql_generation`, `analytics.sql_validation`,
+`analytics.sql_cost_validation` et `analytics.sql_execution`.
 
 Le modèle de réponse produit en un seul appel un objet JSON contenant le message
 final et l'action `answer` ou `abstain`. Il choisit `answer` seulement si les
 sources permettent de répondre suffisamment ; il choisit `abstain` si la demande
 est ambiguë ou les preuves insuffisantes. Cette décision est enregistrée dans
-`rag.generation`; aucun appel
+`generation`; aucun appel
 LLM d'évaluation ou de révision supplémentaire n'est effectué.
 
 Le pipeline de réponse est exécuté par un graphe LangGraph séquentiel :
@@ -1485,9 +1485,14 @@ correction bornées ; aucune boucle de correction n'est active actuellement.
 
 Le nœud `orchestrate` appelle lui-même un sous-graphe : `initialize`,
 `reformulate`, `plan`, `resolve_entities` et `build_execution_plan`, puis une
-route conditionnelle parmi `person_clarification`, `direct`, `structured_sql`,
-`multi_source` et `rag`. Cette décomposition reprend les branches historiques de
-`orchestrate_request` sans changer leur comportement.
+route conditionnelle parmi `person_clarification`, `direct`, `sql_search` et
+`vector_search`.
+
+Le `PlannerPlan` conserve le choix LLM volontairement limité à `direct` ou
+`search`. Après résolution des entités et application des règles déterministes,
+le `ExecutionPlan` expose la route finale — l'une de ces quatre branches. Les
+traces Phoenix, le résultat de retrieval et le graphe LangSmith Studio emploient
+ainsi le même nom de route.
 
 Les états des deux graphes contiennent uniquement des dictionnaires, listes et
 valeurs sérialisables. Les objets `RagRequest`, `PlannerPlan` et `ExecutionPlan`
@@ -1497,7 +1502,7 @@ recevoir un checkpointer sans tenter de persister des connexions clientes.
 
 Un nœud `evaluate` est placé entre la génération et la finalisation. Il fonctionne
 uniquement en mode shadow : son diagnostic est enregistré dans le span Phoenix
-`rag.shadow_evaluation`, mais il ne modifie jamais la réponse, l'action ou les
+`shadow_evaluation`, mais il ne modifie jamais la réponse, l'action ou les
 sources retournées. Il est désactivé par défaut ; définir
 `RAG_SHADOW_EVALUATION_ENABLED=true` active l'appel LLM d'observation. Les réponses
 directes ne sont pas évaluées et une erreur de l'évaluateur n'interrompt jamais la
@@ -1618,7 +1623,7 @@ questions et réponses comme contexte, utiliser l'identifiant de sa trace racine
 L'outil retrouve la session via Phoenix, clone dans PostgreSQL tous les messages
 antérieurs à la question cible, puis rejoue uniquement cette question dans une
 nouvelle conversation. Le résultat apparaît dans le projet Phoenix comme une trace
-`rag.replay`, avec un span `rag.replay.seed_history` et tous les spans RAG habituels.
+`replay`, avec un span `replay.seed_history` et tous les spans RAG habituels.
 Ajouter `--dry-run` pour contrôler le contexte sans écrire en base ni appeler les LLM.
 
 Le testeur de modèles permet de comparer OpenAI, Mistral et Google. Le RAG,

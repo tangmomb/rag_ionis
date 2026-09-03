@@ -459,10 +459,10 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertEqual(
             recorded_spans,
             [
-                "rag.analytics.sql_generation",
-                "rag.analytics.sql_validation",
-                "rag.analytics.sql_cost_validation",
-                "rag.analytics.sql_execution",
+                "analytics.sql_generation",
+                "analytics.sql_validation",
+                "analytics.sql_cost_validation",
+                "analytics.sql_execution",
             ],
         )
         self.assertEqual(trace["status"], "executed")
@@ -476,7 +476,7 @@ class AnalyticsSqlTests(unittest.TestCase):
         )
         self.assertNotIn(
             "explain",
-            recorded_outputs["rag.analytics.sql_cost_validation"],
+            recorded_outputs["analytics.sql_cost_validation"],
         )
         self.assertEqual(
             responses.calls[0]["response_schema"],

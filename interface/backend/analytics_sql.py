@@ -433,7 +433,7 @@ def run_analytics_text_to_sql(
         {"role": "user", "content": user_prompt},
     ]
     with trace_operation(
-        "rag.analytics.sql_generation",
+            "analytics.sql_generation",
         kind="AGENT",
         input_value={"question": query.raw_question, "model": model},
     ) as generation_span:
@@ -470,7 +470,7 @@ def run_analytics_text_to_sql(
         generation_span.set_output(generation_trace)
 
     with trace_operation(
-        "rag.analytics.sql_validation",
+            "analytics.sql_validation",
         kind="GUARDRAIL",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as validation_span:
@@ -490,7 +490,7 @@ def run_analytics_text_to_sql(
         return [], trace
 
     with trace_operation(
-        "rag.analytics.sql_cost_validation",
+            "analytics.sql_cost_validation",
         kind="GUARDRAIL",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as cost_span:
@@ -510,7 +510,7 @@ def run_analytics_text_to_sql(
         return [], trace
 
     with trace_operation(
-        "rag.analytics.sql_execution",
+            "analytics.sql_execution",
         kind="TOOL",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as execution_span:

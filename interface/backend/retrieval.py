@@ -415,7 +415,7 @@ def lookup_video_document(
                     "company_title"
                     if query.companies
                     else "persons_table"
-                    if query.persons
+                    if query.persons or database_persons
                     else "generic"
                 ),
                 "sql": format_sql_for_trace(person_sql),
@@ -932,7 +932,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
     rerank_model = normalize_model_name(payload.rerankModel or "", DEFAULT_RERANK_MODEL)
 
     with trace_operation(
-        "rag.retrieval.prefilter",
+        "retrieval.prefilter",
         kind="CHAIN",
         input_value=execution_plan.model_dump(),
     ) as prefilter_span:
@@ -947,12 +947,12 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             "general_question_only": prefilter_debug.get("general_question_only", True),
         }
         prefilter_span.set_output(prefilter_output)
-        trace_formatted_sql("rag.retrieval.prefilter", prefilter_debug)
+        trace_formatted_sql("retrieval.prefilter", prefilter_debug)
 
     question_embedding: list[float] | None = None
     if client is not None and payload.useSql:
         with trace_operation(
-            "rag.retrieval.embedding",
+            "retrieval.embedding",
             kind="CHAIN",
             input_value={
                 "model": embedding_model,
@@ -971,7 +971,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             )
 
     with trace_operation(
-        "rag.retrieval.bm25",
+        "retrieval.bm25",
         kind="CHAIN",
         input_value={
             "query": execution_plan.query_text_bm25,
@@ -980,10 +980,10 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
     ) as bm25_span:
         bm25_chunks, bm25_debug = fetch_bm25_chunks(execution_plan, prefilter_candidate_ids)
         bm25_span.set_output({**bm25_debug, "results": bm25_chunks})
-        trace_formatted_sql("rag.retrieval.bm25", bm25_debug)
+        trace_formatted_sql("retrieval.bm25", bm25_debug)
 
     with trace_operation(
-        "rag.retrieval.vector",
+        "retrieval.vector",
         kind="CHAIN",
         input_value={
             "query": execution_plan.query_text,
@@ -997,10 +997,10 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             prefilter_candidate_ids,
         )
         vector_span.set_output({**vector_debug, "results": vector_chunks})
-        trace_formatted_sql("rag.retrieval.vector", vector_debug)
+        trace_formatted_sql("retrieval.vector", vector_debug)
 
     with trace_operation(
-        "rag.retrieval.rrf",
+        "retrieval.rrf",
         kind="CHAIN",
         input_value={
             "bm25_chunk_ids": [item["chunk_id"] for item in bm25_chunks],
@@ -1017,7 +1017,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
 
     if payload.useRerank:
         with trace_operation(
-            "rag.retrieval.rerank",
+            "retrieval.rerank",
             kind="RERANKER",
             input_value={
                 "query": execution_plan.query_text,
@@ -1049,7 +1049,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         }
 
     with trace_operation(
-        "rag.retrieval.hierarchy",
+        "retrieval.hierarchy",
         kind="CHAIN",
         input_value={
             "strategy": "detail_then_parents",
@@ -1060,7 +1060,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         hierarchy_span.set_output(
             {"trace": hierarchy_debug, "results": final_chunks}
         )
-        trace_formatted_sql("rag.retrieval.hierarchy", hierarchy_debug)
+        trace_formatted_sql("retrieval.hierarchy", hierarchy_debug)
 
     return final_chunks, {
         "answer_model": answer_model,
@@ -1072,7 +1072,6 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         "rrf_top_n": DEFAULT_RRF_TOP_N,
         "final_k": final_k,
         "used_rerank": payload.useRerank and bool(final_chunks),
-        "sql_main_source": execution_plan.sql_main_source,
         "sql_prefilters": prefilter_debug["applied"],
         "general_question_only": prefilter_debug["general_question_only"],
         "sql_query": None,

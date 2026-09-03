@@ -58,7 +58,7 @@ def _embedding(
     text: str,
     *,
     purpose: str = "topic_summary",
-    span_name: str = "rag.conversation_memory.embedding",
+    span_name: str = "conversation_memory.embedding",
 ) -> list[float] | None:
     """Embed memory text and expose the outcome without recording its vector."""
     client = get_openai_client()

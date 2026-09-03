@@ -1480,8 +1480,9 @@ Le pipeline de réponse est exécuté par un graphe LangGraph séquentiel :
 `orchestrate` mène soit à `generate`, soit à `accept_precomputed`, puis les deux
 branches rejoignent `finalize` et `persist`. Les nœuds appellent la logique métier
 existante sans modifier ses prompts, ses routes, son retrieval ou ses traces. Le
-graphe prépare l'ajout ultérieur d'une étape d'évaluation et de boucles de
-correction bornées ; aucune boucle de correction n'est active actuellement.
+LLM de réponse décide directement entre `answer` et `abstain` à partir des
+sources fournies ; aucune étape de jugement ou de correction séparée ne suit la
+génération.
 
 Le nœud `orchestrate` appelle lui-même un sous-graphe : `initialize`,
 `reformulate`, `plan`, `resolve_entities` et `build_execution_plan`, puis une
@@ -1499,20 +1500,6 @@ valeurs sérialisables. Les objets `RagRequest`, `PlannerPlan` et `ExecutionPlan
 sont convertis en dictionnaires entre les nœuds, tandis que les clients LLM sont
 injectés par le contexte d'exécution LangGraph. Les graphes sont ainsi prêts à
 recevoir un checkpointer sans tenter de persister des connexions clientes.
-
-Un nœud `evaluate` est placé entre la génération et la finalisation. Il fonctionne
-uniquement en mode shadow : son diagnostic est enregistré dans le span Phoenix
-`shadow_evaluation`, mais il ne modifie jamais la réponse, l'action ou les
-sources retournées. Il est désactivé par défaut ; définir
-`RAG_SHADOW_EVALUATION_ENABLED=true` active l'appel LLM d'observation. Les réponses
-directes ne sont pas évaluées et une erreur de l'évaluateur n'interrompt jamais la
-requête utilisateur.
-
-Indépendamment du shadow, `RAG_CORRECTION_LOOP_ENABLED=true` déclenche une unique
-recherche élargie lorsque la génération répond `action=abstain`. La génération
-fournit alors une `retry_query` structurée, utilisée comme point de départ pour la
-nouvelle recherche avant de régénérer la réponse. Aucun appel LLM de juge n'est
-effectué.
 
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa

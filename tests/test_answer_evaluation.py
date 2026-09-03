@@ -59,10 +59,6 @@ class RagResponseGraphTests(unittest.TestCase):
                 "orchestrate",
                 "generate",
                 "accept_precomputed",
-                "evaluate",
-                "correct",
-                "retry_retrieval",
-                "expand_retrieval",
                 "finalize",
                 "persist",
             }.issubset(graph.nodes)

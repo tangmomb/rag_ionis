@@ -120,11 +120,10 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("dernier échange", system_prompt)
         self.assertIn("Conserve tous les référents", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
-        self.assertIn("Test obligatoire : on doit pouvoir lire la question reformulée sans son historique et la comprendre", system_prompt)
-        self.assertIn(
-            "leurs noms ou titres précis doivent apparaître dans la question reformulée",
-            system_prompt,
-        )
+        self.assertIn("il ne voit ni historique, ni mémoire, ni `topic`", system_prompt)
+        self.assertIn("consulte aussi `previous_topics` et leurs résumés", system_prompt)
+        self.assertIn("L'autonomie prime sur la concision", system_prompt)
+        self.assertIn("sans inventer de titre ni de nom", system_prompt)
         self.assertIn(
             "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
             "prioritaire) :\n\nuser: Que dit Alice Martin ?",

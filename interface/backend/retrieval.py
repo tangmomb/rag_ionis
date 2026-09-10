@@ -114,7 +114,7 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
         )
         with trace_operation(
             formatted_span_name,
-            kind="CHAIN",
+            kind="RETRIEVER",
             input_value={"params": sql_trace.get("params", [])},
         ) as sql_span:
             query_results = sql_trace.get("query_results")
@@ -135,7 +135,7 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
     if isinstance(deduplication, dict):
         with trace_operation(
             "deduplicate_videos",
-            kind="TOOL",
+            kind="RETRIEVER",
             input_value={
                 "sources": ["persons_in_speakers", "persons_in_transcripts"],
                 "input_count": deduplication.get("input_count", 0),

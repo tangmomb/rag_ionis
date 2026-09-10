@@ -887,7 +887,7 @@ def run_deterministic_analytics(
     trace["candidate_video_count"] = len(video_ids)
     with trace_operation(
         "analytics_total_videos",
-        kind="CHAIN",
+        kind="RETRIEVER",
         input_value={"entity_count": len(entities)},
     ) as total_videos_span:
         total_videos_span.set_output(

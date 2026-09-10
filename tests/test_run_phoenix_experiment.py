@@ -340,6 +340,8 @@ class RunPhoenixExperimentTests(unittest.TestCase):
                 ("Mistral - Medium", "mistral-medium-latest"),
                 ("Mistral - Small", "mistral-small-latest"),
                 ("Mistral - Large", "mistral-large-latest"),
+                ("Mistral - ZAI GLM 5.2", "zai-glm-5-2"),
+                ("Google - Gemini 3.8 Flash", "gemini-3.8-flash"),
                 (
                     "Google - Gemini 3.1 Flash-Lite",
                     "gemini-3.1-flash-lite",

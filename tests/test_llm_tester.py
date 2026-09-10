@@ -60,6 +60,7 @@ class LlmTesterTests(unittest.TestCase):
             ["global", "eu", "us"],
         )
         self.assertIn("gemini-3.6-flash", providers["google"]["models"])
+        self.assertEqual(providers["google"]["defaultModel"], "gemini-3.5-flash-lite")
 
     def test_missing_key_is_reported_before_network_call(self) -> None:
         with (

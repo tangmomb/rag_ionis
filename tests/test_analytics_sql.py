@@ -223,19 +223,20 @@ class AnalyticsSqlTests(unittest.TestCase):
             raw_question="Combien de vues pour Alice chez Acme ?",
             query_text="Combien de vues pour Alice chez Acme ?",
             query_text_bm25="vues Alice Acme",
-            title_hint="Vidéo Alice",
+            title_hints=["Vidéo Alice"],
             persons=["Alice Martin"],
             companies=["acme"],
-            route="rag",
+            route="sql_search",
             sql_sub_intent="analytics",
-            sql_main_source=True,
         )
         lookup_calls: list[dict] = []
         recorded_spans: list[str] = []
+        recorded_kinds: list[str] = []
 
         @contextmanager
-        def record_trace(name: str, **_kwargs):
+        def record_trace(name: str, **kwargs):
             recorded_spans.append(name)
+            recorded_kinds.append(kwargs["kind"])
             yield SimpleNamespace(set_output=lambda _value: None)
 
         def lookup(entity, _query):
@@ -284,6 +285,10 @@ class AnalyticsSqlTests(unittest.TestCase):
                 "analytics_total_videos",
                 "analytics_all_video_stats",
             ],
+        )
+        self.assertEqual(
+            recorded_kinds,
+            ["RETRIEVER"] * 5,
         )
 
     def test_global_analytics_uses_rankings_without_entity_lookup(self) -> None:

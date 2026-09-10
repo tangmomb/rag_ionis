@@ -398,17 +398,25 @@ class LlmProviderTests(unittest.TestCase):
                     response_schema={"type": "object"},
                 )
 
-    def test_google_uses_langchain_chat_model(self) -> None:
+    def test_google_uses_google_genai_sdk(self) -> None:
         raw = {"id": "google-response"}
-        sdk_response = SimpleNamespace(content="Google", model_dump=lambda mode: raw)
+        sdk_response = SimpleNamespace(text="Google", model_dump=lambda mode: raw)
         client = Mock()
-        client.invoke.return_value = sdk_response
+        client.models.generate_content.return_value = sdk_response
+        operation = MagicMock()
+        trace_context = MagicMock()
+        trace_context.__enter__.return_value = operation
         with (
             patch.dict(os.environ, {"GOOGLE_API_KEY": "secret", "GEMINI_API_KEY": ""}, clear=False),
-            patch.object(llm_providers, "ChatGoogleGenerativeAI", return_value=client) as chat_google,
+            patch.object(llm_providers.genai, "Client", return_value=client) as google_client,
+            patch.object(
+                llm_providers,
+                "trace_operation",
+                return_value=trace_context,
+            ),
         ):
             response = llm_providers.create_llm_response(
-                model="gemini-3.6-flash",
+                model="gemini-3.5-flash-lite",
                 input=[
                     {"role": "system", "content": "Réponds brièvement."},
                     {"role": "user", "content": "Bonjour"},
@@ -417,17 +425,34 @@ class LlmProviderTests(unittest.TestCase):
             )
 
         self.assertEqual(response.output_text, "Google")
-        self.assertEqual(chat_google.call_args.kwargs["model"], "gemini-3.6-flash")
-        self.assertEqual(chat_google.call_args.kwargs["max_tokens"], 400)
-        self.assertEqual(client.invoke.call_args.args[0][0]["role"], "system")
+        self.assertEqual(google_client.call_args.kwargs["api_key"], "secret")
+        self.assertEqual(
+            google_client.call_args.kwargs["http_options"].timeout,
+            300_000,
+        )
+        self.assertEqual(
+            google_client.call_args.kwargs["http_options"].retry_options.attempts,
+            5,
+        )
+        request = client.models.generate_content.call_args.kwargs
+        self.assertEqual(request["model"], "gemini-3.5-flash-lite")
+        self.assertEqual(request["config"].max_output_tokens, 400)
+        self.assertEqual(request["config"].system_instruction, "Réponds brièvement.")
+        self.assertEqual(request["config"].service_tier, "priority")
+        self.assertEqual(request["config"].thinking_config.thinking_level.value, "LOW")
+        attributes = {
+            item.args[0]: item.args[1]
+            for item in operation.set_attribute.call_args_list
+        }
+        self.assertEqual(attributes["google.thinking_level.requested"], "low")
 
     def test_google_forwards_thinking_budget(self) -> None:
-        sdk_response = SimpleNamespace(content="Google", model_dump=lambda mode: {})
+        sdk_response = SimpleNamespace(text="Google", model_dump=lambda mode: {})
         client = Mock()
-        client.invoke.return_value = sdk_response
+        client.models.generate_content.return_value = sdk_response
         with (
             patch.dict(os.environ, {"GOOGLE_API_KEY": "secret"}, clear=False),
-            patch.object(llm_providers, "ChatGoogleGenerativeAI", return_value=client) as chat_google,
+            patch.object(llm_providers.genai, "Client", return_value=client),
         ):
             llm_providers.create_llm_response(
                 model="gemini-3.6-flash",
@@ -435,7 +460,29 @@ class LlmProviderTests(unittest.TestCase):
                 thinking_budget=1024,
             )
 
-        self.assertEqual(chat_google.call_args.kwargs["thinking_budget"], 1024)
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(config.thinking_config.thinking_budget, 1024)
+
+    def test_gemini_38_flash_uses_server_default_thinking(self) -> None:
+        sdk_response = SimpleNamespace(text="Google", model_dump=lambda mode: {})
+        client = Mock()
+        client.models.generate_content.return_value = sdk_response
+        with (
+            patch.dict(os.environ, {"GOOGLE_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_providers.genai,
+                "Client",
+                return_value=client,
+            ),
+        ):
+            llm_providers.create_llm_response(
+                model="gemini-3.8-flash",
+                input="Bonjour",
+            )
+
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(config.thinking_config.thinking_level.value, "LOW")
+        self.assertEqual(config.service_tier, "priority")
 
     def test_normalized_response_is_serializable_for_phoenix_traces(self) -> None:
         response = llm_providers.LLMResponse(

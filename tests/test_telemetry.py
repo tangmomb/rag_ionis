@@ -121,6 +121,10 @@ class TraceOperationTests(unittest.TestCase):
         )
         self.assertEqual(recorded[0]["input_value"]["params"], [3])
         self.assertEqual(recorded[1]["input_value"]["params"], [7])
+        self.assertEqual(
+            [item["kind"] for item in recorded],
+            ["RETRIEVER", "RETRIEVER", "RETRIEVER"],
+        )
         self.assertEqual(recorded[2]["output"]["duplicate_count"], 1)
         self.assertEqual(recorded[0]["output"]["result_count"], 1)
         self.assertEqual(

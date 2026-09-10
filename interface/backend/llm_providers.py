@@ -4,7 +4,8 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, Sequence
-from langchain_google_genai import ChatGoogleGenerativeAI
+from google import genai
+from google.genai import types as google_types
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import ChatOpenAI
 
@@ -18,6 +19,14 @@ LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
 LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
 DEFAULT_OPENAI_SERVICE_TIER = "fast"
+GEMINI_THINKING_LEVELS = {
+    "gemini-3.5-flash-lite": "low",
+    "gemini-3.8-flash": "low",
+}
+GEMINI_38_FLASH_SERVICE_TIER = "priority"
+GEMINI_PRIORITY_MODELS = frozenset(
+    {"gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"}
+)
 OPENAI_SERVICE_TIERS = frozenset(
     {"auto", "default", "flex", "scale", "priority", "fast"}
 )
@@ -52,6 +61,7 @@ LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
         "default_model_env": "GOOGLE_LLM_TEST_MODEL",
         "default_model": "gemini-3.5-flash-lite",
         "models": (
+            ("Gemini 3.8 Flash", "gemini-3.8-flash"),
             ("Gemini 3.1 Flash-Lite", "gemini-3.1-flash-lite"),
             ("Gemini 3.6 Flash", "gemini-3.6-flash"),
             ("Gemini 3.5 Flash-Lite", "gemini-3.5-flash-lite"),
@@ -504,49 +514,131 @@ def call_google(
     response_schema: dict[str, Any] | None,
     thinking_budget: int | None,
 ) -> LLMResponse:
-    options: dict[str, Any] = add_runtime_limits(
-        {
-            "model": model.removeprefix("models/"),
-            "api_key": api_key,
-            "request_timeout": configured_request_timeout_seconds(),
-        }
+    normalized_model = model.removeprefix("models/")
+    system_instruction = "\n\n".join(
+        message["content"] for message in messages if message["role"] == "system"
     )
+    contents = [
+        google_types.Content(
+            role="model" if message["role"] == "assistant" else "user",
+            parts=[google_types.Part.from_text(text=message["content"])],
+        )
+        for message in messages
+        if message["role"] != "system"
+    ] or [google_types.Content(role="user", parts=[google_types.Part.from_text(text="")])]
+    config_options: dict[str, Any] = {}
+    if system_instruction:
+        config_options["system_instruction"] = system_instruction
     if max_output_tokens is not None:
-        options["max_tokens"] = max_output_tokens
+        config_options["max_output_tokens"] = max_output_tokens
     if thinking_budget is not None:
-        options["thinking_budget"] = thinking_budget
+        config_options["thinking_config"] = google_types.ThinkingConfig(
+            thinking_budget=thinking_budget
+        )
+    if normalized_model in GEMINI_THINKING_LEVELS:
+        config_options["thinking_config"] = google_types.ThinkingConfig(
+            thinking_level=GEMINI_THINKING_LEVELS[normalized_model]
+        )
+    if normalized_model in GEMINI_PRIORITY_MODELS:
+        config_options["service_tier"] = GEMINI_38_FLASH_SERVICE_TIER
+    if response_schema is not None:
+        config_options["response_mime_type"] = "application/json"
+        config_options["response_json_schema"] = response_schema
+    thinking_config = config_options.get("thinking_config")
+    requested_thinking_level = getattr(thinking_config, "thinking_level", None)
+    if requested_thinking_level is not None:
+        requested_thinking_level = str(
+            getattr(requested_thinking_level, "value", requested_thinking_level)
+        ).lower()
+    else:
+        requested_thinking_level = "none"
+    request_options = {
+        "model": normalized_model,
+        "contents": contents,
+        "config": google_types.GenerateContentConfig(**config_options),
+    }
+    configured_retries = configured_max_retries()
+    retry_attempts = (
+        configured_retries + 1 if configured_retries is not None else 5
+    )
     try:
-        chat = ChatGoogleGenerativeAI(**options)
-        if response_schema is not None:
-            structured_chat = chat.with_structured_output(
-                langchain_response_schema(response_schema),
-                method="json_schema",
-                include_raw=True,
-            )
-            result = invoke_langchain_model(
-                "google",
-                model,
-                messages,
-                lambda: structured_chat.invoke(messages),
-                invocation_parameters={
-                    **traced_invocation_parameters(options),
-                    "response_format": "json_schema",
+        client = genai.Client(
+            api_key=api_key,
+            http_options=google_types.HttpOptions(
+                timeout=round(configured_request_timeout_seconds() * 1_000),
+                retry_options=google_types.HttpRetryOptions(
+                    attempts=retry_attempts,
+                    initial_delay=1,
+                    max_delay=10,
+                    http_status_codes=[408, 429, 500, 502, 503, 504],
+                ),
+            ),
+        )
+        with trace_operation(
+            model,
+            kind="LLM",
+            input_value=messages,
+            attributes={
+                "llm.provider": "google",
+                "llm.system": "google",
+                "llm.model_name": model,
+                "llm.invocation_parameters": {
+                    "model": normalized_model,
+                    "thinking_level": requested_thinking_level,
+                    "service_tier": config_options.get("service_tier"),
+                    "response_format": "json_schema" if response_schema is not None else None,
                 },
+            },
+        ) as operation:
+            add_llm_message_attributes(operation, "llm.input_messages", messages)
+            response = client.models.generate_content(**request_options)
+            response_headers = getattr(
+                getattr(response, "sdk_http_response", None), "headers", {}
+            ) or {}
+            effective_service_tier = response_headers.get(
+                "x-gemini-service-tier"
             )
-            response = result["raw"]
-            parsed = result.get("parsed")
-            if not isinstance(parsed, dict):
-                raise ValueError("Gemini n'a pas renvoyé l'objet JSON structuré attendu.")
-            output_text = json.dumps(parsed, ensure_ascii=False)
-        else:
-            response = invoke_langchain_model(
-                "google",
-                model,
-                messages,
-                lambda: chat.invoke(messages),
-                invocation_parameters=traced_invocation_parameters(options),
+            operation.set_attribute(
+                "google.service_tier.requested",
+                config_options.get("service_tier", "standard"),
             )
-            output_text = content_text(response.content).strip()
+            operation.set_attribute(
+                "google.thinking_level.requested",
+                requested_thinking_level,
+            )
+            if effective_service_tier:
+                operation.set_attribute(
+                    "google.service_tier.effective",
+                    effective_service_tier,
+                )
+            output_text = str(response.text or "").strip()
+            if response_schema is not None:
+                try:
+                    parsed = json.loads(output_text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("Gemini n'a pas renvoyé l'objet JSON structuré attendu.") from exc
+                if not isinstance(parsed, dict):
+                    raise ValueError("Gemini n'a pas renvoyé l'objet JSON structuré attendu.")
+                output_text = json.dumps(parsed, ensure_ascii=False)
+            operation.set_output(response)
+            add_llm_message_attributes(
+                operation,
+                "llm.output_messages",
+                [{"role": "assistant", "content": output_text}],
+            )
+            usage = getattr(response, "usage_metadata", None)
+            operation.set_attribute(
+                "llm.token_count.prompt",
+                getattr(usage, "prompt_token_count", None),
+            )
+            operation.set_attribute(
+                "llm.token_count.completion",
+                getattr(usage, "candidates_token_count", None),
+            )
+            operation.set_attribute(
+                "llm.token_count.total",
+                getattr(usage, "total_token_count", None),
+            )
     except Exception as exc:
         raise LLMProviderError("google", str(exc)) from exc
     payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}

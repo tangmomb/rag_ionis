@@ -1453,11 +1453,11 @@ et reranking. En production, toutes les requêtes RAG sont envoyées à Phoenix 
 forme de traces OpenTelemetry.
 
 L'interface utilisateur ne propose pas de sélecteur de LLM : la reformulation,
-le planner et la génération finale utilisent tous `gemini-3.5-flash-lite`.
+le planner et la génération finale utilisent tous `zai-glm-5-2`.
 Les quatre sorties structurées de ce pipeline — reformulation, planner,
 Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
-niveau de l'API Google.
-Toutes les inférences RAG sont adressées à Gemini.
+niveau de l'API Mistral.
+Toutes les inférences RAG sont adressées à Mistral.
 
 Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
 Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête

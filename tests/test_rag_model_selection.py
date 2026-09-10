@@ -205,7 +205,7 @@ class RagModelSelectionTests(unittest.TestCase):
             "follow_up", client.responses.calls[0]["input"][0]["content"]
         )
 
-    def test_orchestration_uses_gemini_flash_lite_for_every_step(self) -> None:
+    def test_orchestration_uses_zai_glm_for_every_step(self) -> None:
         client = object()
         payload = RagRequest(
             question="Question",
@@ -243,14 +243,14 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(
                 orchestration,
                 "retrieve_chunks",
-                return_value=([], {"answer_model": "gemini-3.5-flash-lite"}),
+                return_value=([], {"answer_model": "zai-glm-5-2"}),
             ),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
         reformulate.assert_called_once()
         self.assertEqual(reformulate.call_args.args[:5], (
-            "Question", None, client, "gemini-3.5-flash-lite", "Prompt reformulation personnalise"
+            "Question", None, client, "zai-glm-5-2", "Prompt reformulation personnalise"
         ))
         self.assertEqual(
             reformulate.call_args.kwargs["memory_context"]["conversation_memory"]["previous_topics"],
@@ -259,12 +259,12 @@ class RagModelSelectionTests(unittest.TestCase):
         run_planner.assert_called_once_with(
             "Question reformulee",
             client,
-            "gemini-3.5-flash-lite",
+            "zai-glm-5-2",
             "Prompt planner personnalise",
         )
-        self.assertEqual(retrieval["reformulation_model"], "gemini-3.5-flash-lite")
-        self.assertEqual(retrieval["planner_model"], "gemini-3.5-flash-lite")
-        self.assertEqual(retrieval["answer_model"], "gemini-3.5-flash-lite")
+        self.assertEqual(retrieval["reformulation_model"], "zai-glm-5-2")
+        self.assertEqual(retrieval["planner_model"], "zai-glm-5-2")
+        self.assertEqual(retrieval["answer_model"], "zai-glm-5-2")
 
     def test_orchestration_uses_one_reformulation_with_conversation_json(self) -> None:
         client = object()

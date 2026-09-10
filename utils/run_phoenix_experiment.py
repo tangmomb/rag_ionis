@@ -69,10 +69,13 @@ LLM_MODEL_LABELS_BY_ID = {
     model_id: label for label, model_id in LLM_MODEL_OPTIONS
 }
 LLM_MODEL_SHORT_NAMES = {
-    RAG_LLM_MODEL_CHOICES[0]: "gemini-3-5-flash-lite",
+    "gpt-5.6-sol": "sol",
+    "gpt-5.6-terra": "terra",
+    "gpt-5.6-luna": "luna",
     "mistral-medium-latest": "mistral-medium",
     "mistral-small-latest": "mistral-small",
     "mistral-large-latest": "mistral-large",
+    "zai-glm-5-2": "zai-glm-5-2",
     "gemini-3.1-flash-lite": "gemini-3-1-flash-lite",
     "gemini-3.6-flash": "gemini-3-6-flash",
     "gemini-3.5-flash-lite": "gemini-3-5-flash-lite",

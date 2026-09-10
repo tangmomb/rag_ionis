@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, Sequence
 from google import genai
 from google.genai import types as google_types
-from langchain_mistralai import ChatMistralAI
 from langchain_openai import ChatOpenAI
+from mistralai.client import Mistral
 
 from interface.backend.telemetry import trace_operation
 
@@ -447,45 +447,63 @@ def call_mistral(
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
 ) -> LLMResponse:
-    options: dict[str, Any] = add_runtime_limits(
-        {
-            "model_name": model,
-            "api_key": api_key,
-            "timeout": configured_request_timeout_seconds(),
-        }
-    )
+    request_messages = list(messages)
+    options: dict[str, Any] = {"model": model, "messages": request_messages}
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
-    try:
-        chat = ChatMistralAI(**options)
-        if response_schema is not None:
-            structured_chat = chat.with_structured_output(
-                langchain_response_schema(response_schema), include_raw=True
+    if response_schema is not None:
+        if model == "zai-glm-5-2":
+            # GLM is served as a third-party model. Its chat endpoint accepts
+            # JSON mode reliably, while json_schema currently returns 400.
+            options["response_format"] = {"type": "json_object"}
+            json_instruction = (
+                "Réponds uniquement avec un objet JSON valide, sans markdown "
+                "ni commentaire supplémentaire."
             )
-            result = invoke_langchain_model(
-                "mistral",
-                model,
-                messages,
-                lambda: structured_chat.invoke(messages),
-                invocation_parameters={
-                    **traced_invocation_parameters(options),
-                    "response_format": "json_schema",
+            if request_messages and request_messages[0]["role"] == "system":
+                request_messages[0] = {
+                    **request_messages[0],
+                    "content": f"{request_messages[0]['content']}\n\n{json_instruction}",
+                }
+            else:
+                request_messages.insert(0, {"role": "system", "content": json_instruction})
+            options["messages"] = request_messages
+        else:
+            options["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "rag_response",
+                    "schema": response_schema,
                 },
-            )
-            parsed = result.get("parsed")
-            response = result["raw"]
+            }
+    try:
+        client = Mistral(
+            api_key=api_key,
+            timeout_ms=int(configured_request_timeout_seconds() * 1000),
+        )
+        response = invoke_langchain_model(
+            "mistral",
+            model,
+            messages,
+            lambda: client.chat.complete(**options),
+            invocation_parameters={
+                **options,
+                "response_format": (
+                    "json_object"
+                    if model == "zai-glm-5-2" and response_schema is not None
+                    else "json_schema"
+                    if response_schema is not None
+                    else None
+                ),
+            },
+        )
+        raw_payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {}
+        output_text = extract_mistral_text(raw_payload)
+        if response_schema is not None:
+            parsed = json.loads(output_text)
             if not isinstance(parsed, dict):
                 raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
             output_text = json.dumps(parsed, ensure_ascii=False)
-        else:
-            response = invoke_langchain_model(
-                "mistral",
-                model,
-                messages,
-                lambda: chat.invoke(messages),
-                invocation_parameters=traced_invocation_parameters(options),
-            )
-            output_text = content_text(response.content).strip()
     except Exception as exc:
         raw_response = getattr(exc, "raw_response", None)
         status_code = getattr(raw_response, "status_code", None)

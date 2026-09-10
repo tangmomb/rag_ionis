@@ -290,7 +290,7 @@ class LlmProviderTests(unittest.TestCase):
         request = chat_openai.call_args.kwargs
         self.assertEqual(request["service_tier"], "fast")
 
-    def test_mistral_uses_langchain_chat_model(self) -> None:
+    def test_mistral_uses_official_chat_sdk(self) -> None:
         raw = {
             "choices": [
                 {"message": {"content": "Mistral"}}
@@ -301,14 +301,14 @@ class LlmProviderTests(unittest.TestCase):
                 "total_tokens": 13,
             },
         }
-        sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: raw)
+        sdk_response = SimpleNamespace(model_dump=lambda mode: raw)
         client = Mock()
-        client.invoke.return_value = sdk_response
+        client.chat.complete.return_value = sdk_response
         with (
             patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
             patch.object(
                 llm_providers,
-                "ChatMistralAI",
+                "Mistral",
                 return_value=client,
             ) as mistral,
         ):
@@ -323,21 +323,19 @@ class LlmProviderTests(unittest.TestCase):
 
         self.assertEqual(response.output_text, "Mistral")
         mistral.assert_called_once_with(
-            model_name="mistral-medium-latest",
             api_key="secret",
-            timeout=llm_providers.REQUEST_TIMEOUT_SECONDS,
-            max_tokens=300,
+            timeout_ms=llm_providers.REQUEST_TIMEOUT_SECONDS * 1000,
         )
-        request = mistral.call_args.kwargs
-        self.assertEqual(request["model_name"], "mistral-medium-latest")
+        request = client.chat.complete.call_args.kwargs
+        self.assertEqual(request["model"], "mistral-medium-latest")
         self.assertEqual(request["max_tokens"], 300)
-        self.assertEqual(client.invoke.call_args.args[0][0]["role"], "system")
+        self.assertEqual(request["messages"][0]["role"], "system")
         self.assertEqual(response.raw_payload, raw)
 
     def test_mistral_runtime_limits_are_configurable(self) -> None:
-        sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: {})
+        sdk_response = SimpleNamespace(model_dump=lambda mode: {})
         client = Mock()
-        client.invoke.return_value = sdk_response
+        client.chat.complete.return_value = sdk_response
         with (
             patch.dict(
                 os.environ,
@@ -350,7 +348,7 @@ class LlmProviderTests(unittest.TestCase):
             ),
             patch.object(
                 llm_providers,
-                "ChatMistralAI",
+                "Mistral",
                 return_value=client,
             ) as mistral,
         ):
@@ -359,16 +357,15 @@ class LlmProviderTests(unittest.TestCase):
                 input=[{"role": "user", "content": "Bonjour"}],
             )
 
-        self.assertEqual(mistral.call_args.kwargs["timeout"], 45.0)
-        self.assertEqual(mistral.call_args.kwargs["max_retries"], 0)
+        self.assertEqual(mistral.call_args.kwargs["timeout_ms"], 45000)
 
     def test_mistral_does_not_set_an_inference_region(self) -> None:
-        sdk_response = SimpleNamespace(content="Mistral", model_dump=lambda mode: {})
+        sdk_response = SimpleNamespace(model_dump=lambda mode: {})
         client = Mock()
-        client.invoke.return_value = sdk_response
+        client.chat.complete.return_value = sdk_response
         with (
             patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
-            patch.object(llm_providers, "ChatMistralAI", return_value=client) as mistral,
+            patch.object(llm_providers, "Mistral", return_value=client) as mistral,
         ):
             llm_providers.create_llm_response(
                 model="mistral-large-latest",
@@ -378,15 +375,12 @@ class LlmProviderTests(unittest.TestCase):
         self.assertNotIn("base_url", mistral.call_args.kwargs)
 
     def test_mistral_rejects_missing_structured_result(self) -> None:
-        raw = SimpleNamespace(content="texte non structure", model_dump=lambda mode: {})
+        raw = SimpleNamespace(model_dump=lambda mode: {"choices": [{"message": {"content": "texte non structure"}}]})
         client = Mock()
-        client.with_structured_output.return_value.invoke.return_value = {
-            "parsed": None,
-            "raw": raw,
-        }
+        client.chat.complete.return_value = raw
         with (
             patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
-            patch.object(llm_providers, "ChatMistralAI", return_value=client),
+            patch.object(llm_providers, "Mistral", return_value=client),
         ):
             with self.assertRaisesRegex(
                 llm_providers.LLMProviderError,

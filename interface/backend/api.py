@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import queue
+import threading
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
@@ -72,17 +76,40 @@ class RagResponseContext:
     shadow_evaluation_model_override: str | None = None
     shadow_evaluation_sink: dict[str, Any] | None = None
     correction_loop_enabled_override: bool | None = None
+    stream_callback: Callable[[str], None] | None = None
+    stage_callback: Callable[[str, str], None] | None = None
 
 
 def _runtime_context(runtime: Runtime[RagResponseContext]) -> RagResponseContext:
     return runtime.context or RagResponseContext()
 
 
+def _stage_node(name: str, node: Callable[..., dict[str, Any]]):
+    def wrapped(state: RagResponseState, runtime: Runtime[RagResponseContext]) -> dict[str, Any]:
+        callback = _runtime_context(runtime).stage_callback
+        if callback is not None:
+            callback(name, "started")
+        try:
+            result = node(state, runtime)
+        except Exception:
+            if callback is not None:
+                callback(name, "failed")
+            raise
+        if callback is not None:
+            callback(name, "completed")
+        return result
+
+    return wrapped
+
+
 def _response_payload(state: RagResponseState) -> RagRequest:
     return RagRequest.model_validate(state["payload"])
 
 
-def _orchestrate_response(state: RagResponseState) -> dict[str, Any]:
+def _orchestrate_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
     payload = _response_payload(state)
     with trace_operation(
         "orchestration",
@@ -133,6 +160,7 @@ def _generate_response(
             sources,
             answer_trace,
             retrieval.get("answer_prompt_override") or payload.answerPrompt,
+            stream_callback=context.stream_callback,
         )
         generation_span.set_output(
             {
@@ -319,6 +347,7 @@ def _correct_response(
                 state["sources"],
                 answer_trace,
                 _correction_prompt(payload.answerPrompt, evaluation, previous_answer),
+                stream_callback=context.stream_callback,
             )
             correction_metadata["succeeded"] = True
         except Exception as exc:  # Une correction ne doit jamais perdre la réponse initiale.
@@ -486,7 +515,10 @@ def _post_retrieval_route(
     return _generation_route(state)
 
 
-def _finalize_response(state: RagResponseState) -> dict[str, Any]:
+def _finalize_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
     answer = state["answer"].replace("\x00", "")
     sources = state["sources"]
     retrieval = state["retrieval"]
@@ -577,11 +609,11 @@ def build_rag_response_graph():
         RagResponseState,
         context_schema=RagResponseContext,
     )
-    graph.add_node("orchestrate", _orchestrate_response)
-    graph.add_node("generate", _generate_response)
-    graph.add_node("accept_precomputed", _accept_precomputed_response)
-    graph.add_node("finalize", _finalize_response)
-    graph.add_node("persist", _persist_response)
+    graph.add_node("orchestrate", _stage_node("orchestrate", _orchestrate_response))
+    graph.add_node("generate", _stage_node("generate", _generate_response))
+    graph.add_node("accept_precomputed", _stage_node("accept_precomputed", _accept_precomputed_response))
+    graph.add_node("finalize", _stage_node("finalize", _finalize_response))
+    graph.add_node("persist", _stage_node("persist", _persist_response))
     graph.add_edge(START, "orchestrate")
     graph.add_conditional_edges("orchestrate", _generation_route)
     graph.add_edge("generate", "finalize")
@@ -645,6 +677,8 @@ def execute_rag(
     shadow_evaluation_model_override: str | None = None,
     shadow_evaluation_sink: dict[str, Any] | None = None,
     correction_loop_enabled_override: bool | None = None,
+    stream_callback: Callable[[str], None] | None = None,
+    stage_callback: Callable[[str, str], None] | None = None,
 ) -> RagResponse:
     if not payload.useSql:
         raise HTTPException(status_code=400, detail="Le backend actuel attend useSql=true pour interroger la base.")
@@ -665,6 +699,8 @@ def execute_rag(
                 correction_loop_enabled_override=(
                     correction_loop_enabled_override
                 ),
+                stream_callback=stream_callback,
+                stage_callback=stage_callback,
             ),
         )
     except ConversationNotFoundError as exc:
@@ -691,6 +727,8 @@ def run_rag(
     shadow_evaluation_model_override: str | None = None,
     shadow_evaluation_sink: dict[str, Any] | None = None,
     correction_loop_enabled_override: bool | None = None,
+    stream_callback: Callable[[str], None] | None = None,
+    stage_callback: Callable[[str, str], None] | None = None,
 ) -> RagResponse:
     with trace_operation(
         "request",
@@ -720,6 +758,8 @@ def run_rag(
             correction_loop_enabled_override=(
                 correction_loop_enabled_override
             ),
+            stream_callback=stream_callback,
+            stage_callback=stage_callback,
         )
         request_span.set_session_id(response.conversation_id)
         request_span.set_attribute("action", response.action)
@@ -755,3 +795,45 @@ def validate_step_models(payload: RagRequest) -> None:
 def rag(payload: RagRequest) -> RagResponse:
     validate_step_models(payload)
     return run_rag(payload)
+
+
+@router.post("/rag/stream")
+def rag_stream(payload: RagRequest) -> StreamingResponse:
+    """Stream the final structured JSON response as raw SSE fragments."""
+    validate_step_models(payload)
+    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def on_fragment(fragment: str) -> None:
+        events.put({"type": "chunk", "text": fragment})
+
+    def on_stage(name: str, status: str) -> None:
+        events.put({"type": "stage", "name": name, "status": status})
+
+    def worker() -> None:
+        try:
+            response = run_rag(
+                payload,
+                stream_callback=on_fragment,
+                stage_callback=on_stage,
+            )
+            events.put({"type": "done", "response": response.model_dump()})
+        except Exception as exc:  # pragma: no cover - surfaced to the browser
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            events.put({"type": "error", "detail": detail})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def event_stream():
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

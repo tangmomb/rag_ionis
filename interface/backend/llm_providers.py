@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, Sequence
 from google import genai
@@ -446,6 +447,7 @@ def call_mistral(
     api_key: str,
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> LLMResponse:
     request_messages = list(messages)
     options: dict[str, Any] = {"model": model, "messages": request_messages}
@@ -481,6 +483,61 @@ def call_mistral(
             api_key=api_key,
             timeout_ms=int(configured_request_timeout_seconds() * 1000),
         )
+        if stream_callback is not None:
+            stream_options = dict(options)
+            fragments: list[str] = []
+            configured_retries = configured_max_retries()
+            max_attempts = 1 + (configured_retries if configured_retries is not None else 2)
+            transient_statuses = {408, 429, 500, 502, 503, 504}
+            for attempt in range(max(1, min(max_attempts, 4))):
+                try:
+                    for event in client.chat.stream(**stream_options):
+                        event_payload = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
+                        if isinstance(event_payload, dict) and isinstance(event_payload.get("data"), dict):
+                            event_payload = event_payload["data"]
+                        if isinstance(event_payload, dict):
+                            choices = event_payload.get("choices", [])
+                            if not choices or not isinstance(choices[0], dict):
+                                continue
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content") if isinstance(delta, dict) else None
+                        else:
+                            data = getattr(event, "data", None)
+                            choices = getattr(data, "choices", []) or []
+                            if not choices:
+                                continue
+                            content = getattr(getattr(choices[0], "delta", None), "content", None)
+                        if isinstance(content, list):
+                            content = "".join(
+                                str(part.get("text", "")) if isinstance(part, dict) else str(getattr(part, "text", ""))
+                                for part in content
+                                if isinstance(part, dict) or getattr(part, "text", None)
+                            )
+                        if isinstance(content, str) and content:
+                            fragments.append(content)
+                            stream_callback(content)
+                    break
+                except Exception as exc:
+                    raw_response = getattr(exc, "raw_response", None)
+                    status_code = getattr(raw_response, "status_code", None) or getattr(exc, "status_code", None)
+                    is_last_attempt = attempt >= max(1, min(max_attempts, 4)) - 1
+                    if fragments or status_code not in transient_statuses or is_last_attempt:
+                        raise
+                    time.sleep(2**attempt)
+            output_text = "".join(fragments)
+            if not output_text.strip():
+                raise ValueError("Mistral n'a renvoyé aucun fragment de contenu dans le flux.")
+            if response_schema is not None:
+                parsed = json.loads(output_text)
+                if not isinstance(parsed, dict):
+                    raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
+                output_text = json.dumps(parsed, ensure_ascii=False)
+            return LLMResponse(
+                provider="mistral",
+                model=model,
+                output_text=output_text,
+                raw_payload={"model": model, "streamed": True, "content": output_text},
+            )
         response = invoke_langchain_model(
             "mistral",
             model,
@@ -506,7 +563,7 @@ def call_mistral(
             output_text = json.dumps(parsed, ensure_ascii=False)
     except Exception as exc:
         raw_response = getattr(exc, "raw_response", None)
-        status_code = getattr(raw_response, "status_code", None)
+        status_code = getattr(raw_response, "status_code", None) or getattr(exc, "status_code", None)
         payload = getattr(exc, "body", None)
         raise LLMProviderError(
             "mistral",
@@ -681,6 +738,7 @@ def create_llm_response(
     thinking_budget: int | None = None,
     openai_base_url: str | None = None,
     openai_service_tier: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> LLMResponse:
     selected_provider = provider or provider_for_model(model)
     api_key = provider_api_key(selected_provider)
@@ -713,6 +771,7 @@ def create_llm_response(
             api_key,
             max_output_tokens,
             response_schema,
+            stream_callback,
         )
     return call_google(
         model,

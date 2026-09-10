@@ -400,6 +400,37 @@ button {
   font-size: 15px;
 }
 
+@keyframes answer-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.answer-enter {
+  animation: answer-enter 260ms ease-out both;
+}
+
+.streaming-json .message-content {
+  margin: 0;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: pre-wrap;
+}
+
+.stream-stage {
+  margin-bottom: 6px;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 .message-content p,
 .message-content ul,
 .message-content ol,

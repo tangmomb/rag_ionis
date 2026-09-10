@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG YouTube IONIS-STM</title>
-    <link rel="stylesheet" href="styles.css?v=8" />
+    <link rel="stylesheet" href="styles.css?v=9" />
   </head>
   <body>
     <main class="app">
@@ -263,7 +263,9 @@
 
       function addMessage(role, content, meta, sources = []) {
         const article = document.createElement("article");
-        article.className = `message ${role}`;
+        article.className = role === "assistant"
+          ? "message assistant answer-enter"
+          : `message ${role}`;
 
         const renderedContent =
           role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
@@ -338,7 +340,7 @@
         const loadingMessage = addLoadingMessage();
 
         try {
-          const response = await fetch(RAG_CONFIG.apiUrl, {
+          const response = await fetch(`${RAG_CONFIG.apiUrl}/stream`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -346,17 +348,63 @@
             body: JSON.stringify(payload),
           });
           if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.detail || "Erreur backend inconnue");
+            throw new Error(await response.text() || "Erreur backend inconnue");
           }
-          const data = await response.json();
-          conversationId = data.conversation_id ?? conversationId;
-          const meta = data.retrieval?.retrieval_mode || "rag";
+          if (!response.body) throw new Error("Le navigateur ne supporte pas le streaming.");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let rawJson = "";
+          let finalResponse = null;
+          const streamingMessage = document.createElement("article");
+          streamingMessage.className = "message assistant streaming-json";
+          streamingMessage.innerHTML = `
+            <div class="message-body">
+              <div class="message-meta"><span>stream json</span></div>
+              <div class="stream-stage" aria-live="polite"></div>
+              <pre class="message-content"></pre>
+            </div>`;
+          messages.appendChild(streamingMessage);
+          const streamOutput = streamingMessage.querySelector("pre");
+          const stageOutput = streamingMessage.querySelector(".stream-stage");
+
+          const consumeEvent = (eventText) => {
+            const line = eventText.split("\n").find((item) => item.startsWith("data: "));
+            if (!line) return;
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "stage") {
+              const stageLabel = `${event.name} · ${event.status}`;
+              stageOutput.textContent = stageLabel;
+            } else if (event.type === "chunk") {
+              rawJson += event.text || "";
+              streamOutput.textContent = rawJson;
+              streamingMessage.scrollIntoView({ behavior: "smooth", block: "start" });
+            } else if (event.type === "done") {
+              finalResponse = event.response;
+            } else if (event.type === "error") {
+              throw new Error(event.detail || "Erreur backend inconnue");
+            }
+          };
+
+          while (true) {
+            const { value, done } = await reader.read();
+            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || "";
+            events.forEach(consumeEvent);
+            if (done) break;
+          }
+          if (buffer.trim()) consumeEvent(buffer);
+          if (!finalResponse) throw new Error("Réponse stream incomplète.");
+          conversationId = finalResponse.conversation_id ?? conversationId;
+          streamingMessage.remove();
+          const meta = finalResponse.retrieval?.retrieval_mode || "rag";
           addMessage(
             "assistant",
-            data.answer || "Reponse vide.",
+            finalResponse.answer || "Réponse vide.",
             meta,
-            data.sources || [],
+            finalResponse.sources || [],
           );
         } catch (error) {
           const message =

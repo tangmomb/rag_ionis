@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import AnswerAction
@@ -74,11 +74,13 @@ def create_answer_response(
     client: LLMClientProtocol,
     answer_model: str,
     input_messages: list[dict[str, str]],
+    stream_callback: Callable[[str], None] | None = None,
 ) -> Any:
     return client.responses.create(
         model=answer_model,
         input=input_messages,
         response_schema=ANSWER_RESPONSE_SCHEMA,
+        stream_callback=stream_callback,
     )
 
 
@@ -278,6 +280,7 @@ def generate_answer(
     sources: list[dict[str, Any]],
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
@@ -335,7 +338,7 @@ def generate_answer(
                 ),
             },
         ]
-    response = create_answer_response(client, answer_model, input_messages)
+    response = create_answer_response(client, answer_model, input_messages, stream_callback)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -392,6 +395,7 @@ def generate_sql_answer(
     sources: list[dict[str, Any]],
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
@@ -429,7 +433,7 @@ def generate_sql_answer(
                 ),
             },
         ]
-    response = create_answer_response(client, answer_model, input_messages)
+    response = create_answer_response(client, answer_model, input_messages, stream_callback)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -444,6 +448,7 @@ def generate_person_clarification_answer(
     person_resolution: dict[str, Any],
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     """Laisse le modèle de réponse formuler l'action face à une personne ambiguë."""
     fallback = (
@@ -475,7 +480,7 @@ def generate_person_clarification_answer(
             ),
         },
     ]
-    response = create_answer_response(client, answer_model, input_messages)
+    response = create_answer_response(client, answer_model, input_messages, stream_callback)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -492,6 +497,7 @@ def generate_final_answer(
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
     judge_feedback: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     generation_question = question
     if judge_feedback:
@@ -508,6 +514,7 @@ def generate_final_answer(
             person_resolution,
             trace,
             prompt_template,
+            stream_callback,
         )
     if route == "direct":
         if trace is not None:
@@ -522,11 +529,12 @@ def generate_final_answer(
             sources,
             trace,
             prompt_template,
+            stream_callback,
         )
     if route == "vector_search":
         return generate_answer(
-            client, generation_question, answer_model, sources, trace, prompt_template
+            client, generation_question, answer_model, sources, trace, prompt_template, stream_callback
         )
     return generate_answer(
-        client, generation_question, answer_model, sources, trace, prompt_template
+        client, generation_question, answer_model, sources, trace, prompt_template, stream_callback
     )

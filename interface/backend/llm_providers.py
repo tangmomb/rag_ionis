@@ -489,55 +489,94 @@ def call_mistral(
             configured_retries = configured_max_retries()
             max_attempts = 1 + (configured_retries if configured_retries is not None else 2)
             transient_statuses = {408, 429, 500, 502, 503, 504}
-            for attempt in range(max(1, min(max_attempts, 4))):
-                try:
-                    for event in client.chat.stream(**stream_options):
-                        event_payload = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
-                        if isinstance(event_payload, dict) and isinstance(event_payload.get("data"), dict):
-                            event_payload = event_payload["data"]
-                        if isinstance(event_payload, dict):
-                            choices = event_payload.get("choices", [])
-                            if not choices or not isinstance(choices[0], dict):
-                                continue
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content") if isinstance(delta, dict) else None
-                        else:
-                            data = getattr(event, "data", None)
-                            choices = getattr(data, "choices", []) or []
-                            if not choices:
-                                continue
-                            content = getattr(getattr(choices[0], "delta", None), "content", None)
-                        if isinstance(content, list):
-                            content = "".join(
-                                str(part.get("text", "")) if isinstance(part, dict) else str(getattr(part, "text", ""))
-                                for part in content
-                                if isinstance(part, dict) or getattr(part, "text", None)
-                            )
-                        if isinstance(content, str) and content:
-                            fragments.append(content)
-                            stream_callback(content)
-                    break
-                except Exception as exc:
-                    raw_response = getattr(exc, "raw_response", None)
-                    status_code = getattr(raw_response, "status_code", None) or getattr(exc, "status_code", None)
-                    is_last_attempt = attempt >= max(1, min(max_attempts, 4)) - 1
-                    if fragments or status_code not in transient_statuses or is_last_attempt:
-                        raise
-                    time.sleep(2**attempt)
-            output_text = "".join(fragments)
-            if not output_text.strip():
-                raise ValueError("Mistral n'a renvoyé aucun fragment de contenu dans le flux.")
-            if response_schema is not None:
-                parsed = json.loads(output_text)
-                if not isinstance(parsed, dict):
-                    raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
-                output_text = json.dumps(parsed, ensure_ascii=False)
-            return LLMResponse(
-                provider="mistral",
-                model=model,
-                output_text=output_text,
-                raw_payload={"model": model, "streamed": True, "content": output_text},
-            )
+            stream_started_at = time.perf_counter()
+            ttft_recorded = False
+            # Streaming bypasses LangChain, so instrument the whole iterator here.
+            # Otherwise Phoenix sees only the parent "generation" operation.
+            with trace_operation(
+                model,
+                kind="LLM",
+                input_value=messages,
+                attributes={
+                    "llm.provider": "mistral",
+                    "llm.system": "mistral",
+                    "llm.model_name": model,
+                    "llm.invocation_parameters": {
+                        **options,
+                        "response_format": (
+                            "json_object"
+                            if model == "zai-glm-5-2" and response_schema is not None
+                            else "json_schema"
+                            if response_schema is not None
+                            else None
+                        ),
+                        "stream": True,
+                    },
+                },
+            ) as operation:
+                add_llm_message_attributes(operation, "llm.input_messages", messages)
+                for attempt in range(max(1, min(max_attempts, 4))):
+                    try:
+                        for event in client.chat.stream(**stream_options):
+                            event_payload = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
+                            if isinstance(event_payload, dict) and isinstance(event_payload.get("data"), dict):
+                                event_payload = event_payload["data"]
+                            if isinstance(event_payload, dict):
+                                choices = event_payload.get("choices", [])
+                                if not choices or not isinstance(choices[0], dict):
+                                    continue
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content") if isinstance(delta, dict) else None
+                            else:
+                                data = getattr(event, "data", None)
+                                choices = getattr(data, "choices", []) or []
+                                if not choices:
+                                    continue
+                                content = getattr(getattr(choices[0], "delta", None), "content", None)
+                            if isinstance(content, list):
+                                content = "".join(
+                                    str(part.get("text", "")) if isinstance(part, dict) else str(getattr(part, "text", ""))
+                                    for part in content
+                                    if isinstance(part, dict) or getattr(part, "text", None)
+                                )
+                            if isinstance(content, str) and content:
+                                if not ttft_recorded:
+                                    operation.set_attribute(
+                                        "llm.ttft_ms",
+                                        round((time.perf_counter() - stream_started_at) * 1_000),
+                                    )
+                                    ttft_recorded = True
+                                fragments.append(content)
+                                stream_callback(content)
+                        break
+                    except Exception as exc:
+                        raw_response = getattr(exc, "raw_response", None)
+                        status_code = getattr(raw_response, "status_code", None) or getattr(exc, "status_code", None)
+                        is_last_attempt = attempt >= max(1, min(max_attempts, 4)) - 1
+                        if fragments or status_code not in transient_statuses or is_last_attempt:
+                            raise
+                        time.sleep(2**attempt)
+                output_text = "".join(fragments)
+                if not output_text.strip():
+                    raise ValueError("Mistral n'a renvoyé aucun fragment de contenu dans le flux.")
+                if response_schema is not None:
+                    parsed = json.loads(output_text)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
+                    output_text = json.dumps(parsed, ensure_ascii=False)
+                raw_payload = {"model": model, "streamed": True, "content": output_text}
+                operation.set_output(raw_payload)
+                add_llm_message_attributes(
+                    operation,
+                    "llm.output_messages",
+                    [{"role": "assistant", "content": output_text}],
+                )
+                return LLMResponse(
+                    provider="mistral",
+                    model=model,
+                    output_text=output_text,
+                    raw_payload=raw_payload,
+                )
         response = invoke_langchain_model(
             "mistral",
             model,

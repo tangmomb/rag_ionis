@@ -549,7 +549,7 @@ def run_structured_lookup(
                 for entity_type, entity, entity_plan, filters in entity_queries:
                     with services.trace_operation(
                         lookup_span_names[entity_type],
-                        kind="TOOL",
+                        kind="RETRIEVER",
                         input_value={"entity_type": entity_type, "entity": entity},
                     ) as entity_span:
                         entity_sources, entity_trace = services.lookup_video_document(

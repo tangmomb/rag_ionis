@@ -108,6 +108,36 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(attributes["llm.token_count.completion"], 4)
         self.assertEqual(attributes["llm.token_count.total"], 16)
 
+    def test_mistral_span_exposes_the_chat_completion_message(self) -> None:
+        operation = MagicMock()
+        trace_context = MagicMock()
+        trace_context.__enter__.return_value = operation
+        response = MagicMock()
+        response.model_dump.return_value = {
+            "choices": [{"message": {"content": "Réponse Mistral"}}]
+        }
+
+        with patch.object(
+            llm_providers,
+            "trace_operation",
+            return_value=trace_context,
+        ):
+            llm_providers.invoke_langchain_model(
+                "mistral",
+                "zai-glm-5-2",
+                [{"role": "user", "content": "Bonjour"}],
+                lambda: response,
+            )
+
+        attributes = {
+            item.args[0]: item.args[1]
+            for item in operation.set_attribute.call_args_list
+        }
+        self.assertEqual(
+            attributes["llm.output_messages.0.message.content"],
+            "Réponse Mistral",
+        )
+
     def test_traced_invocation_parameters_exclude_credentials_and_timeouts(self) -> None:
         parameters = llm_providers.traced_invocation_parameters(
             {

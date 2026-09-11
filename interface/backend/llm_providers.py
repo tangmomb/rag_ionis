@@ -263,7 +263,11 @@ def invoke_langchain_model(
         result = invoke()
         operation.set_output(result)
         response = raw_langchain_response(result)
-        output_text = langchain_result_text(result)
+        output_text = (
+            extract_mistral_text(response.model_dump(mode="json"))
+            if provider == "mistral" and hasattr(response, "model_dump")
+            else langchain_result_text(result)
+        )
         add_llm_message_attributes(
             operation,
             "llm.output_messages",
@@ -454,30 +458,14 @@ def call_mistral(
     if max_output_tokens is not None:
         options["max_tokens"] = max_output_tokens
     if response_schema is not None:
-        if model == "zai-glm-5-2":
-            # GLM is served as a third-party model. Its chat endpoint accepts
-            # JSON mode reliably, while json_schema currently returns 400.
-            options["response_format"] = {"type": "json_object"}
-            json_instruction = (
-                "Réponds uniquement avec un objet JSON valide, sans markdown "
-                "ni commentaire supplémentaire."
-            )
-            if request_messages and request_messages[0]["role"] == "system":
-                request_messages[0] = {
-                    **request_messages[0],
-                    "content": f"{request_messages[0]['content']}\n\n{json_instruction}",
-                }
-            else:
-                request_messages.insert(0, {"role": "system", "content": json_instruction})
-            options["messages"] = request_messages
-        else:
-            options["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "rag_response",
-                    "schema": response_schema,
-                },
-            }
+        options["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "rag_response",
+                "schema": response_schema,
+                "strict": True,
+            },
+        }
     try:
         client = Mistral(
             api_key=api_key,
@@ -491,6 +479,7 @@ def call_mistral(
             transient_statuses = {408, 429, 500, 502, 503, 504}
             stream_started_at = time.perf_counter()
             ttft_recorded = False
+            fallback_response: Any | None = None
             # Streaming bypasses LangChain, so instrument the whole iterator here.
             # Otherwise Phoenix sees only the parent "generation" operation.
             with trace_operation(
@@ -503,13 +492,7 @@ def call_mistral(
                     "llm.model_name": model,
                     "llm.invocation_parameters": {
                         **options,
-                        "response_format": (
-                            "json_object"
-                            if model == "zai-glm-5-2" and response_schema is not None
-                            else "json_schema"
-                            if response_schema is not None
-                            else None
-                        ),
+                        "response_format": "json_schema" if response_schema is not None else None,
                         "stream": True,
                     },
                 },
@@ -558,13 +541,35 @@ def call_mistral(
                         time.sleep(2**attempt)
                 output_text = "".join(fragments)
                 if not output_text.strip():
-                    raise ValueError("Mistral n'a renvoyé aucun fragment de contenu dans le flux.")
+                    # ZAI GLM can accept json_schema for regular completions while
+                    # closing a streaming response without text deltas. Preserve the
+                    # schema contract and return the completed JSON as one fragment.
+                    fallback_response = client.chat.complete(**options)
+                    fallback_payload = (
+                        fallback_response.model_dump(mode="json")
+                        if hasattr(fallback_response, "model_dump")
+                        else {}
+                    )
+                    output_text = extract_mistral_text(fallback_payload)
+                    if not output_text.strip():
+                        raise ValueError("Mistral n'a renvoyé aucun contenu exploitable.")
+                    operation.set_attribute("llm.streaming.fallback", "non_streaming")
+                    stream_callback(output_text)
                 if response_schema is not None:
-                    parsed = json.loads(output_text)
+                    try:
+                        parsed = json.loads(output_text)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            "Mistral n'a pas renvoyé l'objet JSON structuré attendu."
+                        ) from exc
                     if not isinstance(parsed, dict):
                         raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
                     output_text = json.dumps(parsed, ensure_ascii=False)
-                raw_payload = {"model": model, "streamed": True, "content": output_text}
+                raw_payload = (
+                    fallback_response.model_dump(mode="json")
+                    if fallback_response is not None and hasattr(fallback_response, "model_dump")
+                    else {"model": model, "streamed": True, "content": output_text}
+                )
                 operation.set_output(raw_payload)
                 add_llm_message_attributes(
                     operation,
@@ -584,19 +589,18 @@ def call_mistral(
             lambda: client.chat.complete(**options),
             invocation_parameters={
                 **options,
-                "response_format": (
-                    "json_object"
-                    if model == "zai-glm-5-2" and response_schema is not None
-                    else "json_schema"
-                    if response_schema is not None
-                    else None
-                ),
+                "response_format": "json_schema" if response_schema is not None else None,
             },
         )
         raw_payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {}
         output_text = extract_mistral_text(raw_payload)
         if response_schema is not None:
-            parsed = json.loads(output_text)
+            try:
+                parsed = json.loads(output_text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "Mistral n'a pas renvoyé l'objet JSON structuré attendu."
+                ) from exc
             if not isinstance(parsed, dict):
                 raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
             output_text = json.dumps(parsed, ensure_ascii=False)

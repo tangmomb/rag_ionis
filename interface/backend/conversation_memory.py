@@ -117,9 +117,17 @@ MEMORY_SUMMARY_RESPONSE_SCHEMA: dict[str, Any] = {
 MEMORY_SUMMARY_MAX_OUTPUT_TOKENS = 512
 
 EMPTY_CONVERSATION_MEMORY: dict[str, Any] = {
-    "current_topic": {"id": 1, "topic": "", "messages": []},
+    "current_topic": {"id": 1, "topic": "", "messages": [], "videos_discussed": []},
     "previous_topics": [],
 }
+
+
+def normalize_videos_discussed(value: Any) -> list[str]:
+    """Keep topic video titles ordered, non-empty, and unique."""
+    values = value if isinstance(value, list) else []
+    return list(dict.fromkeys(
+        str(item).strip() for item in values if str(item).strip()
+    ))
 
 
 def normalize_conversation_memory(value: Any) -> dict[str, Any]:
@@ -155,6 +163,9 @@ def normalize_conversation_memory(value: Any) -> dict[str, Any]:
                 "id": topic_id,
                 "topic": str(topic.get("topic") or "").strip(),
                 "summary": str(topic.get("summary") or "").strip(),
+                "videos_discussed": normalize_videos_discussed(
+                    topic.get("videos_discussed", topic.get("video_titles"))
+                ),
             }
         )
     # Keep ordering deterministic even if a hand-edited JSON has duplicate ids.
@@ -174,6 +185,9 @@ def normalize_conversation_memory(value: Any) -> dict[str, Any]:
             "id": current_id,
             "topic": str(current.get("topic") or "").strip(),
             "messages": normalized_messages,
+            "videos_discussed": normalize_videos_discussed(
+                current.get("videos_discussed", current.get("video_titles"))
+            ),
         },
         "previous_topics": normalized_previous,
         **(
@@ -290,6 +304,7 @@ def remember_conversation_json_turn(
     answer: str,
     reformulation: dict[str, Any],
     *,
+    videos_discussed: list[str] | None = None,
     summary_client: Any = None,
     summary_model: str = DEFAULT_GENERATION_MODEL,
 ) -> dict[str, Any]:
@@ -301,6 +316,7 @@ def remember_conversation_json_turn(
     current = memory["current_topic"]
     follow_up = bool(reformulation.get("follow_up", False))
     requested_topic = str(reformulation.get("topic") or "").strip()
+    selected_videos_discussed = normalize_videos_discussed(videos_discussed)
     turn = [
         {"role": "user", "content": question.strip()},
         {"role": "assistant", "content": answer.strip()},
@@ -313,12 +329,18 @@ def remember_conversation_json_turn(
             summary_client, summary_model, current["topic"], current["messages"]
         )
         memory["previous_topics"].append(
-            {"id": current["id"], "topic": current["topic"], "summary": summary}
+            {
+                "id": current["id"],
+                "topic": current["topic"],
+                "summary": summary,
+                "videos_discussed": current["videos_discussed"],
+            }
         )
         memory["current_topic"] = {
             "id": current["id"] + 1,
             "topic": requested_topic,
             "messages": turn,
+            "videos_discussed": selected_videos_discussed,
         }
         if (
             memory["current_topic"]["id"] % TOPIC_COMPACTION_THRESHOLD == 0
@@ -336,6 +358,9 @@ def remember_conversation_json_turn(
         if requested_topic:
             current["topic"] = requested_topic
         current["messages"].extend(turn)
+        current["videos_discussed"] = normalize_videos_discussed(
+            [*current["videos_discussed"], *selected_videos_discussed]
+        )
     memory = normalize_conversation_memory(memory)
     try:
         with connect_database() as connection:
@@ -352,6 +377,7 @@ def remember_conversation_json_turn(
             "follow_up": follow_up,
             "topic_changed": topic_changed,
             "current_topic": memory["current_topic"]["topic"],
+            "videos_discussed": memory["current_topic"]["videos_discussed"],
             "previous_topic_count": len(memory["previous_topics"]),
             "summary_trace": summary_trace,
             "old_topics_summary_trace": old_topics_summary_trace,

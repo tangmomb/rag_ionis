@@ -124,6 +124,7 @@ class ConversationMemoryTests(unittest.TestCase):
                 "current_topic": {
                     "topic": "Lou-Ann",
                     "messages": [{"role": "user", "content": "Quel est son job ?"}],
+                    "videos_discussed": ["Portrait de Lou-Ann"],
                 },
                 "previous_topics": [],
             },
@@ -137,6 +138,7 @@ class ConversationMemoryTests(unittest.TestCase):
                 "Et les vues de Simon ?",
                 "Simon a 10 vues.",
                 {"follow_up": False, "topic": "Vues de Simon"},
+                videos_discussed=["Portrait de Simon"],
                 summary_client=client,
             )
 
@@ -146,9 +148,11 @@ class ConversationMemoryTests(unittest.TestCase):
         self.assertEqual(stored["previous_topics"][0]["id"], 1)
         self.assertEqual(stored["previous_topics"][0]["topic"], "Lou-Ann")
         self.assertEqual(stored["previous_topics"][0]["summary"], "Informations utiles sur Lou-Ann.")
+        self.assertEqual(stored["previous_topics"][0]["videos_discussed"], ["Portrait de Lou-Ann"])
         self.assertEqual(stored["current_topic"]["topic"], "Vues de Simon")
         self.assertEqual(stored["current_topic"]["id"], 2)
         self.assertEqual(stored["current_topic"]["messages"][0]["content"], "Et les vues de Simon ?")
+        self.assertEqual(stored["current_topic"]["videos_discussed"], ["Portrait de Simon"])
 
     def test_tenth_topic_compacts_closed_topics_into_one_summary(self) -> None:
         cursor = MagicMock()

@@ -560,6 +560,11 @@ def _persist_response(
         "trace_id": trace_id,
         "project": telemetry_status().get("project"),
     }
+    videos_discussed = list(dict.fromkeys(
+        title
+        for source in state.get("carousel_sources", [])
+        if (title := str(source.get("video_title") or "").strip())
+    ))
     with trace_operation(
         "store_message",
         kind="TOOL",
@@ -582,6 +587,7 @@ def _persist_response(
                 "conversation_id": conversation_id,
                 "message_id": message_id,
                 "question": payload.question,
+                "videos_discussed": videos_discussed,
             },
         ) as memory_span:
             memory_update = remember_conversation_json_turn(
@@ -589,6 +595,7 @@ def _persist_response(
                 payload.question,
                 answer,
                 retrieval.get("question_reformulation") or {},
+                videos_discussed=videos_discussed,
                 summary_client=answer_client,
                 summary_model=retrieval.get("answer_model") or DEFAULT_GENERATION_MODEL,
             )

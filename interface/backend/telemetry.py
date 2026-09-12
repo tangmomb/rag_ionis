@@ -103,6 +103,57 @@ def shutdown_telemetry() -> None:
         pass
 
 
+def record_trace_score_annotations(
+    trace_id: str | None,
+    scores: dict[str, int | float],
+) -> None:
+    """Publish numeric trace scores for Phoenix's period-based Metrics charts.
+
+    The request path never waits for this best-effort API call.  The trace is
+    flushed first so the annotation endpoint can resolve its trace ID.
+    """
+    if not _ENABLED or not trace_id or not scores:
+        return
+    normalized_scores = {
+        str(name): float(score)
+        for name, score in scores.items()
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    }
+    if not normalized_scores:
+        return
+
+    collector_endpoint = os.getenv(
+        "PHOENIX_COLLECTOR_ENDPOINT",
+        "http://localhost:6006/v1/traces",
+    ).rstrip("/")
+    base_url = collector_endpoint.removesuffix("/v1/traces")
+
+    def publish() -> None:
+        try:
+            if _TRACER_PROVIDER is not None:
+                _TRACER_PROVIDER.force_flush(timeout_millis=5_000)
+            from phoenix.client import Client
+
+            client = Client(base_url=base_url)
+            for annotation_name, score in normalized_scores.items():
+                client.traces.add_trace_annotation(
+                    trace_id=trace_id,
+                    annotation_name=annotation_name,
+                    annotator_kind="CODE",
+                    score=score,
+                    metadata={"unit": "ms", "metric_type": "latency"},
+                )
+        except Exception:
+            # A metrics write must never affect the user request.
+            pass
+
+    threading.Thread(
+        target=publish,
+        name="phoenix-trace-metrics",
+        daemon=True,
+    ).start()
+
+
 def _json_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
 

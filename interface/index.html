@@ -120,6 +120,8 @@
       const messages = document.getElementById("messages");
       const composer = document.getElementById("composer");
       const question = document.getElementById("question");
+      const submitButton = composer.querySelector('button[type="submit"]');
+      const suggestedQuestionButtons = document.querySelectorAll(".suggested-question");
       const suggestedQuestions = document.getElementById("suggestedQuestions");
       const headerThumbnails = document.getElementById("headerThumbnails");
       let conversationId = null;
@@ -132,6 +134,13 @@
         useSql: true,
         useRerank: true,
       };
+
+      function setComposerLocked(locked, placeholder = "Que recherchez vous ?") {
+        question.disabled = locked;
+        submitButton.disabled = locked;
+        question.placeholder = placeholder;
+        suggestedQuestionButtons.forEach((button) => (button.disabled = locked));
+      }
 
       async function loadHeaderThumbnails() {
         try {
@@ -363,6 +372,7 @@
         };
 
         suggestedQuestions.hidden = true;
+        setComposerLocked(true, "Recherche en cours…");
         addMessage("user", text, "envoi frontend");
         const loadingMessage = addLoadingMessage();
 
@@ -384,6 +394,8 @@
           let buffer = "";
           let rawJson = "";
           let finalResponse = null;
+          let finalResponseDisplayed = false;
+          let memoryFinished = false;
           const streamingMessage = document.createElement("article");
           streamingMessage.className = "message assistant streaming-json";
           streamingMessage.innerHTML = `
@@ -409,6 +421,24 @@
               streamingMessage.scrollIntoView({ behavior: "smooth", block: "start" });
             } else if (event.type === "done") {
               finalResponse = event.response;
+              if (!finalResponseDisplayed) {
+                finalResponseDisplayed = true;
+                conversationId = finalResponse.conversation_id ?? conversationId;
+                streamingMessage.remove();
+                const meta = finalResponse.retrieval?.retrieval_mode || "rag";
+                addMessage(
+                  "assistant",
+                  finalResponse.answer || "Réponse vide.",
+                  meta,
+                  finalResponse.sources || [],
+                  finalResponse.message_id,
+                );
+                loadingMessage.remove();
+                setComposerLocked(true, "Mise à jour de la mémoire…");
+              }
+            } else if (event.type === "memory") {
+              memoryFinished = true;
+              setComposerLocked(false);
             } else if (event.type === "error") {
               throw new Error(event.detail || "Erreur backend inconnue");
             }
@@ -424,16 +454,7 @@
           }
           if (buffer.trim()) consumeEvent(buffer);
           if (!finalResponse) throw new Error("Réponse stream incomplète.");
-          conversationId = finalResponse.conversation_id ?? conversationId;
-          streamingMessage.remove();
-          const meta = finalResponse.retrieval?.retrieval_mode || "rag";
-          addMessage(
-            "assistant",
-            finalResponse.answer || "Réponse vide.",
-            meta,
-            finalResponse.sources || [],
-            finalResponse.message_id,
-          );
+          if (!memoryFinished) setComposerLocked(false);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Erreur reseau inconnue";
@@ -444,6 +465,7 @@
           );
         } finally {
           loadingMessage.remove();
+          setComposerLocked(false);
         }
       }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -385,6 +386,95 @@ class RagResponseGraphTests(unittest.TestCase):
 
         self.assertEqual(result["answer"], "Réponse corrigée")
 
+    def test_persist_signals_response_before_updating_memory(self) -> None:
+        ready_responses = []
+        state = {
+            "payload": RagRequest(question="Question", conversationId=3).model_dump(),
+            "answer": "Réponse finale",
+            "answer_action": "answer",
+            "carousel_sources": [_source()],
+            "retrieval": {"answer_model": "mistral-medium-latest"},
+        }
+
+        def update_memory(*_args, **_kwargs):
+            self.assertEqual(len(ready_responses), 1)
+            self.assertEqual(ready_responses[0].answer, "Réponse finale")
+            return {"available": True}
+
+        with (
+            patch.object(api, "store_chat_message", return_value=(3, 9)),
+            patch.object(api, "remember_conversation_json_turn", side_effect=update_memory),
+            patch.object(api, "current_trace_id", return_value="trace-1"),
+            patch.object(api, "telemetry_status", return_value={"project": "test"}),
+        ):
+            result = api._persist_response(
+                state,
+                Runtime(
+                    context=api.RagResponseContext(
+                        answer_client=object(),
+                        response_ready_callback=ready_responses.append,
+                    )
+                ),
+            )
+
+        self.assertEqual(result, {"conversation_id": 3, "message_id": 9})
+        self.assertEqual(ready_responses[0].message_id, 9)
+
+    def test_run_rag_records_stream_latency_milestones(self) -> None:
+        attributes: dict[str, object] = {}
+
+        class RequestSpan:
+            def set_attribute(self, name, value):
+                attributes[name] = value
+
+            def set_session_id(self, _value):
+                return None
+
+            def set_output(self, _value):
+                return None
+
+        @contextmanager
+        def fake_trace_operation(*_args, **_kwargs):
+            yield RequestSpan()
+
+        response = api.RagResponse(
+            conversation_id=3,
+            message_id=9,
+            answer="Réponse finale",
+            action="answer",
+            sources=[],
+            retrieval={},
+        )
+
+        def execute(_payload, **kwargs):
+            kwargs["stream_callback"]("{")
+            kwargs["response_ready_callback"](response)
+            return response
+
+        with (
+            patch.object(api, "trace_operation", fake_trace_operation),
+            patch.object(api, "execute_rag", side_effect=execute),
+            patch.object(api.time, "perf_counter", side_effect=[10, 10.123, 11.5, 12]),
+            patch.object(api, "current_trace_id", return_value="trace-1"),
+            patch.object(api, "record_trace_score_annotations") as record_scores,
+        ):
+            api.run_rag(
+                RagRequest(question="Question"),
+                stream_callback=lambda _fragment: None,
+            )
+
+        self.assertEqual(attributes["rag.ttft_ms"], 123)
+        self.assertEqual(attributes["rag.answer_ready_ms"], 1500)
+        self.assertEqual(attributes["rag.completed_ms"], 2000)
+        record_scores.assert_called_once_with(
+            "trace-1",
+            {
+                "rag_ttft_ms": 123,
+                "rag_answer_ready_ms": 1500,
+                "rag_completed_ms": 2000,
+            },
+        )
+
     def test_graph_runs_one_correction_then_finalizes(self) -> None:
         diagnostics = [
             {
@@ -402,7 +492,7 @@ class RagResponseGraphTests(unittest.TestCase):
             },
         ]
 
-        def generate(_client, _question, _model, _retrieval, _sources, trace, _prompt):
+        def generate(_client, _question, _model, _retrieval, _sources, trace, _prompt, **_kwargs):
             trace.update({"action": "answer", "source_indexes": [1]})
             return "Réponse initiale" if generator.call_count == 1 else "Réponse corrigée"
 

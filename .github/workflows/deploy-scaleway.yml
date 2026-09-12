@@ -1,4 +1,4 @@
-name: Publish Scaleway GPU image
+name: Deploy Scaleway GPU - Container registry
 
 on:
   push:
@@ -22,7 +22,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run Scaleway configuration tests
+        run: python -m unittest tests.test_scaleway_configuration tests.test_scaleway_command_builder
+
+      - name: Validate Scaleway shell scripts
+        shell: bash
+        run: bash -n deploy/publish-image.sh deploy/publish-scaleway-image.sh deploy/deploy-scaleway-worker.sh
+
   build:
+    needs: validate
     runs-on: [self-hosted, Windows, X64, gpu-image-builder]
     environment: production-scaleway
     steps:

@@ -182,7 +182,7 @@ jobs:
         shell: bash
         env:
           REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
-          REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD }}
+          REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD || secrets.SCW_SECRET_KEY }}
         run: |
           set -euo pipefail
           test -n "${REGISTRY_NAMESPACE}" || { echo 'Missing repository variable SCW_REGISTRY_NAMESPACE' >&2; exit 1; }
@@ -217,7 +217,7 @@ jobs:
         with:
           registry: ${{ vars.SCW_REGISTRY_NAMESPACE }}
           username: nologin
-          password: ${{ secrets.SCW_REGISTRY_PASSWORD }}
+          password: ${{ secrets.SCW_REGISTRY_PASSWORD || secrets.SCW_SECRET_KEY }}
 
       - uses: docker/build-push-action@v7
         with:

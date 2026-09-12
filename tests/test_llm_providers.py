@@ -50,6 +50,57 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(schema["title"], "rag_response")
         self.assertEqual(schema["type"], "object")
 
+    def test_structured_response_rejects_missing_required_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "topic"):
+            llm_providers.validate_structured_response(
+                {"follow_up": True, "reformulated_question": "Question"},
+                {
+                    "type": "object",
+                    "required": ["follow_up", "reformulated_question", "topic"],
+                },
+                "Mistral",
+            )
+
+    def test_structured_response_emits_a_validation_span(self) -> None:
+        operation = MagicMock()
+        context = MagicMock()
+        context.__enter__.return_value = operation
+        with patch.object(llm_providers, "trace_operation", return_value=context) as trace:
+            result = llm_providers.validate_structured_response(
+                {"follow_up": True, "topic": "Aymerich"},
+                {"type": "object", "required": ["follow_up", "topic"]},
+                "Mistral",
+            )
+
+        self.assertEqual(result["topic"], "Aymerich")
+        trace.assert_called_once_with(
+            "structured_output_validation",
+            kind="CHAIN",
+            input_value={
+                "provider": "mistral",
+                "required_keys": ["follow_up", "topic"],
+                "returned_keys": ["follow_up", "topic"],
+            },
+        )
+        operation.set_output.assert_called_once_with({"valid": True})
+
+    def test_invalid_json_validation_emits_a_failed_span(self) -> None:
+        operation = MagicMock()
+        context = MagicMock()
+        context.__enter__.return_value = operation
+        with patch.object(llm_providers, "trace_operation", return_value=context):
+            with self.assertRaisesRegex(ValueError, "objet JSON structuré attendu"):
+                llm_providers.validate_structured_response(
+                    None,
+                    {"type": "object", "required": ["topic"]},
+                    "Mistral",
+                    failure_reason="invalid_json",
+                )
+
+        operation.set_output.assert_called_once_with(
+            {"valid": False, "reason": "invalid_json"}
+        )
+
     def test_manual_llm_span_exposes_phoenix_message_cards_and_token_usage(self) -> None:
         operation = MagicMock()
         trace_context = MagicMock()

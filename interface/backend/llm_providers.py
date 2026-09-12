@@ -239,6 +239,49 @@ def langchain_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return {"title": "rag_response", **schema}
 
 
+def validate_structured_response(
+    value: Any,
+    schema: dict[str, Any],
+    provider_label: str,
+    *,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    """Apply the schema's object and required-key contract after generation.
+
+    Providers can occasionally return valid JSON that omits required fields,
+    even when JSON Schema mode was requested.  Reject it before it reaches the
+    calling workflow rather than silently applying defaults.
+    """
+    required_keys = [str(key) for key in schema.get("required", [])]
+    returned_keys = sorted(str(key) for key in value) if isinstance(value, dict) else []
+    with trace_operation(
+        "structured_output_validation",
+        kind="CHAIN",
+        input_value={
+            "provider": provider_label.lower(),
+            "required_keys": required_keys,
+            "returned_keys": returned_keys,
+        },
+    ) as validation_span:
+        if not isinstance(value, dict):
+            validation_span.set_output(
+                {"valid": False, "reason": failure_reason or "response_is_not_an_object"}
+            )
+            raise ValueError(
+                f"{provider_label} n'a pas renvoyé l'objet JSON structuré attendu."
+            )
+        missing = [key for key in required_keys if key not in value]
+        if missing:
+            validation_span.set_output(
+                {"valid": False, "reason": "missing_required_keys", "missing_keys": missing}
+            )
+            raise ValueError(
+                f"{provider_label} a omis les champs JSON requis : {', '.join(missing)}."
+            )
+        validation_span.set_output({"valid": True})
+    return value
+
+
 def invoke_langchain_model(
     provider: LLMProvider,
     model: str,
@@ -457,6 +500,7 @@ def call_openai(
                 },
             )
             parsed = result["parsed"]
+            validate_structured_response(parsed, response_schema, "OpenAI")
             response = result["raw"]
             output_text = json.dumps(parsed, ensure_ascii=False)
         else:
@@ -596,12 +640,11 @@ def call_mistral(
                 if response_schema is not None:
                     try:
                         parsed = json.loads(output_text)
-                    except json.JSONDecodeError as exc:
-                        raise ValueError(
-                            "Mistral n'a pas renvoyé l'objet JSON structuré attendu."
-                        ) from exc
-                    if not isinstance(parsed, dict):
-                        raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
+                    except json.JSONDecodeError:
+                        validate_structured_response(
+                            None, response_schema, "Mistral", failure_reason="invalid_json"
+                        )
+                    validate_structured_response(parsed, response_schema, "Mistral")
                     output_text = json.dumps(parsed, ensure_ascii=False)
                 raw_payload = (
                     fallback_response.model_dump(mode="json")
@@ -639,12 +682,11 @@ def call_mistral(
         if response_schema is not None:
             try:
                 parsed = json.loads(output_text)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    "Mistral n'a pas renvoyé l'objet JSON structuré attendu."
-                ) from exc
-            if not isinstance(parsed, dict):
-                raise ValueError("Mistral n'a pas renvoyé l'objet JSON structuré attendu.")
+            except json.JSONDecodeError:
+                validate_structured_response(
+                    None, response_schema, "Mistral", failure_reason="invalid_json"
+                )
+            validate_structured_response(parsed, response_schema, "Mistral")
             output_text = json.dumps(parsed, ensure_ascii=False)
     except Exception as exc:
         raw_response = getattr(exc, "raw_response", None)
@@ -775,10 +817,11 @@ def call_google(
             if response_schema is not None:
                 try:
                     parsed = json.loads(output_text)
-                except json.JSONDecodeError as exc:
-                    raise ValueError("Gemini n'a pas renvoyé l'objet JSON structuré attendu.") from exc
-                if not isinstance(parsed, dict):
-                    raise ValueError("Gemini n'a pas renvoyé l'objet JSON structuré attendu.")
+                except json.JSONDecodeError:
+                    validate_structured_response(
+                        None, response_schema, "Gemini", failure_reason="invalid_json"
+                    )
+                validate_structured_response(parsed, response_schema, "Gemini")
                 output_text = json.dumps(parsed, ensure_ascii=False)
             operation.set_output(response)
             add_llm_message_attributes(

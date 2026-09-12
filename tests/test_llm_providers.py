@@ -29,7 +29,7 @@ class LlmProviderTests(unittest.TestCase):
             "mistral",
         )
         self.assertEqual(
-            llm_providers.provider_for_model("zai-glm-5-2"),
+            llm_providers.provider_for_model("mistral-medium-latest"),
             "mistral",
         )
         self.assertEqual(
@@ -175,7 +175,7 @@ class LlmProviderTests(unittest.TestCase):
         ):
             llm_providers.invoke_langchain_model(
                 "mistral",
-                "zai-glm-5-2",
+                "mistral-medium-latest",
                 [{"role": "user", "content": "Bonjour"}],
                 lambda: response,
             )

@@ -75,7 +75,6 @@ LLM_MODEL_SHORT_NAMES = {
     "mistral-medium-latest": "mistral-medium",
     "mistral-small-latest": "mistral-small",
     "mistral-large-latest": "mistral-large",
-    "zai-glm-5-2": "zai-glm-5-2",
     "gemini-3.1-flash-lite": "gemini-3-1-flash-lite",
     "gemini-3.6-flash": "gemini-3-6-flash",
     "gemini-3.5-flash-lite": "gemini-3-5-flash-lite",

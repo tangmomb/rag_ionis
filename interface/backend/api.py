@@ -806,7 +806,7 @@ def validate_step_models(payload: RagRequest) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Le RAG utilise uniquement zai-glm-5-2."
+                    "Le RAG utilise uniquement mistral-medium-latest."
                 ),
             )
         try:

@@ -50,7 +50,7 @@ class LlmTesterTests(unittest.TestCase):
             providers["openai"]["generationControls"]["verbosity"],
             ["low", "medium", "high"],
         )
-        self.assertIn("zai-glm-5-2", providers["mistral"]["models"])
+        self.assertIn("mistral-medium-latest", providers["mistral"]["models"])
         self.assertEqual(
             [region["id"] for region in providers["mistral"]["regions"]],
             [],

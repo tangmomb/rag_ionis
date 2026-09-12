@@ -1453,7 +1453,7 @@ et reranking. En production, toutes les requêtes RAG sont envoyées à Phoenix 
 forme de traces OpenTelemetry.
 
 L'interface utilisateur ne propose pas de sélecteur de LLM : la reformulation,
-le planner et la génération finale utilisent tous `zai-glm-5-2`.
+le planner et la génération finale utilisent tous `mistral-medium-latest`.
 Les quatre sorties structurées de ce pipeline — reformulation, planner,
 Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
 niveau de l'API Mistral.

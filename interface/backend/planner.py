@@ -182,7 +182,8 @@ def build_planner_prompt(
         "Exemples : « Qui est Lou Ann ? », « Quelles questions pose-t-on à Fadila ? » → search/false ; « Combien de vues a sa vidéo ? » → search/true.\n\n"
         "2. Remplir les paramètres analytics.\n"
         "- Si analytics=false : tous les champs analytics_* valent null.\n"
-        "- Sinon, analytics_scope='global' pour tout le corpus, 'specific' pour une vidéo, personne, entreprise ou titre.\n"
+        "- analytics_scope='global' est autorisé uniquement si title_hints, persons et companies sont tous vides : la statistique porte alors sur tout le corpus.\n"
+        "- Dès qu'au moins un élément est présent dans title_hints, persons ou companies, analytics_scope doit être 'specific', même si la question demande un classement ou « le plus de vues ».\n"
         "- Scope specific : analytics_metric, analytics_order, analytics_rank_start et analytics_rank_end valent null.\n"
         "- Scope global avec classement : analytics_metric='views', 'likes' ou 'comments' ; analytics_order='desc' pour les plus élevés, 'asc' pour les moins élevés ; analytics_rank_start/end délimitent les rangs demandés (top 5 : 1 à 5).\n"
         "- Scope global sans classement : analytics_metric='all', analytics_order=null, rangs 1 à 3.\n\n"
@@ -249,6 +250,10 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["analytics_scope"] = (
         analytics_scope if sql_sub_intent == "analytics" and analytics_scope in {"global", "specific"} else None
     )
+    if normalized["analytics_scope"] == "global" and any(
+        normalized.get(key) for key in ("title_hints", "persons", "companies")
+    ):
+        normalized["analytics_scope"] = "specific"
     if normalized["analytics_scope"] == "global":
         metric = str(normalized.get("analytics_metric") or "").strip().lower()
         order = str(normalized.get("analytics_order") or "").strip().lower() or None

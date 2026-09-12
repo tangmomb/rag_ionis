@@ -52,13 +52,12 @@ ANSWER_RESPONSE_SCHEMA: dict[str, Any] = {
         },
         "source_indexes": {
             "type": "array",
-            # ZAI GLM rejects numeric constraints and uniqueItems in Mistral's
-            # json_schema relay. Index bounds and deduplication are enforced by
+            # Mistral's json_schema relay rejects numeric constraints and uniqueItems.
+            # Index bounds and deduplication are enforced by
             # parse_answer_output below.
             "items": {"type": "integer"},
         },
-        # Keep the nullable form consistent with the planner schema, which
-        # ZAI GLM accepts in Mistral's json_schema mode.
+        # Keep the nullable form consistent with the planner schema.
         "retry_query": {
             "anyOf": [{"type": "string"}, {"type": "null"}],
         },

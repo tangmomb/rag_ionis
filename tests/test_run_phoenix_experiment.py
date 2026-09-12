@@ -37,9 +37,9 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
 
         self.assertEqual(request.question, "Ma question ?")
-        self.assertEqual(request.reformulationModel, "zai-glm-5-2")
-        self.assertEqual(request.plannerModel, "zai-glm-5-2")
-        self.assertEqual(request.answerModel, "zai-glm-5-2")
+        self.assertEqual(request.reformulationModel, "mistral-medium-latest")
+        self.assertEqual(request.plannerModel, "mistral-medium-latest")
+        self.assertEqual(request.answerModel, "mistral-medium-latest")
         self.assertEqual(request.reformulationPrompt, "Prompt reformulation")
         self.assertEqual(request.plannerPrompt, "Prompt planner")
         self.assertEqual(request.answerPrompt, "Prompt reponse")
@@ -311,9 +311,9 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args.dataset, "cases_phoenix")
         self.assertEqual(args.experiment_name, "rag-gui")
-        self.assertEqual(args.reformulation_model, "zai-glm-5-2")
-        self.assertEqual(args.planner_model, "zai-glm-5-2")
-        self.assertEqual(args.answer_model, "zai-glm-5-2")
+        self.assertEqual(args.reformulation_model, "mistral-medium-latest")
+        self.assertEqual(args.planner_model, "mistral-medium-latest")
+        self.assertEqual(args.answer_model, "mistral-medium-latest")
         self.assertEqual(args.openai_service_tier, "fast")
 
     def test_openai_service_tier_labels_cover_gui_choices(self) -> None:
@@ -340,7 +340,6 @@ class RunPhoenixExperimentTests(unittest.TestCase):
                 ("Mistral - Medium", "mistral-medium-latest"),
                 ("Mistral - Small", "mistral-small-latest"),
                 ("Mistral - Large", "mistral-large-latest"),
-                ("Mistral - ZAI GLM 5.2", "zai-glm-5-2"),
                 ("Google - Gemini 3.8 Flash", "gemini-3.8-flash"),
                 (
                     "Google - Gemini 3.1 Flash-Lite",
@@ -390,13 +389,13 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         settings = run_phoenix_experiment.RagExperimentSettings()
 
         name = run_phoenix_experiment.experiment_name_with_models(
-            "rag-v1_zai-glm-5-2_zai-glm-5-2_zai-glm-5-2",
+            "rag-v1_mistral-medium_mistral-medium_mistral-medium",
             settings,
         )
 
         self.assertEqual(
             name,
-            "rag-v1_zai-glm-5-2_zai-glm-5-2_zai-glm-5-2",
+            "rag-v1_mistral-medium_mistral-medium_mistral-medium",
         )
 
     def test_experiment_name_distinguishes_external_providers(self) -> None:

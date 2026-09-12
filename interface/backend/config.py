@@ -9,8 +9,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
 load_project_env(PROJECT_DIR)
 
-DEFAULT_RAG_LLM_MODEL = "zai-glm-5-2"
-# Toutes les étapes d'inférence du RAG utilisent ZAI GLM 5.2 via Mistral.
+DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
+# Toutes les étapes d'inférence du RAG utilisent Mistral Medium via Mistral.
 DEFAULT_REFORMULATION_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_ANALYTICS_SQL_MODEL = DEFAULT_RAG_LLM_MODEL

@@ -53,7 +53,6 @@ LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
             ("Medium", "mistral-medium-latest"),
             ("Small", "mistral-small-latest"),
             ("Large", "mistral-large-latest"),
-            ("ZAI GLM 5.2", "zai-glm-5-2"),
         ),
     },
     "google": {
@@ -173,9 +172,7 @@ def provider_for_model(model: str) -> LLMProvider:
     normalized = str(model or "").strip().casefold()
     if normalized.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-")):
         return "openai"
-    if normalized.startswith(
-        ("mistral-", "ministral-", "codestral-", "pixtral-", "zai-")
-    ):
+    if normalized.startswith(("mistral-", "ministral-", "codestral-", "pixtral-")):
         return "mistral"
     if normalized.startswith("gemini-"):
         return "google"
@@ -183,7 +180,7 @@ def provider_for_model(model: str) -> LLMProvider:
         "unknown",
         (
             f"Fournisseur impossible à déduire du modèle {model!r}. "
-            "Utilise un identifiant gpt-*, mistral-*, zai-* ou gemini-*."
+            "Utilise un identifiant gpt-*, mistral-* ou gemini-*."
         ),
     )
 
@@ -623,9 +620,8 @@ def call_mistral(
                         time.sleep(2**attempt)
                 output_text = "".join(fragments)
                 if not output_text.strip():
-                    # ZAI GLM can accept json_schema for regular completions while
-                    # closing a streaming response without text deltas. Preserve the
-                    # schema contract and return the completed JSON as one fragment.
+                    # Some Mistral models can close a JSON-schema stream without text
+                    # deltas. Preserve the contract with a regular completion fallback.
                     fallback_response = client.chat.complete(**options)
                     fallback_payload = (
                         fallback_response.model_dump(mode="json")

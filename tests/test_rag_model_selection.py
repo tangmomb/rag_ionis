@@ -73,6 +73,35 @@ class RagModelSelectionTests(unittest.TestCase):
         self.assertFalse(verified)
         self.assertEqual(plan.output_rejection_reason, "analytics_scope_missing")
 
+    def test_entity_filters_force_specific_analytics_scope(self) -> None:
+        normalized = planner.normalize_planner_output({
+            "route": "search",
+            "analytics": True,
+            "analytics_scope": "global",
+            "analytics_metric": "views",
+            "analytics_order": "desc",
+            "analytics_rank_start": 1,
+            "analytics_rank_end": 2,
+            "query_text": "Les deux vidéos Novares les plus vues",
+            "title_hints": ["Témoignage Tuteur : Loïc Maréchal, Directeur HSE, Novares"],
+            "persons": ["Loïc Maréchal"],
+            "companies": ["Novares"],
+        })
+
+        self.assertEqual(normalized["analytics_scope"], "specific")
+        self.assertIsNone(normalized["analytics_metric"])
+        self.assertIsNone(normalized["analytics_order"])
+        self.assertIsNone(normalized["analytics_rank_start"])
+        self.assertIsNone(normalized["analytics_rank_end"])
+
+        plan = PlannerPlan(
+            query_text="Les deux vidéos Novares les plus vues",
+            sql_sub_intent="analytics",
+            analytics_scope="global",
+            title_hints=["Témoignage Tuteur : Loïc Maréchal, Directeur HSE, Novares"],
+        )
+        self.assertEqual(plan.analytics_scope, "specific")
+
     def test_orchestration_graph_exposes_existing_planning_and_retrieval_routes(self) -> None:
         graph = orchestration_graph.RAG_ORCHESTRATION_GRAPH.get_graph()
 
@@ -241,7 +270,7 @@ class RagModelSelectionTests(unittest.TestCase):
             "follow_up", client.responses.calls[0]["input"][0]["content"]
         )
 
-    def test_orchestration_uses_zai_glm_for_every_step(self) -> None:
+    def test_orchestration_uses_mistral_medium_for_every_step(self) -> None:
         client = object()
         payload = RagRequest(
             question="Question",
@@ -279,14 +308,14 @@ class RagModelSelectionTests(unittest.TestCase):
             patch.object(
                 orchestration,
                 "retrieve_chunks",
-                return_value=([], {"answer_model": "zai-glm-5-2"}),
+                return_value=([], {"answer_model": "mistral-medium-latest"}),
             ),
         ):
             _answer, _sources, retrieval = orchestration.orchestrate_request(payload)
 
         reformulate.assert_called_once()
         self.assertEqual(reformulate.call_args.args[:5], (
-            "Question", None, client, "zai-glm-5-2", "Prompt reformulation personnalise"
+            "Question", None, client, "mistral-medium-latest", "Prompt reformulation personnalise"
         ))
         self.assertEqual(
             reformulate.call_args.kwargs["memory_context"]["conversation_memory"]["previous_topics"],
@@ -295,12 +324,12 @@ class RagModelSelectionTests(unittest.TestCase):
         run_planner.assert_called_once_with(
             "Question reformulee",
             client,
-            "zai-glm-5-2",
+            "mistral-medium-latest",
             "Prompt planner personnalise",
         )
-        self.assertEqual(retrieval["reformulation_model"], "zai-glm-5-2")
-        self.assertEqual(retrieval["planner_model"], "zai-glm-5-2")
-        self.assertEqual(retrieval["answer_model"], "zai-glm-5-2")
+        self.assertEqual(retrieval["reformulation_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["planner_model"], "mistral-medium-latest")
+        self.assertEqual(retrieval["answer_model"], "mistral-medium-latest")
 
     def test_orchestration_uses_one_reformulation_with_conversation_json(self) -> None:
         client = object()

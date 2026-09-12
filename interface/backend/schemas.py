@@ -79,7 +79,11 @@ class PlannerPlan(BaseModel):
     @model_validator(mode="after")
     def _validate_analytics_scope(self) -> "PlannerPlan":
         if self.sql_sub_intent == "analytics":
-            self.analytics_scope = self.analytics_scope or "specific"
+            self.analytics_scope = (
+                "specific"
+                if self.title_hints or self.persons or self.companies
+                else self.analytics_scope or "specific"
+            )
             if self.analytics_scope == "global":
                 self.analytics_metric = self.analytics_metric or "all"
                 self.analytics_rank_start = self.analytics_rank_start or 1
@@ -136,7 +140,11 @@ class ExecutionPlan(BaseModel):
     @model_validator(mode="after")
     def _validate_analytics_scope(self) -> "ExecutionPlan":
         if self.sql_sub_intent == "analytics":
-            self.analytics_scope = self.analytics_scope or "specific"
+            self.analytics_scope = (
+                "specific"
+                if self.title_hints or self.persons or self.companies
+                else self.analytics_scope or "specific"
+            )
             if self.analytics_scope == "global":
                 self.analytics_metric = self.analytics_metric or "all"
                 self.analytics_rank_start = self.analytics_rank_start or 1

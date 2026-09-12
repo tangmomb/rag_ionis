@@ -297,12 +297,9 @@ class AnalyticsSqlTests(unittest.TestCase):
             raw_question="Quelle vidéo a le plus de vues sur la chaîne ?",
             query_text="Quelle vidéo a le plus de vues sur la chaîne ?",
             query_text_bm25="plus de vues chaîne",
-            title_hints=["Vidéo de contexte"],
-            persons=["Alice Martin"],
-            route="rag",
+            route="sql_search",
             sql_sub_intent="analytics",
             analytics_scope="global",
-            sql_main_source=True,
         )
         source = {"chunk_id": 1, "video_title": "La plus vue", "video_url": "https://example.test/1", "text": "stats", "stats": []}
         with (

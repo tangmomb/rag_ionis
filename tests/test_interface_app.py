@@ -65,10 +65,10 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(selected_sources, [sources[1]])
 
     def test_llm_steps_use_the_configured_models(self) -> None:
-        self.assertEqual(DEFAULT_PLANNER_MODEL, "zai-glm-5-2")
-        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "zai-glm-5-2")
-        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "zai-glm-5-2")
-        self.assertEqual(DEFAULT_GENERATION_MODEL, "zai-glm-5-2")
+        self.assertEqual(DEFAULT_PLANNER_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_REFORMULATION_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_GENERATION_MODEL, "mistral-medium-latest")
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
@@ -803,7 +803,7 @@ class InterfaceAppTests(unittest.TestCase):
         generation.generate_sql_answer(
             SimpleNamespace(responses=Responses()),
             "Donne-moi les chiffres de cette vidéo.",
-            "zai-glm-5-2",
+            "mistral-medium-latest",
             "analytics",
             [
                 {
@@ -1062,7 +1062,7 @@ class InterfaceAppTests(unittest.TestCase):
             },
         )
 
-    def test_llm_model_catalog_exposes_only_the_rag_zai_model(self) -> None:
+    def test_llm_model_catalog_exposes_only_the_rag_medium_model(self) -> None:
         response = TestClient(app).get("/api/llm-models")
 
         self.assertEqual(response.status_code, 200)
@@ -1070,19 +1070,19 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(
             data["defaults"],
             {
-                "reformulationModel": "zai-glm-5-2",
-                "plannerModel": "zai-glm-5-2",
-                "answerModel": "zai-glm-5-2",
+                "reformulationModel": "mistral-medium-latest",
+                "plannerModel": "mistral-medium-latest",
+                "answerModel": "mistral-medium-latest",
             },
         )
         self.assertEqual(data["models"], [{
             "provider": "mistral",
             "provider_label": "Mistral",
             "label": "Medium",
-            "id": "zai-glm-5-2",
+            "id": "mistral-medium-latest",
         }])
 
-    def test_public_rag_endpoint_forces_zai_glm_for_every_step(self) -> None:
+    def test_public_rag_endpoint_forces_medium_for_every_step(self) -> None:
         request = {
             "question": "Bonjour",
             "reformulationModel": "gemini-3.6-flash",
@@ -1104,9 +1104,9 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         validated = run_rag.call_args.args[0]
-        self.assertEqual(validated.reformulationModel, "zai-glm-5-2")
-        self.assertEqual(validated.plannerModel, "zai-glm-5-2")
-        self.assertEqual(validated.answerModel, "zai-glm-5-2")
+        self.assertEqual(validated.reformulationModel, "mistral-medium-latest")
+        self.assertEqual(validated.plannerModel, "mistral-medium-latest")
+        self.assertEqual(validated.answerModel, "mistral-medium-latest")
 
     def test_request_schema_remains_available_from_app(self) -> None:
         payload = RagRequest(question="Bonjour")

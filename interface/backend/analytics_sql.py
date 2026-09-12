@@ -85,26 +85,56 @@ qui répond exactement à la question, sans répondre toi-même.
 
 {ANALYTICS_SCHEMA_PROMPT}
 
+Organisation des données :
+- `videos` contient une ligne par vidéo YouTube : ses métadonnées stables,
+  dont `id`, `title`, `url`, `thumbnail_medium_url`, `video_type` et
+  `published_at` (date de publication, qui n'est pas une date de statistique).
+- `stats` est l'historique des relevés : plusieurs lignes par `video_id`.
+  Chaque ligne porte les compteurs (`view_count`, `like_count`,
+  `comment_count`) à `snapshot_date`; `data_collected_date`, puis `id`,
+  départagent deux relevés du même jour.
+- `speakers` et `video_speakers` relient les personnes aux vidéos.
+- `comments` contient les commentaires individuels ; `is_deleted=false`
+  désigne les commentaires encore actifs.
+
 Règles :
 - Une seule requête SELECT/CTE, tables ci-dessus seulement, sans commentaire ni ;.
 - Toute valeur utilisateur va dans params via %s, dans le même ordre. Pas de SELECT *.
 - Pour les stats actuelles, prends le dernier snapshot de chaque vidéo avec un LIMIT 1
   corrélé (`WHERE stats.video_id = v.id`), jamais un LIMIT 1 global.
+- Toute requête qui lit `stats` doit sélectionner et retourner au moins une date
+  de snapshot, sous un alias contenant `snapshot_date` (par exemple
+  `s.snapshot_date AS stats_snapshot_date`). Cette date est transmise au LLM
+  qui rédige la réponse.
 - `title_hints` vide signifie aucun filtre `v.title`; sinon filtre avec l'un des titres fournis.
   N'invente jamais un titre depuis une description. Une interview impose
   `v.video_type = %s` avec `interview`.
 - Toute liste de vidéos retourne `video_id`, `video_title`, `video_url` et
-  `thumbnail_medium_url`; maximum {MAX_ANALYTICS_ROWS} lignes non agrégées.
+  `thumbnail_medium_url`. Une limite de sûreté est ajoutée après exécution :
+  ne l'ajoute pas comme objectif de la requête.
 - Plusieurs speakers = OR/IN, jamais AND, sauf coapparition explicitement demandée.
-- Une comparaison retourne les stats de tous les éléments concernés : jamais de LIMIT
-  1 final/global; trie seulement si utile. Toute limite finale doit être au moins 6.
-  Le seul LIMIT 1 autorisé est celui, corrélé, qui sélectionne le dernier snapshot.
+- La requête SQL doit résoudre le problème, pas renvoyer une population pour que
+  le LLM de réponse choisisse ensuite. Si la question demande un seul gagnant,
+  une seule vidéo ou une valeur unique, calcule, trie si nécessaire et retourne
+  directement une ligne avec `LIMIT 1`. Pour une comparaison d'éléments nommés,
+  retourne uniquement tous ces éléments, sans limite arbitraire. Le `LIMIT 1`
+  final est autorisé ; le `LIMIT 1` qui sélectionne un snapshot reste corrélé à
+  sa vidéo.
+- Pour une demande à une date ou entre deux dates de statistiques, travaille sur
+  `stats.snapshot_date` (et non `videos.published_at`). Retourne les dates de
+  snapshot effectivement retenues avec chaque valeur ; pour une comparaison,
+  retourne les deux valeurs, leurs dates et l'écart calculé.
+- La question originale et sa reformulation contextuelle sont toutes deux
+  fournies. Préserve l'intention de la question originale : « gagné »,
+  « progressé » ou « perdu » implique une évolution entre snapshots, pas le
+  classement de la valeur actuelle.
 
 Exemple unique — comparaison de speakers :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.view_count FROM videos v JOIN video_speakers vs ON vs.video_id = v.id JOIN speakers sp ON sp.id = vs.speaker_id JOIN LATERAL (SELECT view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE WHERE sp.name ILIKE %s OR sp.name ILIKE %s ORDER BY s.view_count DESC NULLS LAST","params":["%Déborah Rolland%","%Simon Payen%"]}}
+{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.snapshot_date AS stats_snapshot_date, s.view_count FROM videos v JOIN video_speakers vs ON vs.video_id = v.id JOIN speakers sp ON sp.id = vs.speaker_id JOIN LATERAL (SELECT snapshot_date, view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE WHERE sp.name ILIKE %s OR sp.name ILIKE %s ORDER BY s.view_count DESC NULLS LAST","params":["%Déborah Rolland%","%Simon Payen%"]}}
 """
     context = {
-        "question": question,
+        "question_originale": question,
+        "question_contextualisee": query.query_text,
         "title_hints": query.title_hints,
         "persons": database_persons or query.persons,
         "companies_requested": query.companies,
@@ -231,6 +261,10 @@ def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
         errors.append("missing_allowed_relation")
     if unknown_relations:
         errors.append("unknown_relations:" + ",".join(unknown_relations))
+    if "stats" in relations and not re.search(
+        r"\bas\s+[a-z_]*snapshot_date\b", sql_without_literals, re.IGNORECASE
+    ):
+        errors.append("stats_snapshot_date_required")
 
     if not isinstance(params, list):
         errors.append("params_must_be_list")
@@ -422,7 +456,7 @@ def run_analytics_text_to_sql(
         return [], trace
 
     system_prompt, user_prompt = build_analytics_sql_prompt(
-        query.query_text or query.raw_question,
+        query.raw_question or query.query_text,
         query,
         database_persons,
         database_companies,
@@ -522,6 +556,19 @@ def run_analytics_text_to_sql(
             execution_span.set_output(execution)
             trace.update(execution)
             return [], trace
+
+    if "stats" in validation["relations"] and not any(
+        "snapshot_date" in column.lower()
+        for column in execution.get("columns", [])
+    ):
+        trace.update(
+            {
+                "status": "stats_snapshot_date_missing_from_result",
+                "execution": execution,
+                "result_count": 0,
+            }
+        )
+        return [], trace
 
     trace.update(
         {

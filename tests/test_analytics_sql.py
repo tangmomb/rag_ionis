@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -40,13 +41,14 @@ class _Cursor:
                 SimpleNamespace(name="video_title"),
                 SimpleNamespace(name="video_url"),
                 SimpleNamespace(name="view_count"),
+                SimpleNamespace(name="stats_snapshot_date"),
             ]
 
     def fetchone(self):
         return ([{"Plan": {"Node Type": "Limit", "Total Cost": 12.34}}],)
 
     def fetchall(self):
-        return [(12, "Vidéo populaire", "https://example.test/video", 21136)]
+        return [(12, "Vidéo populaire", "https://example.test/video", 21136, "2026-09-12")]
 
 
 class _Connection:
@@ -66,8 +68,8 @@ class _Connection:
 class AnalyticsSqlTests(unittest.TestCase):
     def test_prompt_exposes_only_analytics_schema_and_latest_snapshot_rule(self) -> None:
         query = ExecutionPlan(
-            raw_question="Quelle vidéo a le plus de vues ?",
-            query_text="Quelle vidéo a le plus de vues ?",
+            raw_question="Quelle vidéo a gagné le plus de vues ?",
+            query_text="Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
             query_text_bm25="plus de vues",
         )
 
@@ -80,9 +82,9 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertIn("stats(", system_prompt)
         self.assertIn("dernier snapshot", system_prompt)
         self.assertIn("jamais un LIMIT 1 global", system_prompt)
-        self.assertIn("comparaison retourne les stats", system_prompt)
-        self.assertIn("Toute limite finale doit être au moins 6", system_prompt)
-        self.assertIn("Le seul LIMIT 1 autorisé", system_prompt)
+        self.assertIn("comparaison d'éléments nommés", system_prompt)
+        self.assertIn("requête SQL doit résoudre le problème", system_prompt)
+        self.assertIn("directement une ligne avec `LIMIT 1`", system_prompt)
         self.assertIn("jamais AND", system_prompt)
         self.assertIn("WHERE sp.name ILIKE %s OR sp.name ILIKE %s", system_prompt)
         self.assertIn("thumbnail_medium_url AS thumbnail_medium_url", system_prompt)
@@ -90,9 +92,12 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertIn("invente jamais un titre", system_prompt)
         self.assertIn("v.id AS video_id", system_prompt)
         self.assertIn("SELECT", system_prompt)
+        self.assertIn("entre deux dates de statistiques", system_prompt)
+        self.assertIn("snapshot effectivement retenues", system_prompt)
         self.assertEqual(system_prompt.count("Exemple"), 1)
         self.assertNotIn("transcripts(", system_prompt)
-        self.assertIn("Quelle vidéo a le plus de vues ?", user_prompt)
+        self.assertIn("Quelle vidéo a gagné le plus de vues ?", user_prompt)
+        self.assertIn("Parmi les vidéos discutées", user_prompt)
 
     def test_analytics_source_keeps_returned_thumbnail(self) -> None:
         sources = analytics_sql.analytics_rows_to_sources(
@@ -114,8 +119,8 @@ class AnalyticsSqlTests(unittest.TestCase):
 
     def test_validator_accepts_safe_parameterized_ranking(self) -> None:
         sql = (
-            "SELECT v.id AS video_id, v.title AS video_title, s.view_count "
-            "FROM videos v JOIN LATERAL (SELECT view_count FROM stats "
+            "SELECT v.id AS video_id, v.title AS video_title, s.snapshot_date AS stats_snapshot_date, s.view_count "
+            "FROM videos v JOIN LATERAL (SELECT snapshot_date, view_count FROM stats "
             "WHERE video_id = v.id ORDER BY snapshot_date DESC LIMIT 1) s ON TRUE "
             "ORDER BY s.view_count DESC LIMIT %s"
         )
@@ -124,6 +129,14 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["relations"], ["stats", "videos"])
+
+    def test_validator_requires_a_snapshot_date_in_stats_results(self) -> None:
+        sql = "SELECT view_count FROM stats WHERE video_id = %s"
+
+        validation = analytics_sql.validate_analytics_sql(sql, [42])
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("stats_snapshot_date_required", validation["errors"])
 
     def test_validator_rejects_global_latest_stats_cte(self) -> None:
         sql = (
@@ -416,7 +429,7 @@ class AnalyticsSqlTests(unittest.TestCase):
     def test_text_to_sql_is_validated_explained_executed_and_traced(self) -> None:
         sql = (
             "SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, "
-            "s.view_count FROM videos v JOIN LATERAL (SELECT view_count FROM stats "
+            "s.snapshot_date AS stats_snapshot_date, s.view_count FROM videos v JOIN LATERAL (SELECT snapshot_date, view_count FROM stats "
             "WHERE video_id = v.id ORDER BY snapshot_date DESC, "
             "data_collected_date DESC, id DESC LIMIT 1) s ON TRUE "
             "ORDER BY s.view_count DESC NULLS LAST LIMIT %s"
@@ -438,12 +451,11 @@ class AnalyticsSqlTests(unittest.TestCase):
             )
 
         query = ExecutionPlan(
-            raw_question="Quelle vidéo a le plus de vues ?",
-            query_text="Quelle vidéo a le plus de vues ?",
+            raw_question="Quelle vidéo a gagné le plus de vues ?",
+            query_text="Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
             query_text_bm25="plus de vues",
-            route="rag",
+            route="sql_search",
             sql_sub_intent="analytics",
-            sql_main_source=True,
         )
         with (
             patch.object(
@@ -485,8 +497,18 @@ class AnalyticsSqlTests(unittest.TestCase):
             responses.calls[0]["response_schema"],
             analytics_sql.ANALYTICS_SQL_RESPONSE_SCHEMA,
         )
+        sql_context = json.loads(responses.calls[0]["input"][1]["content"])
+        self.assertEqual(
+            sql_context["question_originale"],
+            "Quelle vidéo a gagné le plus de vues ?",
+        )
+        self.assertEqual(
+            sql_context["question_contextualisee"],
+            "Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
+        )
         self.assertEqual(sources[0]["chunk_id"], 12)
         self.assertIn("21136", sources[0]["text"])
+        self.assertIn("2026-09-12", sources[0]["text"])
         self.assertEqual(cursor.executed[0][0], "SET TRANSACTION READ ONLY")
         self.assertTrue(cursor.executed[2][0].startswith("EXPLAIN (FORMAT JSON)"))
         self.assertEqual(cursor.executed[3][0], "SET TRANSACTION READ ONLY")
@@ -513,6 +535,37 @@ class AnalyticsSqlTests(unittest.TestCase):
                 "max_total_cost": analytics_sql.DEFAULT_MAX_ANALYTICS_TOTAL_COST,
             },
         )
+
+    def test_text_to_sql_rejects_stats_results_without_snapshot_date_column(self) -> None:
+        sql = "SELECT snapshot_date AS stats_snapshot_date, view_count FROM stats"
+        client = SimpleNamespace(
+            responses=_Responses('{"sql":"' + sql + '","params":[]}')
+        )
+        query = ExecutionPlan(
+            raw_question="Combien de vues ?",
+            query_text="Combien de vues ?",
+            query_text_bm25="vues",
+            route="sql_search",
+            sql_sub_intent="analytics",
+        )
+        with (
+            patch.object(
+                analytics_sql,
+                "explain_analytics_sql",
+                return_value={"valid": True, "total_cost": 1, "max_total_cost": 100},
+            ),
+            patch.object(
+                analytics_sql,
+                "execute_analytics_sql",
+                return_value=([], {"columns": ["view_count"], "row_count": 0}),
+            ),
+        ):
+            sources, trace = analytics_sql.run_analytics_text_to_sql(
+                query, client, "mistral-medium-latest"
+            )
+
+        self.assertEqual(sources, [])
+        self.assertEqual(trace["status"], "stats_snapshot_date_missing_from_result")
 
     def test_explain_cost_above_limit_is_rejected_before_execution(self) -> None:
         sql = "SELECT COUNT(*) AS video_count FROM videos"

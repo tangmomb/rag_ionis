@@ -476,8 +476,10 @@ def run_structured_lookup(
             },
         ) as sql_span:
             if lookup_intent == "analytics":
-                sources, direct_trace = services.run_deterministic_analytics(
+                sources, direct_trace = services.run_analytics_text_to_sql(
                     execution_plan,
+                    client,
+                    state["analytics_sql_model"],
                     database_persons=state["database_persons"],
                     database_companies=state["database_company"],
                 )

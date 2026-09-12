@@ -817,6 +817,7 @@ class InterfaceAppTests(unittest.TestCase):
                     "video_title": "Vidéo test",
                     "video_url": "https://example.test/video",
                     "text": "Vues: 42",
+                    "result_intro": "Voici les statistiques demandées.",
                 }
             ],
         )
@@ -826,7 +827,7 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("Sous-route SQL", messages[1]["content"])
         self.assertNotIn("sql_sub_intent", messages[1]["content"])
         self.assertIn("Sources pour répondre :", messages[1]["content"])
-        self.assertIn("Résultats SQL vérifiés", messages[1]["content"])
+        self.assertIn("Voici les statistiques demandées.", messages[1]["content"])
         self.assertIn("Source 1 :", messages[1]["content"])
         self.assertNotIn("Resultat 1", messages[1]["content"])
 
@@ -836,6 +837,7 @@ class InterfaceAppTests(unittest.TestCase):
                 "video_title": "Vidéo test",
                 "video_url": "https://example.test/video",
                 "text": "Donnée SQL",
+                "result_intro": "Voici le résultat demandé.",
             }
         ]
 
@@ -848,8 +850,8 @@ class InterfaceAppTests(unittest.TestCase):
             sql_sub_intent="description",
         )
 
-        self.assertIn("Résultats SQL vérifiés", analytics_context)
-        self.assertNotIn("Résultats SQL vérifiés", description_context)
+        self.assertIn("Voici le résultat demandé.", analytics_context)
+        self.assertNotIn("Voici le résultat demandé.", description_context)
         self.assertIn("Source 1 :", description_context)
 
     def test_answer_prompts_do_not_require_question_reformulation(self) -> None:

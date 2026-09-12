@@ -94,6 +94,8 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertIn("SELECT", system_prompt)
         self.assertIn("entre deux dates de statistiques", system_prompt)
         self.assertIn("snapshot effectivement retenues", system_prompt)
+        self.assertIn("Retourne `result_intro`", system_prompt)
+        self.assertIn("obligatoirement par `:`", system_prompt)
         self.assertEqual(system_prompt.count("Exemple"), 1)
         self.assertNotIn("transcripts(", system_prompt)
         self.assertIn("Quelle vidéo a gagné le plus de vues ?", user_prompt)
@@ -435,7 +437,8 @@ class AnalyticsSqlTests(unittest.TestCase):
             "ORDER BY s.view_count DESC NULLS LAST LIMIT %s"
         )
         responses = _Responses(
-            '{"sql":' + repr(sql).replace("'", '"') + ',"params":[1]}'
+            '{"sql":' + repr(sql).replace("'", '"')
+            + ',"result_intro":"Voici la vidéo demandée.","params":[1]}'
         )
         client = SimpleNamespace(responses=responses)
         cursor = _Cursor()
@@ -507,6 +510,7 @@ class AnalyticsSqlTests(unittest.TestCase):
             "Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
         )
         self.assertEqual(sources[0]["chunk_id"], 12)
+        self.assertEqual(sources[0]["result_intro"], "Voici la vidéo demandée.")
         self.assertIn("21136", sources[0]["text"])
         self.assertIn("2026-09-12", sources[0]["text"])
         self.assertEqual(cursor.executed[0][0], "SET TRANSACTION READ ONLY")

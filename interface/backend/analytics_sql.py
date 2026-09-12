@@ -28,6 +28,7 @@ ANALYTICS_SQL_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "sql": {"type": "string"},
+        "result_intro": {"type": "string"},
         "params": {
             "type": "array",
             "items": {
@@ -40,7 +41,7 @@ ANALYTICS_SQL_RESPONSE_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["sql", "params"],
+    "required": ["sql", "result_intro", "params"],
     "additionalProperties": False,
 }
 
@@ -128,9 +129,14 @@ Règles :
   fournies. Préserve l'intention de la question originale : « gagné »,
   « progressé » ou « perdu » implique une évolution entre snapshots, pas le
   classement de la valeur actuelle.
+- Retourne `result_intro` : une phrase courte qui introduit les lignes SQL pour
+  le LLM de réponse (ex. « Voici l'avant-dernière vidéo publiée de la chaîne. »).
+  Elle décrit seulement le type de résultat attendu, sans inventer de valeur ni
+  qualifier la chaîne par une personne ou une organisation. Elle se termine
+  obligatoirement par `:`.
 
 Exemple unique — comparaison de speakers :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.snapshot_date AS stats_snapshot_date, s.view_count FROM videos v JOIN video_speakers vs ON vs.video_id = v.id JOIN speakers sp ON sp.id = vs.speaker_id JOIN LATERAL (SELECT snapshot_date, view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE WHERE sp.name ILIKE %s OR sp.name ILIKE %s ORDER BY s.view_count DESC NULLS LAST","params":["%Déborah Rolland%","%Simon Payen%"]}}
+{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.snapshot_date AS stats_snapshot_date, s.view_count FROM videos v JOIN video_speakers vs ON vs.video_id = v.id JOIN speakers sp ON sp.id = vs.speaker_id JOIN LATERAL (SELECT snapshot_date, view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE WHERE sp.name ILIKE %s OR sp.name ILIKE %s ORDER BY s.view_count DESC NULLS LAST","result_intro":"Voici les vidéos concernées par la comparaison.","params":["%Déborah Rolland%","%Simon Payen%"]}}
 """
     context = {
         "question_originale": question,
@@ -483,6 +489,7 @@ def run_analytics_text_to_sql(
                 str(getattr(response, "output_text", "") or "").strip()
             )
             sql = str(payload.get("sql") or "").strip()
+            result_intro = str(payload.get("result_intro") or "").strip()[:500]
             params = payload.get("params", [])
             generation_trace = {
                 "status": "generated",
@@ -490,6 +497,7 @@ def run_analytics_text_to_sql(
                 "prompt": messages,
                 "response_raw": raw_response,
                 "sql": format_sql_for_trace(sql),
+                "result_intro": result_intro,
                 "params": params,
             }
         except Exception as exc:
@@ -515,6 +523,7 @@ def run_analytics_text_to_sql(
             "prompt": messages,
             "response_raw": generation_trace["response_raw"],
             "sql": format_sql_for_trace(sql),
+            "result_intro": result_intro,
             "params": params if isinstance(params, list) else [],
             "validation": validation,
         }
@@ -550,6 +559,8 @@ def run_analytics_text_to_sql(
     ) as execution_span:
         try:
             sources, execution = execute_analytics_sql(sql, params)
+            if result_intro:
+                sources = [{**source, "result_intro": result_intro} for source in sources]
             execution_span.set_output({**execution, "results": sources})
         except Exception as exc:
             execution = {"status": "execution_error", "error": str(exc)}

@@ -306,11 +306,8 @@ def format_answer_sources(
         return ""
     if sql_sub_intent != "analytics":
         return source_cards
-    return (
-        "Résultats SQL vérifiés : les lignes ci-dessous sont les données retournées "
-        "par la base et peuvent suffire à répondre directement à la question.\n\n"
-        + source_cards
-    )
+    result_intro = str(sources[0].get("result_intro") or "").strip()
+    return f"{result_intro}\n\n{source_cards}" if result_intro else source_cards
 
 
 def generate_answer(

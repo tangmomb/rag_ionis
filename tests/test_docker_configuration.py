@@ -52,9 +52,9 @@ class DockerConfigurationTests(unittest.TestCase):
 
         self.assertNotIn("env_file:", production_compose)
         self.assertIn("GOOGLE_API_KEY:", production_compose)
+        self.assertIn("MISTRAL_API_KEY:", production_compose)
         self.assertIn("OPENAI_API_KEY:", production_compose)
         self.assertIn("COHERE_API_KEY:", production_compose)
-        self.assertNotIn("MISTRAL_API_KEY:", production_compose)
         self.assertNotIn("HUGGINGFACE_TOKEN:", production_compose)
 
     def test_vps_updater_is_cpu_only_and_opt_in(self) -> None:

@@ -46,20 +46,29 @@ def configure_telemetry() -> None:
         project_name = os.getenv("PHOENIX_PROJECT_NAME", "rag-ionis").strip() or "rag-ionis"
 
         try:
-            from openinference.instrumentation.mistralai import MistralAIInstrumentor
-            from openinference.instrumentation.openai import OpenAIInstrumentor
             from phoenix.otel import register
+
+            # Nettoie aussi un environnement local existant dans lequel
+            # l'instrumenteur LangChain aurait déjà été chargé. Il n'est plus
+            # installé par requirements-api.txt sur les nouveaux déploiements.
+            try:
+                from openinference.instrumentation.langchain import LangChainInstrumentor
+
+                langchain_instrumentor = LangChainInstrumentor()
+                if langchain_instrumentor.is_instrumented_by_opentelemetry:
+                    langchain_instrumentor.uninstrument()
+            except ImportError:
+                pass
 
             _TRACER_PROVIDER = register(
                 endpoint=endpoint,
                 project_name=project_name,
                 protocol="http/protobuf",
                 batch=True,
+                auto_instrument=False,
                 verbose=False,
             )
             _TRACER = _TRACER_PROVIDER.get_tracer("rag_ionis.interface")
-            OpenAIInstrumentor().instrument(tracer_provider=_TRACER_PROVIDER)
-            MistralAIInstrumentor().instrument(tracer_provider=_TRACER_PROVIDER)
             _ENABLED = True
             print(
                 f"[telemetry] Phoenix actif: project={project_name} endpoint={endpoint}",
@@ -92,6 +101,57 @@ def shutdown_telemetry() -> None:
         provider.shutdown()
     except Exception:
         pass
+
+
+def record_trace_score_annotations(
+    trace_id: str | None,
+    scores: dict[str, int | float],
+) -> None:
+    """Publish numeric trace scores for Phoenix's period-based Metrics charts.
+
+    The request path never waits for this best-effort API call.  The trace is
+    flushed first so the annotation endpoint can resolve its trace ID.
+    """
+    if not _ENABLED or not trace_id or not scores:
+        return
+    normalized_scores = {
+        str(name): float(score)
+        for name, score in scores.items()
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    }
+    if not normalized_scores:
+        return
+
+    collector_endpoint = os.getenv(
+        "PHOENIX_COLLECTOR_ENDPOINT",
+        "http://localhost:6006/v1/traces",
+    ).rstrip("/")
+    base_url = collector_endpoint.removesuffix("/v1/traces")
+
+    def publish() -> None:
+        try:
+            if _TRACER_PROVIDER is not None:
+                _TRACER_PROVIDER.force_flush(timeout_millis=5_000)
+            from phoenix.client import Client
+
+            client = Client(base_url=base_url)
+            for annotation_name, score in normalized_scores.items():
+                client.traces.add_trace_annotation(
+                    trace_id=trace_id,
+                    annotation_name=annotation_name,
+                    annotator_kind="CODE",
+                    score=score,
+                    metadata={"unit": "ms", "metric_type": "latency"},
+                )
+        except Exception:
+            # A metrics write must never affect the user request.
+            pass
+
+    threading.Thread(
+        target=publish,
+        name="phoenix-trace-metrics",
+        daemon=True,
+    ).start()
 
 
 def _json_value(value: Any) -> str:
@@ -182,7 +242,15 @@ def trace_operation(
     kind: str = "CHAIN",
     input_value: Any = None,
     attributes: dict[str, Any] | None = None,
+    root: bool = False,
 ) -> Iterator[TraceOperation]:
+    """Create an OpenInference span.
+
+    ``root`` is reserved for an incoming RAG request.  A streamed request is
+    executed in a worker thread and must never inherit a stale OpenTelemetry
+    context from the server thread (which would append its spans to another
+    user's trace).
+    """
     if not _ENABLED or _TRACER is None:
         yield TraceOperation()
         return
@@ -194,7 +262,18 @@ def trace_operation(
     )
 
     resolved_kind = getattr(OpenInferenceSpanKindValues, kind.upper(), OpenInferenceSpanKindValues.CHAIN)
-    with _TRACER.start_as_current_span(name) as span:
+    span_kwargs: dict[str, Any] = {}
+    if root:
+        # An explicit invalid parent creates a new trace even if an ASGI
+        # middleware or a reused worker left a span in the current context.
+        from opentelemetry import context as otel_context, trace
+
+        span_kwargs["context"] = trace.set_span_in_context(
+            trace.INVALID_SPAN,
+            otel_context.Context(),
+        )
+
+    with _TRACER.start_as_current_span(name, **span_kwargs) as span:
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, resolved_kind.value)
         if input_value is not None:
             span.set_attribute(SpanAttributes.INPUT_VALUE, _json_value(input_value))

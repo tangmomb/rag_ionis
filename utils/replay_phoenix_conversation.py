@@ -313,18 +313,18 @@ def run_replay(
     configure_telemetry()
     try:
         with trace_operation(
-            "rag.replay",
+            "replay",
             kind="CHAIN",
             input_value={"mode": args.mode, **summary},
             attributes={
-                "rag.replay.mode": args.mode,
-                "rag.replay.original_trace_id": args.trace_id,
-                "rag.replay.original_conversation_id": context.original_conversation_id,
+                "replay.mode": args.mode,
+                "replay.original_trace_id": args.trace_id,
+                "replay.original_conversation_id": context.original_conversation_id,
             },
         ) as replay_span:
             replay_trace_id = current_trace_id()
             with trace_operation(
-                "rag.replay.seed_history",
+                "replay.seed_history",
                 kind="TOOL",
                 input_value={
                     "original_trace_id": args.trace_id,

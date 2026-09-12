@@ -1,0 +1,5 @@
+langgraph-cli[inmem]
+fastapi>=0.141.1
+psycopg[binary]>=3.3.4
+# Required when LangGraph imports the project's graphs from interface/backend.
+google-genai>=1.0,<3

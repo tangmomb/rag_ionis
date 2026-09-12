@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG YouTube IONIS-STM</title>
-    <link rel="stylesheet" href="styles.css?v=8" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=10" />
   </head>
   <body>
     <main class="app">
@@ -71,13 +72,13 @@
             >
               <div class="suggested-questions-list">
                 <button type="button" class="suggested-question">
-                  Qui est Emric ?
+                  Qui est Aymerich ?
                 </button>
                 <button type="button" class="suggested-question">
                   J'ai besoin de la transcription d'une vidéo.
                 </button>
                 <button type="button" class="suggested-question">
-                  Quelles questions ont été posées à Déborah ?
+                  Quelles questions ont été posées à Fadila ?
                 </button>
               </div>
             </div>
@@ -119,14 +120,13 @@
       const messages = document.getElementById("messages");
       const composer = document.getElementById("composer");
       const question = document.getElementById("question");
+      const submitButton = composer.querySelector('button[type="submit"]');
+      const suggestedQuestionButtons = document.querySelectorAll(".suggested-question");
       const suggestedQuestions = document.getElementById("suggestedQuestions");
       const headerThumbnails = document.getElementById("headerThumbnails");
       let conversationId = null;
       const RAG_CONFIG = {
         apiUrl: "/api/rag",
-        reformulationModel: "mistral-medium-latest",
-        plannerModel: "mistral-medium-latest",
-        answerModel: "mistral-medium-latest",
         embeddingModel: "meme modele que la base",
         rerankModel: "cohere rerank",
         topK: 40,
@@ -134,6 +134,16 @@
         useSql: true,
         useRerank: true,
       };
+
+      function setComposerLocked(locked, placeholder = "Que recherchez vous ?") {
+        question.disabled = locked;
+        submitButton.disabled = locked;
+        question.placeholder = placeholder;
+        suggestedQuestionButtons.forEach((button) => (button.disabled = locked));
+        if (!locked) {
+          requestAnimationFrame(() => question.focus());
+        }
+      }
 
       async function loadHeaderThumbnails() {
         try {
@@ -264,9 +274,11 @@
         `;
       }
 
-      function addMessage(role, content, meta, sources = []) {
+      function addMessage(role, content, meta, sources = [], messageId = null) {
         const article = document.createElement("article");
-        article.className = `message ${role}`;
+        article.className = role === "assistant"
+          ? "message assistant answer-enter"
+          : `message ${role}`;
 
         const renderedContent =
           role === "assistant" ? renderMarkdown(content) : escapeHtml(content);
@@ -277,16 +289,16 @@
         const videoHtml =
           role === "assistant" ? renderVideoThumbnails(sources) : "";
         const actionsHtml =
-          role === "assistant"
+          role === "assistant" && Number.isInteger(messageId)
             ? `
-              <div class="message-actions" aria-hidden="true">
-                <button type="button" class="icon-btn" aria-label="Like">
+              <div class="message-actions">
+                <button type="button" class="icon-btn" aria-label="J'aime" data-feedback="true">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M14 10V5.5c0-1.4-.8-2.7-2-3.3L8.7 9.1A2 2 0 0 0 8 10.5V19a2 2 0 0 0 2 2h6.2a3 3 0 0 0 2.9-2.3l1.4-6A2 2 0 0 0 18.6 10H14Z" />
                     <path d="M4 10h4v11H4z" />
                   </svg>
                 </button>
-                <button type="button" class="icon-btn" aria-label="Dislike">
+                <button type="button" class="icon-btn" aria-label="Je n'aime pas" data-feedback="false">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M10 14v4.5c0 1.4.8 2.7 2 3.3l3.3-6.9a2 2 0 0 0 .7-1.4V5a2 2 0 0 0-2-2H7.8a3 3 0 0 0-2.9 2.3l-1.4 6A2 2 0 0 0 5.4 14H10Z" />
                     <path d="M20 14h-4V3h4z" />
@@ -303,6 +315,32 @@
             ${actionsHtml}
           </div>
         `;
+
+        if (role === "assistant" && Number.isInteger(messageId)) {
+          const feedbackButtons = article.querySelectorAll("[data-feedback]");
+          feedbackButtons.forEach((button) => {
+            button.addEventListener("click", async () => {
+              const feedback = button.dataset.feedback === "true";
+              feedbackButtons.forEach((item) => (item.disabled = true));
+              try {
+                const response = await fetch(
+                  `${RAG_CONFIG.apiUrl}/messages/${messageId}/feedback`,
+                  {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ feedback }),
+                  },
+                );
+                if (!response.ok) throw new Error("Sauvegarde du feedback impossible.");
+                feedbackButtons.forEach((item) => {
+                  item.setAttribute("aria-pressed", String(item === button));
+                });
+              } catch (_error) {
+                feedbackButtons.forEach((item) => (item.disabled = false));
+              }
+            });
+          });
+        }
 
         messages.appendChild(article);
         article.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -328,9 +366,6 @@
           question: text,
           conversationId,
           apiUrl: RAG_CONFIG.apiUrl,
-          reformulationModel: RAG_CONFIG.reformulationModel,
-          plannerModel: RAG_CONFIG.plannerModel,
-          answerModel: RAG_CONFIG.answerModel,
           embeddingModel: RAG_CONFIG.embeddingModel,
           rerankModel: RAG_CONFIG.rerankModel,
           useSql: RAG_CONFIG.useSql,
@@ -340,11 +375,12 @@
         };
 
         suggestedQuestions.hidden = true;
+        setComposerLocked(true, "Recherche en cours…");
         addMessage("user", text, "envoi frontend");
         const loadingMessage = addLoadingMessage();
 
         try {
-          const response = await fetch(RAG_CONFIG.apiUrl, {
+          const response = await fetch(`${RAG_CONFIG.apiUrl}/stream`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -352,18 +388,76 @@
             body: JSON.stringify(payload),
           });
           if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.detail || "Erreur backend inconnue");
+            throw new Error(await response.text() || "Erreur backend inconnue");
           }
-          const data = await response.json();
-          conversationId = data.conversation_id ?? conversationId;
-          const meta = data.retrieval?.retrieval_mode || "rag";
-          addMessage(
-            "assistant",
-            data.answer || "Reponse vide.",
-            meta,
-            data.sources || [],
-          );
+          if (!response.body) throw new Error("Le navigateur ne supporte pas le streaming.");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let rawJson = "";
+          let finalResponse = null;
+          let finalResponseDisplayed = false;
+          let memoryFinished = false;
+          const streamingMessage = document.createElement("article");
+          streamingMessage.className = "message assistant streaming-json";
+          streamingMessage.innerHTML = `
+            <div class="message-body">
+              <div class="message-meta"><span>stream json</span></div>
+              <div class="stream-stage" aria-live="polite"></div>
+              <pre class="message-content"></pre>
+            </div>`;
+          messages.appendChild(streamingMessage);
+          const streamOutput = streamingMessage.querySelector("pre");
+          const stageOutput = streamingMessage.querySelector(".stream-stage");
+
+          const consumeEvent = (eventText) => {
+            const line = eventText.split("\n").find((item) => item.startsWith("data: "));
+            if (!line) return;
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "stage") {
+              const stageLabel = `${event.name} · ${event.status}`;
+              stageOutput.textContent = stageLabel;
+            } else if (event.type === "chunk") {
+              rawJson += event.text || "";
+              streamOutput.textContent = rawJson;
+              streamingMessage.scrollIntoView({ behavior: "smooth", block: "start" });
+            } else if (event.type === "done") {
+              finalResponse = event.response;
+              if (!finalResponseDisplayed) {
+                finalResponseDisplayed = true;
+                conversationId = finalResponse.conversation_id ?? conversationId;
+                streamingMessage.remove();
+                const meta = finalResponse.retrieval?.retrieval_mode || "rag";
+                addMessage(
+                  "assistant",
+                  finalResponse.answer || "Réponse vide.",
+                  meta,
+                  finalResponse.sources || [],
+                  finalResponse.message_id,
+                );
+                loadingMessage.remove();
+                setComposerLocked(true, "Mise à jour de la mémoire…");
+              }
+            } else if (event.type === "memory") {
+              memoryFinished = true;
+              setComposerLocked(false);
+            } else if (event.type === "error") {
+              throw new Error(event.detail || "Erreur backend inconnue");
+            }
+          };
+
+          while (true) {
+            const { value, done } = await reader.read();
+            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || "";
+            events.forEach(consumeEvent);
+            if (done) break;
+          }
+          if (buffer.trim()) consumeEvent(buffer);
+          if (!finalResponse) throw new Error("Réponse stream incomplète.");
+          if (!memoryFinished) setComposerLocked(false);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Erreur reseau inconnue";
@@ -374,6 +468,7 @@
           );
         } finally {
           loadingMessage.remove();
+          setComposerLocked(false);
         }
       }
 
@@ -399,6 +494,8 @@
           sendQuestion(text);
         });
       });
+
+      question.focus();
     </script>
   </body>
 </html>

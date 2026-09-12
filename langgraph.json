@@ -1,0 +1,9 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "rag_response": "./interface/backend/api.py:RAG_RESPONSE_GRAPH",
+    "rag_orchestration": "./interface/backend/orchestration_graph.py:RAG_ORCHESTRATION_GRAPH"
+  },
+  "env": ".env.local"
+}

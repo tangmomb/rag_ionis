@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
-from interface.backend import retrieval
+from interface.backend import retrieval, telemetry
 from interface.backend.telemetry import TraceOperation
 from interface.backend.utilities import format_sql_pretty
 
@@ -18,7 +18,32 @@ class _RecordingSpan:
         self.attributes[name] = value
 
 
+class _RecordingTracer:
+    def __init__(self) -> None:
+        self.context = None
+
+    @contextmanager
+    def start_as_current_span(self, _name: str, **kwargs):
+        self.context = kwargs.get("context")
+        yield _RecordingSpan()
+
+
 class TraceOperationTests(unittest.TestCase):
+    def test_root_trace_drops_the_current_parent_context(self) -> None:
+        """A request cannot become a child of an unrelated request trace."""
+        tracer = _RecordingTracer()
+        with (
+            patch.object(telemetry, "_ENABLED", True),
+            patch.object(telemetry, "_TRACER", tracer),
+        ):
+            with telemetry.trace_operation("request", root=True):
+                pass
+
+        from opentelemetry import trace
+
+        self.assertIsNotNone(tracer.context)
+        self.assertFalse(trace.get_current_span(tracer.context).get_span_context().is_valid)
+
     def test_set_output_text_uses_plain_text_mime_type(self) -> None:
         span = _RecordingSpan()
 
@@ -69,6 +94,9 @@ class TraceOperationTests(unittest.TestCase):
             def set_output_text(self, value: str) -> None:
                 self.record["output"] = value
 
+            def set_output(self, value: dict[str, Any]) -> None:
+                self.record["output"] = value
+
         @contextmanager
         def record_trace(name: str, **kwargs):
             record = {"name": name, **kwargs}
@@ -78,24 +106,63 @@ class TraceOperationTests(unittest.TestCase):
         trace = {
             "sql": "SELECT transcript_enriched FROM transcripts WHERE video_id = %s",
             "params": [7],
+            "query_results": [
+                {
+                    "chunk_id": 7,
+                    "video_title": "Video transcript",
+                    "video_url": "https://example.test/transcript",
+                    "text": "Long transcript omitted from the span.",
+                }
+            ],
             "persons_table": {
                 "sql": "SELECT name FROM speakers WHERE id = %s",
                 "params": [3],
+                "query_results": [
+                    {
+                        "chunk_id": 3,
+                        "video_title": "Video speaker",
+                        "video_url": "https://example.test/speaker",
+                    }
+                ],
+            },
+            "deduplication": {
+                "input_count": 2,
+                "duplicate_count": 1,
+                "output_count": 1,
+                "key": "video_id",
             },
         }
 
         with patch.object(retrieval, "trace_operation", side_effect=record_trace):
-            retrieval.trace_formatted_sql("rag.structured_sql", trace)
+            retrieval.trace_formatted_sql("sql", trace)
 
         self.assertEqual(
             [item["name"] for item in recorded],
             [
-                "rag.structured_sql.persons_table.sql_formatted",
-                "rag.structured_sql.transcript_enriched.sql_formatted",
+                "persons_in_speakers",
+                "persons_in_transcripts",
+                "deduplicate_videos",
             ],
         )
         self.assertEqual(recorded[0]["input_value"]["params"], [3])
         self.assertEqual(recorded[1]["input_value"]["params"], [7])
+        self.assertEqual(
+            [item["kind"] for item in recorded],
+            ["RETRIEVER", "RETRIEVER", "RETRIEVER"],
+        )
+        self.assertEqual(recorded[2]["output"]["duplicate_count"], 1)
+        self.assertEqual(recorded[0]["output"]["result_count"], 1)
+        self.assertEqual(
+            recorded[1]["output"]["results"],
+            [
+                {
+                    "chunk_id": 7,
+                    "video_title": "Video transcript",
+                    "video_url": "https://example.test/transcript",
+                    "text": "Long transcript omitted from the span.",
+                }
+            ],
+        )
 
 
 

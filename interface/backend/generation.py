@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import AnswerAction
@@ -18,25 +18,28 @@ FINAL_ANSWER_STYLE = (
     "place une courte formule de politesse au début. "
     "Quand action vaut answer, ne termine pas par une phrase indiquant qu'il manque "
     "des informations et ne parle pas de tes limites ni de la recherche effectuée. "
-    "Quand action vaut clarify ou abstain, formule uniquement la précision nécessaire "
-    "ou l'impossibilité factuelle de répondre avec les éléments fournis."
+    "Quand action vaut abstain, formule uniquement l'impossibilité factuelle de "
+    "répondre avec les éléments fournis."
 )
 
 
-SOURCE_MARKER_INSTRUCTION = (
-    "Pour chaque information importante provenant d'un chunk, ajoute son marqueur "
-    "[S1], [S2], etc. correspondant au numéro du chunk dans le contexte. "
-    "N'utilise que les marqueurs des chunks réellement utilisés."
+SOURCE_SELECTION_INSTRUCTION = (
+    "Renseigne `source_indexes` avec les numéros des sources réellement utilisées "
+    "pour construire la réponse, par exemple [1, 3]. Utilise une liste vide si aucune "
+    "source n'est utilisée. Utilise une liste vide avec action=abstain. N'ajoute aucun "
+    "marqueur [S1] ou citation technique dans `answer`."
 )
 
 
 ANSWER_ACTION_INSTRUCTION = (
-    "Choisis l'action answer, clarify ou abstain. Choisis answer uniquement si "
+    "Choisis l'action answer ou abstain. Choisis answer uniquement si "
     "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
-    "clarify si une ambiguïté empêche de savoir quelle information, personne ou vidéo est "
-    "demandée ; answer contient alors une seule question de précision. Choisis abstain si la "
-    "demande est claire mais que les éléments fournis ne permettent pas d'y répondre "
-    "fidèlement. Le champ answer contient uniquement le message final à afficher."
+    "abstain si la demande est ambiguë ou que les éléments fournis ne permettent pas "
+    "d'y répondre fidèlement. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
+    "une question de recherche courte, autonome et plus précise qui pourrait permettre de "
+    "répondre. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
+    "Le champ `answer` contient uniquement le message final à afficher et "
+    "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )
 
 
@@ -46,10 +49,21 @@ ANSWER_RESPONSE_SCHEMA: dict[str, Any] = {
         "answer": {"type": "string"},
         "action": {
             "type": "string",
-            "enum": ["answer", "clarify", "abstain"],
+            "enum": ["answer", "abstain"],
+        },
+        "source_indexes": {
+            "type": "array",
+            # Mistral's json_schema relay rejects numeric constraints and uniqueItems.
+            # Index bounds and deduplication are enforced by
+            # parse_answer_output below.
+            "items": {"type": "integer"},
+        },
+        # Keep the nullable form consistent with the planner schema.
+        "retry_query": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
         },
     },
-    "required": ["answer", "action"],
+    "required": ["answer", "action", "source_indexes", "retry_query"],
     "additionalProperties": False,
 }
 
@@ -66,11 +80,13 @@ def create_answer_response(
     client: LLMClientProtocol,
     answer_model: str,
     input_messages: list[dict[str, str]],
+    stream_callback: Callable[[str], None] | None = None,
 ) -> Any:
     return client.responses.create(
         model=answer_model,
         input=input_messages,
         response_schema=ANSWER_RESPONSE_SCHEMA,
+        stream_callback=stream_callback,
     )
 
 
@@ -92,13 +108,13 @@ def render_answer_system_prompt(
     rendered = template
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
-    if "Choisis l'action answer, clarify ou abstain." not in rendered:
+    if "Choisis l'action answer ou abstain." not in rendered:
         rendered = f"{rendered}\n\n{ANSWER_ACTION_INSTRUCTION}"
     return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
 
 def record_answer_trace(
-    trace: dict[str, str] | None,
+    trace: dict[str, Any] | None,
     model: str,
     input_messages: list[dict[str, str]],
     response: Any,
@@ -112,7 +128,7 @@ def record_answer_trace(
     trace["response_raw"] = serialize_openai_response(response)
 
 
-def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) -> str:
+def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) -> str:
     """Extrait la réponse et conserve l'action choisie par le modèle."""
     fallback_action: AnswerAction = "abstain"
     try:
@@ -120,29 +136,77 @@ def parse_answer_output(raw_answer: str, trace: dict[str, str] | None = None) ->
     except (TypeError, ValueError, json.JSONDecodeError):
         if trace is not None:
             trace["action"] = fallback_action
+            trace["source_indexes"] = []
+            trace["retry_query"] = None
         return raw_answer
 
     if not isinstance(payload, dict):
         if trace is not None:
             trace["action"] = fallback_action
+            trace["source_indexes"] = []
+            trace["retry_query"] = None
         return raw_answer
 
     action = payload.get("action")
-    if action not in {"answer", "clarify", "abstain"}:
+    if action not in {"answer", "abstain"}:
         action = fallback_action
     if trace is not None:
-        trace["action"] = action
+        raw_source_indexes = payload.get("source_indexes")
+        source_indexes = list(
+            dict.fromkeys(
+                index
+                for index in raw_source_indexes
+                if isinstance(index, int) and not isinstance(index, bool) and index >= 1
+            )
+        ) if isinstance(raw_source_indexes, list) else []
+        trace["source_indexes"] = source_indexes
+        raw_retry_query = payload.get("retry_query")
+        retry_query = (
+            raw_retry_query.strip()
+            if isinstance(raw_retry_query, str)
+            else ""
+        )
+        retry_query = (
+            retry_query
+            if action == "abstain"
+            and retry_query
+            and not re.match(
+                r"^(?:select|with|insert|update|delete|alter|drop|create|merge)\b",
+                retry_query,
+                flags=re.IGNORECASE,
+            )
+            else None
+        )
+        if action == "abstain" and source_indexes:
+            trace["action"] = "answer"
+            trace["retry_query"] = None
+            trace["action_normalization"] = {
+                "reason": "abstain_with_cited_sources",
+                "from_action": "abstain",
+                "to_action": "answer",
+                "source_indexes": source_indexes,
+            }
+        else:
+            trace["action"] = action
+            trace["retry_query"] = retry_query
     answer = str(payload.get("answer") or "").strip()
     return answer or raw_answer
 
 
-def select_answer_sources(answer: str, sources: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Retire les marqueurs et conserve les sources citées par marqueur ou URL."""
+def select_answer_sources(
+    answer: str,
+    sources: list[dict[str, Any]],
+    source_indexes: list[int] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Sélectionne les sources JSON, avec lecture des anciens marqueurs en secours."""
     selected_indexes = {
+        index for index in (source_indexes or []) if 1 <= index <= len(sources)
+    }
+    selected_indexes.update({
         int(value)
         for value in re.findall(r"\[S(\d+)\]", answer, flags=re.IGNORECASE)
         if 1 <= int(value) <= len(sources)
-    }
+    })
     selected_indexes.update(
         index
         for index, source in enumerate(sources, start=1)
@@ -167,13 +231,93 @@ def source_context_text(source: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def format_global_analytics_context(sources: list[dict[str, Any]]) -> str | None:
+    """Turn flat SQL ranking rows into one readable prompt section."""
+    ranking_sources = [
+        (index, source)
+        for index, source in enumerate(sources, start=1)
+        if isinstance(source.get("global_ranking"), dict)
+    ]
+    if not ranking_sources:
+        return None
+
+    first_source = ranking_sources[0][1]
+    first_text = str(first_source.get("text") or "")
+    population_match = re.search(r"Population analysée : ([^.]+)\.", first_text)
+    first_publication_match = re.search(r"Première publication : ([^.]+)\.", first_text)
+    last_publication_match = re.search(r"Dernière publication : ([^.]+)\.", first_text)
+    overview = ["## Population analysée"]
+    if population_match:
+        overview.append(f"- Vidéos : {population_match.group(1)}")
+    if first_publication_match:
+        overview.append(f"- Première publication : {first_publication_match.group(1)}")
+    if last_publication_match:
+        overview.append(f"- Dernière publication : {last_publication_match.group(1)}")
+
+    labels = {
+        ("views", "top"): "Vidéos les plus vues",
+        ("views", "bottom"): "Vidéos les moins vues",
+        ("likes", "top"): "Vidéos avec le plus de likes",
+        ("likes", "bottom"): "Vidéos avec le moins de likes",
+        ("comments", "top"): "Vidéos avec le plus de commentaires",
+        ("comments", "bottom"): "Vidéos avec le moins de commentaires",
+    }
+    metric_labels = {"views": "vues", "likes": "likes", "comments": "commentaires"}
+    sections = ["\n".join(overview)]
+    for key, heading in labels.items():
+        rows = []
+        for index, source in ranking_sources:
+            ranking = source["global_ranking"]
+            if (ranking.get("metric"), ranking.get("direction")) != key:
+                continue
+            rows.append(
+                f"{ranking.get('rank')}. {source.get('video_title') or 'Sans titre'} — "
+                f"{ranking.get('value')} {metric_labels[key[0]]} "
+                f"(source {index})"
+            )
+        if rows:
+            ranks = [int(source["global_ranking"].get("rank") or 0) for _index, source in ranking_sources if (source["global_ranking"].get("metric"), source["global_ranking"].get("direction")) == key]
+            rank_label = f"rang {min(ranks)}" if len(ranks) == 1 else f"rangs {min(ranks)} à {max(ranks)}"
+            sections.append("## " + heading + f" ({rank_label})\n" + "\n".join(rows))
+    return "\n\n".join(sections)
+
+
+def format_answer_sources(
+    sources: list[dict[str, Any]],
+    *,
+    sql_sub_intent: str | None = None,
+) -> str:
+    """Use a compact semantic layout for global analytics, otherwise source cards."""
+    global_context = format_global_analytics_context(sources)
+    if global_context is not None:
+        return "Données analytiques globales de la chaîne en question :\n\n" + global_context
+    source_cards = "\n\n".join(
+        "\n".join(
+            [
+                f"Source {index} :",
+                f"Titre: {source['video_title']}",
+                f"URL: {source['video_url']}",
+                f"Texte: {source['text']}",
+            ]
+        )
+        for index, source in enumerate(sources, start=1)
+    )
+    if not source_cards:
+        return ""
+    if sql_sub_intent != "analytics":
+        return source_cards
+    result_intro = str(sources[0].get("result_intro") or "").strip()
+    return f"{result_intro}\n\n{source_cards}" if result_intro else source_cards
+
+
 def generate_answer(
     client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     sources: list[dict[str, Any]],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
@@ -220,7 +364,7 @@ def generate_answer(
                         "Tu es un assistant RAG. Réponds en français, de façon concise, "
                         "en t'appuyant uniquement sur les sources fournies."
                     ),
-                    source_marker_instruction=SOURCE_MARKER_INSTRUCTION,
+                    source_marker_instruction=SOURCE_SELECTION_INSTRUCTION,
                 ),
             },
             {
@@ -231,7 +375,7 @@ def generate_answer(
                 ),
             },
         ]
-    response = create_answer_response(client, answer_model, input_messages)
+    response = create_answer_response(client, answer_model, input_messages, stream_callback)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -245,6 +389,9 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
             "Tu réponds à une demande analytique à partir du résultat SQL fourni. "
             "Respecte exactement l'opération demandée : comptage, agrégation, classement, extremum ou statistiques d'une vidéo. "
             "Présente uniquement les valeurs et entités présentes dans le résultat, sans extrapoler au-delà de son périmètre. "
+            "Indique toujours la date de collecte ou du snapshot associée à chaque statistique citée. "
+            "Si le contexte contient des données analytiques globales, il est organisé en population puis en six classements. "
+            "Utilise seulement le ou les classements nécessaires à la question ; ne récite pas les autres. "
             "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
         )
     if sql_sub_intent == "description":
@@ -278,76 +425,15 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
     )
 
 
-def generate_multi_source_answer(
-    client: LLMClientProtocol | None,
-    question: str,
-    answer_model: str | None,
-    route_name: str,
-    sources: list[dict[str, Any]],
-    sql_sub_intent: str | None = None,
-    trace: dict[str, str] | None = None,
-    prompt_template: str | None = None,
-) -> str:
-    if client is None or not answer_model:
-        if trace is not None:
-            trace["action"] = "answer" if sources else "abstain"
-        source_text = "\n\n".join(
-            f"[S{index}] {source['text']}"
-            for index, source in enumerate(sources, start=1)
-        )
-        return source_text
-
-    source_blocks = []
-    for index, source in enumerate(sources, start=1):
-        source_blocks.append(
-            "\n".join(
-                [
-                    f"Source {index} :",
-                    f"Titre: {source['video_title']}",
-                    f"URL: {source['video_url']}",
-                    f"Chunk: {source['chunk_index']}",
-                    f"Texte: {source['text']}",
-                ]
-            )
-        )
-    source_block = "\n\n".join(source_blocks) or "Aucune source documentaire exploitable."
-    source_marker_instruction = (
-        "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
-    )
-
-    input_messages = [
-            {
-                "role": "system",
-                "content": render_answer_system_prompt(
-                    prompt_template,
-                    route_instructions=(
-                        "Tu synthétises plusieurs sources documentaires pour répondre en français. "
-                        + build_sql_sub_intent_prompt(sql_sub_intent)
-                    ),
-                    source_marker_instruction=source_marker_instruction,
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Question: {question}\n\nSources pour répondre :\n{source_block}",
-            },
-        ]
-    response = create_answer_response(client, answer_model, input_messages)
-    record_answer_trace(trace, answer_model, input_messages, response)
-    answer = getattr(response, "output_text", "").strip()
-    if answer:
-        return parse_answer_output(answer, trace)
-    raise RuntimeError(f"Le modele n'a pas renvoye de texte exploitable pour la route {route_name}.")
-
-
 def generate_sql_answer(
     client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
     sql_sub_intent: str | None,
     sources: list[dict[str, Any]],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
@@ -366,23 +452,8 @@ def generate_sql_answer(
             return "\n".join(lines)
         return f"[S1] {sources[0]['text']}"
 
-    context_blocks = []
-    for index, source in enumerate(sources, start=1):
-        context_blocks.append(
-            "\n".join(
-                [
-                    f"Source {index} :",
-                    f"Titre: {source['video_title']}",
-                    f"URL: {source['video_url']}",
-                    f"Texte: {source['text']}",
-                ]
-            )
-        )
-
     task_prompt = build_sql_sub_intent_prompt(sql_sub_intent)
-    source_marker_instruction = (
-        "" if sql_sub_intent == "transcript_verbatim" else SOURCE_MARKER_INSTRUCTION + " "
-    )
+    source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
     system_prompt = render_answer_system_prompt(
         prompt_template,
         route_instructions=(
@@ -396,11 +467,17 @@ def generate_sql_answer(
                 "role": "user",
                 "content": (
                     f"Question: {question}\n\nSources pour répondre :\n\n"
-                    + ("\n\n".join(context_blocks) or "Aucun résultat SQL exploitable.")
+                    + (
+                        format_answer_sources(
+                            sources,
+                            sql_sub_intent=sql_sub_intent,
+                        )
+                        or "Aucun résultat SQL exploitable."
+                    )
                 ),
             },
         ]
-    response = create_answer_response(client, answer_model, input_messages)
+    response = create_answer_response(client, answer_model, input_messages, stream_callback)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -413,8 +490,9 @@ def generate_person_clarification_answer(
     question: str,
     answer_model: str | None,
     person_resolution: dict[str, Any],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     """Laisse le modèle de réponse formuler l'action face à une personne ambiguë."""
     fallback = (
@@ -423,7 +501,7 @@ def generate_person_clarification_answer(
     )
     if client is None or not answer_model:
         if trace is not None:
-            trace["action"] = "clarify"
+            trace["action"] = "abstain"
         return fallback
 
     input_messages = [
@@ -446,7 +524,7 @@ def generate_person_clarification_answer(
             ),
         },
     ]
-    response = create_answer_response(client, answer_model, input_messages)
+    response = create_answer_response(client, answer_model, input_messages, stream_callback)
     record_answer_trace(trace, answer_model, input_messages, response)
     answer = getattr(response, "output_text", "").strip()
     if answer:
@@ -460,9 +538,10 @@ def generate_final_answer(
     answer_model: str | None,
     retrieval: dict[str, Any],
     sources: list[dict[str, Any]],
-    trace: dict[str, str] | None = None,
+    trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
     judge_feedback: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> str:
     generation_question = question
     if judge_feedback:
@@ -479,46 +558,27 @@ def generate_final_answer(
             person_resolution,
             trace,
             prompt_template,
+            stream_callback,
         )
     if route == "direct":
         if trace is not None:
             trace["action"] = "answer"
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
-    if route == "rag" and retrieval.get("retrieval_mode") == "rag+structured_sql":
+    if route == "sql_search":
         return generate_sql_answer(
             client,
             generation_question,
             answer_model,
-            retrieval.get("sql_sub_intent"),
+            "description" if retrieval.get("description_requested") else retrieval.get("sql_sub_intent"),
             sources,
             trace,
             prompt_template,
+            stream_callback,
         )
-    if route == "rag":
+    if route == "vector_search":
         return generate_answer(
-            client, generation_question, answer_model, sources, trace, prompt_template
-        )
-    if route == "sql":
-        return generate_sql_answer(
-            client,
-            generation_question,
-            answer_model,
-            retrieval.get("sql_sub_intent"),
-            sources,
-            trace,
-            prompt_template,
-        )
-    if route == "multi_source":
-        return generate_multi_source_answer(
-            client,
-            generation_question,
-            answer_model,
-            route,
-            sources,
-            retrieval.get("sql_sub_intent"),
-            trace,
-            prompt_template,
+            client, generation_question, answer_model, sources, trace, prompt_template, stream_callback
         )
     return generate_answer(
-        client, generation_question, answer_model, sources, trace, prompt_template
+        client, generation_question, answer_model, sources, trace, prompt_template, stream_callback
     )

@@ -58,6 +58,11 @@ def connect_analytics_database():
 
 
 def ensure_chat_schema() -> None:
+    """Create the JSON-backed chat storage and remove retired topic tables.
+
+    ``memory_json`` is the single source of truth for topic state.  The cleanup
+    is deliberately idempotent so existing installations converge safely.
+    """
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
@@ -73,8 +78,17 @@ def ensure_chat_schema() -> None:
                     """
                     CREATE TABLE IF NOT EXISTS chat.conversations (
                         id BIGSERIAL PRIMARY KEY,
-                        date TIMESTAMPTZ NOT NULL DEFAULT now()
+                        date TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        memory_json JSONB NOT NULL DEFAULT
+                            '{"current_topic":{"id":1,"topic":"","messages":[]},"previous_topics":[]}'::jsonb
                     )
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE chat.conversations
+                    ADD COLUMN IF NOT EXISTS memory_json JSONB NOT NULL DEFAULT
+                        '{"current_topic":{"id":1,"topic":"","messages":[]},"previous_topics":[]}'::jsonb
                     """
                 )
                 cursor.execute(
@@ -84,7 +98,8 @@ def ensure_chat_schema() -> None:
                         conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
                         user_message TEXT NOT NULL,
                         answer_message TEXT,
-                        trace_id TEXT
+                        trace_id TEXT,
+                        feedback BOOLEAN
                     )
                     """
                 )
@@ -93,6 +108,45 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS trace_id TEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN"
+                )
+                cursor.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        feedback_constraint RECORD;
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
+                              AND column_name = 'feedback'
+                              AND data_type <> 'boolean'
+                        ) THEN
+                            FOR feedback_constraint IN
+                                SELECT conname
+                                FROM pg_constraint
+                                WHERE conrelid = 'chat.messages'::regclass
+                                  AND contype = 'c'
+                                  AND pg_get_constraintdef(oid) LIKE '%feedback%'
+                            LOOP
+                                EXECUTE format(
+                                    'ALTER TABLE chat.messages DROP CONSTRAINT %I',
+                                    feedback_constraint.conname
+                                );
+                            END LOOP;
+                            EXECUTE '
+                                ALTER TABLE chat.messages
+                                ALTER COLUMN feedback TYPE BOOLEAN
+                                USING feedback::text::boolean
+                            ';
+                        END IF;
+                    END
+                    $$
+                    """
                 )
                 cursor.execute(
                     """
@@ -110,7 +164,8 @@ def ensure_chat_schema() -> None:
                                   'conversation_id',
                                   'user_message',
                                   'answer_message',
-                                  'trace_id'
+                                  'trace_id',
+                                  'feedback'
                               )
                         LOOP
                             EXECUTE format(
@@ -128,6 +183,12 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id)"
                 )
+                cursor.execute("DROP TABLE IF EXISTS chat.conversation_episodes")
+                cursor.execute("DROP TABLE IF EXISTS chat.topic_messages")
+                cursor.execute("ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS chat_messages_topic_id_fkey")
+                cursor.execute("ALTER TABLE chat.messages DROP COLUMN IF EXISTS topic_id")
+                cursor.execute("DROP TABLE IF EXISTS chat.conversation_topics")
+                cursor.execute("DROP TABLE IF EXISTS chat.topics")
             connection.commit()
 
         _SCHEMA_READY = True
@@ -143,6 +204,15 @@ def ensure_conversation(connection: psycopg.Connection[Any], conversation_id: in
             return int(row[0])
         cursor.execute("INSERT INTO chat.conversations DEFAULT VALUES RETURNING id")
         return int(cursor.fetchone()[0])
+
+
+def create_conversation() -> int:
+    """Create a conversation before the first LLM call when topic state is needed."""
+    ensure_chat_schema()
+    with connect_database() as connection:
+        conversation_id = ensure_conversation(connection, None)
+        connection.commit()
+    return conversation_id
 
 
 def fetch_conversation_history(
@@ -163,7 +233,8 @@ def fetch_conversation_history(
     """
     with connect_database() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(sql, (conversation_id, limit))
+            parameters = (conversation_id, limit)
+            cursor.execute(sql, parameters)
             rows = cursor.fetchall()
 
     items: list[dict[str, str]] = []
@@ -180,7 +251,8 @@ def fetch_conversation_history(
         "reason": None,
         "message_count": len(items),
         "sql": sql,
-        "params": [conversation_id, limit],
+        "params": list(parameters),
+        "latest_topic_only": False,
     }
 
 
@@ -191,6 +263,9 @@ def store_chat_message(
     trace_id: str | None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
+    user_message = user_message.replace("\x00", "")
+    answer_message = answer_message.replace("\x00", "")
+    trace_id = trace_id.replace("\x00", "") if trace_id is not None else None
 
     with connect_database() as connection:
         resolved_conversation_id = ensure_conversation(connection, conversation_id)
@@ -216,3 +291,21 @@ def store_chat_message(
             message_id = int(cursor.fetchone()[0])
         connection.commit()
     return resolved_conversation_id, message_id
+
+
+def store_message_feedback(message_id: int, feedback: bool) -> bool:
+    """Store a user's thumbs-up (true) or thumbs-down (false) for an answer."""
+    ensure_chat_schema()
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE chat.messages
+                SET feedback = %s
+                WHERE id = %s AND answer_message IS NOT NULL
+                """,
+                (feedback, message_id),
+            )
+            updated = cursor.rowcount == 1
+        connection.commit()
+    return updated

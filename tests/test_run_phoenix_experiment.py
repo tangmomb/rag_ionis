@@ -37,9 +37,9 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
 
         self.assertEqual(request.question, "Ma question ?")
-        self.assertEqual(request.reformulationModel, "gpt-5.6-terra")
-        self.assertEqual(request.plannerModel, "gpt-5.6-luna")
-        self.assertEqual(request.answerModel, "answer-model")
+        self.assertEqual(request.reformulationModel, "mistral-medium-latest")
+        self.assertEqual(request.plannerModel, "mistral-medium-latest")
+        self.assertEqual(request.answerModel, "mistral-medium-latest")
         self.assertEqual(request.reformulationPrompt, "Prompt reformulation")
         self.assertEqual(request.plannerPrompt, "Prompt planner")
         self.assertEqual(request.answerPrompt, "Prompt reponse")
@@ -86,10 +86,25 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             },
         )
         task = run_phoenix_experiment.build_rag_task(
-            run_phoenix_experiment.RagExperimentSettings()
+            run_phoenix_experiment.RagExperimentSettings(shadow_evaluation=True)
         )
 
-        with patch.object(run_phoenix_experiment, "rag", return_value=response):
+        def run_with_shadow(_request, **kwargs):
+            self.assertTrue(kwargs["shadow_evaluation_enabled_override"])
+            self.assertEqual(
+                kwargs["shadow_evaluation_model_override"],
+                run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
+            )
+            self.assertFalse(kwargs["correction_loop_enabled_override"])
+            kwargs["shadow_evaluation_sink"].update(
+                {
+                    "status": "acceptable",
+                    "reason": "Réponse étayée",
+                }
+            )
+            return response
+
+        with patch.object(run_phoenix_experiment, "rag", side_effect=run_with_shadow):
             output = task({"question": "Question"})
 
         self.assertEqual(output["answer"], "Une reponse.")
@@ -100,14 +115,149 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             output["diagnostics"]["reformulation_provider"],
             None,
         )
+        self.assertEqual(
+            output["diagnostics"]["shadow_evaluation"]["status"],
+            "acceptable",
+        )
 
     def test_builtin_evaluators_capture_transport_quality_and_action(self) -> None:
-        output = {"answer": "Reponse", "action": "clarify"}
+        output = {
+            "answer": "Reponse",
+            "action": "clarify",
+            "diagnostics": {
+                "shadow_evaluation": {
+                    "verdict": "acceptable",
+                    "issue": "none",
+                    "status": "acceptable",
+                    "reason": "Réponse étayée",
+                    "retrieval_quality": 0.85,
+                    "answer_grounded": True,
+                }
+            },
+        }
 
         self.assertTrue(run_phoenix_experiment.response_nonempty(output))
         self.assertEqual(
             run_phoenix_experiment.answer_action(output),
             {"label": "clarify"},
+        )
+        self.assertEqual(
+            run_phoenix_experiment.answer_action_match(
+                output,
+                {"action": "clarify"},
+            )[1],
+            "match",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_status(output)["label"],
+            "acceptable",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_verdict(output)["label"],
+            "acceptable",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_issue(output)["label"],
+            "none",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_grounded(output)[0],
+            1.0,
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_retrieval_quality(output)[0],
+            0.85,
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_verdict_match(
+                output,
+                {"shadow_verdict": "acceptable"},
+            )[1],
+            "match",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_issue_match(
+                output,
+                {"shadow_issue": "none"},
+            )[1],
+            "match",
+        )
+
+    def test_parser_enables_shadow_calibration_explicitly(self) -> None:
+        args = run_phoenix_experiment.build_parser().parse_args(
+            ["--dataset", "questions-rag", "--shadow-evaluation"]
+        )
+
+        self.assertTrue(args.shadow_evaluation)
+        self.assertEqual(
+            args.shadow_evaluation_model,
+            run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
+        )
+        self.assertEqual(args.llm_timeout, 60)
+        self.assertEqual(args.llm_max_retries, 0)
+
+    def test_parser_enables_bounded_correction_explicitly(self) -> None:
+        args = run_phoenix_experiment.build_parser().parse_args(
+            [
+                "--dataset",
+                "questions-rag",
+                "--shadow-evaluation",
+                "--correction-loop",
+            ]
+        )
+
+        self.assertTrue(args.shadow_evaluation)
+        self.assertTrue(args.correction_loop)
+
+    def test_builtin_evaluators_handle_failed_task_output(self) -> None:
+        self.assertFalse(run_phoenix_experiment.response_nonempty(None))
+        self.assertEqual(
+            run_phoenix_experiment.answer_action(None),
+            {"label": "unknown"},
+        )
+        self.assertEqual(
+            run_phoenix_experiment.answer_action_match(
+                None,
+                {"action": "answer"},
+            )[1],
+            "mismatch",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.shadow_status(None)["label"],
+            "not_run",
+        )
+
+    def test_correction_evaluators_report_attempt_and_strategy(self) -> None:
+        output = {
+            "diagnostics": {
+                "correction": {
+                    "attempted": True,
+                    "count": 1,
+                    "succeeded": True,
+                    "strategy": "regenerate_answer",
+                    "issue": "unsupported_answer",
+                }
+            }
+        }
+
+        self.assertEqual(
+            run_phoenix_experiment.correction_outcome(output)["label"],
+            "succeeded",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.correction_count(output),
+            (1.0, "attempted"),
+        )
+        output["diagnostics"]["shadow_evaluation"] = {
+            "verdict": "acceptable"
+        }
+        self.assertEqual(
+            run_phoenix_experiment.correction_effectiveness(output)["label"],
+            "effective",
+        )
+        self.assertEqual(
+            run_phoenix_experiment.correction_outcome(None)["label"],
+            "not_attempted",
         )
 
     def test_parser_supports_single_example_dry_run(self) -> None:
@@ -190,6 +340,7 @@ class RunPhoenixExperimentTests(unittest.TestCase):
                 ("Mistral - Medium", "mistral-medium-latest"),
                 ("Mistral - Small", "mistral-small-latest"),
                 ("Mistral - Large", "mistral-large-latest"),
+                ("Google - Gemini 3.8 Flash", "gemini-3.8-flash"),
                 (
                     "Google - Gemini 3.1 Flash-Lite",
                     "gemini-3.1-flash-lite",

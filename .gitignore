@@ -1,4 +1,5 @@
 .venv/
+.venv-studio/
 __pycache__/
 *.py[cod]
 .env
@@ -8,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.langgraph_api/
 downloads/
 models/huggingface/
 models/faster-whisper-large-v3/
@@ -20,3 +22,5 @@ utils/env_prod_previous_sur_vps.txt
 utils/backup_sql/
 utils/modifs_finales
 utils/ssh_rag.txt
+utils/chantier_fin_aout
+.venv-studio-py313/

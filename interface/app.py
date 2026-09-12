@@ -80,6 +80,11 @@ def read_styles() -> FileResponse:
     return FileResponse(INTERFACE_DIR / "styles.css", media_type="text/css")
 
 
+@app.get("/favicon.svg")
+def read_favicon() -> FileResponse:
+    return FileResponse(INTERFACE_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 __all__ = [
     "ChunkSource",
     "ExecutionPlan",

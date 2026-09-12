@@ -29,6 +29,9 @@ class LlmTesterTests(unittest.TestCase):
             os.environ,
             {
                 "MISTRAL_API_KEY": "",
+                "OPENAI_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "GEMINI_API_KEY": "",
             },
             clear=False,
         ):
@@ -37,9 +40,27 @@ class LlmTesterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         providers = {item["id"]: item for item in payload["providers"]}
-        self.assertEqual(set(providers), {"mistral"})
+        self.assertEqual(set(providers), {"openai", "mistral", "google"})
         self.assertFalse(providers["mistral"]["configured"])
-        self.assertIn("zai-glm-5-2", providers["mistral"]["models"])
+        self.assertFalse(providers["openai"]["configured"])
+        self.assertFalse(providers["google"]["configured"])
+        self.assertEqual(providers["google"]["label"], "Gemini")
+        self.assertIn("gpt-5.6-sol", providers["openai"]["models"])
+        self.assertEqual(
+            providers["openai"]["generationControls"]["verbosity"],
+            ["low", "medium", "high"],
+        )
+        self.assertIn("mistral-medium-latest", providers["mistral"]["models"])
+        self.assertEqual(
+            [region["id"] for region in providers["mistral"]["regions"]],
+            [],
+        )
+        self.assertEqual(
+            [region["id"] for region in providers["openai"]["regions"]],
+            ["global", "eu", "us"],
+        )
+        self.assertIn("gemini-3.6-flash", providers["google"]["models"])
+        self.assertEqual(providers["google"]["defaultModel"], "gemini-3.5-flash-lite")
 
     def test_missing_key_is_reported_before_network_call(self) -> None:
         with (
@@ -93,18 +114,225 @@ class LlmTesterTests(unittest.TestCase):
         self.assertEqual(response.json()["text"], "Bonjour Mistral")
         self.assertEqual(response.json()["response"], raw)
 
-    def test_other_providers_are_rejected(self) -> None:
+    def test_openai_and_google_providers_are_accepted(self) -> None:
+        for provider, model, key_name in (
+            ("openai", "gpt-5.6-sol", "OPENAI_API_KEY"),
+            ("google", "gemini-3.6-flash", "GOOGLE_API_KEY"),
+        ):
+            with (
+                patch.dict(os.environ, {key_name: "secret"}, clear=False),
+                patch.object(
+                    llm_tester,
+                    "create_llm_response",
+                    return_value=LLMResponse(
+                        provider=provider,
+                        model=model,
+                        output_text="Bonjour",
+                        raw_payload={"content": "Bonjour"},
+                    ),
+                ) as create,
+            ):
+                response = self.client.post(
+                    "/api/generate",
+                    json={
+                        "provider": provider,
+                        "model": model,
+                        "message": "Bonjour",
+                        "max_output_tokens": 200,
+                    },
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["provider"], provider)
+            create.assert_called_once()
+
+    def test_unknown_provider_is_rejected(self) -> None:
         response = self.client.post(
             "/api/generate",
             json={
-                "provider": "openai",
-                "model": "gpt-5.6-sol",
+                "provider": "unknown",
+                "model": "unknown-model",
                 "message": "Bonjour",
                 "max_output_tokens": 200,
             },
         )
 
         self.assertEqual(response.status_code, 422)
+
+    def test_generation_options_are_forwarded(self) -> None:
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_tester,
+                "create_llm_response",
+                return_value=LLMResponse(
+                    provider="openai",
+                    model="gpt-5.6-luna",
+                    output_text="Bonjour",
+                    raw_payload={},
+                ),
+            ) as create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-5.6-luna",
+                    "message": "Bonjour",
+                    "reasoning_effort": "none",
+                    "verbosity": "low",
+                    "openai_service_tier": "default",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(create.call_args.kwargs["reasoning_effort"], "none")
+        self.assertEqual(create.call_args.kwargs["verbosity"], "low")
+        self.assertEqual(create.call_args.kwargs["openai_service_tier"], "default")
+        self.assertNotIn("response_schema", create.call_args.kwargs)
+
+    def test_system_message_is_sent_before_user_message(self) -> None:
+        with (
+            patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_tester,
+                "create_llm_response",
+                return_value=LLMResponse(
+                    provider="mistral",
+                    model="mistral-large-latest",
+                    output_text="Bonjour",
+                    raw_payload={},
+                ),
+            ) as create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                json={
+                    "provider": "mistral",
+                    "model": "mistral-large-latest",
+                    "system_message": "Réponds en français.",
+                    "message": "Bonjour",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            create.call_args.kwargs["input"],
+            [
+                {"role": "system", "content": "Réponds en français."},
+                {"role": "user", "content": "Bonjour"},
+            ],
+        )
+
+    def test_gemini_thinking_budget_is_forwarded(self) -> None:
+        with (
+            patch.dict(os.environ, {"GOOGLE_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_tester,
+                "create_llm_response",
+                return_value=LLMResponse(
+                    provider="google",
+                    model="gemini-2.5-flash",
+                    output_text="Bonjour",
+                    raw_payload={},
+                ),
+            ) as create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                json={
+                    "provider": "google",
+                    "model": "gemini-2.5-flash",
+                    "message": "Bonjour",
+                    "thinking_budget": 1024,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(create.call_args.kwargs["thinking_budget"], 1024)
+
+    def test_mistral_request_does_not_forward_an_inference_region(self) -> None:
+        with (
+            patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_tester,
+                "create_llm_response",
+                return_value=LLMResponse(
+                    provider="mistral",
+                    model="mistral-large-latest",
+                    output_text="Bonjour",
+                    raw_payload={},
+                ),
+            ) as create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                json={
+                    "provider": "mistral",
+                    "model": "mistral-large-latest",
+                    "message": "Bonjour",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("mistral_base_url", create.call_args.kwargs)
+
+    def test_openai_region_is_forwarded_as_base_url(self) -> None:
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_tester,
+                "create_llm_response",
+                return_value=LLMResponse(
+                    provider="openai",
+                    model="gpt-5.6-sol",
+                    output_text="Bonjour",
+                    raw_payload={},
+                ),
+            ) as create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol",
+                    "message": "Bonjour",
+                    "openai_region": "eu",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            create.call_args.kwargs["openai_base_url"],
+            "https://eu.api.openai.com/v1",
+        )
+
+    def test_openai_fast_tier_is_forwarded(self) -> None:
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False),
+            patch.object(
+                llm_tester,
+                "create_llm_response",
+                return_value=LLMResponse(
+                    provider="openai",
+                    model="gpt-5.6-sol",
+                    output_text="Bonjour",
+                    raw_payload={},
+                ),
+            ) as create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol",
+                    "message": "Bonjour",
+                    "openai_service_tier": "fast",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(create.call_args.kwargs["openai_service_tier"], "fast")
 
 
 if __name__ == "__main__":

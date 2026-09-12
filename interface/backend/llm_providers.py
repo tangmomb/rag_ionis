@@ -2,20 +2,32 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Sequence
-from urllib.parse import quote
-
-import requests
+from typing import Any, Callable, Literal, Protocol, Sequence
+from google import genai
+from google.genai import types as google_types
+from langchain_openai import ChatOpenAI
 from mistralai.client import Mistral
-from openai import OpenAI
 
-from interface.backend.telemetry import TraceOperation, trace_operation
+from interface.backend.telemetry import trace_operation
+
 
 
 LLMProvider = Literal["openai", "mistral", "google"]
 REQUEST_TIMEOUT_SECONDS = 300
+LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
+LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
+DEFAULT_OPENAI_SERVICE_TIER = "fast"
+GEMINI_THINKING_LEVELS = {
+    "gemini-3.5-flash-lite": "low",
+    "gemini-3.8-flash": "low",
+}
+GEMINI_38_FLASH_SERVICE_TIER = "priority"
+GEMINI_PRIORITY_MODELS = frozenset(
+    {"gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"}
+)
 OPENAI_SERVICE_TIERS = frozenset(
     {"auto", "default", "flex", "scale", "priority", "fast"}
 )
@@ -41,15 +53,15 @@ LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
             ("Medium", "mistral-medium-latest"),
             ("Small", "mistral-small-latest"),
             ("Large", "mistral-large-latest"),
-            ("ZAI GLM 5.2", "zai-glm-5-2"),
         ),
     },
     "google": {
         "label": "Google",
         "key_names": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         "default_model_env": "GOOGLE_LLM_TEST_MODEL",
-        "default_model": "gemini-3.6-flash",
+        "default_model": "gemini-3.5-flash-lite",
         "models": (
+            ("Gemini 3.8 Flash", "gemini-3.8-flash"),
             ("Gemini 3.1 Flash-Lite", "gemini-3.1-flash-lite"),
             ("Gemini 3.6 Flash", "gemini-3.6-flash"),
             ("Gemini 3.5 Flash-Lite", "gemini-3.5-flash-lite"),
@@ -71,6 +83,35 @@ class LLMProviderError(RuntimeError):
         self.provider = provider
         self.status_code = status_code
         self.payload = payload
+
+
+def configured_request_timeout_seconds() -> float:
+    raw_value = os.getenv(LLM_REQUEST_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return float(REQUEST_TIMEOUT_SECONDS)
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return float(REQUEST_TIMEOUT_SECONDS)
+    return value if value > 0 else float(REQUEST_TIMEOUT_SECONDS)
+
+
+def configured_max_retries() -> int | None:
+    raw_value = os.getenv(LLM_MAX_RETRIES_ENV, "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def add_runtime_limits(options: dict[str, Any]) -> dict[str, Any]:
+    retries = configured_max_retries()
+    if retries is not None:
+        options["max_retries"] = retries
+    return options
 
 
 @dataclass(frozen=True)
@@ -107,10 +148,10 @@ def provider_api_key(provider: LLMProvider) -> str | None:
     return None
 
 
-def configured_openai_service_tier() -> str | None:
+def configured_openai_service_tier() -> str:
     service_tier = os.getenv(OPENAI_SERVICE_TIER_ENV, "").strip().lower()
     if not service_tier:
-        return None
+        return DEFAULT_OPENAI_SERVICE_TIER
     if service_tier not in OPENAI_SERVICE_TIERS:
         choices = ", ".join(sorted(OPENAI_SERVICE_TIERS))
         raise LLMProviderError(
@@ -131,9 +172,7 @@ def provider_for_model(model: str) -> LLMProvider:
     normalized = str(model or "").strip().casefold()
     if normalized.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-")):
         return "openai"
-    if normalized.startswith(
-        ("mistral-", "ministral-", "codestral-", "pixtral-")
-    ):
+    if normalized.startswith(("mistral-", "ministral-", "codestral-", "pixtral-")):
         return "mistral"
     if normalized.startswith("gemini-"):
         return "google"
@@ -192,6 +231,175 @@ def normalize_messages(input_value: Any) -> list[dict[str, str]]:
     return messages or [{"role": "user", "content": ""}]
 
 
+def langchain_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Give function-calling providers the name LangChain requires."""
+    return {"title": "rag_response", **schema}
+
+
+def validate_structured_response(
+    value: Any,
+    schema: dict[str, Any],
+    provider_label: str,
+    *,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    """Apply the schema's object and required-key contract after generation.
+
+    Providers can occasionally return valid JSON that omits required fields,
+    even when JSON Schema mode was requested.  Reject it before it reaches the
+    calling workflow rather than silently applying defaults.
+    """
+    required_keys = [str(key) for key in schema.get("required", [])]
+    returned_keys = sorted(str(key) for key in value) if isinstance(value, dict) else []
+    with trace_operation(
+        "structured_output_validation",
+        kind="CHAIN",
+        input_value={
+            "provider": provider_label.lower(),
+            "required_keys": required_keys,
+            "returned_keys": returned_keys,
+        },
+    ) as validation_span:
+        if not isinstance(value, dict):
+            validation_span.set_output(
+                {"valid": False, "reason": failure_reason or "response_is_not_an_object"}
+            )
+            raise ValueError(
+                f"{provider_label} n'a pas renvoyé l'objet JSON structuré attendu."
+            )
+        missing = [key for key in required_keys if key not in value]
+        if missing:
+            validation_span.set_output(
+                {"valid": False, "reason": "missing_required_keys", "missing_keys": missing}
+            )
+            raise ValueError(
+                f"{provider_label} a omis les champs JSON requis : {', '.join(missing)}."
+            )
+        validation_span.set_output({"valid": True})
+    return value
+
+
+def invoke_langchain_model(
+    provider: LLMProvider,
+    model: str,
+    messages: list[dict[str, str]],
+    invoke: Callable[[], Any],
+    *,
+    invocation_parameters: dict[str, Any] | None = None,
+) -> Any:
+    """Create one provider-level Phoenix LLM span, without LangChain internals."""
+    with trace_operation(
+        model,
+        kind="LLM",
+        input_value=messages,
+        attributes={
+            "llm.provider": provider,
+            "llm.system": provider,
+            "llm.model_name": model,
+            "llm.invocation_parameters": invocation_parameters or {"model": model},
+        },
+    ) as operation:
+        add_llm_message_attributes(operation, "llm.input_messages", messages)
+        result = invoke()
+        operation.set_output(result)
+        response = raw_langchain_response(result)
+        output_text = (
+            extract_mistral_text(response.model_dump(mode="json"))
+            if provider == "mistral" and hasattr(response, "model_dump")
+            else langchain_result_text(result)
+        )
+        add_llm_message_attributes(
+            operation,
+            "llm.output_messages",
+            [{"role": "assistant", "content": output_text}],
+        )
+        add_llm_usage_attributes(operation, response)
+        return result
+
+
+def add_llm_message_attributes(
+    operation: Any,
+    attribute_name: str,
+    messages: list[dict[str, str]],
+) -> None:
+    """Write the flattened OpenInference attributes Phoenix renders as message cards."""
+    for index, message in enumerate(messages):
+        prefix = f"{attribute_name}.{index}.message"
+        operation.set_attribute(f"{prefix}.role", message["role"])
+        operation.set_attribute(f"{prefix}.content", message["content"])
+
+
+def raw_langchain_response(result: Any) -> Any:
+    if isinstance(result, dict) and result.get("raw") is not None:
+        return result["raw"]
+    return result
+
+
+def langchain_result_text(result: Any) -> str:
+    if isinstance(result, dict) and result.get("parsed") is not None:
+        return json.dumps(result["parsed"], ensure_ascii=False)
+    return content_text(getattr(raw_langchain_response(result), "content", "")).strip()
+
+
+def add_llm_usage_attributes(operation: Any, response: Any) -> None:
+    """Record usage from LangChain and provider-native response shapes."""
+    usage = usage_from_response(response)
+    operation.set_attribute(
+        "llm.token_count.prompt",
+        usage_value(usage, "input_tokens", "prompt_tokens"),
+    )
+    operation.set_attribute(
+        "llm.token_count.completion",
+        usage_value(usage, "output_tokens", "completion_tokens"),
+    )
+    operation.set_attribute("llm.token_count.total", usage_value(usage, "total_tokens"))
+
+
+def usage_from_response(response: Any) -> Any:
+    """Find a usage object without depending on a single provider SDK."""
+    if response is None:
+        return {}
+    for attribute_name in ("usage_metadata", "usage"):
+        usage = getattr(response, attribute_name, None)
+        if usage is not None:
+            return usage
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict) and metadata.get("token_usage") is not None:
+        return metadata["token_usage"]
+    data = getattr(response, "data", None)
+    if data is not None:
+        usage = usage_from_response(data)
+        if usage:
+            return usage
+    if hasattr(response, "model_dump"):
+        try:
+            payload = response.model_dump(mode="json")
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            return payload.get("usage") or payload.get("usage_metadata") or {}
+    if isinstance(response, dict):
+        return response.get("usage") or response.get("usage_metadata") or {}
+    return {}
+
+
+def usage_value(usage: Any, *names: str) -> int | None:
+    for name in names:
+        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def traced_invocation_parameters(options: dict[str, Any]) -> dict[str, Any]:
+    """Keep useful request options in Phoenix without exposing credentials."""
+    return {
+        key: value
+        for key, value in options.items()
+        if key not in {"api_key", "timeout", "request_timeout"}
+    }
+
+
 def extract_openai_text(payload: dict[str, Any]) -> str:
     top_level = payload.get("output_text")
     if isinstance(top_level, str) and top_level.strip():
@@ -234,76 +442,6 @@ def extract_mistral_text(payload: dict[str, Any]) -> str:
     return "\n".join(pieces).strip()
 
 
-def extract_google_text(payload: dict[str, Any]) -> str:
-    pieces = []
-    for candidate in payload.get("candidates", []) or []:
-        if not isinstance(candidate, dict):
-            continue
-        content = candidate.get("content", {})
-        if not isinstance(content, dict):
-            continue
-        for part in content.get("parts", []) or []:
-            if not isinstance(part, dict) or part.get("thought") is True:
-                continue
-            text = part.get("text")
-            if isinstance(text, str) and text:
-                pieces.append(text)
-    return "\n".join(pieces).strip()
-
-
-def json_response(
-    response: requests.Response,
-    provider: LLMProvider,
-) -> dict[str, Any]:
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise LLMProviderError(
-            provider,
-            "Le fournisseur a renvoyé une réponse non JSON.",
-            status_code=response.status_code,
-            payload={"response_preview": response.text[:2_000]},
-        ) from exc
-    if not response.ok:
-        raise LLMProviderError(
-            provider,
-            "Le fournisseur a refusé la requête.",
-            status_code=response.status_code,
-            payload=payload,
-        )
-    if not isinstance(payload, dict):
-        raise LLMProviderError(
-            provider,
-            "Le fournisseur a renvoyé un JSON inattendu.",
-            status_code=response.status_code,
-            payload=payload,
-        )
-    return payload
-
-
-def add_llm_message_attributes(
-    operation: TraceOperation,
-    attribute_name: str,
-    messages: list[dict[str, str]],
-) -> None:
-    for index, message in enumerate(messages):
-        prefix = f"{attribute_name}.{index}.message"
-        operation.set_attribute(f"{prefix}.role", message["role"])
-        operation.set_attribute(f"{prefix}.content", message["content"])
-
-
-def add_llm_usage_attributes(
-    operation: TraceOperation,
-    *,
-    prompt_tokens: Any = None,
-    completion_tokens: Any = None,
-    total_tokens: Any = None,
-) -> None:
-    operation.set_attribute("llm.token_count.prompt", prompt_tokens)
-    operation.set_attribute("llm.token_count.completion", completion_tokens)
-    operation.set_attribute("llm.token_count.total", total_tokens)
-
-
 def call_openai(
     model: str,
     messages: list[dict[str, str]],
@@ -311,36 +449,73 @@ def call_openai(
     max_output_tokens: int | None,
     store: bool | None,
     response_schema: dict[str, Any] | None,
+    reasoning_effort: str | None,
+    verbosity: str | None,
+    base_url: str | None,
+    service_tier_override: str | None,
 ) -> LLMResponse:
-    request: dict[str, Any] = {
-        "model": model,
-        "input": messages,
-    }
-    service_tier = configured_openai_service_tier()
-    if service_tier is not None:
-        request["service_tier"] = service_tier
-    if max_output_tokens is not None:
-        request["max_output_tokens"] = max_output_tokens
-    if store is not None:
-        request["store"] = store
-    if response_schema is not None:
-        request["text"] = {
-            "format": {
-                "type": "json_schema",
-                "name": "rag_answer",
-                "schema": response_schema,
-                "strict": True,
-            }
+    options: dict[str, Any] = add_runtime_limits(
+        {
+            "model": model,
+            "api_key": api_key,
+            "timeout": configured_request_timeout_seconds(),
         }
+    )
+    service_tier = service_tier_override or configured_openai_service_tier()
+    if service_tier is not None:
+        options["service_tier"] = service_tier
+    if max_output_tokens is not None:
+        options["max_completion_tokens"] = max_output_tokens
+    if store is not None:
+        options["store"] = store
+    if reasoning_effort is not None:
+        options["reasoning_effort"] = reasoning_effort
+    if verbosity is not None:
+        options["verbosity"] = verbosity
+    if base_url is not None:
+        options["base_url"] = base_url
+    if reasoning_effort is not None or verbosity is not None:
+        # These controls are Responses API fields: LangChain serializes them as
+        # reasoning={"effort": ...} and text={"verbosity": ...}.
+        options["use_responses_api"] = True
     try:
-        response = OpenAI(api_key=api_key).responses.create(**request)
+        chat = ChatOpenAI(**options)
+        if response_schema is not None:
+            structured_chat = chat.with_structured_output(
+                langchain_response_schema(response_schema),
+                method="json_schema",
+                include_raw=True,
+            )
+            result = invoke_langchain_model(
+                "openai",
+                model,
+                messages,
+                lambda: structured_chat.invoke(messages),
+                invocation_parameters={
+                    **traced_invocation_parameters(options),
+                    "response_format": "json_schema",
+                },
+            )
+            parsed = result["parsed"]
+            validate_structured_response(parsed, response_schema, "OpenAI")
+            response = result["raw"]
+            output_text = json.dumps(parsed, ensure_ascii=False)
+        else:
+            response = invoke_langchain_model(
+                "openai",
+                model,
+                messages,
+                lambda: chat.invoke(messages),
+                invocation_parameters=traced_invocation_parameters(options),
+            )
+            output_text = content_text(response.content).strip()
     except Exception as exc:
         raise LLMProviderError("openai", str(exc)) from exc
-    payload = response.model_dump(mode="json")
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}
     return LLMResponse(
         provider="openai",
         model=model,
-        output_text=(response.output_text or "").strip(),
+        output_text=output_text,
         raw_payload=payload,
     )
 
@@ -351,30 +526,167 @@ def call_mistral(
     api_key: str,
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> LLMResponse:
-    request: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-    }
+    request_messages = list(messages)
+    options: dict[str, Any] = {"model": model, "messages": request_messages}
     if max_output_tokens is not None:
-        request["max_tokens"] = max_output_tokens
+        options["max_tokens"] = max_output_tokens
     if response_schema is not None:
-        request["response_format"] = {
+        options["response_format"] = {
             "type": "json_schema",
             "json_schema": {
-                "name": "rag_answer",
+                "name": "rag_response",
                 "schema": response_schema,
                 "strict": True,
             },
         }
     try:
-        response = Mistral(
+        client = Mistral(
             api_key=api_key,
-            timeout_ms=REQUEST_TIMEOUT_SECONDS * 1_000,
-        ).chat.complete(**request)
+            timeout_ms=int(configured_request_timeout_seconds() * 1000),
+        )
+        if stream_callback is not None:
+            stream_options = dict(options)
+            fragments: list[str] = []
+            configured_retries = configured_max_retries()
+            max_attempts = 1 + (configured_retries if configured_retries is not None else 2)
+            transient_statuses = {408, 429, 500, 502, 503, 504}
+            stream_started_at = time.perf_counter()
+            ttft_recorded = False
+            fallback_response: Any | None = None
+            last_stream_event: Any | None = None
+            # Streaming bypasses LangChain, so instrument the whole iterator here.
+            # Otherwise Phoenix sees only the parent "generation" operation.
+            with trace_operation(
+                model,
+                kind="LLM",
+                input_value=messages,
+                attributes={
+                    "llm.provider": "mistral",
+                    "llm.system": "mistral",
+                    "llm.model_name": model,
+                    "llm.invocation_parameters": {
+                        **options,
+                        "response_format": "json_schema" if response_schema is not None else None,
+                        "stream": True,
+                    },
+                },
+            ) as operation:
+                add_llm_message_attributes(operation, "llm.input_messages", messages)
+                for attempt in range(max(1, min(max_attempts, 4))):
+                    try:
+                        for event in client.chat.stream(**stream_options):
+                            # Usage, when provided, is carried by the final event,
+                            # which typically has no text delta.
+                            last_stream_event = event
+                            event_payload = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
+                            if isinstance(event_payload, dict) and isinstance(event_payload.get("data"), dict):
+                                event_payload = event_payload["data"]
+                            if isinstance(event_payload, dict):
+                                choices = event_payload.get("choices", [])
+                                if not choices or not isinstance(choices[0], dict):
+                                    continue
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content") if isinstance(delta, dict) else None
+                            else:
+                                data = getattr(event, "data", None)
+                                choices = getattr(data, "choices", []) or []
+                                if not choices:
+                                    continue
+                                content = getattr(getattr(choices[0], "delta", None), "content", None)
+                            if isinstance(content, list):
+                                content = "".join(
+                                    str(part.get("text", "")) if isinstance(part, dict) else str(getattr(part, "text", ""))
+                                    for part in content
+                                    if isinstance(part, dict) or getattr(part, "text", None)
+                                )
+                            if isinstance(content, str) and content:
+                                if not ttft_recorded:
+                                    operation.set_attribute(
+                                        "llm.ttft_ms",
+                                        round((time.perf_counter() - stream_started_at) * 1_000),
+                                    )
+                                    ttft_recorded = True
+                                fragments.append(content)
+                                stream_callback(content)
+                        break
+                    except Exception as exc:
+                        raw_response = getattr(exc, "raw_response", None)
+                        status_code = getattr(raw_response, "status_code", None) or getattr(exc, "status_code", None)
+                        is_last_attempt = attempt >= max(1, min(max_attempts, 4)) - 1
+                        if fragments or status_code not in transient_statuses or is_last_attempt:
+                            raise
+                        time.sleep(2**attempt)
+                output_text = "".join(fragments)
+                if not output_text.strip():
+                    # Some Mistral models can close a JSON-schema stream without text
+                    # deltas. Preserve the contract with a regular completion fallback.
+                    fallback_response = client.chat.complete(**options)
+                    fallback_payload = (
+                        fallback_response.model_dump(mode="json")
+                        if hasattr(fallback_response, "model_dump")
+                        else {}
+                    )
+                    output_text = extract_mistral_text(fallback_payload)
+                    if not output_text.strip():
+                        raise ValueError("Mistral n'a renvoyé aucun contenu exploitable.")
+                    operation.set_attribute("llm.streaming.fallback", "non_streaming")
+                    stream_callback(output_text)
+                if response_schema is not None:
+                    try:
+                        parsed = json.loads(output_text)
+                    except json.JSONDecodeError:
+                        validate_structured_response(
+                            None, response_schema, "Mistral", failure_reason="invalid_json"
+                        )
+                    validate_structured_response(parsed, response_schema, "Mistral")
+                    output_text = json.dumps(parsed, ensure_ascii=False)
+                raw_payload = (
+                    fallback_response.model_dump(mode="json")
+                    if fallback_response is not None and hasattr(fallback_response, "model_dump")
+                    else {"model": model, "streamed": True, "content": output_text}
+                )
+                operation.set_output(raw_payload)
+                add_llm_message_attributes(
+                    operation,
+                    "llm.output_messages",
+                    [{"role": "assistant", "content": output_text}],
+                )
+                add_llm_usage_attributes(
+                    operation,
+                    fallback_response or last_stream_event,
+                )
+                return LLMResponse(
+                    provider="mistral",
+                    model=model,
+                    output_text=output_text,
+                    raw_payload=raw_payload,
+                )
+        response = invoke_langchain_model(
+            "mistral",
+            model,
+            messages,
+            lambda: client.chat.complete(**options),
+            invocation_parameters={
+                **options,
+                "response_format": "json_schema" if response_schema is not None else None,
+            },
+        )
+        raw_payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {}
+        output_text = extract_mistral_text(raw_payload)
+        if response_schema is not None:
+            try:
+                parsed = json.loads(output_text)
+            except json.JSONDecodeError:
+                validate_structured_response(
+                    None, response_schema, "Mistral", failure_reason="invalid_json"
+                )
+            validate_structured_response(parsed, response_schema, "Mistral")
+            output_text = json.dumps(parsed, ensure_ascii=False)
     except Exception as exc:
         raw_response = getattr(exc, "raw_response", None)
-        status_code = getattr(raw_response, "status_code", None)
+        status_code = getattr(raw_response, "status_code", None) or getattr(exc, "status_code", None)
         payload = getattr(exc, "body", None)
         raise LLMProviderError(
             "mistral",
@@ -383,8 +695,7 @@ def call_mistral(
             payload=payload,
         ) from exc
 
-    payload = response.model_dump(mode="json")
-    output_text = extract_mistral_text(payload)
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}
     return LLMResponse(
         provider="mistral",
         model=model,
@@ -399,87 +710,143 @@ def call_google(
     api_key: str,
     max_output_tokens: int | None,
     response_schema: dict[str, Any] | None,
+    thinking_budget: int | None,
 ) -> LLMResponse:
-    system_parts = [
-        {"text": message["content"]}
-        for message in messages
-        if message["role"] == "system" and message["content"]
-    ]
+    normalized_model = model.removeprefix("models/")
+    system_instruction = "\n\n".join(
+        message["content"] for message in messages if message["role"] == "system"
+    )
     contents = [
-        {
-            "role": "model" if message["role"] == "assistant" else "user",
-            "parts": [{"text": message["content"]}],
-        }
+        google_types.Content(
+            role="model" if message["role"] == "assistant" else "user",
+            parts=[google_types.Part.from_text(text=message["content"])],
+        )
         for message in messages
         if message["role"] != "system"
-    ]
-    request: dict[str, Any] = {"contents": contents}
-    if system_parts:
-        request["systemInstruction"] = {"parts": system_parts}
-    generation_config: dict[str, Any] = {}
+    ] or [google_types.Content(role="user", parts=[google_types.Part.from_text(text="")])]
+    config_options: dict[str, Any] = {}
+    if system_instruction:
+        config_options["system_instruction"] = system_instruction
     if max_output_tokens is not None:
-        generation_config["maxOutputTokens"] = max_output_tokens
+        config_options["max_output_tokens"] = max_output_tokens
+    if thinking_budget is not None:
+        config_options["thinking_config"] = google_types.ThinkingConfig(
+            thinking_budget=thinking_budget
+        )
+    if normalized_model in GEMINI_THINKING_LEVELS:
+        config_options["thinking_config"] = google_types.ThinkingConfig(
+            thinking_level=GEMINI_THINKING_LEVELS[normalized_model]
+        )
+    if normalized_model in GEMINI_PRIORITY_MODELS:
+        config_options["service_tier"] = GEMINI_38_FLASH_SERVICE_TIER
     if response_schema is not None:
-        generation_config.update(
-            {
-                "responseMimeType": "application/json",
-                "responseJsonSchema": response_schema,
-            }
-        )
-    if generation_config:
-        request["generationConfig"] = generation_config
-    model_id = model.removeprefix("models/")
-    invocation_parameters = {
-        key: value
-        for key, value in request.items()
-        if key not in {"contents", "systemInstruction"}
+        config_options["response_mime_type"] = "application/json"
+        config_options["response_json_schema"] = response_schema
+    thinking_config = config_options.get("thinking_config")
+    requested_thinking_level = getattr(thinking_config, "thinking_level", None)
+    if requested_thinking_level is not None:
+        requested_thinking_level = str(
+            getattr(requested_thinking_level, "value", requested_thinking_level)
+        ).lower()
+    else:
+        requested_thinking_level = "none"
+    request_options = {
+        "model": normalized_model,
+        "contents": contents,
+        "config": google_types.GenerateContentConfig(**config_options),
     }
-    with trace_operation(
-        "GoogleGenerateContent",
-        kind="LLM",
-        input_value=messages,
-        attributes={
-            "llm.model_name": model,
-            "llm.provider": "google",
-            "llm.system": "google",
-            "llm.invocation_parameters": invocation_parameters,
-        },
-    ) as operation:
-        add_llm_message_attributes(operation, "llm.input_messages", messages)
-        response = requests.post(
-            (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{quote(model_id, safe='-._')}:generateContent"
+    configured_retries = configured_max_retries()
+    retry_attempts = (
+        configured_retries + 1 if configured_retries is not None else 5
+    )
+    try:
+        client = genai.Client(
+            api_key=api_key,
+            http_options=google_types.HttpOptions(
+                timeout=round(configured_request_timeout_seconds() * 1_000),
+                retry_options=google_types.HttpRetryOptions(
+                    attempts=retry_attempts,
+                    initial_delay=1,
+                    max_delay=10,
+                    http_status_codes=[408, 429, 500, 502, 503, 504],
+                ),
             ),
-            headers={
-                "x-goog-api-key": api_key,
-                "Content-Type": "application/json",
+        )
+        with trace_operation(
+            model,
+            kind="LLM",
+            input_value=messages,
+            attributes={
+                "llm.provider": "google",
+                "llm.system": "google",
+                "llm.model_name": model,
+                "llm.invocation_parameters": {
+                    "model": normalized_model,
+                    "thinking_level": requested_thinking_level,
+                    "service_tier": config_options.get("service_tier"),
+                    "response_format": "json_schema" if response_schema is not None else None,
+                },
             },
-            json=request,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        payload = json_response(response, "google")
-        output_text = extract_google_text(payload)
-        operation.set_output(payload)
-        add_llm_message_attributes(
-            operation,
-            "llm.output_messages",
-            [{"role": "assistant", "content": output_text}],
-        )
-        usage = payload.get("usageMetadata", {})
-        if isinstance(usage, dict):
-            add_llm_usage_attributes(
-                operation,
-                prompt_tokens=usage.get("promptTokenCount"),
-                completion_tokens=usage.get("candidatesTokenCount"),
-                total_tokens=usage.get("totalTokenCount"),
+        ) as operation:
+            add_llm_message_attributes(operation, "llm.input_messages", messages)
+            response = client.models.generate_content(**request_options)
+            response_headers = getattr(
+                getattr(response, "sdk_http_response", None), "headers", {}
+            ) or {}
+            effective_service_tier = response_headers.get(
+                "x-gemini-service-tier"
             )
-        return LLMResponse(
-            provider="google",
-            model=model,
-            output_text=output_text,
-            raw_payload=payload,
-        )
+            operation.set_attribute(
+                "google.service_tier.requested",
+                config_options.get("service_tier", "standard"),
+            )
+            operation.set_attribute(
+                "google.thinking_level.requested",
+                requested_thinking_level,
+            )
+            if effective_service_tier:
+                operation.set_attribute(
+                    "google.service_tier.effective",
+                    effective_service_tier,
+                )
+            output_text = str(response.text or "").strip()
+            if response_schema is not None:
+                try:
+                    parsed = json.loads(output_text)
+                except json.JSONDecodeError:
+                    validate_structured_response(
+                        None, response_schema, "Gemini", failure_reason="invalid_json"
+                    )
+                validate_structured_response(parsed, response_schema, "Gemini")
+                output_text = json.dumps(parsed, ensure_ascii=False)
+            operation.set_output(response)
+            add_llm_message_attributes(
+                operation,
+                "llm.output_messages",
+                [{"role": "assistant", "content": output_text}],
+            )
+            usage = getattr(response, "usage_metadata", None)
+            operation.set_attribute(
+                "llm.token_count.prompt",
+                getattr(usage, "prompt_token_count", None),
+            )
+            operation.set_attribute(
+                "llm.token_count.completion",
+                getattr(usage, "candidates_token_count", None),
+            )
+            operation.set_attribute(
+                "llm.token_count.total",
+                getattr(usage, "total_token_count", None),
+            )
+    except Exception as exc:
+        raise LLMProviderError("google", str(exc)) from exc
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else {"content": output_text}
+    return LLMResponse(
+        provider="google",
+        model=model,
+        output_text=output_text,
+        raw_payload=payload,
+    )
 
 
 def create_llm_response(
@@ -490,6 +857,12 @@ def create_llm_response(
     max_output_tokens: int | None = None,
     store: bool | None = None,
     response_schema: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    thinking_budget: int | None = None,
+    openai_base_url: str | None = None,
+    openai_service_tier: str | None = None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> LLMResponse:
     selected_provider = provider or provider_for_model(model)
     api_key = provider_api_key(selected_provider)
@@ -502,36 +875,36 @@ def create_llm_response(
             f"Clé absente : renseigne {key_names} dans .env.",
         )
     messages = normalize_messages(input)
-    try:
-        if selected_provider == "openai":
-            return call_openai(
-                model,
-                messages,
-                api_key,
-                max_output_tokens,
-                store,
-                response_schema,
-            )
-        if selected_provider == "mistral":
-            return call_mistral(
-                model,
-                messages,
-                api_key,
-                max_output_tokens,
-                response_schema,
-            )
-        return call_google(
+    if selected_provider == "openai":
+        return call_openai(
+            model,
+            messages,
+            api_key,
+            max_output_tokens,
+            store,
+            response_schema,
+            reasoning_effort,
+            verbosity,
+            openai_base_url,
+            openai_service_tier,
+        )
+    if selected_provider == "mistral":
+        return call_mistral(
             model,
             messages,
             api_key,
             max_output_tokens,
             response_schema,
+            stream_callback,
         )
-    except requests.RequestException as exc:
-        raise LLMProviderError(
-            selected_provider,
-            f"Erreur réseau : {exc}",
-        ) from exc
+    return call_google(
+        model,
+        messages,
+        api_key,
+        max_output_tokens,
+        response_schema,
+        thinking_budget,
+    )
 
 
 class RoutedResponses:
@@ -545,6 +918,8 @@ class RoutedLLMClient:
 
 
 def get_llm_client() -> RoutedLLMClient | None:
-    if not configured_llm_provider_exists():
+    # Le client exposé au RAG ne doit être disponible qu'avec la clé du seul
+    # fournisseur d'inférence autorisé.
+    if not provider_api_key("google"):
         return None
     return RoutedLLMClient()

@@ -83,17 +83,22 @@ TITLE_CONTAINS_SQL = (
     f"{normalized_sql_text('v.title')} LIKE "
     f"concat(chr(37), {normalized_sql_text('%s')}, chr(37))"
 )
+TITLE_HINTS_CONTAINS_SQL = (
+    f"{normalized_sql_text('v.title')} LIKE ANY(ARRAY("
+    f"SELECT concat(chr(37), {normalized_sql_text('title_hint')}, chr(37)) "
+    "FROM unnest(%s::text[]) AS title_hint))"
+)
 
 
 def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
     persons_table = trace.get("persons_table")
     sql_entries: list[tuple[str | None, dict[str, Any]]] = []
     if isinstance(persons_table, dict) and persons_table.get("sql"):
-        sql_entries.append(("persons_table", persons_table))
+        sql_entries.append(("persons_in_speakers", persons_table))
     if trace.get("sql"):
         sql_entries.append(
             (
-                "transcript_enriched" if sql_entries else None,
+                "persons_in_transcripts" if sql_entries else None,
                 trace,
             )
         )
@@ -103,16 +108,59 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
         if formatted_sql is None:
             continue
         formatted_span_name = (
-            f"{span_name}.{label}.sql_formatted"
+            label
             if label
             else f"{span_name}.sql_formatted"
         )
         with trace_operation(
             formatted_span_name,
-            kind="CHAIN",
+            kind="RETRIEVER",
             input_value={"params": sql_trace.get("params", [])},
         ) as sql_span:
-            sql_span.set_output_text(formatted_sql)
+            query_results = sql_trace.get("query_results")
+            if isinstance(query_results, list):
+                sql_span.set_output(
+                    {
+                        "sql": formatted_sql,
+                        "result_count": sql_trace.get(
+                            "query_result_count", len(query_results)
+                        ),
+                        "results": summarize_sql_results(query_results),
+                    }
+                )
+            else:
+                sql_span.set_output_text(formatted_sql)
+
+    deduplication = trace.get("deduplication")
+    if isinstance(deduplication, dict):
+        with trace_operation(
+            "deduplicate_videos",
+            kind="RETRIEVER",
+            input_value={
+                "sources": ["persons_in_speakers", "persons_in_transcripts"],
+                "input_count": deduplication.get("input_count", 0),
+            },
+        ) as deduplication_span:
+            deduplication_span.set_output(deduplication)
+
+
+def summarize_sql_results(results: list[Any]) -> list[dict[str, Any]]:
+    """Serialize each SQL query result for its Phoenix span."""
+    fields = (
+        "chunk_id",
+        "video_title",
+        "video_url",
+        "thumbnail_medium_url",
+        "persons",
+        "person_details",
+        "video_type",
+        "text",
+    )
+    return [
+        {field: result[field] for field in fields if field in result}
+        for result in results
+        if isinstance(result, dict)
+    ]
 
 
 def append_person_filter_clauses(clauses: list[str], params: list[Any], persons: list[str]) -> None:
@@ -170,9 +218,9 @@ def append_company_filter_clauses(
 def build_prefilter_conditions(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    if query.title_hint:
-        clauses.append(TITLE_CONTAINS_SQL)
-        params.append(query.title_hint)
+    if query.title_hints:
+        clauses.append(TITLE_HINTS_CONTAINS_SQL)
+        params.append(query.title_hints)
     if query.published_after:
         clauses.append("v.published_at >= %s::timestamptz")
         params.append(query.published_after)
@@ -242,10 +290,10 @@ def build_video_lookup_conditions(
 ) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    title_hint = query.title_hint
-    if title_hint:
-        clauses.append(TITLE_CONTAINS_SQL)
-        params.append(title_hint)
+    title_hints = query.title_hints
+    if title_hints:
+        clauses.append(TITLE_HINTS_CONTAINS_SQL)
+        params.append(title_hints)
     if database_persons:
         append_person_filter_clauses(clauses, params, database_persons)
     if database_company:
@@ -367,7 +415,7 @@ def lookup_video_document(
                     "company_title"
                     if query.companies
                     else "persons_table"
-                    if query.persons
+                    if query.persons or database_persons
                     else "generic"
                 ),
                 "sql": format_sql_for_trace(person_sql),
@@ -425,13 +473,15 @@ def lookup_video_document(
             transcript_rows,
             transcript_persons=transcript_search_persons,
         )
+        person_results = format_lookup_rows(person_rows)
         results_by_video = {
             result["chunk_id"]: result
-            for result in format_lookup_rows(person_rows)
+            for result in person_results
         }
         for result in transcript_results:
             results_by_video.setdefault(result["chunk_id"], result)
         results = list(results_by_video.values())
+        input_count = len(person_results) + len(transcript_results)
         return results, {
             "mode": intent,
             "lookup_strategy": (
@@ -442,10 +492,21 @@ def lookup_video_document(
             "sql": format_sql_for_trace(transcript_sql),
             "params": transcript_params,
             "result_count": len(results),
+            "deduplication": {
+                "input_count": input_count,
+                "persons_in_speakers_count": len(person_results),
+                "persons_in_transcripts_count": len(transcript_results),
+                "duplicate_count": input_count - len(results),
+                "output_count": len(results),
+                "key": "video_id",
+            },
+            "query_result_count": len(transcript_results),
+            "query_results": transcript_results,
             "persons_table": {
                 "sql": format_sql_for_trace(person_sql),
                 "params": person_params,
                 "result_count": len(person_rows),
+                "query_results": person_results,
             },
         }
 
@@ -498,7 +559,7 @@ def lookup_video_document(
 
     clauses, params = build_video_lookup_conditions(query)
     terms = query.query_text_bm25.strip() or query.query_text.strip() or query.raw_question
-    if not query.title_hint:
+    if not query.title_hints:
         clauses.append(
             f"""
             to_tsvector('french', coalesce(v.title, '') || ' ' || coalesce({document_expr}, ''))
@@ -871,7 +932,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
     rerank_model = normalize_model_name(payload.rerankModel or "", DEFAULT_RERANK_MODEL)
 
     with trace_operation(
-        "rag.retrieval.prefilter",
+        "retrieval.prefilter",
         kind="CHAIN",
         input_value=execution_plan.model_dump(),
     ) as prefilter_span:
@@ -886,12 +947,12 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             "general_question_only": prefilter_debug.get("general_question_only", True),
         }
         prefilter_span.set_output(prefilter_output)
-        trace_formatted_sql("rag.retrieval.prefilter", prefilter_debug)
+        trace_formatted_sql("retrieval.prefilter", prefilter_debug)
 
     question_embedding: list[float] | None = None
     if client is not None and payload.useSql:
         with trace_operation(
-            "rag.retrieval.embedding",
+            "retrieval.embedding",
             kind="CHAIN",
             input_value={
                 "model": embedding_model,
@@ -910,7 +971,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             )
 
     with trace_operation(
-        "rag.retrieval.bm25",
+        "retrieval.bm25",
         kind="CHAIN",
         input_value={
             "query": execution_plan.query_text_bm25,
@@ -919,10 +980,10 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
     ) as bm25_span:
         bm25_chunks, bm25_debug = fetch_bm25_chunks(execution_plan, prefilter_candidate_ids)
         bm25_span.set_output({**bm25_debug, "results": bm25_chunks})
-        trace_formatted_sql("rag.retrieval.bm25", bm25_debug)
+        trace_formatted_sql("retrieval.bm25", bm25_debug)
 
     with trace_operation(
-        "rag.retrieval.vector",
+        "retrieval.vector",
         kind="CHAIN",
         input_value={
             "query": execution_plan.query_text,
@@ -936,10 +997,10 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             prefilter_candidate_ids,
         )
         vector_span.set_output({**vector_debug, "results": vector_chunks})
-        trace_formatted_sql("rag.retrieval.vector", vector_debug)
+        trace_formatted_sql("retrieval.vector", vector_debug)
 
     with trace_operation(
-        "rag.retrieval.rrf",
+        "retrieval.rrf",
         kind="CHAIN",
         input_value={
             "bm25_chunk_ids": [item["chunk_id"] for item in bm25_chunks],
@@ -956,7 +1017,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
 
     if payload.useRerank:
         with trace_operation(
-            "rag.retrieval.rerank",
+            "retrieval.rerank",
             kind="RERANKER",
             input_value={
                 "query": execution_plan.query_text,
@@ -988,7 +1049,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         }
 
     with trace_operation(
-        "rag.retrieval.hierarchy",
+        "retrieval.hierarchy",
         kind="CHAIN",
         input_value={
             "strategy": "detail_then_parents",
@@ -999,7 +1060,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         hierarchy_span.set_output(
             {"trace": hierarchy_debug, "results": final_chunks}
         )
-        trace_formatted_sql("rag.retrieval.hierarchy", hierarchy_debug)
+        trace_formatted_sql("retrieval.hierarchy", hierarchy_debug)
 
     return final_chunks, {
         "answer_model": answer_model,
@@ -1011,7 +1072,6 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         "rrf_top_n": DEFAULT_RRF_TOP_N,
         "final_k": final_k,
         "used_rerank": payload.useRerank and bool(final_chunks),
-        "sql_main_source": execution_plan.sql_main_source,
         "sql_prefilters": prefilter_debug["applied"],
         "general_question_only": prefilter_debug["general_question_only"],
         "sql_query": None,

@@ -7,8 +7,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from interface.app import RagRequest, app
-from interface.backend import generation, orchestration, planner, retrieval
+from interface.backend import api, generation, orchestration, planner, retrieval
 from interface.backend.config import (
+    DEFAULT_ANALYTICS_SQL_MODEL,
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PLANNER_MODEL,
     DEFAULT_REFORMULATION_MODEL,
@@ -48,21 +49,38 @@ class InterfaceAppTests(unittest.TestCase):
         )
         self.assertEqual(selected_sources, [source])
 
-    def test_all_llm_steps_use_mistral_medium_by_default(self) -> None:
+    def test_answer_json_source_indexes_select_sources_without_visible_markers(self) -> None:
+        sources = [
+            {"video_url": "https://example.test/one"},
+            {"video_url": "https://example.test/two"},
+        ]
+
+        answer, selected_sources = generation.select_answer_sources(
+            "Réponse sans marqueur technique.",
+            sources,
+            [2],
+        )
+
+        self.assertEqual(answer, "Réponse sans marqueur technique.")
+        self.assertEqual(selected_sources, [sources[1]])
+
+    def test_llm_steps_use_the_configured_models(self) -> None:
         self.assertEqual(DEFAULT_PLANNER_MODEL, "mistral-medium-latest")
         self.assertEqual(DEFAULT_REFORMULATION_MODEL, "mistral-medium-latest")
+        self.assertEqual(DEFAULT_ANALYTICS_SQL_MODEL, "mistral-medium-latest")
         self.assertEqual(DEFAULT_GENERATION_MODEL, "mistral-medium-latest")
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
-        from interface.backend.answer_judge import ANSWER_JUDGE_RESPONSE_SCHEMA
+        from interface.backend.answer_evaluation import SHADOW_EVALUATION_RESPONSE_SCHEMA
 
         schemas = (
             planner.REFORMULATION_RESPONSE_SCHEMA,
+            planner.FINAL_REFORMULATION_RESPONSE_SCHEMA,
             planner.PLANNER_RESPONSE_SCHEMA,
             ANALYTICS_SQL_RESPONSE_SCHEMA,
             generation.ANSWER_RESPONSE_SCHEMA,
-            ANSWER_JUDGE_RESPONSE_SCHEMA,
+            SHADOW_EVALUATION_RESPONSE_SCHEMA,
         )
         for schema in schemas:
             self.assertEqual(schema["type"], "object")
@@ -72,7 +90,7 @@ class InterfaceAppTests(unittest.TestCase):
                 set(schema["properties"]),
             )
 
-    def test_interface_fixes_all_llm_steps_to_mistral_medium(self) -> None:
+    def test_interface_uses_backend_defaults_for_llm_steps(self) -> None:
         response = TestClient(app).get("/")
 
         self.assertEqual(response.status_code, 200)
@@ -81,7 +99,9 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn('id="plannerModel"', html)
         self.assertNotIn('id="answerModel"', html)
         self.assertNotIn('fetch("/api/llm-models")', html)
-        self.assertEqual(html.count('"mistral-medium-latest"'), 3)
+        self.assertNotIn('reformulationModel:', html)
+        self.assertNotIn('plannerModel:', html)
+        self.assertNotIn('answerModel:', html)
 
     def test_reformulation_prompt_has_one_narrow_responsibility(self) -> None:
         system_prompt, user_prompt = planner.build_question_reformulation_prompt(
@@ -93,23 +113,23 @@ class InterfaceAppTests(unittest.TestCase):
         )
 
         self.assertLess(len(system_prompt), 1800)
-        self.assertIn("besoin de l'historique", system_prompt)
-        self.assertIn("peut n'avoir aucun rapport avec l'historique précédent", system_prompt)
+        self.assertTrue(system_prompt.startswith("ÉTAPE 1 — Avant toute reformulation"))
+        self.assertIn("ne la rattache jamais", system_prompt)
+        self.assertLess(
+            system_prompt.index("`follow_up`"),
+            system_prompt.index("Reformule le dernier message utilisateur"),
+        )
+        self.assertIn("dépend de l'historique", system_prompt)
         self.assertIn("changer de sujet", system_prompt)
-        self.assertIn("Sois le plus simple et concis possible", system_prompt)
         self.assertIn("follow_up", system_prompt)
         self.assertIn("reformulated_question", system_prompt)
-        self.assertIn("échange le plus récent", system_prompt)
-        self.assertIn("conserve-les tous", system_prompt)
+        self.assertIn("dernier échange", system_prompt)
+        self.assertIn("Conserve tous les référents", system_prompt)
         self.assertIn("texte normal, sans Markdown", system_prompt)
-        self.assertIn("Règle absolue d'autonomie", system_prompt)
-        self.assertIn("entièrement compréhensible", system_prompt)
-        self.assertIn("la première vidéo mentionnée", system_prompt)
-        self.assertIn("copie le titre exact", system_prompt)
-        self.assertIn("Test obligatoire avant de répondre", system_prompt)
-        self.assertIn("Que dit Alice dans la vidéo « Vidéo A » ?", system_prompt)
-        self.assertIn("du plus vieux au plus récent", system_prompt)
-        self.assertIn("dernier bloc user/assistant", system_prompt)
+        self.assertIn("il ne voit ni historique, ni mémoire, ni `topic`", system_prompt)
+        self.assertIn("consulte aussi `previous_topics` et leurs résumés", system_prompt)
+        self.assertIn("L'autonomie prime sur la concision", system_prompt)
+        self.assertIn("sans inventer de titre ni de nom", system_prompt)
         self.assertIn(
             "Historique récent (du plus vieux au plus récent ; le dernier bloc est "
             "prioritaire) :\n\nuser: Que dit Alice Martin ?",
@@ -280,6 +300,16 @@ class InterfaceAppTests(unittest.TestCase):
             211,
             limit=planner.REFORMULATION_HISTORY_EXCHANGES,
         )
+        self.assertEqual(
+            calls[0]["input"][0],
+            {
+                "role": "system",
+                "content": planner.build_question_reformulation_prompt(
+                    "Des points communs avec Yassin ?", [],
+                )[0],
+            },
+        )
+        self.assertEqual(calls[0]["input"][1]["role"], "user")
         reformulation_prompt = calls[0]["input"][1]["content"]
         self.assertNotIn("Emric", reformulation_prompt)
         self.assertIn("Fadila Ouro Sama", reformulation_prompt)
@@ -329,6 +359,8 @@ class InterfaceAppTests(unittest.TestCase):
                 client,
             )
 
+        self.assertEqual(calls[0]["input"][0]["role"], "system")
+        self.assertEqual(calls[0]["input"][1]["role"], "user")
         reformulation_prompt = calls[0]["input"][1]["content"]
         self.assertNotIn("Sophie Vanderpol", reformulation_prompt)
         self.assertIn("Loucif", reformulation_prompt)
@@ -358,6 +390,37 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("Emric", selected_text)
         self.assertIn("Fadila", selected_text)
         self.assertIn("Hugo", selected_text)
+        self.assertEqual(len(selected), 4)
+
+    def test_pronoun_comparison_keeps_latest_subject_and_prior_comparison(self) -> None:
+        """A later subject must not be hidden by an older comparison episode."""
+        history = [
+            {"role": "user", "text": "Des points communs dans ce qu'ils disent ?"},
+            {
+                "role": "assistant",
+                "text": "Déborah Rolland et Simon Payen de la Garanderie ont plusieurs points communs.",
+            },
+            {"role": "user", "text": "Qui a le plus de vues ?"},
+            {
+                "role": "assistant",
+                "text": "Déborah a 51 vues, contre 34 pour Simon.",
+            },
+            {"role": "user", "text": "Je cherche le job de Lou Ann."},
+            {
+                "role": "assistant",
+                "text": "Lou-Ann Corveddu est cheffe de produits chez ALK.",
+            },
+        ]
+
+        selected = planner.select_reformulation_history(
+            "Elle a plus de vues qu'eux ?",
+            history,
+        )
+
+        selected_text = "\n".join(item["text"] for item in selected)
+        self.assertNotIn("points communs", selected_text)
+        self.assertIn("Déborah a 51 vues", selected_text)
+        self.assertIn("Lou-Ann Corveddu", selected_text)
         self.assertEqual(len(selected), 4)
 
     def test_content_question_with_explicit_title_uses_full_transcript(self) -> None:
@@ -597,13 +660,22 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertIn("specific_persons", system_prompt)
         self.assertIn("personnes ou entreprises", system_prompt)
 
-    def test_planner_prompt_routes_multiple_persons_to_multi_source(self) -> None:
+    def test_description_is_deterministic_and_not_an_llm_sub_intent(self) -> None:
+        plan = PlannerPlan(route="rag", query_text="Quelle est la description de cette vidéo ?")
+
+        planner.apply_deterministic_sql_policy("Quelle est la description de cette vidéo ?", plan)
+
+        self.assertTrue(plan.description_requested)
+        self.assertIsNone(plan.sql_sub_intent)
+        self.assertTrue(plan.sql_main_source)
+
+    def test_planner_prompt_routes_multiple_persons_to_rag(self) -> None:
         system_prompt, _ = planner.build_planner_prompt(
             "Compare les interventions de Gabriel Dumy et Alice Martin."
         )
 
-        self.assertIn("plus d'une personne ou entreprise", system_prompt)
-        self.assertIn("multi_source", system_prompt)
+        self.assertIn("route peut être 'direct' ou 'rag'", system_prompt)
+        self.assertNotIn("multi_source", system_prompt)
 
     def test_planner_identifies_companies_in_dedicated_key(self) -> None:
         system_prompt, _ = planner.build_planner_prompt(
@@ -719,6 +791,12 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertEqual(len(set(prompts.values())), len(prompts))
 
+    def test_analytics_prompt_requires_stat_dates(self) -> None:
+        prompt = generation.build_sql_sub_intent_prompt("analytics")
+
+        self.assertIn("toujours la date", prompt)
+        self.assertIn("snapshot", prompt)
+
     def test_sql_sub_intent_name_is_not_exposed_in_final_user_prompt(self) -> None:
         calls: list[dict] = []
 
@@ -739,6 +817,7 @@ class InterfaceAppTests(unittest.TestCase):
                     "video_title": "Vidéo test",
                     "video_url": "https://example.test/video",
                     "text": "Vues: 42",
+                    "result_intro": "Voici les statistiques demandées.",
                 }
             ],
         )
@@ -748,29 +827,32 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("Sous-route SQL", messages[1]["content"])
         self.assertNotIn("sql_sub_intent", messages[1]["content"])
         self.assertIn("Sources pour répondre :", messages[1]["content"])
+        self.assertIn("Voici les statistiques demandées.", messages[1]["content"])
         self.assertIn("Source 1 :", messages[1]["content"])
         self.assertNotIn("Resultat 1", messages[1]["content"])
 
-        generation.generate_multi_source_answer(
-            SimpleNamespace(responses=Responses()),
-            "Compare ces personnes.",
-            "mistral-medium-latest",
-            "multi_source",
-            [
-                {
-                    "video_title": "Vidéo test",
-                    "video_url": "https://example.test/video",
-                    "chunk_index": 1,
-                    "text": "Information comparative",
-                }
-            ],
+    def test_only_analytics_sql_sources_get_the_verified_results_intro(self) -> None:
+        sources = [
+            {
+                "video_title": "Vidéo test",
+                "video_url": "https://example.test/video",
+                "text": "Donnée SQL",
+                "result_intro": "Voici le résultat demandé.",
+            }
+        ]
+
+        analytics_context = generation.format_answer_sources(
+            sources,
+            sql_sub_intent="analytics",
+        )
+        description_context = generation.format_answer_sources(
+            sources,
+            sql_sub_intent="description",
         )
 
-        multi_source_user_prompt = calls[1]["input"][1]["content"]
-        self.assertNotIn("Route planifiee", multi_source_user_prompt)
-        self.assertNotIn("multi_source", multi_source_user_prompt)
-        self.assertIn("Sources pour répondre :", multi_source_user_prompt)
-        self.assertNotIn("Historique", multi_source_user_prompt)
+        self.assertIn("Voici le résultat demandé.", analytics_context)
+        self.assertNotIn("Voici le résultat demandé.", description_context)
+        self.assertIn("Source 1 :", description_context)
 
     def test_answer_prompts_do_not_require_question_reformulation(self) -> None:
         prompts = [
@@ -834,10 +916,21 @@ class InterfaceAppTests(unittest.TestCase):
             title_hint="Titre exact",
         )
         clauses, params = retrieval.build_prefilter_conditions(query)
-        self.assertEqual(clauses, [retrieval.TITLE_CONTAINS_SQL])
+        self.assertEqual(clauses, [retrieval.TITLE_HINTS_CONTAINS_SQL])
         self.assertIn("regexp_replace", clauses[0])
         self.assertIn("concat(chr(37)", clauses[0])
-        self.assertEqual(params, ["Titre exact"])
+        self.assertEqual(params, [["Titre exact"]])
+
+    def test_rag_prefilter_is_empty_without_explicit_filters(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Laquelle a le plus de vues ?",
+            query_text="Laquelle a le plus de vues ?",
+            query_text_bm25="laquelle plus vues",
+        )
+        clauses, params = retrieval.build_prefilter_conditions(query)
+
+        self.assertEqual(clauses, [])
+        self.assertEqual(params, [])
 
     def test_bm25_search_is_limited_to_detail_chunks(self) -> None:
         class Cursor:
@@ -1001,7 +1094,7 @@ class InterfaceAppTests(unittest.TestCase):
             },
         )
 
-    def test_llm_model_catalog_exposes_only_mistral(self) -> None:
+    def test_llm_model_catalog_exposes_only_the_rag_medium_model(self) -> None:
         response = TestClient(app).get("/api/llm-models")
 
         self.assertEqual(response.status_code, 200)
@@ -1014,29 +1107,38 @@ class InterfaceAppTests(unittest.TestCase):
                 "answerModel": "mistral-medium-latest",
             },
         )
-        self.assertIn(
-            "mistral-medium-latest",
-            {model["id"] for model in data["models"]},
-        )
-        self.assertEqual(
-            {model["provider"] for model in data["models"]},
-            {"mistral"},
-        )
+        self.assertEqual(data["models"], [{
+            "provider": "mistral",
+            "provider_label": "Mistral",
+            "label": "Medium",
+            "id": "mistral-medium-latest",
+        }])
 
-    def test_public_rag_endpoint_rejects_non_mistral_models(self) -> None:
-        response = TestClient(app).post(
-            "/api/rag",
-            json={
-                "question": "Bonjour",
-                "reformulationModel": "gpt-5.6-sol",
-                "plannerModel": "mistral-medium-latest",
-                "answerModel": "mistral-medium-latest",
+    def test_public_rag_endpoint_forces_medium_for_every_step(self) -> None:
+        request = {
+            "question": "Bonjour",
+            "reformulationModel": "gemini-3.6-flash",
+            "answerModel": "gemini-3.6-flash",
+        }
+        with patch.object(
+            api,
+            "run_rag",
+            return_value={
+                "conversation_id": 1,
+                "message_id": 1,
+                "answer": "ok",
+                "action": "answer",
+                "sources": [],
+                "retrieval": {},
             },
-        )
+        ) as run_rag:
+            response = TestClient(app).post("/api/rag", json=request)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("uniquement Mistral", response.json()["detail"])
-        self.assertIn("run_phoenix_experiment.py", response.json()["detail"])
+        self.assertEqual(response.status_code, 200)
+        validated = run_rag.call_args.args[0]
+        self.assertEqual(validated.reformulationModel, "mistral-medium-latest")
+        self.assertEqual(validated.plannerModel, "mistral-medium-latest")
+        self.assertEqual(validated.answerModel, "mistral-medium-latest")
 
     def test_request_schema_remains_available_from_app(self) -> None:
         payload = RagRequest(question="Bonjour")

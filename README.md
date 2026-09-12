@@ -1312,7 +1312,7 @@ boot :
 
 ```dotenv
 OPENAI_API_KEY=...
-OPENAI_SERVICE_TIER=auto
+OPENAI_SERVICE_TIER=fast
 HUGGINGFACE_TOKEN=...
 S3_BUCKET_NAME=...
 S3_REGION=eu-west-3
@@ -1457,6 +1457,7 @@ le planner et la génération finale utilisent tous `mistral-medium-latest`.
 Les quatre sorties structurées de ce pipeline — reformulation, planner,
 Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
 niveau de l'API Mistral.
+Toutes les inférences RAG sont adressées à Mistral.
 
 Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
 Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête
@@ -1465,15 +1466,40 @@ privilèges du compte `rag_ionis_analytics` limitent également les tables et
 colonnes accessibles. La requête est passée dans `EXPLAIN`, rejetée si son coût
 dépasse `ANALYTICS_MAX_TOTAL_COST`, puis exécutée avec ce compte read-only, un
 timeout et une limite de lignes. Phoenix expose séparément les spans
-`rag.analytics.sql_generation`, `rag.analytics.sql_validation`,
-`rag.analytics.sql_cost_validation` et `rag.analytics.sql_execution`.
+`analytics.sql_generation`, `analytics.sql_validation`,
+`analytics.sql_cost_validation` et `analytics.sql_execution`.
 
 Le modèle de réponse produit en un seul appel un objet JSON contenant le message
-final et l'action `answer`, `clarify` ou `abstain`. Il choisit `answer` seulement
-si les sources permettent de répondre suffisamment, `clarify` si la cible de la
-question est ambiguë et `abstain` si la question est claire mais les preuves
-insuffisantes. Cette décision est enregistrée dans `rag.generation`; aucun appel
+final et l'action `answer` ou `abstain`. Il choisit `answer` seulement si les
+sources permettent de répondre suffisamment ; il choisit `abstain` si la demande
+est ambiguë ou les preuves insuffisantes. Cette décision est enregistrée dans
+`generation`; aucun appel
 LLM d'évaluation ou de révision supplémentaire n'est effectué.
+
+Le pipeline de réponse est exécuté par un graphe LangGraph séquentiel :
+`orchestrate` mène soit à `generate`, soit à `accept_precomputed`, puis les deux
+branches rejoignent `finalize` et `persist`. Les nœuds appellent la logique métier
+existante sans modifier ses prompts, ses routes, son retrieval ou ses traces. Le
+LLM de réponse décide directement entre `answer` et `abstain` à partir des
+sources fournies ; aucune étape de jugement ou de correction séparée ne suit la
+génération.
+
+Le nœud `orchestrate` appelle lui-même un sous-graphe : `initialize`,
+`reformulate`, `plan`, `resolve_entities` et `build_execution_plan`, puis une
+route conditionnelle parmi `person_clarification`, `direct`, `sql_search` et
+`vector_search`.
+
+Le `PlannerPlan` conserve le choix LLM volontairement limité à `direct` ou
+`search`. Après résolution des entités et application des règles déterministes,
+le `ExecutionPlan` expose la route finale — l'une de ces quatre branches. Les
+traces Phoenix, le résultat de retrieval et le graphe LangSmith Studio emploient
+ainsi le même nom de route.
+
+Les états des deux graphes contiennent uniquement des dictionnaires, listes et
+valeurs sérialisables. Les objets `RagRequest`, `PlannerPlan` et `ExecutionPlan`
+sont convertis en dictionnaires entre les nœuds, tandis que les clients LLM sont
+injectés par le contexte d'exécution LangGraph. Les graphes sont ainsi prêts à
+recevoir un checkpointer sans tenter de persister des connexions clientes.
 
 La recherche BM25 et vectorielle porte uniquement sur les chunks `detail`.
 Après la fusion et le reranking, chaque détail final est enrichi avec sa
@@ -1501,6 +1527,77 @@ Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix 
 .\.venv\Scripts\python.exe utils/run_phoenix_experiment.py
 ```
 
+Pour calibrer l'évaluateur shadow sur un dataset Phoenix sans activer de
+correction automatique :
+
+```powershell
+.\.venv\Scripts\python.exe utils/import_phoenix_dataset.py `
+  --dataset cases_phoenix
+
+.\.venv\Scripts\python.exe utils/run_phoenix_experiment.py `
+  --dataset cases_phoenix `
+  --experiment-name rag-shadow-calibration `
+  --shadow-evaluation `
+  --shadow-evaluation-model gpt-5.6-terra `
+  --llm-timeout 60 `
+  --llm-max-retries 0
+```
+
+L'import place `expected.action`, `expected.shadow_verdict` et
+`expected.shadow_issue` dans chaque exemple. L'expérience publie
+`answer_action_match`, `shadow_verdict`, `shadow_issue`, `shadow_grounded`,
+`shadow_retrieval_quality`, `shadow_verdict_match` et `shadow_issue_match`. Ces
+labels mesurent le résultat de bout en bout attendu pour les cas versionnés.
+Une mesure stricte des faux positifs et faux négatifs du juge nécessite en plus
+une annotation humaine des réponses générées, car leur contenu peut changer
+d'une campagne à l'autre.
+
+Le verdict indique uniquement si la réponse affichée peut être conservée ou
+doit être corrigée. La cause est indépendante : une demande de précision bien
+formulée produit par exemple `verdict=acceptable` avec
+`issue=ambiguous_question`.
+
+Le modèle du juge est indépendant du modèle de réponse. En production, il peut
+être défini avec `RAG_SHADOW_EVALUATION_MODEL`; sans cette variable, le juge
+conserve le modèle de réponse pour préserver le comportement historique.
+Les options `--llm-timeout` et `--llm-max-retries` bornent chaque appel de la
+campagne indépendamment des reprises d'exemples configurées par `--retries`.
+En dehors des expériences, les mêmes limites peuvent être configurées avec
+`RAG_LLM_REQUEST_TIMEOUT_SECONDS` et `RAG_LLM_MAX_RETRIES`.
+
+La première boucle de correction LangGraph est disponible avec
+`RAG_CORRECTION_LOOP_ENABLED=true`. Elle est indépendante du shadow et ne traite
+que `action=abstain` : elle élargit la recherche jusqu'aux limites configurées,
+puis régénère une fois la réponse. Si la correction échoue, la réponse initiale
+est conservée.
+Pour une expérience isolée, utiliser `--shadow-evaluation --correction-loop` ;
+ce réglage est transmis uniquement au contexte LangGraph de la campagne.
+Phoenix publie alors aussi `correction_outcome`, `correction_count` et
+`correction_effectiveness` afin de comparer les réponses finales et le coût des
+corrections avec une baseline. L'activation en production doit rester
+désactivée tant qu'une campagne labellisée montre une régression de
+`answer_action_match`, même si le grounding s'améliore.
+
+### LangSmith Studio
+
+Les graphes `rag_response` et `rag_orchestration` sont déclarés dans
+`langgraph.json`. Pour les visualiser et les exécuter localement en mode graphe :
+
+```powershell
+C:\Users\rgb\AppData\Local\Programs\Python\Python313\python.exe -m venv .venv-studio-py313
+.\.venv-studio-py313\Scripts\python.exe -m pip install --no-cache-dir -r requirements-studio.txt
+.\.venv-studio-py313\Scripts\python.exe -m pip install --no-cache-dir openai mistralai langchain-openai langchain-mistralai langchain-google-genai
+.\.venv-studio-py313\Scripts\langgraph.exe dev --no-browser
+```
+
+Ouvrir ensuite
+`https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024` et fournir
+les entrées en JSON brut, par exemple
+`{"payload":{"question":"Qui est directeur de Eskimoz ?","useSql":true}}`.
+Studio charge les variables applicatives depuis `.env.local`. Ajouter
+`LANGSMITH_API_KEY` dans ce fichier local si Studio le demande ; ne jamais
+commiter cette clé.
+
 Pour rejouer le dernier tour d'une conversation avec exactement les anciennes
 questions et réponses comme contexte, utiliser l'identifiant de sa trace racine :
 
@@ -1513,15 +1610,14 @@ questions et réponses comme contexte, utiliser l'identifiant de sa trace racine
 L'outil retrouve la session via Phoenix, clone dans PostgreSQL tous les messages
 antérieurs à la question cible, puis rejoue uniquement cette question dans une
 nouvelle conversation. Le résultat apparaît dans le projet Phoenix comme une trace
-`rag.replay`, avec un span `rag.replay.seed_history` et tous les spans RAG habituels.
+`replay`, avec un span `replay.seed_history` et tous les spans RAG habituels.
 Ajouter `--dry-run` pour contrôler le contexte sans écrire en base ni appeler les LLM.
 
-La fenêtre permet de choisir séparément un modèle OpenAI, Mistral ou Google
-pour la reformulation, le planner et la réponse finale. Les payloads propres à
-chaque API sont traduits vers une réponse commune, tandis que le JSON brut reste
-enregistrable dans les traces Phoenix. Le schéma JSON strict `answer` / `action`
-est imposé au niveau de l'API uniquement pour Mistral ; dans les expériences
-Phoenix, OpenAI et Google conservent le contrat JSON défini dans le prompt.
+Le testeur de modèles permet de comparer OpenAI, Mistral et Google. Le RAG,
+lui, utilise exclusivement Gemini 3.5 Flash Lite pour la reformulation, le
+planner et la réponse finale. Les payloads propres à chaque API sont traduits
+vers une réponse commune, tandis que le JSON brut reste enregistrable dans les
+traces Phoenix.
 
 Les embeddings ne changent pas de fournisseur : ils doivent rester compatibles
 avec les vecteurs déjà présents en base et utilisent donc

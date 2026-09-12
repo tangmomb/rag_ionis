@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
@@ -16,15 +16,18 @@ from interface.backend.config import (
 )
 
 
-PlannerRoute = Literal["direct", "rag", "multi_source"]
-SqlSubIntent = Literal[
-    "specific_persons",
-    "analytics",
-    "description",
-    "transcript_verbatim",
-    "transcript_qa",
+PlannerRoute = Literal["direct", "search"]
+ExecutionRoute = Literal[
+    "person_clarification",
+    "direct",
+    "sql_search",
+    "vector_search",
 ]
-AnswerAction = Literal["answer", "clarify", "abstain"]
+SqlSubIntent = Literal["analytics"]
+AnalyticsScope = Literal["global", "specific"]
+AnalyticsMetric = Literal["all", "views", "likes", "comments"]
+AnalyticsOrder = Literal["asc", "desc"]
+AnswerAction = Literal["answer", "abstain"]
 
 
 class RagRequest(BaseModel):
@@ -44,40 +47,126 @@ class RagRequest(BaseModel):
     topK: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     finalK: int = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 
+    @model_validator(mode="after")
+    def _force_mistral_medium_for_rag_inference(self) -> "RagRequest":
+        """Keep every RAG inference stage on the configured Mistral model."""
+        self.reformulationModel = DEFAULT_REFORMULATION_MODEL
+        self.plannerModel = DEFAULT_PLANNER_MODEL
+        self.answerModel = DEFAULT_GENERATION_MODEL
+        return self
+
 
 class PlannerPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _output_rejection_reason: str | None = PrivateAttr(default=None)
 
-    route: PlannerRoute = "rag"
+    route: PlannerRoute = "search"
     sql_sub_intent: SqlSubIntent | None = None
+    analytics_scope: AnalyticsScope | None = None
+    analytics_metric: AnalyticsMetric | None = None
+    analytics_order: AnalyticsOrder | None = None
+    analytics_rank_start: int | None = Field(default=None, ge=1, le=100)
+    analytics_rank_end: int | None = Field(default=None, ge=1, le=100)
     query_text: str
     query_text_bm25: str | None = None
-    title_hint: str | None = None
+    title_hints: list[str] = Field(default_factory=list)
     persons: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
-    use_rag: bool = False
-    sql_main_source: bool = False
+    description_requested: bool = False
+
+    @model_validator(mode="after")
+    def _validate_analytics_scope(self) -> "PlannerPlan":
+        if self.sql_sub_intent == "analytics":
+            self.analytics_scope = (
+                "specific"
+                if self.title_hints or self.persons or self.companies
+                else self.analytics_scope or "specific"
+            )
+            if self.analytics_scope == "global":
+                self.analytics_metric = self.analytics_metric or "all"
+                self.analytics_rank_start = self.analytics_rank_start or 1
+                self.analytics_rank_end = self.analytics_rank_end or 3
+            else:
+                self.analytics_metric = None
+                self.analytics_order = None
+                self.analytics_rank_start = None
+                self.analytics_rank_end = None
+        else:
+            self.analytics_scope = None
+            self.analytics_metric = None
+            self.analytics_order = None
+            self.analytics_rank_start = None
+            self.analytics_rank_end = None
+        if self.analytics_rank_start and self.analytics_rank_end and self.analytics_rank_start > self.analytics_rank_end:
+            raise ValueError("analytics_rank_start doit être inférieur ou égal à analytics_rank_end.")
+        return self
+
+    @property
+    def title_hint(self) -> str | None:
+        return self.title_hints[0] if self.title_hints else None
+
+    @property
+    def output_rejection_reason(self) -> str | None:
+        """Reason the LLM planner output was discarded in favour of a safe plan."""
+        return self._output_rejection_reason
 
 
 class ExecutionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    route: PlannerRoute = "rag"
+    # This is the final, deterministic graph branch.  It deliberately differs
+    # from PlannerPlan.route, which is only the LLM's coarse direct/search intent.
+    route: ExecutionRoute = "vector_search"
     sql_sub_intent: SqlSubIntent | None = None
+    analytics_scope: AnalyticsScope | None = None
+    analytics_metric: AnalyticsMetric | None = None
+    analytics_order: AnalyticsOrder | None = None
+    analytics_rank_start: int | None = Field(default=None, ge=1, le=100)
+    analytics_rank_end: int | None = Field(default=None, ge=1, le=100)
     raw_question: str
     query_text: str
     query_text_bm25: str
-    title_hint: str | None = None
+    title_hints: list[str] = Field(default_factory=list)
     persons: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
     published_after: str | None = None
     published_before: str | None = None
-    use_rag: bool = False
-    sql_main_source: bool = False
+    description_requested: bool = False
     top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     final_k: int | None = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
+
+    @model_validator(mode="after")
+    def _validate_analytics_scope(self) -> "ExecutionPlan":
+        if self.sql_sub_intent == "analytics":
+            self.analytics_scope = (
+                "specific"
+                if self.title_hints or self.persons or self.companies
+                else self.analytics_scope or "specific"
+            )
+            if self.analytics_scope == "global":
+                self.analytics_metric = self.analytics_metric or "all"
+                self.analytics_rank_start = self.analytics_rank_start or 1
+                self.analytics_rank_end = self.analytics_rank_end or 3
+            else:
+                self.analytics_metric = None
+                self.analytics_order = None
+                self.analytics_rank_start = None
+                self.analytics_rank_end = None
+        else:
+            self.analytics_scope = None
+            self.analytics_metric = None
+            self.analytics_order = None
+            self.analytics_rank_start = None
+            self.analytics_rank_end = None
+        if self.analytics_rank_start and self.analytics_rank_end and self.analytics_rank_start > self.analytics_rank_end:
+            raise ValueError("analytics_rank_start doit être inférieur ou égal à analytics_rank_end.")
+        return self
+
+    @property
+    def title_hint(self) -> str | None:
+        return self.title_hints[0] if self.title_hints else None
 
 
 class ChunkSource(BaseModel):

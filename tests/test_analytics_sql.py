@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from interface.backend import analytics_sql, planner
+from interface.backend import analytics_sql, generation, planner
 from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
@@ -40,13 +41,14 @@ class _Cursor:
                 SimpleNamespace(name="video_title"),
                 SimpleNamespace(name="video_url"),
                 SimpleNamespace(name="view_count"),
+                SimpleNamespace(name="stats_snapshot_date"),
             ]
 
     def fetchone(self):
         return ([{"Plan": {"Node Type": "Limit", "Total Cost": 12.34}}],)
 
     def fetchall(self):
-        return [(12, "Vidéo populaire", "https://example.test/video", 21136)]
+        return [(12, "Vidéo populaire", "https://example.test/video", 21136, "2026-09-12")]
 
 
 class _Connection:
@@ -66,8 +68,8 @@ class _Connection:
 class AnalyticsSqlTests(unittest.TestCase):
     def test_prompt_exposes_only_analytics_schema_and_latest_snapshot_rule(self) -> None:
         query = ExecutionPlan(
-            raw_question="Quelle vidéo a le plus de vues ?",
-            query_text="Quelle vidéo a le plus de vues ?",
+            raw_question="Quelle vidéo a gagné le plus de vues ?",
+            query_text="Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
             query_text_bm25="plus de vues",
         )
 
@@ -78,17 +80,26 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertIn("videos(", system_prompt)
         self.assertIn("stats(", system_prompt)
-        self.assertIn("snapshot le plus récent", system_prompt)
-        self.assertIn("Ne jamais placer un LIMIT 1 global", system_prompt)
-        self.assertIn("classe leur union", system_prompt)
-        self.assertIn("COUNT(*) OVER ()", system_prompt)
-        self.assertIn("SUM(...) OVER (PARTITION BY speaker)", system_prompt)
+        self.assertIn("dernier snapshot", system_prompt)
+        self.assertIn("jamais un LIMIT 1 global", system_prompt)
+        self.assertIn("comparaison d'éléments nommés", system_prompt)
+        self.assertIn("requête SQL doit résoudre le problème", system_prompt)
+        self.assertIn("directement une ligne avec `LIMIT 1`", system_prompt)
+        self.assertIn("jamais AND", system_prompt)
+        self.assertIn("WHERE sp.name ILIKE %s OR sp.name ILIKE %s", system_prompt)
         self.assertIn("thumbnail_medium_url AS thumbnail_medium_url", system_prompt)
-        self.assertIn("v.title ILIKE %s", system_prompt)
+        self.assertIn("title_hints` vide signifie aucun filtre", system_prompt)
+        self.assertIn("invente jamais un titre", system_prompt)
         self.assertIn("v.id AS video_id", system_prompt)
         self.assertIn("SELECT", system_prompt)
+        self.assertIn("entre deux dates de statistiques", system_prompt)
+        self.assertIn("snapshot effectivement retenues", system_prompt)
+        self.assertIn("Retourne `result_intro`", system_prompt)
+        self.assertIn("obligatoirement par `:`", system_prompt)
+        self.assertEqual(system_prompt.count("Exemple"), 1)
         self.assertNotIn("transcripts(", system_prompt)
-        self.assertIn("Quelle vidéo a le plus de vues ?", user_prompt)
+        self.assertIn("Quelle vidéo a gagné le plus de vues ?", user_prompt)
+        self.assertIn("Parmi les vidéos discutées", user_prompt)
 
     def test_analytics_source_keeps_returned_thumbnail(self) -> None:
         sources = analytics_sql.analytics_rows_to_sources(
@@ -110,8 +121,8 @@ class AnalyticsSqlTests(unittest.TestCase):
 
     def test_validator_accepts_safe_parameterized_ranking(self) -> None:
         sql = (
-            "SELECT v.id AS video_id, v.title AS video_title, s.view_count "
-            "FROM videos v JOIN LATERAL (SELECT view_count FROM stats "
+            "SELECT v.id AS video_id, v.title AS video_title, s.snapshot_date AS stats_snapshot_date, s.view_count "
+            "FROM videos v JOIN LATERAL (SELECT snapshot_date, view_count FROM stats "
             "WHERE video_id = v.id ORDER BY snapshot_date DESC LIMIT 1) s ON TRUE "
             "ORDER BY s.view_count DESC LIMIT %s"
         )
@@ -120,6 +131,14 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["relations"], ["stats", "videos"])
+
+    def test_validator_requires_a_snapshot_date_in_stats_results(self) -> None:
+        sql = "SELECT view_count FROM stats WHERE video_id = %s"
+
+        validation = analytics_sql.validate_analytics_sql(sql, [42])
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("stats_snapshot_date_required", validation["errors"])
 
     def test_validator_rejects_global_latest_stats_cte(self) -> None:
         sql = (
@@ -201,16 +220,225 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertEqual(normalized["sql_sub_intent"], "analytics")
 
+    def test_planner_schema_requires_analytics_scope_for_analytics(self) -> None:
+        client = SimpleNamespace(responses=_Responses(
+            '{"route":"rag","sql_sub_intent":"analytics",'
+            '"analytics_scope":null,"query_text":"Quelle vidéo a le plus de vues ?",'
+            '"query_text_bm25":"plus de vues","title_hints":[],"persons":[],'
+            '"companies":[],"published_after":null,"published_before":null}'
+        ))
+
+        plan, _prompt, _raw, verified = planner.run_planner("Quelle vidéo a le plus de vues ?", client)
+
+        self.assertFalse(verified)
+        self.assertEqual(plan.sql_sub_intent, None)
+        self.assertEqual(plan.output_rejection_reason, "analytics_scope_missing")
+
+    def test_deterministic_analytics_deduplicates_entity_videos_before_loading_stats(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Combien de vues pour Alice chez Acme ?",
+            query_text="Combien de vues pour Alice chez Acme ?",
+            query_text_bm25="vues Alice Acme",
+            title_hints=["Vidéo Alice"],
+            persons=["Alice Martin"],
+            companies=["acme"],
+            route="sql_search",
+            sql_sub_intent="analytics",
+        )
+        lookup_calls: list[dict] = []
+        recorded_spans: list[str] = []
+        recorded_kinds: list[str] = []
+
+        @contextmanager
+        def record_trace(name: str, **kwargs):
+            recorded_spans.append(name)
+            recorded_kinds.append(kwargs["kind"])
+            yield SimpleNamespace(set_output=lambda _value: None)
+
+        def lookup(entity, _query):
+            lookup_calls.append(entity)
+            return (
+                [
+                    {
+                        "video_id": 42,
+                        "video_title": "Vidéo Alice",
+                        "video_url": "https://example.test/alice",
+                        "thumbnail_medium_url": None,
+                    }
+                ],
+                {"sql": "SELECT ...", "params": [entity["value"]]},
+            )
+
+        source = {
+            "chunk_id": 42,
+            "video_title": "Vidéo Alice",
+            "video_url": "https://example.test/alice",
+            "text": "Historique complet des statistiques",
+            "stats": [{"snapshot_date": "2026-08-01", "view_count": 100}],
+        }
+        with (
+            patch.object(analytics_sql, "_lookup_analytics_entity_videos", side_effect=lookup),
+            patch.object(
+                analytics_sql,
+                "_analytics_stats_sources",
+                return_value=([source], {"video_count": 1, "snapshot_count": 1}),
+            ) as stats,
+            patch.object(analytics_sql, "trace_operation", side_effect=record_trace),
+        ):
+            sources, trace = analytics_sql.run_deterministic_analytics(query)
+
+        self.assertEqual([item["kind"] for item in lookup_calls], ["person", "company", "title"])
+        self.assertEqual(trace["candidate_video_count"], 1)
+        self.assertEqual(trace["result_count"], 1)
+        self.assertEqual(sources, [source])
+        self.assertEqual(stats.call_args.args[0], [42])
+        self.assertEqual(
+            recorded_spans,
+            [
+                "analytics_entity_lookup",
+                "analytics_entity_lookup",
+                "analytics_entity_lookup",
+                "analytics_total_videos",
+                "analytics_all_video_stats",
+            ],
+        )
+        self.assertEqual(
+            recorded_kinds,
+            ["RETRIEVER"] * 5,
+        )
+
+    def test_global_analytics_uses_rankings_without_entity_lookup(self) -> None:
+        query = ExecutionPlan(
+            raw_question="Quelle vidéo a le plus de vues sur la chaîne ?",
+            query_text="Quelle vidéo a le plus de vues sur la chaîne ?",
+            query_text_bm25="plus de vues chaîne",
+            route="sql_search",
+            sql_sub_intent="analytics",
+            analytics_scope="global",
+        )
+        source = {"chunk_id": 1, "video_title": "La plus vue", "video_url": "https://example.test/1", "text": "stats", "stats": []}
+        with (
+            patch.object(analytics_sql, "_lookup_analytics_entity_videos") as entity_lookup,
+            patch.object(
+                analytics_sql,
+                "_global_analytics_ranking_sources",
+                return_value=([source], {"sql": "SELECT rankings", "params": [], "population_video_count": 42, "ranking_result_count": 1}),
+            ) as global_rankings,
+            patch.object(analytics_sql, "_analytics_stats_sources") as stats,
+        ):
+            sources, trace = analytics_sql.run_deterministic_analytics(query)
+
+        entity_lookup.assert_not_called()
+        global_rankings.assert_called_once_with(query)
+        stats.assert_not_called()
+        self.assertEqual(sources, [source])
+        self.assertEqual(trace["analytics_scope"], "global")
+        self.assertEqual(trace["candidate_video_count"], 42)
+
+    def test_global_rankings_include_the_analysed_video_count_in_source_text(self) -> None:
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, _sql, _params=None):
+                return None
+
+            def fetchall(self):
+                return [
+                    (1, "Vidéo", "https://example.test/1", None, "interview", None,
+                     "2026-08-01", 50, 4, 2, 12, "2020-01-01", "2026-08-01",
+                     1, 1, 1, 1, 1, 1, "views", "top", 1)
+                ]
+
+        with patch.object(
+            analytics_sql,
+            "connect_analytics_database",
+            return_value=_Connection(Cursor()),
+        ):
+            sources, trace = analytics_sql._global_analytics_ranking_sources(
+                ExecutionPlan(raw_question="test", query_text="test", query_text_bm25="test")
+            )
+
+        self.assertEqual(trace["population_video_count"], 12)
+        self.assertIn("Population analysée : 12 vidéos", sources[0]["text"])
+        self.assertIn("Première publication : 2020-01-01", sources[0]["text"])
+        self.assertIn("Dernière publication : 2026-08-01", sources[0]["text"])
+
+    def test_global_answer_context_is_grouped_by_metric_and_direction(self) -> None:
+        sources = [
+            {
+                "video_title": "Vidéo A", "video_url": "https://example.test/a",
+                "text": "Population analysée : 12 vidéos. Première publication : 2020-01-01. Dernière publication : 2026-08-01.",
+                "global_ranking": {"metric": "views", "direction": "top", "rank": 1, "value": 500},
+            },
+            {
+                "video_title": "Vidéo B", "video_url": "https://example.test/b", "text": "",
+                "global_ranking": {"metric": "likes", "direction": "bottom", "rank": 1, "value": 0},
+            },
+        ]
+
+        context = generation.format_answer_sources(sources)
+
+        self.assertIn("Données analytiques globales de la chaîne en question", context)
+        self.assertIn("## Population analysée", context)
+        self.assertIn("## Vidéos les plus vues (rang 1)", context)
+        self.assertIn("## Vidéos avec le moins de likes (rang 1)", context)
+        self.assertNotIn("Source 1 :", context)
+
+    def test_entity_lookup_without_date_filter_builds_a_valid_where_clause(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object]] = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, sql, params=None) -> None:
+                self.calls.append((sql, params))
+
+            def fetchall(self):
+                return []
+
+        cursor = Cursor()
+        query = ExecutionPlan(
+            raw_question="Question",
+            query_text="Question",
+            query_text_bm25="Question",
+        )
+        with patch.object(
+            analytics_sql,
+            "connect_analytics_database",
+            return_value=_Connection(cursor),
+        ):
+            videos, _trace = analytics_sql._lookup_analytics_entity_videos(
+                {"kind": "person", "value": "Lou-Ann Corveddu"}, query
+            )
+
+        sql = cursor.calls[-1][0]
+        self.assertEqual(videos, [])
+        self.assertIn("WHERE (EXISTS", sql)
+        self.assertIn("FROM transcripts transcript_row", sql)
+        self.assertIn("transcript_row.transcript_enriched IS NOT NULL", sql)
+        self.assertEqual(cursor.calls[-1][1], ["Lou-Ann Corveddu", "Lou-Ann Corveddu"])
+        self.assertNotIn("\n          TRUE", sql)
+
     def test_text_to_sql_is_validated_explained_executed_and_traced(self) -> None:
         sql = (
             "SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, "
-            "s.view_count FROM videos v JOIN LATERAL (SELECT view_count FROM stats "
+            "s.snapshot_date AS stats_snapshot_date, s.view_count FROM videos v JOIN LATERAL (SELECT snapshot_date, view_count FROM stats "
             "WHERE video_id = v.id ORDER BY snapshot_date DESC, "
             "data_collected_date DESC, id DESC LIMIT 1) s ON TRUE "
             "ORDER BY s.view_count DESC NULLS LAST LIMIT %s"
         )
         responses = _Responses(
-            '{"sql":' + repr(sql).replace("'", '"') + ',"params":[1]}'
+            '{"sql":' + repr(sql).replace("'", '"')
+            + ',"result_intro":"Voici la vidéo demandée.","params":[1]}'
         )
         client = SimpleNamespace(responses=responses)
         cursor = _Cursor()
@@ -226,12 +454,11 @@ class AnalyticsSqlTests(unittest.TestCase):
             )
 
         query = ExecutionPlan(
-            raw_question="Quelle vidéo a le plus de vues ?",
-            query_text="Quelle vidéo a le plus de vues ?",
+            raw_question="Quelle vidéo a gagné le plus de vues ?",
+            query_text="Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
             query_text_bm25="plus de vues",
-            route="rag",
+            route="sql_search",
             sql_sub_intent="analytics",
-            sql_main_source=True,
         )
         with (
             patch.object(
@@ -250,10 +477,10 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertEqual(
             recorded_spans,
             [
-                "rag.analytics.sql_generation",
-                "rag.analytics.sql_validation",
-                "rag.analytics.sql_cost_validation",
-                "rag.analytics.sql_execution",
+                "analytics.sql_generation",
+                "analytics.sql_validation",
+                "analytics.sql_cost_validation",
+                "analytics.sql_execution",
             ],
         )
         self.assertEqual(trace["status"], "executed")
@@ -267,14 +494,25 @@ class AnalyticsSqlTests(unittest.TestCase):
         )
         self.assertNotIn(
             "explain",
-            recorded_outputs["rag.analytics.sql_cost_validation"],
+            recorded_outputs["analytics.sql_cost_validation"],
         )
         self.assertEqual(
             responses.calls[0]["response_schema"],
             analytics_sql.ANALYTICS_SQL_RESPONSE_SCHEMA,
         )
+        sql_context = json.loads(responses.calls[0]["input"][1]["content"])
+        self.assertEqual(
+            sql_context["question_originale"],
+            "Quelle vidéo a gagné le plus de vues ?",
+        )
+        self.assertEqual(
+            sql_context["question_contextualisee"],
+            "Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
+        )
         self.assertEqual(sources[0]["chunk_id"], 12)
+        self.assertEqual(sources[0]["result_intro"], "Voici la vidéo demandée.")
         self.assertIn("21136", sources[0]["text"])
+        self.assertIn("2026-09-12", sources[0]["text"])
         self.assertEqual(cursor.executed[0][0], "SET TRANSACTION READ ONLY")
         self.assertTrue(cursor.executed[2][0].startswith("EXPLAIN (FORMAT JSON)"))
         self.assertEqual(cursor.executed[3][0], "SET TRANSACTION READ ONLY")
@@ -301,6 +539,37 @@ class AnalyticsSqlTests(unittest.TestCase):
                 "max_total_cost": analytics_sql.DEFAULT_MAX_ANALYTICS_TOTAL_COST,
             },
         )
+
+    def test_text_to_sql_rejects_stats_results_without_snapshot_date_column(self) -> None:
+        sql = "SELECT snapshot_date AS stats_snapshot_date, view_count FROM stats"
+        client = SimpleNamespace(
+            responses=_Responses('{"sql":"' + sql + '","params":[]}')
+        )
+        query = ExecutionPlan(
+            raw_question="Combien de vues ?",
+            query_text="Combien de vues ?",
+            query_text_bm25="vues",
+            route="sql_search",
+            sql_sub_intent="analytics",
+        )
+        with (
+            patch.object(
+                analytics_sql,
+                "explain_analytics_sql",
+                return_value={"valid": True, "total_cost": 1, "max_total_cost": 100},
+            ),
+            patch.object(
+                analytics_sql,
+                "execute_analytics_sql",
+                return_value=([], {"columns": ["view_count"], "row_count": 0}),
+            ),
+        ):
+            sources, trace = analytics_sql.run_analytics_text_to_sql(
+                query, client, "mistral-medium-latest"
+            )
+
+        self.assertEqual(sources, [])
+        self.assertEqual(trace["status"], "stats_snapshot_date_missing_from_result")
 
     def test_explain_cost_above_limit_is_rejected_before_execution(self) -> None:
         sql = "SELECT COUNT(*) AS video_count FROM videos"

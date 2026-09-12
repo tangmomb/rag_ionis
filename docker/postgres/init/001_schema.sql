@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
     user_message TEXT NOT NULL,
     answer_message TEXT,
-    trace_id TEXT
+    trace_id TEXT,
+    feedback BOOLEAN
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);

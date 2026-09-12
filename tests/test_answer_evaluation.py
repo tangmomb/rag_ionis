@@ -2,21 +2,22 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.runtime import Runtime
+
 from interface.backend import api
-from interface.backend.answer_judge import (
-    ANALYTICS_VIDEO_METADATA_CORRECTION,
-    ANSWER_JUDGE_RESPONSE_SCHEMA,
-    judge_final_answer,
-)
+from interface.backend import orchestration_graph
+from interface.backend.answer_evaluation import evaluate_answer_shadow
 from interface.backend.generation import (
     generate_answer,
     generate_person_clarification_answer,
     parse_answer_output,
 )
-from interface.backend.schemas import ExecutionPlan, RagRequest
+from interface.backend.schemas import RagRequest
 
 
 class _Responses:
@@ -34,6 +35,592 @@ class _Responses:
 class _Client:
     def __init__(self, outputs: list[dict]) -> None:
         self.responses = _Responses(outputs)
+
+
+class RagResponseGraphTests(unittest.TestCase):
+    def test_studio_runtime_can_fall_back_without_explicit_context(self) -> None:
+        runtime = Runtime(context=None)
+        self.assertIsInstance(
+            api._runtime_context(runtime),
+            api.RagResponseContext,
+        )
+        client = object()
+        with patch.object(
+            orchestration_graph.services,
+            "get_llm_client",
+            return_value=client,
+        ):
+            self.assertIs(orchestration_graph._runtime_client(runtime), client)
+
+    def test_graph_exposes_the_existing_response_pipeline_steps(self) -> None:
+        graph = api.RAG_RESPONSE_GRAPH.get_graph()
+
+        self.assertTrue(
+            {
+                "orchestrate",
+                "generate",
+                "accept_precomputed",
+                "finalize",
+                "persist",
+            }.issubset(graph.nodes)
+        )
+
+    def test_response_state_is_checkpoint_serializable(self) -> None:
+        self.assertNotIn("answer_client", api.RagResponseState.__annotations__)
+        serializer = JsonPlusSerializer()
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse",
+            "sources": [],
+            "retrieval": {},
+            "answer_trace": {"action": "answer"},
+        }
+
+        restored = serializer.loads_typed(serializer.dumps_typed(state))
+
+        self.assertEqual(restored["payload"]["question"], "Question")
+        self.assertEqual(restored["answer_trace"]["action"], "answer")
+
+    def test_shadow_evaluation_records_a_diagnostic_without_mutating_the_answer(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse inchangée",
+            "sources": [_source()],
+            "retrieval": {
+                "route": "rag",
+                "answer_model": "mistral-medium-latest",
+                "contextual_question": "Question",
+            },
+            "answer_trace": {"action": "answer"},
+        }
+        diagnostic = {
+            "enabled": True,
+            "mode": "shadow",
+            "status": "acceptable",
+            "reason": "Réponse étayée",
+        }
+        with (
+            patch.object(api, "shadow_evaluation_enabled", return_value=True),
+            patch.object(
+                api,
+                "evaluate_answer_shadow",
+                return_value=diagnostic,
+            ) as evaluator,
+        ):
+            sink: dict = {}
+            result = api._evaluate_response(
+                state,
+                Runtime(
+                    context=api.RagResponseContext(
+                        answer_client=object(),
+                        shadow_evaluation_model_override="judge-model",
+                        shadow_evaluation_sink=sink,
+                    )
+                ),
+            )
+
+        self.assertEqual(result["shadow_evaluation"], diagnostic)
+        self.assertFalse(result["correction_requested"])
+        self.assertEqual(sink, diagnostic)
+        self.assertEqual(state["answer"], "Réponse inchangée")
+        evaluator.assert_called_once()
+        self.assertEqual(evaluator.call_args.args[1], "judge-model")
+
+    def test_shadow_evaluation_error_does_not_escape_the_node(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse inchangée",
+            "sources": [_source()],
+            "retrieval": {
+                "route": "rag",
+                "answer_model": "mistral-medium-latest",
+            },
+            "answer_trace": {"action": "answer"},
+        }
+        with (
+            patch.object(api, "shadow_evaluation_enabled", return_value=True),
+            patch.object(
+                api,
+                "evaluate_answer_shadow",
+                side_effect=RuntimeError("échec évaluateur"),
+            ),
+        ):
+            result = api._evaluate_response(
+                state,
+                Runtime(context=api.RagResponseContext(answer_client=object())),
+            )
+
+        self.assertEqual(result["shadow_evaluation"]["status"], "error")
+        self.assertEqual(state["answer"], "Réponse inchangée")
+
+    def test_direct_answer_is_not_submitted_to_shadow_evaluation(self) -> None:
+        state = {
+            "payload": RagRequest(question="Bonjour").model_dump(),
+            "answer": "Bonjour !",
+            "sources": [],
+            "retrieval": {"route": "direct", "answer_model": None},
+            "answer_trace": {"action": "answer"},
+        }
+        with (
+            patch.object(api, "shadow_evaluation_enabled", return_value=True),
+            patch.object(api, "evaluate_answer_shadow") as evaluator,
+        ):
+            result = api._evaluate_response(
+                state,
+                Runtime(context=api.RagResponseContext(answer_client=object())),
+            )
+
+        self.assertEqual(result["shadow_evaluation"]["status"], "not_applicable")
+        evaluator.assert_not_called()
+
+    def test_generation_abstention_requests_at_most_one_correction(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "abstain"},
+            "correction_count": 0,
+        }
+        runtime = Runtime(
+            context=api.RagResponseContext(
+                answer_client=object(),
+                shadow_evaluation_enabled_override=False,
+            )
+        )
+        first = api._evaluate_response(state, runtime)
+        second = api._evaluate_response(
+            {**state, "correction_count": 1},
+            runtime,
+        )
+
+        self.assertTrue(first["correction_requested"])
+        self.assertFalse(second["correction_requested"])
+        self.assertEqual(
+            api._post_evaluation_route({**state, **first}), "expand_retrieval"
+        )
+        self.assertEqual(api._post_evaluation_route(second), "finalize")
+
+    def test_generation_abstention_always_requests_one_correction(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "sql_search", "answer_model": "answer-model"},
+            "answer_trace": {"action": "abstain"},
+            "correction_count": 0,
+        }
+
+        result = api._evaluate_response(
+            state,
+            Runtime(
+                context=api.RagResponseContext(
+                    answer_client=object(),
+                    shadow_evaluation_enabled_override=False,
+                    correction_loop_enabled_override=False,
+                )
+            ),
+        )
+
+        self.assertTrue(result["correction_requested"])
+
+    def test_correction_route_depends_on_evaluation_issue(self) -> None:
+        base_state = {"correction_requested": True}
+
+        self.assertEqual(
+            api._post_evaluation_route(
+                {
+                    **base_state,
+                    "shadow_evaluation": {"issue": "unsupported_answer"},
+                }
+            ),
+            "correct",
+        )
+        self.assertEqual(
+            api._post_evaluation_route(
+                {
+                    **base_state,
+                    "shadow_evaluation": {"issue": "bad_retrieval"},
+                }
+            ),
+            "retry_retrieval",
+        )
+        self.assertEqual(
+            api._post_evaluation_route(
+                {
+                    **base_state,
+                    "shadow_evaluation": {"issue": "insufficient_sources"},
+                }
+            ),
+            "expand_retrieval",
+        )
+
+    def test_insufficient_sources_expands_retrieval_limits(self) -> None:
+        state = {
+            "payload": RagRequest(
+                question="Question",
+                topK=20,
+                finalK=5,
+                plannerPrompt="Prompt planner",
+            ).model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {
+                "action": "abstain",
+                "retry_query": "date de publication de la vidéo mentionnée",
+            },
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "insufficient_sources",
+                "reason": "Il manque une source.",
+            },
+        }
+
+        def orchestrate(payload):
+            self.assertEqual(payload.topK, api.MAX_TOP_K)
+            self.assertEqual(payload.finalK, api.MAX_FINAL_K)
+            self.assertIn("plus large", payload.plannerPrompt)
+            self.assertIn("date de publication de la vidéo mentionnée", payload.plannerPrompt)
+            return "", [_source(), {**_source(), "chunk_id": 8}], {
+                "route": "rag",
+                "answer_model": "answer-model",
+            }
+
+        with patch.object(api, "orchestrate_request", side_effect=orchestrate):
+            result = api._expand_retrieval(state)
+
+        self.assertEqual(result["correction_count"], 1)
+        self.assertEqual(len(result["sources"]), 2)
+        correction = result["retrieval"]["correction"]
+        self.assertEqual(correction["strategy"], "expand_retrieval")
+        self.assertTrue(correction["succeeded"])
+        self.assertEqual(api._post_retrieval_route(result), "generate")
+
+    def test_bad_retrieval_uses_a_precise_new_planner_request(self) -> None:
+        state = {
+            "payload": RagRequest(
+                question="Question",
+                topK=10,
+                finalK=3,
+            ).model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "bad_retrieval",
+                "reason": "Sources hors sujet.",
+            },
+        }
+
+        def orchestrate(payload):
+            self.assertEqual(payload.topK, 20)
+            self.assertEqual(payload.finalK, 8)
+            self.assertIn("plus précise", payload.plannerPrompt)
+            return "", [_source()], {
+                "route": "rag",
+                "answer_model": "answer-model",
+            }
+
+        with patch.object(api, "orchestrate_request", side_effect=orchestrate):
+            result = api._retry_retrieval(state)
+
+        self.assertEqual(
+            result["retrieval"]["correction"]["strategy"],
+            "retry_retrieval",
+        )
+        self.assertEqual(api._post_retrieval_route(result), "generate")
+
+    def test_correction_regenerates_with_same_sources_and_records_attempt(self) -> None:
+        state = {
+            "payload": RagRequest(
+                question="Question",
+                answerPrompt="Prompt initial",
+            ).model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {
+                "route": "rag",
+                "answer_model": "answer-model",
+                "contextual_question": "Question autonome",
+            },
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "unsupported_answer",
+                "reason": "Une affirmation dépasse les sources.",
+                "suggested_correction": "Supprimer cette affirmation.",
+            },
+        }
+        runtime = Runtime(context=api.RagResponseContext(answer_client=object()))
+
+        def generate(_client, question, model, retrieval, sources, trace, prompt):
+            self.assertEqual(question, "Question autonome")
+            self.assertEqual(model, "answer-model")
+            self.assertEqual(sources, state["sources"])
+            self.assertIn("Réponse initiale", prompt)
+            self.assertIn("unsupported_answer", prompt)
+            trace.update({"action": "answer", "source_indexes": [1]})
+            return "Réponse corrigée"
+
+        with patch.object(api, "generate_final_answer", side_effect=generate):
+            result = api._correct_response(state, runtime)
+
+        self.assertEqual(result["answer"], "Réponse corrigée")
+        self.assertEqual(result["correction_count"], 1)
+        self.assertTrue(result["retrieval"]["correction"]["succeeded"])
+        self.assertEqual(len(result["shadow_evaluation_history"]), 1)
+
+    def test_failed_correction_keeps_the_initial_answer(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "rag", "answer_model": "answer-model"},
+            "answer_trace": {"action": "answer"},
+            "shadow_evaluation": {
+                "verdict": "needs_correction",
+                "issue": "unsupported_answer",
+            },
+        }
+        runtime = Runtime(context=api.RagResponseContext(answer_client=object()))
+        with patch.object(
+            api,
+            "generate_final_answer",
+            side_effect=RuntimeError("échec correction"),
+        ):
+            result = api._correct_response(state, runtime)
+
+        self.assertEqual(result["answer"], "Réponse initiale")
+        self.assertFalse(result["retrieval"]["correction"]["succeeded"])
+
+    def test_finalize_removes_postgresql_nul_characters(self) -> None:
+        result = api._finalize_response(
+            {
+                "answer": "Réponse\x00 corrigée",
+                "sources": [],
+                "retrieval": {},
+                "answer_trace": {"action": "answer"},
+            }
+        )
+
+        self.assertEqual(result["answer"], "Réponse corrigée")
+
+    def test_persist_signals_response_before_updating_memory(self) -> None:
+        ready_responses = []
+        state = {
+            "payload": RagRequest(question="Question", conversationId=3).model_dump(),
+            "answer": "Réponse finale",
+            "answer_action": "answer",
+            "carousel_sources": [_source()],
+            "retrieval": {"answer_model": "mistral-medium-latest"},
+        }
+
+        def update_memory(*_args, **_kwargs):
+            self.assertEqual(len(ready_responses), 1)
+            self.assertEqual(ready_responses[0].answer, "Réponse finale")
+            return {"available": True}
+
+        with (
+            patch.object(api, "store_chat_message", return_value=(3, 9)),
+            patch.object(api, "remember_conversation_json_turn", side_effect=update_memory),
+            patch.object(api, "current_trace_id", return_value="trace-1"),
+            patch.object(api, "telemetry_status", return_value={"project": "test"}),
+        ):
+            result = api._persist_response(
+                state,
+                Runtime(
+                    context=api.RagResponseContext(
+                        answer_client=object(),
+                        response_ready_callback=ready_responses.append,
+                    )
+                ),
+            )
+
+        self.assertEqual(result, {"conversation_id": 3, "message_id": 9})
+        self.assertEqual(ready_responses[0].message_id, 9)
+
+    def test_run_rag_records_stream_latency_milestones(self) -> None:
+        attributes: dict[str, object] = {}
+
+        class RequestSpan:
+            def set_attribute(self, name, value):
+                attributes[name] = value
+
+            def set_session_id(self, _value):
+                return None
+
+            def set_output(self, _value):
+                return None
+
+        @contextmanager
+        def fake_trace_operation(*_args, **_kwargs):
+            yield RequestSpan()
+
+        response = api.RagResponse(
+            conversation_id=3,
+            message_id=9,
+            answer="Réponse finale",
+            action="answer",
+            sources=[],
+            retrieval={},
+        )
+
+        def execute(_payload, **kwargs):
+            kwargs["stream_callback"]("{")
+            kwargs["response_ready_callback"](response)
+            return response
+
+        with (
+            patch.object(api, "trace_operation", fake_trace_operation),
+            patch.object(api, "execute_rag", side_effect=execute),
+            patch.object(api.time, "perf_counter", side_effect=[10, 10.123, 11.5, 12]),
+            patch.object(api, "current_trace_id", return_value="trace-1"),
+            patch.object(api, "record_trace_score_annotations") as record_scores,
+        ):
+            api.run_rag(
+                RagRequest(question="Question"),
+                stream_callback=lambda _fragment: None,
+            )
+
+        self.assertEqual(attributes["rag.ttft_ms"], 123)
+        self.assertEqual(attributes["rag.answer_ready_ms"], 1500)
+        self.assertEqual(attributes["rag.completed_ms"], 2000)
+        record_scores.assert_called_once_with(
+            "trace-1",
+            {
+                "rag_ttft_ms": 123,
+                "rag_answer_ready_ms": 1500,
+                "rag_completed_ms": 2000,
+            },
+        )
+
+    def test_graph_runs_one_correction_then_finalizes(self) -> None:
+        diagnostics = [
+            {
+                "verdict": "needs_correction",
+                "issue": "unsupported_answer",
+                "status": "unsupported_answer",
+                "reason": "Réponse non étayée.",
+                "suggested_correction": "Retirer l'affirmation.",
+            },
+            {
+                "verdict": "acceptable",
+                "issue": "none",
+                "status": "acceptable",
+                "reason": "Réponse corrigée.",
+            },
+        ]
+
+        def generate(_client, _question, _model, _retrieval, _sources, trace, _prompt, **_kwargs):
+            trace.update({"action": "answer", "source_indexes": [1]})
+            return "Réponse initiale" if generator.call_count == 1 else "Réponse corrigée"
+
+        with (
+            patch.object(
+                api,
+                "orchestrate_request",
+                return_value=(
+                    "",
+                    [_source()],
+                    {
+                        "route": "rag",
+                        "answer_model": "answer-model",
+                        "contextual_question": "Question",
+                    },
+                ),
+            ),
+            patch.object(api, "get_llm_client", return_value=object()),
+            patch.object(api, "generate_final_answer", side_effect=generate) as generator,
+            patch.object(api, "evaluate_answer_shadow", side_effect=diagnostics) as evaluator,
+            patch.object(
+                api,
+                "select_answer_sources",
+                side_effect=lambda answer, sources, _indexes: (answer, sources),
+            ),
+            patch.object(api, "store_chat_message", return_value=(3, 9)),
+            patch.object(api, "remember_conversation_json_turn", return_value={}),
+            patch.object(api, "current_trace_id", return_value="trace-1"),
+            patch.object(api, "telemetry_status", return_value={"project": "test"}),
+        ):
+            result = api.RAG_RESPONSE_GRAPH.invoke(
+                {
+                    "payload": RagRequest(
+                        question="Question",
+                        conversationId=3,
+                    ).model_dump()
+                },
+                context=api.RagResponseContext(
+                    shadow_evaluation_enabled_override=True,
+                    correction_loop_enabled_override=True,
+                ),
+            )
+
+        self.assertEqual(result["answer"], "Réponse corrigée")
+        self.assertEqual(result["correction_count"], 1)
+        self.assertEqual(result["shadow_evaluation"]["verdict"], "acceptable")
+        self.assertEqual(len(result["retrieval"]["shadow_evaluation_history"]), 1)
+        self.assertEqual(generator.call_count, 2)
+        self.assertEqual(evaluator.call_count, 2)
+
+    def test_shadow_evaluator_uses_a_strict_structured_response(self) -> None:
+        client = _Client(
+            [
+                {
+                    "verdict": "acceptable",
+                    "issue": "none",
+                    "reason": "Réponse étayée",
+                    "retrieval_quality": 0.9,
+                    "answer_grounded": True,
+                    "suggested_correction": None,
+                }
+            ]
+        )
+
+        result = evaluate_answer_shadow(
+            client,
+            "mistral-medium-latest",
+            "Question",
+            "Réponse",
+            "answer",
+            [_source()],
+        )
+
+        self.assertEqual(result["status"], "acceptable")
+        self.assertEqual(result["verdict"], "acceptable")
+        self.assertEqual(result["issue"], "none")
+        self.assertTrue(result["answer_grounded"])
+        self.assertEqual(len(client.responses.calls), 1)
+        self.assertIn("response_schema", client.responses.calls[0])
+
+    def test_correct_clarification_is_acceptable_despite_ambiguity(self) -> None:
+        client = _Client(
+            [
+                {
+                    "verdict": "acceptable",
+                    "issue": "ambiguous_question",
+                    "reason": "La réponse demande la précision nécessaire.",
+                    "retrieval_quality": 1.0,
+                    "answer_grounded": True,
+                    "suggested_correction": None,
+                }
+            ]
+        )
+
+        result = evaluate_answer_shadow(
+            client,
+            "judge-model",
+            "Je cherche la vidéo de Camille",
+            "De quelle Camille parlez-vous ?",
+            "abstain",
+            [],
+        )
+
+        self.assertEqual(result["verdict"], "acceptable")
+        self.assertEqual(result["issue"], "ambiguous_question")
+        self.assertEqual(result["status"], "acceptable")
 
 
 def _source() -> dict:
@@ -62,94 +649,22 @@ def _source() -> dict:
 
 
 class AnswerActionTests(unittest.TestCase):
-    def test_answer_judge_is_limited_to_risky_answers(self) -> None:
-        self.assertFalse(api.should_run_answer_judge("direct", "answer", {}))
-        self.assertFalse(api.should_run_answer_judge("rag", "answer", {}))
-        self.assertTrue(api.should_run_answer_judge("rag", "clarify", {}))
-        self.assertTrue(api.should_run_answer_judge("rag", "abstain", {}))
-        self.assertTrue(
-            api.should_run_answer_judge(
-                "rag",
-                "answer",
-                {"sql_sub_intent": "analytics"},
-            )
-        )
-        self.assertFalse(api.should_run_answer_judge("multi_source", "answer", {}))
-        self.assertTrue(
-            api.should_run_answer_judge(
-                "rag",
-                "answer",
-                {"direct_lookup": {"result_count": 0}},
-            )
-        )
-
-    def test_answer_judge_requests_sql_retry_with_strict_schema(self) -> None:
-        client = _Client(
-            [
-                {
-                    "valid": False,
-                    "retry_stage": "sql",
-                    "reason": "La requête utilise une intersection.",
-                    "correction": "Utiliser l'union des vidéos des deux personnes.",
-                }
-            ]
-        )
-
-        verdict = judge_final_answer(
-            client,
-            "mistral-medium-latest",
-            "Laquelle a le plus de vues ?",
-            {
-                "route": "multi_source",
-                "sql_sub_intent": "analytics",
-                "execution_plan": {"persons": ["Loucif", "Sophie Ollivier"]},
-            },
-            [],
-            "Précise les vidéos.",
-            "clarify",
-        )
-
-        self.assertFalse(verdict["valid"])
-        self.assertEqual(verdict["retry_stage"], "sql")
-        self.assertEqual(
-            client.responses.calls[0]["response_schema"],
-            ANSWER_JUDGE_RESPONSE_SCHEMA,
-        )
-
-    def test_answer_judge_retries_analytics_without_video_metadata(self) -> None:
-        client = _Client([])
-        source = _source()
-        source["video_title"] = "Résultat analytique"
-        source["video_url"] = ""
-
-        verdict = judge_final_answer(
-            client,
-            "mistral-medium-latest",
-            "Laquelle a le plus de vues ?",
-            {"sql_sub_intent": "analytics"},
-            [source],
-            "Loucif a le plus de vues. [S1]",
-            "answer",
-        )
-
-        self.assertFalse(verdict["valid"])
-        self.assertEqual(verdict["retry_stage"], "sql")
-        self.assertEqual(verdict["correction"], ANALYTICS_VIDEO_METADATA_CORRECTION)
-        self.assertEqual(client.responses.calls, [])
-
     def test_generator_output_exposes_answer_and_action(self) -> None:
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = parse_answer_output(
-            '{"answer":"Peux-tu préciser la vidéo ?","action":"clarify"}',
+            ('{"answer":"Peux-tu préciser la vidéo ?","action":"abstain",'
+             '"source_indexes":[],"retry_query":"identifier la vidéo concernée"}'),
             trace,
         )
 
         self.assertEqual(answer, "Peux-tu préciser la vidéo ?")
-        self.assertEqual(trace["action"], "clarify")
+        self.assertEqual(trace["action"], "abstain")
+        self.assertEqual(trace["source_indexes"], [])
+        self.assertEqual(trace["retry_query"], "identifier la vidéo concernée")
 
     def test_invalid_or_missing_action_falls_back_to_abstention(self) -> None:
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = parse_answer_output('{"answer":"Réponse non qualifiée"}', trace)
 
@@ -158,9 +673,9 @@ class AnswerActionTests(unittest.TestCase):
 
     def test_no_source_is_still_submitted_to_the_answer_model(self) -> None:
         client = _Client(
-            [{"answer": "De quelle vidéo parles-tu ?", "action": "clarify"}]
+            [{"answer": "De quelle vidéo parles-tu ?", "action": "abstain"}]
         )
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = generate_answer(
             client,
@@ -171,18 +686,51 @@ class AnswerActionTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "De quelle vidéo parles-tu ?")
-        self.assertEqual(trace["action"], "clarify")
+        self.assertEqual(trace["action"], "abstain")
         self.assertEqual(len(client.responses.calls), 1)
         self.assertIn(
             "Aucune source exploitable",
             client.responses.calls[0]["input"][1]["content"],
         )
 
+    def test_sql_retry_query_is_discarded(self) -> None:
+        trace: dict[str, object] = {}
+
+        parse_answer_output(
+            ('{"answer":"Je ne peux pas répondre.","action":"abstain",'
+             '"source_indexes":[],"retry_query":"SELECT * FROM videos"}'),
+            trace,
+        )
+
+        self.assertIsNone(trace["retry_query"])
+
+    def test_abstention_with_cited_sources_is_normalized_to_answer(self) -> None:
+        trace: dict[str, object] = {}
+
+        parse_answer_output(
+            ('{"answer":"La vidéo est disponible.","action":"abstain",'
+             '"source_indexes":[1],"retry_query":"retrouver la vidéo"}'),
+            trace,
+        )
+
+        self.assertEqual(trace["action"], "answer")
+        self.assertEqual(trace["source_indexes"], [1])
+        self.assertIsNone(trace["retry_query"])
+        self.assertEqual(
+            trace["action_normalization"],
+            {
+                "reason": "abstain_with_cited_sources",
+                "from_action": "abstain",
+                "to_action": "answer",
+                "source_indexes": [1],
+            },
+        )
+
     def test_ambiguous_person_candidates_are_given_to_the_answer_model(self) -> None:
         client = _Client(
-            [{"answer": "Parles-tu d'Alice Martin ou d'Alice Durand ?", "action": "clarify"}]
+            [{"answer": "Parles-tu d'Alice Martin ou d'Alice Durand ?", "action": "abstain"}]
         )
-        trace: dict[str, str] = {}
+        trace: dict[str, object] = {}
 
         answer = generate_person_clarification_answer(
             client,
@@ -196,7 +744,7 @@ class AnswerActionTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "Parles-tu d'Alice Martin ou d'Alice Durand ?")
-        self.assertEqual(trace["action"], "clarify")
+        self.assertEqual(trace["action"], "abstain")
         prompt = client.responses.calls[0]["input"][1]["content"]
         self.assertIn("Alice Martin", prompt)
         self.assertIn("Alice Durand", prompt)
@@ -204,7 +752,7 @@ class AnswerActionTests(unittest.TestCase):
     def test_execute_rag_uses_the_action_from_the_generation_call(self) -> None:
         retrieval = {
             "route": "rag",
-            "retrieval_mode": "rag+structured_sql",
+            "retrieval_mode": "rag+sql",
             "contextual_question": "Quand la vidéo a-t-elle été publiée ?",
             "answer_model": "mistral-medium-latest",
         }
@@ -212,9 +760,11 @@ class AnswerActionTests(unittest.TestCase):
         def generate(*args, **kwargs):
             trace = args[5]
             trace["action"] = "answer"
-            return "Le 12 avril 2022. [S1]"
+            trace["source_indexes"] = [1]
+            return "Le 12 avril 2022."
 
         with (
+            patch.object(api, "create_conversation", return_value=3),
             patch.object(api, "orchestrate_request", return_value=("", [_source()], retrieval)),
             patch.object(api, "get_llm_client", return_value=object()),
             patch.object(api, "generate_final_answer", side_effect=generate) as generator,
@@ -229,10 +779,10 @@ class AnswerActionTests(unittest.TestCase):
         self.assertNotIn("answer_evaluation", response.retrieval)
         generator.assert_called_once()
 
-    def test_execute_rag_keeps_cited_sources_for_clarification(self) -> None:
+    def test_execute_rag_hides_sources_for_abstention(self) -> None:
         retrieval = {
             "route": "rag",
-            "retrieval_mode": "rag+structured_sql",
+            "retrieval_mode": "rag+sql",
             "contextual_question": "Je cherche la video de Sophie",
             "answer_model": "mistral-medium-latest",
         }
@@ -241,10 +791,12 @@ class AnswerActionTests(unittest.TestCase):
 
         def generate(*args, **kwargs):
             trace = args[5]
-            trace["action"] = "clarify"
-            return "Parles-tu de cette Sophie ? [S1]"
+            trace["action"] = "abstain"
+            trace["source_indexes"] = [1]
+            return "Parles-tu de cette Sophie ?"
 
         with (
+            patch.object(api, "create_conversation", return_value=3),
             patch.object(api, "orchestrate_request", return_value=("", [source], retrieval)),
             patch.object(api, "get_llm_client", return_value=object()),
             patch.object(api, "generate_final_answer", side_effect=generate),
@@ -252,106 +804,10 @@ class AnswerActionTests(unittest.TestCase):
         ):
             response = api.execute_rag(RagRequest(question="Video de Sophie ?"))
 
-        self.assertEqual(response.action, "clarify")
+        self.assertEqual(response.action, "abstain")
         self.assertEqual(response.answer, "Parles-tu de cette Sophie ?")
-        self.assertEqual(len(response.sources), 1)
-        self.assertEqual(
-            response.sources[0].thumbnail_medium_url,
-            "https://example.test/thumbnail.jpg",
-        )
-        self.assertEqual(response.retrieval["answer_source_indexes"], [1])
-
-    def test_execute_rag_retries_sql_once_when_judge_detects_intersection(self) -> None:
-        execution_plan = ExecutionPlan(
-            route="multi_source",
-            sql_sub_intent="analytics",
-            raw_question="Loucif et Sophie Ollivier ?",
-            query_text="Quelle vidéo entre Loucif et Sophie Ollivier a le plus de vues ?",
-            query_text_bm25="Loucif Sophie vues",
-            persons=["Loucif", "Sophie Ollivier"],
-            sql_main_source=True,
-            top_k=None,
-            final_k=None,
-        )
-        retrieval = {
-            "route": "multi_source",
-            "retrieval_mode": "multi_source",
-            "contextual_question": execution_plan.query_text,
-            "answer_model": "mistral-medium-latest",
-            "planner_model": "mistral-medium-latest",
-            "sql_sub_intent": "analytics",
-            "execution_plan": execution_plan.model_dump(),
-            "resolved_persons": ["Loucif Ouyahia", "Sophie Ollivier"],
-            "resolved_companies": [],
-            "multi_source_actions": [],
-        }
-        corrected_source = _source()
-        corrected_source["chunk_id"] = 40
-        corrected_source["video_title"] = "Sophie Ollivier"
-        corrected_source["text"] = "view_count: 127"
-        generated_answers = iter(
-            [
-                ("Précise les vidéos concernées.", "clarify"),
-                ("Sophie Ollivier a le plus de vues. [S1]", "answer"),
-            ]
-        )
-
-        def generate(*args, **kwargs):
-            answer, action = next(generated_answers)
-            args[5]["action"] = action
-            if action == "answer":
-                self.assertIn("union", kwargs["judge_feedback"])
-            return answer
-
-        judge_verdicts = [
-            {
-                "status": "completed",
-                "valid": False,
-                "retry_stage": "sql",
-                "reason": "Le SQL cherche une vidéo commune.",
-                "correction": "Utiliser l'union des vidéos des deux personnes.",
-            },
-            {
-                "status": "completed",
-                "valid": True,
-                "retry_stage": "none",
-                "reason": "",
-                "correction": "",
-            },
-        ]
-
-        with (
-            patch.object(api, "orchestrate_request", return_value=("", [], retrieval)),
-            patch.object(api, "get_llm_client", return_value=object()),
-            patch.object(api, "generate_final_answer", side_effect=generate) as generator,
-            patch.object(api, "judge_final_answer", side_effect=judge_verdicts) as judge,
-            patch.object(
-                api,
-                "run_analytics_text_to_sql",
-                return_value=(
-                    [corrected_source],
-                    {
-                        "status": "executed",
-                        "sql": "SELECT ... WHERE speaker_a OR speaker_b",
-                        "params": ["Loucif", "Sophie Ollivier"],
-                        "result_count": 1,
-                    },
-                ),
-            ) as sql_retry,
-            patch.object(api, "store_chat_message", return_value=(213, 277)),
-        ):
-            response = api.execute_rag(
-                RagRequest(question="Loucif et Sophie Ollivier ?", conversationId=213)
-            )
-
-        self.assertEqual(response.action, "answer")
-        self.assertEqual(response.answer, "Sophie Ollivier a le plus de vues.")
-        self.assertEqual(response.sources[0].chunk_id, 40)
-        self.assertTrue(response.retrieval["answer_judge"]["retry_performed"])
-        self.assertTrue(response.retrieval["answer_judge"]["final"]["valid"])
-        self.assertEqual(generator.call_count, 2)
-        self.assertEqual(judge.call_count, 2)
-        sql_retry.assert_called_once()
+        self.assertEqual(response.sources, [])
+        self.assertEqual(response.retrieval["answer_source_indexes"], [])
 
     def test_precomputed_direct_answer_keeps_answer_action(self) -> None:
         retrieval = {
@@ -361,6 +817,7 @@ class AnswerActionTests(unittest.TestCase):
             "answer_model": None,
         }
         with (
+            patch.object(api, "create_conversation", return_value=3),
             patch.object(
                 api,
                 "orchestrate_request",

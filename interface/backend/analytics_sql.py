@@ -28,6 +28,7 @@ ANALYTICS_SQL_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "sql": {"type": "string"},
+        "result_intro": {"type": "string"},
         "params": {
             "type": "array",
             "items": {
@@ -40,7 +41,7 @@ ANALYTICS_SQL_RESPONSE_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["sql", "params"],
+    "required": ["sql", "result_intro", "params"],
     "additionalProperties": False,
 }
 
@@ -64,45 +65,12 @@ DISALLOWED_SQL_OBJECTS = re.compile(
 )
 
 
-ANALYTICS_SCHEMA_PROMPT = """Schéma PostgreSQL autorisé (search_path=data,public) :
-
-videos(
-  id bigint primary key,
-  youtube_video_id text,
-  title text,
-  description text,
-  url text,
-  duration_seconds integer,
-  is_long_video boolean,
-  thumbnail_medium_url text,
-  has_subtitles boolean,
-  video_type text,
-  published_at timestamptz,
-  data_collected_date timestamptz
-)
-Valeurs connues de videos.video_type : interview, video_recording, long_video, motion_design.
-
-stats(
-  id bigint primary key,
-  video_id bigint references videos(id),
-  view_count bigint,
-  like_count bigint,
-  comment_count bigint,
-  snapshot_date date,
-  data_collected_date timestamptz
-)
-Il existe plusieurs snapshots par vidéo. Pour les statistiques actuelles, sélectionner
-exactement le snapshot le plus récent de chaque vidéo avec :
-ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1.
-Ce LIMIT 1 doit être corrélé à la vidéo concernée, par exemple dans un JOIN LATERAL
-avec WHERE stats.video_id = videos.id. Ne jamais placer un LIMIT 1 global dans un CTE
-lisant stats : il ne conserverait qu'un seul snapshot pour l'ensemble des vidéos.
-
-speakers(id bigint primary key, name text, title text, data_collected_date timestamptz)
-video_speakers(video_id bigint, speaker_id bigint, data_collected_date timestamptz)
-comments(id bigint primary key, video_id bigint, parent_comment_id bigint,
-         author_name text, text text, like_count bigint, published_at timestamptz,
-         updated_at timestamptz, is_deleted boolean)
+ANALYTICS_SCHEMA_PROMPT = """Schéma autorisé (search_path=data,public) :
+videos(id, title, description, url, thumbnail_medium_url, video_type, published_at, ...)
+stats(id, video_id, view_count, like_count, comment_count, snapshot_date, data_collected_date)
+speakers(id, name, title), video_speakers(video_id, speaker_id)
+comments(id, video_id, parent_comment_id, author_name, text, like_count, published_at, is_deleted)
+video_type : interview, video_recording, long_video, motion_design.
 """
 
 
@@ -118,45 +86,63 @@ qui répond exactement à la question, sans répondre toi-même.
 
 {ANALYTICS_SCHEMA_PROMPT}
 
-Règles obligatoires :
-- sql doit être une unique requête SELECT, éventuellement précédée de CTE WITH.
-- N'utilise que les tables du schéma fourni.
-- N'utilise jamais SELECT *, sauf dans un COUNT(*).
-- Utilise des placeholders psycopg %s pour toute valeur issue de la question et place
-  ces valeurs, dans le même ordre, dans params.
-- N'ajoute ni commentaire SQL ni point-virgule.
-- Pour un classement ou un extremum, trie sur la métrique demandée et applique la
-  limite utile. Ne trie pas par date de publication sauf demande explicite.
-- Pour compter des vidéos, conserve une ligne par vidéo et calcule le total avec
-  COUNT(*) OVER () afin de garder les métadonnées de chaque vidéo.
-- Pour une interview, filtre v.video_type = %s avec la valeur interview dans params.
-- Traite title_hint et les titres mentionnés comme des fragments : utilise v.title ILIKE %s
-  avec une valeur entourée de %, sauf si un identifiant vidéo exact est fourni.
-- Toute analyse portant sur des vidéos doit conserver une ligne concrète par vidéo et
-  retourner v.id AS video_id, v.title AS video_title, v.url AS video_url et
-  v.thumbnail_medium_url AS thumbnail_medium_url.
-- Pour un total ou une comparaison par personne, utilise une fonction fenêtre comme
-  SUM(...) OVER (PARTITION BY speaker) plutôt qu'un GROUP BY qui supprimerait les
-  métadonnées vidéo. Chaque ligne doit rester rattachée à sa vidéo.
-- Pour une statistique YouTube actuelle, utilise uniquement le dernier snapshot de
-  chaque vidéo selon la règle du schéma.
-- Pour comparer plusieurs personnes, cherche les vidéos associées à au moins une de
-  ces personnes avec OR/IN, puis classe leur union. N'exige leur présence dans la même
-  vidéo que si la question dit explicitement « ensemble », « dans la même vidéo » ou
-  demande une coapparition.
-- Les requêtes non agrégées doivent retourner au maximum {MAX_ANALYTICS_ROWS} lignes.
+Organisation des données :
+- `videos` contient une ligne par vidéo YouTube : ses métadonnées stables,
+  dont `id`, `title`, `url`, `thumbnail_medium_url`, `video_type` et
+  `published_at` (date de publication, qui n'est pas une date de statistique).
+- `stats` est l'historique des relevés : plusieurs lignes par `video_id`.
+  Chaque ligne porte les compteurs (`view_count`, `like_count`,
+  `comment_count`) à `snapshot_date`; `data_collected_date`, puis `id`,
+  départagent deux relevés du même jour.
+- `speakers` et `video_speakers` relient les personnes aux vidéos.
+- `comments` contient les commentaires individuels ; `is_deleted=false`
+  désigne les commentaires encore actifs.
 
-Exemple « quelle vidéo a le plus de vues ? » :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.view_count FROM videos v JOIN LATERAL (SELECT view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE ORDER BY s.view_count DESC NULLS LAST LIMIT %s","params":[1]}}
+Règles :
+- Une seule requête SELECT/CTE, tables ci-dessus seulement, sans commentaire ni ;.
+- Toute valeur utilisateur va dans params via %s, dans le même ordre. Pas de SELECT *.
+- Pour les stats actuelles, prends le dernier snapshot de chaque vidéo avec un LIMIT 1
+  corrélé (`WHERE stats.video_id = v.id`), jamais un LIMIT 1 global.
+- Toute requête qui lit `stats` doit sélectionner et retourner au moins une date
+  de snapshot, sous un alias contenant `snapshot_date` (par exemple
+  `s.snapshot_date AS stats_snapshot_date`). Cette date est transmise au LLM
+  qui rédige la réponse.
+- `title_hints` vide signifie aucun filtre `v.title`; sinon filtre avec l'un des titres fournis.
+  N'invente jamais un titre depuis une description. Une interview impose
+  `v.video_type = %s` avec `interview`.
+- Toute liste de vidéos retourne `video_id`, `video_title`, `video_url` et
+  `thumbnail_medium_url`. Une limite de sûreté est ajoutée après exécution :
+  ne l'ajoute pas comme objectif de la requête.
+- Plusieurs speakers = OR/IN, jamais AND, sauf coapparition explicitement demandée.
+- La requête SQL doit résoudre le problème, pas renvoyer une population pour que
+  le LLM de réponse choisisse ensuite. Si la question demande un seul gagnant,
+  une seule vidéo ou une valeur unique, calcule, trie si nécessaire et retourne
+  directement une ligne avec `LIMIT 1`. Pour une comparaison d'éléments nommés,
+  retourne uniquement tous ces éléments, sans limite arbitraire. Le `LIMIT 1`
+  final est autorisé ; le `LIMIT 1` qui sélectionne un snapshot reste corrélé à
+  sa vidéo.
+- Pour une demande à une date ou entre deux dates de statistiques, travaille sur
+  `stats.snapshot_date` (et non `videos.published_at`). Retourne les dates de
+  snapshot effectivement retenues avec chaque valeur ; pour une comparaison,
+  retourne les deux valeurs, leurs dates et l'écart calculé.
+- La question originale et sa reformulation contextuelle sont toutes deux
+  fournies. Préserve l'intention de la question originale : « gagné »,
+  « progressé » ou « perdu » implique une évolution entre snapshots, pas le
+  classement de la valeur actuelle.
+- Retourne `result_intro` : une phrase courte qui introduit les lignes SQL pour
+  le LLM de réponse (ex. « Voici l'avant-dernière vidéo publiée de la chaîne. »).
+  Elle décrit seulement le type de résultat attendu, sans inventer de valeur ni
+  qualifier la chaîne par une personne ou une organisation. Elle se termine
+  obligatoirement par `:`.
 
-Exemple « combien de vidéos interview sur la chaîne ? » :
-{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, COUNT(*) OVER () AS video_count FROM videos v WHERE v.video_type = %s","params":["interview"]}}
+Exemple unique — comparaison de speakers :
+{{"sql":"SELECT v.id AS video_id, v.title AS video_title, v.url AS video_url, v.thumbnail_medium_url AS thumbnail_medium_url, s.snapshot_date AS stats_snapshot_date, s.view_count FROM videos v JOIN video_speakers vs ON vs.video_id = v.id JOIN speakers sp ON sp.id = vs.speaker_id JOIN LATERAL (SELECT snapshot_date, view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC LIMIT 1) s ON TRUE WHERE sp.name ILIKE %s OR sp.name ILIKE %s ORDER BY s.view_count DESC NULLS LAST","result_intro":"Voici les vidéos concernées par la comparaison.","params":["%Déborah Rolland%","%Simon Payen%"]}}
 """
     context = {
-        "question": question,
-        "title_hint": query.title_hint,
-        "persons_requested": query.persons,
-        "persons_resolved": database_persons or [],
+        "question_originale": question,
+        "question_contextualisee": query.query_text,
+        "title_hints": query.title_hints,
+        "persons": database_persons or query.persons,
         "companies_requested": query.companies,
         "companies_resolved": database_companies or [],
         "published_after": query.published_after,
@@ -281,6 +267,10 @@ def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
         errors.append("missing_allowed_relation")
     if unknown_relations:
         errors.append("unknown_relations:" + ",".join(unknown_relations))
+    if "stats" in relations and not re.search(
+        r"\bas\s+[a-z_]*snapshot_date\b", sql_without_literals, re.IGNORECASE
+    ):
+        errors.append("stats_snapshot_date_required")
 
     if not isinstance(params, list):
         errors.append("params_must_be_list")
@@ -472,7 +462,7 @@ def run_analytics_text_to_sql(
         return [], trace
 
     system_prompt, user_prompt = build_analytics_sql_prompt(
-        query.query_text or query.raw_question,
+        query.raw_question or query.query_text,
         query,
         database_persons,
         database_companies,
@@ -483,7 +473,7 @@ def run_analytics_text_to_sql(
         {"role": "user", "content": user_prompt},
     ]
     with trace_operation(
-        "rag.analytics.sql_generation",
+            "analytics.sql_generation",
         kind="AGENT",
         input_value={"question": query.raw_question, "model": model},
     ) as generation_span:
@@ -499,6 +489,7 @@ def run_analytics_text_to_sql(
                 str(getattr(response, "output_text", "") or "").strip()
             )
             sql = str(payload.get("sql") or "").strip()
+            result_intro = str(payload.get("result_intro") or "").strip()[:500]
             params = payload.get("params", [])
             generation_trace = {
                 "status": "generated",
@@ -506,6 +497,7 @@ def run_analytics_text_to_sql(
                 "prompt": messages,
                 "response_raw": raw_response,
                 "sql": format_sql_for_trace(sql),
+                "result_intro": result_intro,
                 "params": params,
             }
         except Exception as exc:
@@ -520,7 +512,7 @@ def run_analytics_text_to_sql(
         generation_span.set_output(generation_trace)
 
     with trace_operation(
-        "rag.analytics.sql_validation",
+            "analytics.sql_validation",
         kind="GUARDRAIL",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as validation_span:
@@ -531,6 +523,7 @@ def run_analytics_text_to_sql(
             "prompt": messages,
             "response_raw": generation_trace["response_raw"],
             "sql": format_sql_for_trace(sql),
+            "result_intro": result_intro,
             "params": params if isinstance(params, list) else [],
             "validation": validation,
         }
@@ -540,7 +533,7 @@ def run_analytics_text_to_sql(
         return [], trace
 
     with trace_operation(
-        "rag.analytics.sql_cost_validation",
+            "analytics.sql_cost_validation",
         kind="GUARDRAIL",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as cost_span:
@@ -560,18 +553,33 @@ def run_analytics_text_to_sql(
         return [], trace
 
     with trace_operation(
-        "rag.analytics.sql_execution",
+            "analytics.sql_execution",
         kind="TOOL",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as execution_span:
         try:
             sources, execution = execute_analytics_sql(sql, params)
+            if result_intro:
+                sources = [{**source, "result_intro": result_intro} for source in sources]
             execution_span.set_output({**execution, "results": sources})
         except Exception as exc:
             execution = {"status": "execution_error", "error": str(exc)}
             execution_span.set_output(execution)
             trace.update(execution)
             return [], trace
+
+    if "stats" in validation["relations"] and not any(
+        "snapshot_date" in column.lower()
+        for column in execution.get("columns", [])
+    ):
+        trace.update(
+            {
+                "status": "stats_snapshot_date_missing_from_result",
+                "execution": execution,
+                "result_count": 0,
+            }
+        )
+        return [], trace
 
     trace.update(
         {
@@ -580,4 +588,379 @@ def run_analytics_text_to_sql(
             "result_count": len(sources),
         }
     )
+    return sources, trace
+
+
+def _analytics_text(value_sql: str) -> str:
+    return (
+        "btrim(regexp_replace("
+        f"unaccent(lower(coalesce({value_sql}, ''))), "
+        "'[^[:alnum:]]+', ' ', 'g'))"
+    )
+
+
+def _analytics_video_date_filters(query: ExecutionPlan) -> tuple[list[str], list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if query.published_after:
+        clauses.append("v.published_at >= %s::timestamptz")
+        params.append(query.published_after)
+    if query.published_before:
+        clauses.append("v.published_at <= %s::timestamptz")
+        params.append(query.published_before)
+    return clauses, params
+
+
+def _resolved_analytics_entities(
+    query: ExecutionPlan,
+    database_persons: list[str] | None,
+    database_companies: list[str] | None,
+) -> list[dict[str, str]]:
+    entities: list[dict[str, str]] = []
+    for kind, values in (
+        ("person", database_persons or query.persons),
+        ("company", database_companies or query.companies),
+        ("title", query.title_hints),
+    ):
+        for value in values:
+            cleaned = str(value or "").strip()
+            entity = {"kind": kind, "value": cleaned}
+            if cleaned and entity not in entities:
+                entities.append(entity)
+    return entities
+
+
+def _lookup_analytics_entity_videos(
+    entity: dict[str, str],
+    query: ExecutionPlan,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kind, value = entity["kind"], entity["value"]
+    date_clauses, date_params = _analytics_video_date_filters(query)
+    if kind == "person":
+        entity_clause = (
+            "(EXISTS (SELECT 1 FROM video_speakers vs "
+            "JOIN speakers sp ON sp.id = vs.speaker_id "
+            "WHERE vs.video_id = v.id "
+            f"AND {_analytics_text('sp.name')} = {_analytics_text('%s')}) "
+            "OR EXISTS (SELECT 1 FROM transcripts transcript_row "
+            "WHERE transcript_row.video_id = v.id "
+            "AND transcript_row.transcript_enriched IS NOT NULL "
+            "AND concat(' ', "
+            f"{_analytics_text('transcript_row.transcript_enriched')}, ' ') "
+            "LIKE concat(chr(37), ' ', "
+            f"{_analytics_text('%s')}, ' ', chr(37))))"
+        )
+    elif kind == "company":
+        entity_clause = (
+            "EXISTS (SELECT 1 FROM video_speakers vs "
+            "JOIN speakers sp ON sp.id = vs.speaker_id "
+            "WHERE vs.video_id = v.id AND sp.title IS NOT NULL "
+            f"AND {_analytics_text('sp.title')} LIKE "
+            f"concat(chr(37), {_analytics_text('%s')}, chr(37)))"
+        )
+    else:
+        entity_clause = f"{_analytics_text('v.title')} = {_analytics_text('%s')}"
+
+    where_clauses = [entity_clause, *date_clauses]
+    sql = f"""
+        SELECT DISTINCT v.id, v.title, v.url, v.thumbnail_medium_url
+        FROM videos v
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY v.id ASC
+        LIMIT {MAX_ANALYTICS_ROWS}
+    """
+    params = [value, value, *date_params] if kind == "person" else [value, *date_params]
+    with connect_analytics_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(
+                f"SET LOCAL statement_timeout = '{ANALYTICS_STATEMENT_TIMEOUT_MS}ms'"
+            )
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+    videos = [
+        {
+            "video_id": int(row[0]),
+            "video_title": str(row[1] or ""),
+            "video_url": str(row[2] or ""),
+            "thumbnail_medium_url": str(row[3] or "").strip() or None,
+        }
+        for row in rows
+    ]
+    return videos, {"sql": format_sql_for_trace(sql), "params": params}
+
+
+def _global_analytics_ranking_sources(
+    query: ExecutionPlan,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return the planner-requested global ranking window from one SQL query."""
+    date_clauses, params = _analytics_video_date_filters(query)
+    where_clause = f"WHERE {' AND '.join(date_clauses)}" if date_clauses else ""
+    ranking_columns = {
+        ("views", "desc"): ("view_count", "views_top_rank", "views", "top"),
+        ("views", "asc"): ("view_count", "views_bottom_rank", "views", "bottom"),
+        ("likes", "desc"): ("like_count", "likes_top_rank", "likes", "top"),
+        ("likes", "asc"): ("like_count", "likes_bottom_rank", "likes", "bottom"),
+        ("comments", "desc"): ("comment_count", "comments_top_rank", "comments", "top"),
+        ("comments", "asc"): ("comment_count", "comments_bottom_rank", "comments", "bottom"),
+    }
+    metric = query.analytics_metric or "all"
+    rank_start, rank_end = query.analytics_rank_start or 1, query.analytics_rank_end or 3
+    sql = f"""
+        WITH ranked AS (
+            SELECT
+                v.id AS video_id,
+                v.title AS video_title,
+                v.url AS video_url,
+                v.thumbnail_medium_url,
+                v.video_type,
+                v.published_at,
+                latest.snapshot_date,
+                latest.view_count,
+                latest.like_count,
+                latest.comment_count,
+                COUNT(*) OVER () AS population_video_count,
+                MIN(v.published_at) OVER () AS first_published_at,
+                MAX(v.published_at) OVER () AS last_published_at,
+                row_number() OVER (ORDER BY latest.view_count DESC NULLS LAST, v.id ASC) AS views_top_rank,
+                row_number() OVER (ORDER BY latest.view_count ASC NULLS LAST, v.id ASC) AS views_bottom_rank,
+                row_number() OVER (ORDER BY latest.like_count DESC NULLS LAST, v.id ASC) AS likes_top_rank,
+                row_number() OVER (ORDER BY latest.like_count ASC NULLS LAST, v.id ASC) AS likes_bottom_rank,
+                row_number() OVER (ORDER BY latest.comment_count DESC NULLS LAST, v.id ASC) AS comments_top_rank,
+                row_number() OVER (ORDER BY latest.comment_count ASC NULLS LAST, v.id ASC) AS comments_bottom_rank
+            FROM videos v
+            JOIN LATERAL (
+                SELECT snapshot_date, view_count, like_count, comment_count
+                FROM stats
+                WHERE video_id = v.id
+                ORDER BY snapshot_date DESC, data_collected_date DESC, id DESC
+                LIMIT 1
+            ) latest ON TRUE
+            {where_clause}
+        )
+        {{ranking_query}}
+        ORDER BY metric, direction, ranking
+    """
+    ranking_queries: list[str] = []
+    ranking_params: list[Any] = []
+    selected_rankings = (
+        list(ranking_columns.values())
+        if metric == "all"
+        else [ranking_columns[(metric, query.analytics_order or "desc")]]
+    )
+    for value_column, rank_column, metric_label, direction in selected_rankings:
+        ranking_queries.append(
+            f"SELECT *, '{metric_label}' AS metric, '{direction}' AS direction, {rank_column} AS ranking "
+            f"FROM ranked WHERE {value_column} IS NOT NULL AND {rank_column} BETWEEN %s AND %s"
+        )
+        ranking_params.extend([rank_start, rank_end])
+    sql = sql.replace("{ranking_query}", "\n        UNION ALL\n        ".join(ranking_queries))
+    with connect_analytics_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(
+                f"SET LOCAL statement_timeout = '{ANALYTICS_STATEMENT_TIMEOUT_MS}ms'"
+            )
+            cursor.execute(sql, [*params, *ranking_params])
+            rows = cursor.fetchall()
+    sources: list[dict[str, Any]] = []
+    population_video_count = int(rows[0][10]) if rows else 0
+    first_published_at = _json_compatible(rows[0][11]) if rows else None
+    last_published_at = _json_compatible(rows[0][12]) if rows else None
+    for row in rows:
+        metric, direction, ranking = str(row[19]), str(row[20]), int(row[21])
+        value_index = {"views": 7, "likes": 8, "comments": 9}[metric]
+        value = _json_compatible(row[value_index])
+        snapshot = {
+            "snapshot_date": _json_compatible(row[6]),
+            "view_count": _json_compatible(row[7]),
+            "like_count": _json_compatible(row[8]),
+            "comment_count": _json_compatible(row[9]),
+        }
+        label = {"views": "vues", "likes": "likes", "comments": "commentaires"}[metric]
+        direction_label = "plus élevées" if direction == "top" else "plus faibles"
+        sources.append(
+            {
+                "chunk_id": int(row[0]),
+                "video_title": str(row[1] or ""),
+                "video_url": str(row[2] or ""),
+                "thumbnail_medium_url": str(row[3] or "").strip() or None,
+                "chunk_index": 0,
+                "persons": [],
+                "bm25_score": None,
+                "video_type": str(row[4] or "") or None,
+                "published_at": _json_compatible(row[5]),
+                "stats": [snapshot],
+                "global_ranking": {"metric": metric, "direction": direction, "rank": ranking, "value": value},
+                "text": (
+                    f"Population analysée : {population_video_count} vidéos. "
+                    f"Première publication : {first_published_at or 'inconnue'}. "
+                    f"Dernière publication : {last_published_at or 'inconnue'}. "
+                    f"Classement global — {label} {direction_label}, rang {ranking}: "
+                    f"{value} ({snapshot['snapshot_date']})."
+                ),
+            }
+        )
+    return sources, {
+        "sql": format_sql_for_trace(sql),
+        "params": [*params, *ranking_params],
+        "population_video_count": population_video_count,
+        "first_published_at": first_published_at,
+        "last_published_at": last_published_at,
+        "ranking_result_count": len(sources),
+        "analytics_metric": metric,
+        "analytics_order": query.analytics_order,
+        "analytics_rank_start": rank_start,
+        "analytics_rank_end": rank_end,
+    }
+
+
+def _analytics_stats_sources(video_ids: list[int]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not video_ids:
+        return [], {"sql": None, "params": [], "video_count": 0, "snapshot_count": 0}
+    sql = """
+        SELECT
+            v.id AS video_id,
+            v.title AS video_title,
+            v.url AS video_url,
+            v.thumbnail_medium_url,
+            v.video_type,
+            v.published_at,
+            s.snapshot_date,
+            s.view_count,
+            s.like_count,
+            s.comment_count
+        FROM videos v
+        LEFT JOIN stats s ON s.video_id = v.id
+        WHERE v.id = ANY(%s)
+        ORDER BY v.id ASC, s.snapshot_date ASC NULLS LAST
+    """
+    with connect_analytics_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(
+                f"SET LOCAL statement_timeout = '{ANALYTICS_STATEMENT_TIMEOUT_MS}ms'"
+            )
+            cursor.execute(sql, [video_ids])
+            rows = cursor.fetchall()
+
+    videos: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        video_id = int(row[0])
+        video = videos.setdefault(
+            video_id,
+            {
+                "chunk_id": video_id,
+                "video_title": str(row[1] or ""),
+                "video_url": str(row[2] or ""),
+                "thumbnail_medium_url": str(row[3] or "").strip() or None,
+                "chunk_index": 0,
+                "persons": [],
+                "bm25_score": None,
+                "video_type": str(row[4] or "") or None,
+                "published_at": _json_compatible(row[5]),
+                "stats": [],
+            },
+        )
+        if row[6] is not None:
+            video["stats"].append(
+                {
+                    "snapshot_date": _json_compatible(row[6]),
+                    "view_count": _json_compatible(row[7]),
+                    "like_count": _json_compatible(row[8]),
+                    "comment_count": _json_compatible(row[9]),
+                }
+            )
+
+    sources = []
+    for video_id in video_ids:
+        video = videos.get(video_id)
+        if video is None:
+            continue
+        snapshots = video["stats"]
+        stats_lines = [
+            "- " + ", ".join(
+                f"{key}: {value}" for key, value in snapshot.items() if value is not None
+            )
+            for snapshot in snapshots
+        ]
+        video["text"] = "Historique complet des statistiques:\n" + (
+            "\n".join(stats_lines) or "- Aucune statistique disponible"
+        )
+        sources.append(video)
+    return sources, {
+        "sql": format_sql_for_trace(sql),
+        "params": [video_ids],
+        "video_count": len(sources),
+        "snapshot_count": sum(len(source["stats"]) for source in sources),
+    }
+
+
+def run_deterministic_analytics(
+    query: ExecutionPlan,
+    *,
+    database_persons: list[str] | None = None,
+    database_companies: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load stats for either an entity-filtered or complete analytics population."""
+    entities = _resolved_analytics_entities(query, database_persons, database_companies)
+    analytics_scope = query.analytics_scope or "specific"
+    trace: dict[str, Any] = {
+        "mode": "analytics",
+        "strategy": f"deterministic_{analytics_scope}_stats",
+        "analytics_scope": analytics_scope,
+        "entities": entities,
+        "entity_lookups": [],
+        "candidate_video_count": 0,
+        "result_count": 0,
+    }
+    videos_by_id: dict[int, dict[str, Any]] = {}
+    if analytics_scope == "global":
+        with trace_operation(
+            "analytics_global_rankings",
+            kind="RETRIEVER",
+            input_value={"published_after": query.published_after, "published_before": query.published_before},
+        ) as global_span:
+            sources, rankings_trace = _global_analytics_ranking_sources(query)
+            global_span.set_output({**rankings_trace, "results": sources})
+        trace["global_rankings"] = rankings_trace
+        trace["candidate_video_count"] = rankings_trace["population_video_count"]
+        trace["result_count"] = len(sources)
+        return sources, trace
+    else:
+        for entity in entities:
+            with trace_operation(
+                "analytics_entity_lookup",
+                kind="RETRIEVER",
+                input_value=entity,
+            ) as entity_span:
+                videos, lookup_trace = _lookup_analytics_entity_videos(entity, query)
+                entity_output = {**entity, "result_count": len(videos), "results": videos}
+                entity_span.set_output(entity_output)
+            trace["entity_lookups"].append({**entity, **lookup_trace, "result_count": len(videos), "results": videos})
+            for video in videos:
+                videos_by_id.setdefault(int(video["video_id"]), video)
+
+    video_ids = list(videos_by_id)
+    trace["candidate_video_count"] = len(video_ids)
+    with trace_operation(
+        "analytics_total_videos",
+        kind="RETRIEVER",
+        input_value={"entity_count": len(entities)},
+    ) as total_videos_span:
+        total_videos_span.set_output(
+            {
+                "candidate_video_count": len(video_ids),
+                "video_ids": video_ids,
+            }
+        )
+    with trace_operation(
+        "analytics_all_video_stats",
+        kind="RETRIEVER",
+        input_value={"video_ids": video_ids},
+    ) as stats_span:
+        sources, stats_trace = _analytics_stats_sources(video_ids)
+        stats_span.set_output({**stats_trace, "results": sources})
+    trace["stats"] = stats_trace
+    trace["result_count"] = len(sources)
     return sources, trace

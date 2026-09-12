@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from interface.backend.config import (
     DEFAULT_EMBEDDING_MODEL,
@@ -58,6 +58,7 @@ class RagRequest(BaseModel):
 
 class PlannerPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _output_rejection_reason: str | None = PrivateAttr(default=None)
 
     route: PlannerRoute = "search"
     sql_sub_intent: SqlSubIntent | None = None
@@ -101,6 +102,11 @@ class PlannerPlan(BaseModel):
     @property
     def title_hint(self) -> str | None:
         return self.title_hints[0] if self.title_hints else None
+
+    @property
+    def output_rejection_reason(self) -> str | None:
+        """Reason the LLM planner output was discarded in favour of a safe plan."""
+        return self._output_rejection_reason
 
 
 class ExecutionPlan(BaseModel):

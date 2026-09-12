@@ -113,6 +113,11 @@ class InterfaceAppTests(unittest.TestCase):
         )
 
         self.assertLess(len(system_prompt), 1800)
+        self.assertTrue(system_prompt.startswith("ÉTAPE 1 — Avant toute reformulation"))
+        self.assertLess(
+            system_prompt.index("`follow_up`"),
+            system_prompt.index("Reformule le dernier message utilisateur"),
+        )
         self.assertIn("dépend de l'historique", system_prompt)
         self.assertIn("changer de sujet", system_prompt)
         self.assertIn("follow_up", system_prompt)

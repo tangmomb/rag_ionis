@@ -671,6 +671,11 @@ button {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.icon-btn[aria-pressed="true"] {
+  color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.14);
+}
+
 .composer {
   position: sticky;
   bottom: 0;

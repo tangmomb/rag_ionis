@@ -191,7 +191,15 @@ def trace_operation(
     kind: str = "CHAIN",
     input_value: Any = None,
     attributes: dict[str, Any] | None = None,
+    root: bool = False,
 ) -> Iterator[TraceOperation]:
+    """Create an OpenInference span.
+
+    ``root`` is reserved for an incoming RAG request.  A streamed request is
+    executed in a worker thread and must never inherit a stale OpenTelemetry
+    context from the server thread (which would append its spans to another
+    user's trace).
+    """
     if not _ENABLED or _TRACER is None:
         yield TraceOperation()
         return
@@ -203,7 +211,18 @@ def trace_operation(
     )
 
     resolved_kind = getattr(OpenInferenceSpanKindValues, kind.upper(), OpenInferenceSpanKindValues.CHAIN)
-    with _TRACER.start_as_current_span(name) as span:
+    span_kwargs: dict[str, Any] = {}
+    if root:
+        # An explicit invalid parent creates a new trace even if an ASGI
+        # middleware or a reused worker left a span in the current context.
+        from opentelemetry import context as otel_context, trace
+
+        span_kwargs["context"] = trace.set_span_in_context(
+            trace.INVALID_SPAN,
+            otel_context.Context(),
+        )
+
+    with _TRACER.start_as_current_span(name, **span_kwargs) as span:
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, resolved_kind.value)
         if input_value is not None:
             span.set_attribute(SpanAttributes.INPUT_VALUE, _json_value(input_value))

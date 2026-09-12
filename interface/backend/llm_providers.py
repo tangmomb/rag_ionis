@@ -302,19 +302,53 @@ def langchain_result_text(result: Any) -> str:
 
 
 def add_llm_usage_attributes(operation: Any, response: Any) -> None:
-    usage = getattr(response, "usage_metadata", None)
-    if not isinstance(usage, dict):
-        metadata = getattr(response, "response_metadata", None)
-        usage = metadata.get("token_usage", {}) if isinstance(metadata, dict) else {}
+    """Record usage from LangChain and provider-native response shapes."""
+    usage = usage_from_response(response)
     operation.set_attribute(
         "llm.token_count.prompt",
-        usage.get("input_tokens", usage.get("prompt_tokens")),
+        usage_value(usage, "input_tokens", "prompt_tokens"),
     )
     operation.set_attribute(
         "llm.token_count.completion",
-        usage.get("output_tokens", usage.get("completion_tokens")),
+        usage_value(usage, "output_tokens", "completion_tokens"),
     )
-    operation.set_attribute("llm.token_count.total", usage.get("total_tokens"))
+    operation.set_attribute("llm.token_count.total", usage_value(usage, "total_tokens"))
+
+
+def usage_from_response(response: Any) -> Any:
+    """Find a usage object without depending on a single provider SDK."""
+    if response is None:
+        return {}
+    for attribute_name in ("usage_metadata", "usage"):
+        usage = getattr(response, attribute_name, None)
+        if usage is not None:
+            return usage
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict) and metadata.get("token_usage") is not None:
+        return metadata["token_usage"]
+    data = getattr(response, "data", None)
+    if data is not None:
+        usage = usage_from_response(data)
+        if usage:
+            return usage
+    if hasattr(response, "model_dump"):
+        try:
+            payload = response.model_dump(mode="json")
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            return payload.get("usage") or payload.get("usage_metadata") or {}
+    if isinstance(response, dict):
+        return response.get("usage") or response.get("usage_metadata") or {}
+    return {}
+
+
+def usage_value(usage: Any, *names: str) -> int | None:
+    for name in names:
+        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        if isinstance(value, int):
+            return value
+    return None
 
 
 def traced_invocation_parameters(options: dict[str, Any]) -> dict[str, Any]:
@@ -480,6 +514,7 @@ def call_mistral(
             stream_started_at = time.perf_counter()
             ttft_recorded = False
             fallback_response: Any | None = None
+            last_stream_event: Any | None = None
             # Streaming bypasses LangChain, so instrument the whole iterator here.
             # Otherwise Phoenix sees only the parent "generation" operation.
             with trace_operation(
@@ -501,6 +536,9 @@ def call_mistral(
                 for attempt in range(max(1, min(max_attempts, 4))):
                     try:
                         for event in client.chat.stream(**stream_options):
+                            # Usage, when provided, is carried by the final event,
+                            # which typically has no text delta.
+                            last_stream_event = event
                             event_payload = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
                             if isinstance(event_payload, dict) and isinstance(event_payload.get("data"), dict):
                                 event_payload = event_payload["data"]
@@ -575,6 +613,10 @@ def call_mistral(
                     operation,
                     "llm.output_messages",
                     [{"role": "assistant", "content": output_text}],
+                )
+                add_llm_usage_attributes(
+                    operation,
+                    fallback_response or last_stream_event,
                 )
                 return LLMResponse(
                     provider="mistral",

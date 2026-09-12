@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
+from pydantic import BaseModel
 
 from interface.backend.answer_evaluation import (
     correction_loop_enabled,
@@ -21,6 +22,7 @@ from interface.backend.database import (
     ConversationNotFoundError,
     connect_database,
     create_conversation,
+    store_message_feedback,
     store_chat_message,
 )
 from interface.backend.config import (
@@ -31,6 +33,7 @@ from interface.backend.config import (
     MAX_TOP_K,
 )
 from interface.backend.conversation_memory import (
+    assign_topic_id,
     remember_conversation_json_turn,
 )
 from interface.backend.generation import (
@@ -67,6 +70,10 @@ class RagResponseState(TypedDict, total=False):
     correction_count: int
     correction_requested: bool
     shadow_evaluation_history: list[dict[str, Any]]
+
+
+class MessageFeedbackRequest(BaseModel):
+    feedback: bool
 
 
 @dataclass
@@ -565,12 +572,19 @@ def _persist_response(
         for source in state.get("carousel_sources", [])
         if (title := str(source.get("video_title") or "").strip())
     ))
+    reformulation = retrieval.get("question_reformulation") or {}
+    topic_assignment = assign_topic_id(
+        payload.conversationId,
+        bool(reformulation.get("follow_up", False)),
+    )
+    topic_id = topic_assignment.get("topic_id")
     with trace_operation(
         "store_message",
         kind="TOOL",
         input_value={
             "conversation_id": payload.conversationId,
             "trace_id": trace_id,
+            "topic_assignment": topic_assignment,
         },
     ) as storage_span:
         conversation_id, message_id = store_chat_message(
@@ -578,7 +592,7 @@ def _persist_response(
             user_message=payload.question,
             answer_message=answer,
             trace_id=trace_id,
-            topic_id=None,
+            topic_id=topic_id,
         )
         with trace_operation(
             "conversation_memory.update",
@@ -588,21 +602,28 @@ def _persist_response(
                 "message_id": message_id,
                 "question": payload.question,
                 "videos_discussed": videos_discussed,
+                "topic_assignment": topic_assignment,
             },
         ) as memory_span:
             memory_update = remember_conversation_json_turn(
                 conversation_id,
                 payload.question,
                 answer,
-                retrieval.get("question_reformulation") or {},
+                reformulation,
                 videos_discussed=videos_discussed,
                 summary_client=answer_client,
                 summary_model=retrieval.get("answer_model") or DEFAULT_GENERATION_MODEL,
             )
+            memory_update["topic_assignment"] = topic_assignment
             memory_span.set_output(memory_update)
         storage_span.set_session_id(conversation_id)
         storage_span.set_output(
-            {"conversation_id": conversation_id, "message_id": message_id, "memory": memory_update}
+            {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "topic_id": topic_id,
+                "memory": memory_update,
+            }
         )
     retrieval["conversation_memory"] = memory_update
     return {
@@ -740,6 +761,7 @@ def run_rag(
     with trace_operation(
         "request",
         kind="CHAIN",
+        root=True,
         input_value={
             "question": payload.question,
             "conversation_id": payload.conversationId,
@@ -802,6 +824,16 @@ def validate_step_models(payload: RagRequest) -> None:
 def rag(payload: RagRequest) -> RagResponse:
     validate_step_models(payload)
     return run_rag(payload)
+
+
+@router.put("/rag/messages/{message_id}/feedback")
+def save_message_feedback(
+    message_id: int,
+    payload: MessageFeedbackRequest,
+) -> dict[str, int | bool]:
+    if not store_message_feedback(message_id, payload.feedback):
+        raise HTTPException(status_code=404, detail="Message assistant introuvable.")
+    return {"message_id": message_id, "feedback": payload.feedback}
 
 
 @router.post("/rag/stream")

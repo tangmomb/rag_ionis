@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG YouTube IONIS-STM</title>
-    <link rel="stylesheet" href="styles.css?v=9" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=10" />
   </head>
   <body>
     <main class="app">
@@ -261,7 +262,7 @@
         `;
       }
 
-      function addMessage(role, content, meta, sources = []) {
+      function addMessage(role, content, meta, sources = [], messageId = null) {
         const article = document.createElement("article");
         article.className = role === "assistant"
           ? "message assistant answer-enter"
@@ -276,16 +277,16 @@
         const videoHtml =
           role === "assistant" ? renderVideoThumbnails(sources) : "";
         const actionsHtml =
-          role === "assistant"
+          role === "assistant" && Number.isInteger(messageId)
             ? `
-              <div class="message-actions" aria-hidden="true">
-                <button type="button" class="icon-btn" aria-label="Like">
+              <div class="message-actions">
+                <button type="button" class="icon-btn" aria-label="J'aime" data-feedback="true">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M14 10V5.5c0-1.4-.8-2.7-2-3.3L8.7 9.1A2 2 0 0 0 8 10.5V19a2 2 0 0 0 2 2h6.2a3 3 0 0 0 2.9-2.3l1.4-6A2 2 0 0 0 18.6 10H14Z" />
                     <path d="M4 10h4v11H4z" />
                   </svg>
                 </button>
-                <button type="button" class="icon-btn" aria-label="Dislike">
+                <button type="button" class="icon-btn" aria-label="Je n'aime pas" data-feedback="false">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M10 14v4.5c0 1.4.8 2.7 2 3.3l3.3-6.9a2 2 0 0 0 .7-1.4V5a2 2 0 0 0-2-2H7.8a3 3 0 0 0-2.9 2.3l-1.4 6A2 2 0 0 0 5.4 14H10Z" />
                     <path d="M20 14h-4V3h4z" />
@@ -302,6 +303,32 @@
             ${actionsHtml}
           </div>
         `;
+
+        if (role === "assistant" && Number.isInteger(messageId)) {
+          const feedbackButtons = article.querySelectorAll("[data-feedback]");
+          feedbackButtons.forEach((button) => {
+            button.addEventListener("click", async () => {
+              const feedback = button.dataset.feedback === "true";
+              feedbackButtons.forEach((item) => (item.disabled = true));
+              try {
+                const response = await fetch(
+                  `${RAG_CONFIG.apiUrl}/messages/${messageId}/feedback`,
+                  {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ feedback }),
+                  },
+                );
+                if (!response.ok) throw new Error("Sauvegarde du feedback impossible.");
+                feedbackButtons.forEach((item) => {
+                  item.setAttribute("aria-pressed", String(item === button));
+                });
+              } catch (_error) {
+                feedbackButtons.forEach((item) => (item.disabled = false));
+              }
+            });
+          });
+        }
 
         messages.appendChild(article);
         article.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -405,6 +432,7 @@
             finalResponse.answer || "Réponse vide.",
             meta,
             finalResponse.sources || [],
+            finalResponse.message_id,
           );
         } catch (error) {
           const message =

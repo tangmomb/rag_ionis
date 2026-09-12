@@ -217,6 +217,7 @@ class AnalyticsSqlTests(unittest.TestCase):
 
         self.assertFalse(verified)
         self.assertEqual(plan.sql_sub_intent, None)
+        self.assertEqual(plan.output_rejection_reason, "analytics_scope_missing")
 
     def test_deterministic_analytics_deduplicates_entity_videos_before_loading_stats(self) -> None:
         query = ExecutionPlan(

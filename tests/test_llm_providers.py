@@ -138,6 +138,36 @@ class LlmProviderTests(unittest.TestCase):
             "Réponse Mistral",
         )
 
+    def test_mistral_usage_info_object_is_exported_to_phoenix(self) -> None:
+        operation = MagicMock()
+        usage = SimpleNamespace(
+            prompt_tokens=12,
+            completion_tokens=4,
+            total_tokens=16,
+        )
+
+        llm_providers.add_llm_usage_attributes(
+            operation,
+            SimpleNamespace(usage=usage),
+        )
+
+        attributes = {
+            item.args[0]: item.args[1]
+            for item in operation.set_attribute.call_args_list
+        }
+        self.assertEqual(attributes["llm.token_count.prompt"], 12)
+        self.assertEqual(attributes["llm.token_count.completion"], 4)
+        self.assertEqual(attributes["llm.token_count.total"], 16)
+
+    def test_usage_from_stream_event_reads_nested_mistral_data(self) -> None:
+        usage = {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}
+
+        extracted = llm_providers.usage_from_response(
+            SimpleNamespace(data=SimpleNamespace(usage=usage))
+        )
+
+        self.assertEqual(extracted, usage)
+
     def test_traced_invocation_parameters_exclude_credentials_and_timeouts(self) -> None:
         parameters = llm_providers.traced_invocation_parameters(
             {

@@ -109,6 +109,18 @@ class DatabaseTests(unittest.TestCase):
             (3, None, "Question", "Réponse corrigée", "trace"),
         )
 
+    def test_store_message_feedback_updates_only_answer_messages(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.rowcount = 1
+        with (
+            patch.object(database, "ensure_chat_schema"),
+            patch.object(database, "connect_database", return_value=connection),
+        ):
+            stored = database.store_message_feedback(9, True)
+
+        self.assertTrue(stored)
+        self.assertEqual(connection.cursor_instance.parameters, (True, 9))
+
 
 if __name__ == "__main__":
     unittest.main()

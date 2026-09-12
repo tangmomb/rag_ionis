@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
-from interface.backend import retrieval
+from interface.backend import retrieval, telemetry
 from interface.backend.telemetry import TraceOperation
 from interface.backend.utilities import format_sql_pretty
 
@@ -18,7 +18,32 @@ class _RecordingSpan:
         self.attributes[name] = value
 
 
+class _RecordingTracer:
+    def __init__(self) -> None:
+        self.context = None
+
+    @contextmanager
+    def start_as_current_span(self, _name: str, **kwargs):
+        self.context = kwargs.get("context")
+        yield _RecordingSpan()
+
+
 class TraceOperationTests(unittest.TestCase):
+    def test_root_trace_drops_the_current_parent_context(self) -> None:
+        """A request cannot become a child of an unrelated request trace."""
+        tracer = _RecordingTracer()
+        with (
+            patch.object(telemetry, "_ENABLED", True),
+            patch.object(telemetry, "_TRACER", tracer),
+        ):
+            with telemetry.trace_operation("request", root=True):
+                pass
+
+        from opentelemetry import trace
+
+        self.assertIsNotNone(tracer.context)
+        self.assertFalse(trace.get_current_span(tracer.context).get_span_context().is_valid)
+
     def test_set_output_text_uses_plain_text_mime_type(self) -> None:
         span = _RecordingSpan()
 

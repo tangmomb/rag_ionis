@@ -233,6 +233,7 @@ def plan(
                 "prompt": planner_prompt,
                 "response_raw": planner_raw,
                 "validated": pydantic_verification,
+                "planner_output_rejected": planner_plan.output_rejection_reason,
                 "policy_correction": policy_correction,
                 "plan": planner_plan.model_dump(),
             }

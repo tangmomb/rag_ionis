@@ -20,19 +20,16 @@ from interface.backend.utilities import normalize_text, safe_json_loads, seriali
 
 PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "description": "Plan de requête : décider route et analytics en premier, puis remplir les paramètres associés et les champs de recherche.",
     "properties": {
         "route": {
             "type": "string",
             "enum": ["direct", "search"],
+            "description": "Première décision : direct pour un message uniquement social, search pour une question documentaire.",
         },
-        "sql_sub_intent": {
-            "anyOf": [
-                {
-                    "type": "string",
-                    "enum": ["analytics"],
-                },
-                {"type": "null"},
-            ],
+        "analytics": {
+            "type": "boolean",
+            "description": "Deuxième décision : false pour le contenu des vidéos ; true uniquement pour les statistiques ou métadonnées des vidéos.",
         },
         "analytics_scope": {
             "anyOf": [
@@ -71,7 +68,7 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "route",
-        "sql_sub_intent",
+        "analytics",
         "analytics_scope",
         "analytics_metric",
         "analytics_order",
@@ -176,16 +173,27 @@ def build_planner_prompt(
     system_prompt_override: str | None = None,
 ) -> tuple[str, str]:
     default_system_prompt = (
-        "Tu planifies la requete d'un assistant RAG sans y repondre. "
-        "Première étape, identifier les personnes ou entreprises mentionnées dans la question. Les stocker dans persons et companies. "
-        "Deuxième étape, identifier les dates de publication mentionnées dans la question. Les stocker dans published_after et published_before sous forme de chaînes ISO 8601 (YYYY-MM-DD). "
-        "Troisième étape, identifier les titres de vidéos mentionnés dans la question. Les stocker dans title_hints. "
-        "Quatrième étape, produire les clés query_text et query_text_bm25. query_text est la question reformulée pour la recherche RAG, c'est elle qui sera calculée pour l'embedding donc attention à son écriture sémantique. query_text_bm25 est la question reformulée pour la recherche BM25, elle doit être plus courte et plus directe, adaptée pour une recherche par mots-clés. "
-        "Cinquième et dernière étape, choisir la stratégie pour répondre à la question via les clés route et sql_sub_intent. route peut être 'direct' ou 'search'. sql_sub_intent peut être 'analytics' ou 'null'. "
-        "route='direct' si la question ou le message est une salutation ou une formule de politesse. route='search' pour toute question documentaire."
-        "sql_sub_intent='analytics' uniquement pour les statistiques, comptages, classements et métadonnées structurées comme la date de publication, la durée, le type de vidéo ou la présence de sous-titres. Si sql_sub_intent='analytics', analytics_scope est obligatoire : 'global' pour une statistique sur l'ensemble de la chaîne ou du corpus ; 'specific' pour une statistique limitée à une vidéo, une personne, une entreprise ou un titre. Pour analytics_scope='global', fournis analytics_metric ('views', 'likes', 'comments' ou 'all'), analytics_rank_start et analytics_rank_end. Pour un classement explicite, analytics_metric cible la mesure, analytics_order vaut 'desc' pour les plus élevés et 'asc' pour les moins élevés ; les deux rangs décrivent la fenêtre demandée, par exemple 10 à 20. Sans classement explicite, utilise analytics_metric='all', analytics_order=null et les rangs 1 à 3. Hors scope global, ces quatre champs doivent être null. Dans tous les autres cas, sql_sub_intent vaut null. "
-        "Toutes les valeurs textuelles doivent être en texte normal, sans Markdown."
-
+        "Tu planifies la requête d'un assistant RAG sans y répondre.\n\n"
+        "1. Première étape : choisir route et analytics.\n"
+        "- route='direct' si la question ou le message est une salutation ou une formule de politesse, sans demande documentaire ; sinon 'search'.\n"
+        "- analytics=false pour le contenu des vidéos : propos, questions, identité, métier, résumé, comparaison. Également false pour 'direct'.\n"
+        "- analytics=true uniquement pour les statistiques des vidéos (vues, likes, commentaires, comptages, classements) ou leurs métadonnées (publication, durée, type, sous-titres).\n"
+        "Une personne, un titre, un filtre de publication ou un chiffre cité dans un entretien ne justifient pas analytics.\n"
+        "Exemples : « Qui est Lou Ann ? », « Quelles questions pose-t-on à Fadila ? » → search/false ; « Combien de vues a sa vidéo ? » → search/true.\n\n"
+        "2. Remplir les paramètres analytics.\n"
+        "- Si analytics=false : tous les champs analytics_* valent null.\n"
+        "- Sinon, analytics_scope='global' pour tout le corpus, 'specific' pour une vidéo, personne, entreprise ou titre.\n"
+        "- Scope specific : analytics_metric, analytics_order, analytics_rank_start et analytics_rank_end valent null.\n"
+        "- Scope global avec classement : analytics_metric='views', 'likes' ou 'comments' ; analytics_order='desc' pour les plus élevés, 'asc' pour les moins élevés ; analytics_rank_start/end délimitent les rangs demandés (top 5 : 1 à 5).\n"
+        "- Scope global sans classement : analytics_metric='all', analytics_order=null, rangs 1 à 3.\n\n"
+        "3. Préparer la recherche sans changer l'intention.\n"
+        "- query_text : question autonome pour la recherche sémantique.\n"
+        "- query_text_bm25 : mots-clés courts et précis.\n\n"
+        "4. Extraire les filtres explicites.\n"
+        "- title_hints : titres de vidéos ; persons et companies : personnes ou entreprises mentionnées.\n"
+        "- published_after/before : dates de publication au format YYYY-MM-DD, jamais les dates évoquées dans l'entretien.\n"
+        "- Valeurs absentes : [] pour les listes, null pour les dates.\n\n"
+        "Retourne les clés du schéma JSON, route et analytics en premier. Utilise true, false et null sans guillemets et du texte normal, sans Markdown."
     )
     system_prompt = (system_prompt_override or "").strip() or default_system_prompt
     return system_prompt, question
@@ -221,6 +229,13 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
     route = str(normalized.get("route") or "").strip()
     sql_sub_intent = str(normalized.get("sql_sub_intent") or "").strip() or None
+    # Adapt the LLM boolean to the execution contract. Older saved plans and
+    # custom prompts may still supply sql_sub_intent.
+    if "analytics" in normalized:
+        analytics = normalized.pop("analytics")
+        if not isinstance(analytics, bool):
+            raise ValueError("analytics doit être un booléen JSON")
+        sql_sub_intent = "analytics" if analytics else None
     if route not in {"direct", "search"}:
         route = "search"
     if route == "direct":
@@ -292,6 +307,7 @@ def run_planner(
             route="search",
             query_text=question,
         )
+        fallback._output_rejection_reason = "empty_llm_output"
         derive_plan_sources(fallback)
         return fallback, raw_prompt, raw_response, False
 
@@ -323,10 +339,15 @@ def run_planner(
         validated = PlannerPlan.model_validate(parsed)
         derive_plan_sources(validated)
         return validated, raw_prompt, raw_response, True
-    except Exception:
+    except Exception as exc:
         fallback = PlannerPlan(
             route="search",
             query_text=question,
+        )
+        fallback._output_rejection_reason = (
+            "analytics_scope_missing"
+            if "analytics_scope manquant ou invalide" in str(exc)
+            else "invalid_llm_plan"
         )
         derive_plan_sources(fallback)
         return fallback, raw_prompt, raw_response, False
@@ -833,13 +854,12 @@ def build_question_reformulation_prompt(
         f"{item['role']}: {item['text']}" for item in history_items
     )
     follow_up_instruction = (
-        "Indique dans `follow_up` s'il dépend de l'historique ou du sujet actif ; il peut aussi changer de sujet. "
-        "Mets `false` quand il ouvre un nouveau sujet. "
-        "Dans `topic`, fournis le libellé court du sujet actif ou du nouveau sujet.\n\n"
+        "ÉTAPE 1 — Avant toute reformulation, décide `follow_up` : `true` si le message dépend de l'historique ou du sujet actif ; "
+        "`false` s'il ouvre un nouveau sujet ; il peut aussi changer de sujet. Indique `topic`, puis reformule.\n\n"
         if include_follow_up
         else ""
     )
-    default_system_prompt = f"""Reformule le dernier message utilisateur en une question autonome, sans y répondre.
+    default_system_prompt = f"""{follow_up_instruction}Reformule le dernier message utilisateur en une question autonome, sans y répondre.
 Le destinataire ne reçoit que `reformulated_question` : il ne voit ni historique, ni mémoire, ni `topic`.
 
 Résous les pronoms, ordinaux et références implicites en nommant les personnes, vidéos, entreprises ou objets concernés. Conserve tous les référents réellement demandés, l'intention et les contraintes. Reprends les noms et titres disponibles ; si le titre manque, identifie la vidéo par la personne ou l'objet connu, sans inventer de titre ni de nom.
@@ -848,7 +868,6 @@ Priorité au dernier échange et à `current_topic`. S'ils ne suffisent pas à i
 
 Exemple : sujet précédent = entretien d'Alice ; sujet courant = métier de Bruno. « laquelle des 2 a le plus de vues ? » devient « Entre la vidéo d'Alice et celle de Bruno, laquelle a le plus de vues ? ». « Laquelle des deux vidéos a le plus de vues ? » n'est pas autonome.
 
-{follow_up_instruction}
 Si le message est déjà autonome, conserve-le. `reformulated_question` doit être concis, en texte normal, sans Markdown. L'autonomie prime sur la concision.
 
 Test obligatoire : sans accès à la conversation, le destinataire peut-il identifier chaque objet de la demande et comprendre la demande ? Sinon, complète la question avec les référents disponibles."""

@@ -157,7 +157,8 @@ def ensure_chat_schema() -> None:
                         topic_id BIGINT,
                         user_message TEXT NOT NULL,
                         answer_message TEXT,
-                        trace_id TEXT
+                        trace_id TEXT,
+                        feedback BOOLEAN
                     )
                     """
                 )
@@ -169,6 +170,45 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS topic_id BIGINT"
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN"
+                )
+                cursor.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        feedback_constraint RECORD;
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'chat'
+                              AND table_name = 'messages'
+                              AND column_name = 'feedback'
+                              AND data_type <> 'boolean'
+                        ) THEN
+                            FOR feedback_constraint IN
+                                SELECT conname
+                                FROM pg_constraint
+                                WHERE conrelid = 'chat.messages'::regclass
+                                  AND contype = 'c'
+                                  AND pg_get_constraintdef(oid) LIKE '%feedback%'
+                            LOOP
+                                EXECUTE format(
+                                    'ALTER TABLE chat.messages DROP CONSTRAINT %I',
+                                    feedback_constraint.conname
+                                );
+                            END LOOP;
+                            EXECUTE '
+                                ALTER TABLE chat.messages
+                                ALTER COLUMN feedback TYPE BOOLEAN
+                                USING feedback::text::boolean
+                            ';
+                        END IF;
+                    END
+                    $$
+                    """
                 )
                 cursor.execute(
                     """
@@ -187,7 +227,8 @@ def ensure_chat_schema() -> None:
                                   'topic_id',
                                   'user_message',
                                   'answer_message',
-                                  'trace_id'
+                                  'trace_id',
+                                  'feedback'
                               )
                         LOOP
                             EXECUTE format(
@@ -361,3 +402,21 @@ def store_chat_message(
             message_id = int(cursor.fetchone()[0])
         connection.commit()
     return resolved_conversation_id, message_id
+
+
+def store_message_feedback(message_id: int, feedback: bool) -> bool:
+    """Store a user's thumbs-up (true) or thumbs-down (false) for an answer."""
+    ensure_chat_schema()
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE chat.messages
+                SET feedback = %s
+                WHERE id = %s AND answer_message IS NOT NULL
+                """,
+                (feedback, message_id),
+            )
+            updated = cursor.rowcount == 1
+        connection.commit()
+    return updated

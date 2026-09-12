@@ -33,9 +33,45 @@ class _Client:
 
 class RagModelSelectionTests(unittest.TestCase):
     def test_planner_llm_can_only_request_analytics_sql(self) -> None:
-        choices = planner.PLANNER_RESPONSE_SCHEMA["properties"]["sql_sub_intent"]["anyOf"][0]["enum"]
+        properties = planner.PLANNER_RESPONSE_SCHEMA["properties"]
+        self.assertEqual(properties["analytics"]["type"], "boolean")
+        self.assertNotIn("sql_sub_intent", properties)
 
-        self.assertEqual(choices, ["analytics"])
+    def test_planner_boolean_preserves_entities_and_execution_intent(self) -> None:
+        for analytics, scope, expected in ((False, None, None), (True, "specific", "analytics")):
+            with self.subTest(analytics=analytics):
+                client = _Client({
+                    "route": "search", "analytics": analytics,
+                    "analytics_scope": scope, "query_text": "Fadila",
+                    "query_text_bm25": "Fadila", "persons": ["Fadila"],
+                })
+                plan, _, _, verified = planner.run_planner("Fadila", client)
+                self.assertTrue(verified)
+                self.assertEqual(plan.sql_sub_intent, expected)
+                self.assertEqual(plan.persons, ["Fadila"])
+                self.assertEqual(plan.query_text_bm25, "Fadila")
+
+    def test_planner_rejects_non_boolean_analytics(self) -> None:
+        for value in ("false", "true", 0, 1, None):
+            with self.subTest(value=value):
+                client = _Client({"route": "search", "analytics": value, "query_text": "Fadila"})
+                plan, _, _, verified = planner.run_planner("Fadila", client)
+                self.assertFalse(verified)
+                self.assertIsNone(plan.sql_sub_intent)
+
+    def test_planner_boolean_takes_precedence_over_legacy_intent(self) -> None:
+        normalized = planner.normalize_planner_output({
+            "route": "search", "analytics": False,
+            "sql_sub_intent": "analytics", "analytics_scope": "global",
+        })
+        self.assertIsNone(normalized["sql_sub_intent"])
+        self.assertIsNone(normalized["analytics_scope"])
+
+    def test_planner_boolean_requires_analytics_scope(self) -> None:
+        client = _Client({"route": "search", "analytics": True, "query_text": "Vues"})
+        plan, _, _, verified = planner.run_planner("Vues", client)
+        self.assertFalse(verified)
+        self.assertEqual(plan.output_rejection_reason, "analytics_scope_missing")
 
     def test_orchestration_graph_exposes_existing_planning_and_retrieval_routes(self) -> None:
         graph = orchestration_graph.RAG_ORCHESTRATION_GRAPH.get_graph()

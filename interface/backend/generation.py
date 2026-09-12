@@ -36,8 +36,9 @@ ANSWER_ACTION_INSTRUCTION = (
     "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
     "abstain si la demande est ambiguë ou que les éléments fournis ne permettent pas "
     "d'y répondre fidèlement. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
-    "une requête de recherche courte, autonome et plus précise qui pourrait permettre de "
-    "répondre. Le champ `answer` contient uniquement le message final à afficher et "
+    "une question de recherche courte, autonome et plus précise qui pourrait permettre de "
+    "répondre. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
+    "Le champ `answer` contient uniquement le message final à afficher et "
     "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )
 
@@ -150,23 +151,44 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
     if action not in {"answer", "abstain"}:
         action = fallback_action
     if trace is not None:
-        trace["action"] = action
         raw_source_indexes = payload.get("source_indexes")
-        trace["source_indexes"] = list(
+        source_indexes = list(
             dict.fromkeys(
                 index
                 for index in raw_source_indexes
                 if isinstance(index, int) and not isinstance(index, bool) and index >= 1
             )
         ) if isinstance(raw_source_indexes, list) else []
+        trace["source_indexes"] = source_indexes
         raw_retry_query = payload.get("retry_query")
-        trace["retry_query"] = (
+        retry_query = (
             raw_retry_query.strip()
+            if isinstance(raw_retry_query, str)
+            else ""
+        )
+        retry_query = (
+            retry_query
             if action == "abstain"
-            and isinstance(raw_retry_query, str)
-            and raw_retry_query.strip()
+            and retry_query
+            and not re.match(
+                r"^(?:select|with|insert|update|delete|alter|drop|create|merge)\b",
+                retry_query,
+                flags=re.IGNORECASE,
+            )
             else None
         )
+        if action == "abstain" and source_indexes:
+            trace["action"] = "answer"
+            trace["retry_query"] = None
+            trace["action_normalization"] = {
+                "reason": "abstain_with_cited_sources",
+                "from_action": "abstain",
+                "to_action": "answer",
+                "source_indexes": source_indexes,
+            }
+        else:
+            trace["action"] = action
+            trace["retry_query"] = retry_query
     answer = str(payload.get("answer") or "").strip()
     return answer or raw_answer
 
@@ -260,12 +282,16 @@ def format_global_analytics_context(sources: list[dict[str, Any]]) -> str | None
     return "\n\n".join(sections)
 
 
-def format_answer_sources(sources: list[dict[str, Any]]) -> str:
+def format_answer_sources(
+    sources: list[dict[str, Any]],
+    *,
+    sql_sub_intent: str | None = None,
+) -> str:
     """Use a compact semantic layout for global analytics, otherwise source cards."""
     global_context = format_global_analytics_context(sources)
     if global_context is not None:
         return "Données analytiques globales de la chaîne en question :\n\n" + global_context
-    return "\n\n".join(
+    source_cards = "\n\n".join(
         "\n".join(
             [
                 f"Source {index} :",
@@ -275,6 +301,15 @@ def format_answer_sources(sources: list[dict[str, Any]]) -> str:
             ]
         )
         for index, source in enumerate(sources, start=1)
+    )
+    if not source_cards:
+        return ""
+    if sql_sub_intent != "analytics":
+        return source_cards
+    return (
+        "Résultats SQL vérifiés : les lignes ci-dessous sont les données retournées "
+        "par la base et peuvent suffire à répondre directement à la question.\n\n"
+        + source_cards
     )
 
 
@@ -435,7 +470,13 @@ def generate_sql_answer(
                 "role": "user",
                 "content": (
                     f"Question: {question}\n\nSources pour répondre :\n\n"
-                    + (format_answer_sources(sources) or "Aucun résultat SQL exploitable.")
+                    + (
+                        format_answer_sources(
+                            sources,
+                            sql_sub_intent=sql_sub_intent,
+                        )
+                        or "Aucun résultat SQL exploitable."
+                    )
                 ),
             },
         ]

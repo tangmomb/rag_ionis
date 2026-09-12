@@ -14,7 +14,6 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel
 
 from interface.backend.answer_evaluation import (
-    correction_loop_enabled,
     evaluate_answer_shadow,
     shadow_evaluation_enabled,
     shadow_evaluation_model,
@@ -175,6 +174,19 @@ def _generate_response(
             retrieval.get("answer_prompt_override") or payload.answerPrompt,
             stream_callback=context.stream_callback,
         )
+        normalization = answer_trace.get("action_normalization")
+        if isinstance(normalization, dict):
+            with trace_operation(
+                "normalize_abstain_with_sources",
+                kind="CHAIN",
+                input_value=normalization,
+            ) as normalization_span:
+                normalization_span.set_output(
+                    {
+                        "answer": answer,
+                        "action": answer_trace.get("action"),
+                    }
+                )
         generation_span.set_output(
             {
                 "answer": answer,
@@ -287,12 +299,8 @@ def _evaluate_response(
     if context.shadow_evaluation_sink is not None:
         context.shadow_evaluation_sink.clear()
         context.shadow_evaluation_sink.update(checkpoint_evaluation)
-    correction_enabled = context.correction_loop_enabled_override
-    if correction_enabled is None:
-        correction_enabled = correction_loop_enabled()
     correction_requested = bool(
-        correction_enabled
-        and state["answer_trace"].get("action") == "abstain"
+        state["answer_trace"].get("action") == "abstain"
         and state.get("correction_count", 0) < 1
         and route != "direct"
     )

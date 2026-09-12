@@ -186,7 +186,6 @@ class RagResponseGraphTests(unittest.TestCase):
             context=api.RagResponseContext(
                 answer_client=object(),
                 shadow_evaluation_enabled_override=False,
-                correction_loop_enabled_override=True,
             )
         )
         first = api._evaluate_response(state, runtime)
@@ -201,6 +200,29 @@ class RagResponseGraphTests(unittest.TestCase):
             api._post_evaluation_route({**state, **first}), "expand_retrieval"
         )
         self.assertEqual(api._post_evaluation_route(second), "finalize")
+
+    def test_generation_abstention_always_requests_one_correction(self) -> None:
+        state = {
+            "payload": RagRequest(question="Question").model_dump(),
+            "answer": "Réponse initiale",
+            "sources": [_source()],
+            "retrieval": {"route": "sql_search", "answer_model": "answer-model"},
+            "answer_trace": {"action": "abstain"},
+            "correction_count": 0,
+        }
+
+        result = api._evaluate_response(
+            state,
+            Runtime(
+                context=api.RagResponseContext(
+                    answer_client=object(),
+                    shadow_evaluation_enabled_override=False,
+                    correction_loop_enabled_override=False,
+                )
+            ),
+        )
+
+        self.assertTrue(result["correction_requested"])
 
     def test_correction_route_depends_on_evaluation_issue(self) -> None:
         base_state = {"correction_requested": True}
@@ -669,6 +691,39 @@ class AnswerActionTests(unittest.TestCase):
         self.assertIn(
             "Aucune source exploitable",
             client.responses.calls[0]["input"][1]["content"],
+        )
+
+    def test_sql_retry_query_is_discarded(self) -> None:
+        trace: dict[str, object] = {}
+
+        parse_answer_output(
+            ('{"answer":"Je ne peux pas répondre.","action":"abstain",'
+             '"source_indexes":[],"retry_query":"SELECT * FROM videos"}'),
+            trace,
+        )
+
+        self.assertIsNone(trace["retry_query"])
+
+    def test_abstention_with_cited_sources_is_normalized_to_answer(self) -> None:
+        trace: dict[str, object] = {}
+
+        parse_answer_output(
+            ('{"answer":"La vidéo est disponible.","action":"abstain",'
+             '"source_indexes":[1],"retry_query":"retrouver la vidéo"}'),
+            trace,
+        )
+
+        self.assertEqual(trace["action"], "answer")
+        self.assertEqual(trace["source_indexes"], [1])
+        self.assertIsNone(trace["retry_query"])
+        self.assertEqual(
+            trace["action_normalization"],
+            {
+                "reason": "abstain_with_cited_sources",
+                "from_action": "abstain",
+                "to_action": "answer",
+                "source_indexes": [1],
+            },
         )
 
     def test_ambiguous_person_candidates_are_given_to_the_answer_model(self) -> None:

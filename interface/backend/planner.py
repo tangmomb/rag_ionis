@@ -867,9 +867,11 @@ def build_question_reformulation_prompt(
     default_system_prompt = f"""{follow_up_instruction}Reformule le dernier message utilisateur en une question autonome, sans y répondre.
 Le destinataire ne reçoit que `reformulated_question` : il ne voit ni historique, ni mémoire, ni `topic`.
 
-Résous les pronoms, ordinaux et références implicites en nommant les personnes, vidéos, entreprises ou objets concernés. Conserve tous les référents réellement demandés, l'intention et les contraintes. Reprends les noms et titres disponibles ; si le titre manque, identifie la vidéo par la personne ou l'objet connu, sans inventer de titre ni de nom.
+Résous pronoms, ordinaux et références implicites. Conserve tous les référents réellement demandés, l'intention et les contraintes, sans inventer de titre ni de nom.
 
-Priorité au dernier échange et à `current_topic`. S'ils ne suffisent pas à identifier TOUS les référents, consulte aussi `previous_topics` et leurs résumés. Une comparaison peut relier plusieurs sujets : ne te limite pas au sujet courant. N'ajoute aucun sujet ancien sans lien avec la demande. Si le contexte ne permet pas de résoudre une référence, conserve cette incertitude sans inventer.
+« La chaîne » désigne toujours la chaîne interrogée : ne la rattache jamais à une personne, entreprise ou autre entité.
+
+Priorité au dernier échange et à `current_topic`. Si nécessaire, consulte aussi `previous_topics` et leurs résumés. N'ajoute aucun sujet ancien sans lien ; conserve l'incertitude sans inventer.
 
 Exemple : sujet précédent = entretien d'Alice ; sujet courant = métier de Bruno. « laquelle des 2 a le plus de vues ? » devient « Entre la vidéo d'Alice et celle de Bruno, laquelle a le plus de vues ? ». « Laquelle des deux vidéos a le plus de vues ? » n'est pas autonome.
 

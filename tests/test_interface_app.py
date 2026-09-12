@@ -114,6 +114,7 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertLess(len(system_prompt), 1800)
         self.assertTrue(system_prompt.startswith("ÉTAPE 1 — Avant toute reformulation"))
+        self.assertIn("ne la rattache jamais", system_prompt)
         self.assertLess(
             system_prompt.index("`follow_up`"),
             system_prompt.index("Reformule le dernier message utilisateur"),
@@ -825,8 +826,31 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertNotIn("Sous-route SQL", messages[1]["content"])
         self.assertNotIn("sql_sub_intent", messages[1]["content"])
         self.assertIn("Sources pour répondre :", messages[1]["content"])
+        self.assertIn("Résultats SQL vérifiés", messages[1]["content"])
         self.assertIn("Source 1 :", messages[1]["content"])
         self.assertNotIn("Resultat 1", messages[1]["content"])
+
+    def test_only_analytics_sql_sources_get_the_verified_results_intro(self) -> None:
+        sources = [
+            {
+                "video_title": "Vidéo test",
+                "video_url": "https://example.test/video",
+                "text": "Donnée SQL",
+            }
+        ]
+
+        analytics_context = generation.format_answer_sources(
+            sources,
+            sql_sub_intent="analytics",
+        )
+        description_context = generation.format_answer_sources(
+            sources,
+            sql_sub_intent="description",
+        )
+
+        self.assertIn("Résultats SQL vérifiés", analytics_context)
+        self.assertNotIn("Résultats SQL vérifiés", description_context)
+        self.assertIn("Source 1 :", description_context)
 
     def test_answer_prompts_do_not_require_question_reformulation(self) -> None:
         prompts = [

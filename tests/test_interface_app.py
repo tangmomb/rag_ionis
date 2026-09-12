@@ -790,6 +790,12 @@ class InterfaceAppTests(unittest.TestCase):
 
         self.assertEqual(len(set(prompts.values())), len(prompts))
 
+    def test_analytics_prompt_requires_stat_dates(self) -> None:
+        prompt = generation.build_sql_sub_intent_prompt("analytics")
+
+        self.assertIn("toujours la date", prompt)
+        self.assertIn("snapshot", prompt)
+
     def test_sql_sub_intent_name_is_not_exposed_in_final_user_prompt(self) -> None:
         calls: list[dict] = []
 

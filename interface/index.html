@@ -140,6 +140,9 @@
         submitButton.disabled = locked;
         question.placeholder = placeholder;
         suggestedQuestionButtons.forEach((button) => (button.disabled = locked));
+        if (!locked) {
+          requestAnimationFrame(() => question.focus());
+        }
       }
 
       async function loadHeaderThumbnails() {
@@ -491,6 +494,8 @@
           sendQuestion(text);
         });
       });
+
+      question.focus();
     </script>
   </body>
 </html>

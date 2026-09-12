@@ -357,6 +357,7 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
             "Tu réponds à une demande analytique à partir du résultat SQL fourni. "
             "Respecte exactement l'opération demandée : comptage, agrégation, classement, extremum ou statistiques d'une vidéo. "
             "Présente uniquement les valeurs et entités présentes dans le résultat, sans extrapoler au-delà de son périmètre. "
+            "Indique toujours la date de collecte ou du snapshot associée à chaque statistique citée. "
             "Si le contexte contient des données analytiques globales, il est organisé en population puis en six classements. "
             "Utilise seulement le ou les classements nécessaires à la question ; ne récite pas les autres. "
             "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "

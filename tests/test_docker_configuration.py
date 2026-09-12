@@ -18,7 +18,8 @@ PUBLISH_SCRIPT_PATH = ROOT_DIR / "deploy" / "publish-scaleway-image.sh"
 SHARED_PUBLISH_SCRIPT_PATH = ROOT_DIR / "deploy" / "publish-image.sh"
 VPS_DEPLOY_SCRIPT_PATH = ROOT_DIR / "deploy" / "deploy-vps.sh"
 SCALEWAY_DEPLOY_SCRIPT_PATH = ROOT_DIR / "deploy" / "deploy-scaleway-worker.sh"
-RELEASE_WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "release-images.yml"
+VPS_WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "deploy-vps.yml"
+SCALEWAY_WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "deploy-scaleway.yml"
 WORKER_ENV_EXAMPLE_PATH = ROOT_DIR / "deploy" / "scaleway-worker.env.example"
 ANALYTICS_SQL_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "002_analytics_readonly.sql"
 
@@ -108,18 +109,20 @@ class DockerConfigurationTests(unittest.TestCase):
         self.assertIn("rolling back", scaleway_deploy)
         self.assertIn("Waiting for the current GPU worker", scaleway_deploy)
 
-    def test_release_workflow_builds_selectively_with_registry_cache(self) -> None:
-        workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+    def test_deployment_workflows_are_separated_with_registry_cache(self) -> None:
+        vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+        scaleway_workflow = SCALEWAY_WORKFLOW_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("Select affected images", workflow)
-        self.assertIn("pull_request:", workflow)
-        self.assertIn("docker/build-push-action@v7", workflow)
-        self.assertIn("cache-from: type=registry", workflow)
-        self.assertIn("cache-to: type=registry", workflow)
-        self.assertIn("validate:", workflow)
-        self.assertIn("actionlint@sha256:", workflow)
-        self.assertIn("deploy-vps:", workflow)
-        self.assertIn("deploy-scaleway:", workflow)
+        self.assertIn("Select affected images", vps_workflow)
+        self.assertIn("pull_request:", vps_workflow)
+        self.assertIn("deploy-vps:", vps_workflow)
+        self.assertIn("actionlint@sha256:", vps_workflow)
+        self.assertIn("docker/build-push-action@v7", vps_workflow)
+        self.assertIn("cache-from: type=registry", vps_workflow)
+        self.assertIn("name: Deploy Scaleway GPU worker", scaleway_workflow)
+        self.assertIn("Dockerfile.scaleway", scaleway_workflow)
+        self.assertIn("deploy-scaleway-worker.sh", scaleway_workflow)
+        self.assertIn("cache-to: type=registry", scaleway_workflow)
 
     def test_gpu_requirements_do_not_include_api_or_database_stack(self) -> None:
         requirements = GPU_REQUIREMENTS_PATH.read_text(encoding="utf-8")

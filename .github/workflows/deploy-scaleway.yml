@@ -1,4 +1,4 @@
-name: Deploy Scaleway GPU worker
+name: Publish Scaleway GPU image
 
 on:
   push:
@@ -11,7 +11,6 @@ on:
       - "requirements-ytdlp.txt"
       - "models/frame_filter_2026-07-02_21-30-31.joblib"
       - "pipeline/**"
-      - "deploy/deploy-scaleway-worker.sh"
       - ".github/workflows/deploy-scaleway.yml"
   workflow_dispatch:
 
@@ -61,75 +60,3 @@ jobs:
             ${{ vars.SCW_REGISTRY_NAMESPACE }}/rag-ionis-scaleway:latest
           cache-from: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/rag-ionis-scaleway:buildcache
           cache-to: type=registry,ref=${{ vars.SCW_REGISTRY_NAMESPACE }}/rag-ionis-scaleway:buildcache,mode=min
-
-  deploy:
-    needs: build
-    if: vars.ENABLE_SCALEWAY_DEPLOY == 'true'
-    runs-on: ubuntu-latest
-    environment: production-scaleway
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v5
-      - name: Start the GPU instance when needed
-        id: instance
-        shell: bash
-        env:
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCALEWAY_ZONE: ${{ vars.SCALEWAY_ZONE }}
-          SCALEWAY_SERVER_ID: ${{ secrets.SCALEWAY_SERVER_ID }}
-        run: |
-          set -euo pipefail
-          zone="${SCALEWAY_ZONE:-fr-par-2}"
-          url="https://api.scaleway.com/instance/v1/zones/${zone}/servers/${SCALEWAY_SERVER_ID}"
-          auth=(-H "X-Auth-Token: ${SCW_SECRET_KEY}" -H 'Content-Type: application/json')
-          state="$(curl -fsS "${auth[@]}" "${url}" | jq -r '.server.state // .state // .server.status // .status')"
-          started=false
-          if [[ "${state}" == "stopped" || "${state}" == "paused" ]]; then
-            curl -fsS -X POST "${auth[@]}" --data '{"action":"poweron"}' "${url}/action" >/dev/null
-            started=true
-          fi
-          printf 'started_by_ci=%s\n' "${started}" >>"${GITHUB_OUTPUT}"
-          for _ in {1..90}; do
-            state="$(curl -fsS "${auth[@]}" "${url}" | jq -r '.server.state // .state // .server.status // .status')"
-            [[ "${state}" == "running" ]] && exit 0
-            sleep 10
-          done
-          echo "GPU instance did not start (last state: ${state})" >&2; exit 1
-      - name: Deploy worker image
-        shell: bash
-        env:
-          SCALEWAY_HOST: ${{ secrets.SCALEWAY_HOST }}
-          SCALEWAY_USER: ${{ secrets.SCALEWAY_USER }}
-          REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
-          IMAGE_TAG: ${{ github.sha }}
-          STARTED_BY_CI: ${{ steps.instance.outputs.started_by_ci }}
-          SSH_PRIVATE_KEY: ${{ secrets.SCALEWAY_SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SCALEWAY_SSH_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-          install -d -m 0700 ~/.ssh
-          printf '%s\n' "${SSH_PRIVATE_KEY}" >~/.ssh/id_ed25519
-          printf '%s\n' "${SSH_KNOWN_HOSTS}" >~/.ssh/known_hosts
-          chmod 0600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-          remote="${SCALEWAY_USER}@${SCALEWAY_HOST}"
-          for _ in {1..60}; do ssh -o BatchMode=yes -o ConnectTimeout=5 "${remote}" true && break; sleep 10; done
-          scp deploy/deploy-scaleway-worker.sh "${remote}:/tmp/deploy-scaleway-worker.sh"
-          start_worker=1; [[ "${STARTED_BY_CI}" == "true" ]] && start_worker=0
-          ssh "${remote}" bash -s -- "${start_worker}" "${REGISTRY_NAMESPACE}/rag-ionis-scaleway:${IMAGE_TAG}" <<'REMOTE'
-          set -euo pipefail
-          sudo install -m 0755 /tmp/deploy-scaleway-worker.sh /usr/local/bin/deploy-scaleway-worker.sh
-          sudo env SCALEWAY_DEPLOY_START_WORKER="$1" /usr/local/bin/deploy-scaleway-worker.sh "$2"
-          REMOTE
-      - name: Stop the CI-started GPU instance
-        if: always() && steps.instance.outputs.started_by_ci == 'true'
-        shell: bash
-        env:
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCALEWAY_ZONE: ${{ vars.SCALEWAY_ZONE }}
-          SCALEWAY_SERVER_ID: ${{ secrets.SCALEWAY_SERVER_ID }}
-        run: |
-          set -euo pipefail
-          zone="${SCALEWAY_ZONE:-fr-par-2}"
-          url="https://api.scaleway.com/instance/v1/zones/${zone}/servers/${SCALEWAY_SERVER_ID}"
-          curl -fsS -X POST -H "X-Auth-Token: ${SCW_SECRET_KEY}" -H 'Content-Type: application/json' \
-            --data '{"action":"poweroff"}' "${url}/action" >/dev/null

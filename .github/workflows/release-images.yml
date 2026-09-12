@@ -20,7 +20,10 @@ on:
       - "models/frame_filter_2026-07-02_21-30-31.joblib"
       - "docker-compose.yml"
       - "docker-compose.prod.yml"
+      - "Caddyfile"
+      - "docker/postgres/init/**"
       - "deploy/deploy-vps.sh"
+      - "deploy/sync-vps-config.sh"
       - "deploy/deploy-scaleway-worker.sh"
       - "deploy/publish-image.sh"
       - "deploy/publish-images.sh"
@@ -116,7 +119,7 @@ jobs:
                 pipeline/*)
                   updater=true; scaleway=true
                   ;;
-                docker-compose.yml|docker-compose.prod.yml|deploy/deploy-vps.sh)
+                docker-compose.yml|docker-compose.prod.yml|Caddyfile|docker/postgres/init/*|deploy/deploy-vps.sh)
                   vps_config=true
                   ;;
               esac
@@ -281,16 +284,21 @@ jobs:
         run: |
           set -euo pipefail
           deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
-          [[ "${deploy_path}" =~ ^[A-Za-z0-9_./-]+$ ]] || { echo 'Invalid VPS_DEPLOY_PATH' >&2; exit 2; }
+          [[ "${deploy_path}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'VPS_DEPLOY_PATH must be a simple directory name' >&2; exit 2; }
           test -n "${VPS_HOST}" || { echo 'Missing VPS_HOST' >&2; exit 1; }
           test -n "${VPS_USER}" || { echo 'Missing VPS_USER' >&2; exit 1; }
           remote="${VPS_USER}@${VPS_HOST}"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
           set -euo pipefail
-          mkdir -p "$1/deploy"
+          mkdir -p "$1/deploy" "$1/docker/postgres"
           REMOTE
-          scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
-          scp deploy/deploy-vps.sh "${remote}:${deploy_path}/deploy/"
+          scp Caddyfile docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
+          scp deploy/deploy-vps.sh deploy/sync-vps-config.sh "${remote}:${deploy_path}/deploy/"
+          scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
+          ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
+          set -euo pipefail
+          bash "$HOME/$1/deploy/sync-vps-config.sh" "$1"
+          REMOTE
 
       - name: Deploy affected VPS services
         shell: bash

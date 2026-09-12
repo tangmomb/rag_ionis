@@ -429,7 +429,7 @@ class RagResponseGraphTests(unittest.TestCase):
                 side_effect=lambda answer, sources, _indexes: (answer, sources),
             ),
             patch.object(api, "store_chat_message", return_value=(3, 9)),
-            patch.object(api, "remember_conversation_turn", return_value={}),
+            patch.object(api, "remember_conversation_json_turn", return_value={}),
             patch.object(api, "current_trace_id", return_value="trace-1"),
             patch.object(api, "telemetry_status", return_value={"project": "test"}),
         ):

@@ -1,111 +1,15 @@
-"""Persistent, topic-aware memory for chat reformulation.
-
-The memory is deliberately separate from the RAG corpus. It keeps raw exchanges
-in ``chat.messages`` and one compact text summary per topic.
-"""
+"""JSON-backed conversation memory for chat reformulation."""
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
-from interface.backend.config import (
-    DEFAULT_EMBEDDING_DIMENSIONS,
-    DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_GENERATION_MODEL,
-)
-from interface.backend.database import connect_database, ensure_chat_schema, fetch_conversation_history
-from interface.backend.telemetry import trace_operation
-from interface.backend.utilities import get_openai_client, normalize_text
+from interface.backend.config import DEFAULT_GENERATION_MODEL
+from interface.backend.database import connect_database, ensure_chat_schema
 
 
-IMMEDIATE_HISTORY_EXCHANGES = 3
-MEMORY_MESSAGE_LIMIT = 3
-MEMORY_TOKEN_BUDGET_CHARS = 3_600
 MEMORY_SUMMARY_MAX_CHARS = 900
 TOPIC_COMPACTION_THRESHOLD = 10
-TOPIC_MATCH_MAX_COSINE_DISTANCE = 0.35
-_STOPWORDS = {
-    "avec", "dans", "pour", "plus", "moins", "quel", "quelle", "quels", "elles",
-    "elle", "eux", "nous", "vous", "leur", "leurs", "deux", "video", "videos",
-    "vues", "faire", "fait", "sont", "est", "une", "des", "les", "que", "qui",
-}
-
-
-def _tokens(value: str) -> set[str]:
-    return {
-        token for token in re.findall(r"[a-z0-9]+", normalize_text(value))
-        if len(token) >= 3 and token not in _STOPWORDS
-    }
-
-
-def _entities(value: str) -> set[str]:
-    """Extract display entities conservatively; the answer supplies canonical names."""
-    entities = set()
-    for match in re.finditer(r"\b(?:[A-ZÉÈÀÂÎÔÛÇ][\w'’.-]+(?:\s+|$)){1,4}", value):
-        candidate = " ".join(match.group(0).split()).strip(" .,:;!?()")
-        if len(candidate) >= 3 and candidate.lower() not in {"la", "le", "les", "une"}:
-            entities.add(candidate)
-    return entities
-
-
-def extract_memory_signals(*values: str) -> tuple[list[str], list[str]]:
-    text = "\n".join(value or "" for value in values)
-    return sorted(_entities(text)), sorted(_tokens(text))[:48]
-
-
-def _embedding(
-    text: str,
-    *,
-    purpose: str = "topic_summary",
-    span_name: str = "conversation_memory.embedding",
-) -> list[float] | None:
-    """Embed memory text and expose the outcome without recording its vector."""
-    client = get_openai_client()
-    with trace_operation(
-        span_name,
-        kind="EMBEDDING",
-        input_value={
-            "purpose": purpose,
-            "model": DEFAULT_EMBEDDING_MODEL,
-            "dimensions": DEFAULT_EMBEDDING_DIMENSIONS,
-            "text_length": len(text.strip()),
-        },
-    ) as embedding_span:
-        if client is None:
-            embedding_span.set_output(
-                {"status": "skipped", "reason": "openai_client_unavailable"}
-            )
-            return None
-        if not text.strip():
-            embedding_span.set_output({"status": "skipped", "reason": "empty_text"})
-            return None
-        try:
-            response = client.embeddings.create(
-                model=DEFAULT_EMBEDDING_MODEL,
-                dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
-                input=text[:12_000],
-            )
-            embedding = list(response.data[0].embedding)
-            embedding_span.set_output(
-                {
-                    "status": "completed",
-                    "model": DEFAULT_EMBEDDING_MODEL,
-                    "dimensions": len(embedding),
-                }
-            )
-            return embedding
-        except Exception as exc:
-            embedding_span.set_output(
-                {"status": "failed", "error_type": type(exc).__name__}
-            )
-            return None
-
-
-def _vector_literal(values: list[float] | None) -> str | None:
-    if not values:
-        return None
-    return "[" + ",".join(str(value) for value in values) + "]"
 
 
 MEMORY_SUMMARY_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -391,309 +295,44 @@ def remember_conversation_json_turn(
         }
 
 
-def summarize_topic_turn(
-    client: Any,
-    model: str,
-    previous_summary: str,
-    question: str,
-    answer: str,
-) -> tuple[str, dict[str, Any]]:
-    """Update one compact topic summary; never let this auxiliary call fail a turn."""
-    fallback = (
-        f"Dernière demande : {question.strip()}\n"
-        f"Dernière réponse : {answer.strip()}"
-    )[:MEMORY_SUMMARY_MAX_CHARS]
-    if client is None:
-        return fallback, {"status": "fallback", "reason": "no_llm_client"}
-    system_prompt = (
-        "Tu mets à jour le résumé texte d'un seul sujet de conversation. "
-        "Conserve uniquement les entités, faits établis, décisions et question en cours "
-        "utiles pour les prochaines relances. Oublie le détail inutile. "
-        f"Réponds avec un résumé concis de moins de {MEMORY_SUMMARY_MAX_CHARS} caractères."
-    )
-    user_prompt = (
-        f"Résumé précédent :\n{previous_summary or '(aucun)'}\n\n"
-        f"Nouveau message utilisateur :\n{question}\n\n"
-        f"Nouvelle réponse assistant :\n{answer}"
-    )
-    try:
-        response = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_schema=MEMORY_SUMMARY_RESPONSE_SCHEMA,
-            max_output_tokens=MEMORY_SUMMARY_MAX_OUTPUT_TOKENS,
-        )
-        raw = str(getattr(response, "output_text", "") or "").strip()
-        parsed = json.loads(raw)
-        summary = str(parsed.get("summary") or "").strip()
-        if not summary:
-            raise ValueError("empty_summary")
-        return summary[:MEMORY_SUMMARY_MAX_CHARS], {
-            "status": "completed",
-            "model": model,
-            "prompt": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_raw": raw,
-        }
-    except Exception as exc:
-        return fallback, {"status": "fallback", "reason": str(exc)}
-
-
-def _topic_score(entities: set[str], keywords: set[str], topic_entities: set[str], topic_keywords: set[str]) -> float:
-    entity_overlap = len({normalize_text(item) for item in entities} & {normalize_text(item) for item in topic_entities})
-    keyword_overlap = len(keywords & topic_keywords)
-    return entity_overlap * 5 + keyword_overlap
-
-
-def assign_topic_id(conversation_id: int | None, follow_up: bool) -> dict[str, Any]:
-    """Reserve the topic immediately after light reformulation.
-
-    A follow-up keeps the latest topic. Any other message inserts a fresh row and
-    lets PostgreSQL's increasing BIGSERIAL id allocate the next topic id.
-    """
-    if conversation_id is None:
-        return {"reason": "no_conversation_id"}
-    try:
-        ensure_chat_schema()
-        with connect_database() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT t.id, t.summary
-                    FROM chat.conversation_topics AS ct
-                    JOIN chat.topics AS t ON t.id = ct.topic_id
-                    WHERE ct.conversation_id = %s
-                    ORDER BY t.id DESC
-                    LIMIT 1
-                    """,
-                    (conversation_id,),
-                )
-                active = cursor.fetchone()
-                if follow_up and active is not None:
-                    return {
-                        "topic_id": int(active[0]),
-                        "decision": "current_topic",
-                        "summary": str(active[1] or ""),
-                    }
-                cursor.execute(
-                    """
-                    INSERT INTO chat.topics (summary)
-                    VALUES ('')
-                    RETURNING id
-                    """,
-                )
-                topic_id = int(cursor.fetchone()[0])
-                cursor.execute(
-                    """
-                    INSERT INTO chat.conversation_topics (conversation_id, topic_id)
-                    VALUES (%s, %s)
-                    """,
-                    (conversation_id, topic_id),
-                )
-            connection.commit()
-        return {
-            "topic_id": topic_id,
-            "decision": "new_topic",
-            "summary": "",
-        }
-    except Exception as exc:
-        return {"reason": str(exc)}
-
-
-def remember_conversation_turn(
-    conversation_id: int,
-    message_id: int,
-    question: str,
-    answer: str,
-    *,
-    summary_client: Any = None,
-    summary_model: str = DEFAULT_GENERATION_MODEL,
-    topic_id: int | None = None,
-) -> dict[str, Any]:
-    """Update the compact summary of the topic assigned before the answer."""
-    try:
-        with connect_database() as connection:
-            with connection.cursor() as cursor:
-                if topic_id is None:
-                    raise RuntimeError("Aucun topic_id attribué pour ce message")
-                cursor.execute(
-                    """
-                    SELECT t.summary
-                    FROM chat.topics AS t
-                    JOIN chat.conversation_topics AS ct ON ct.topic_id = t.id
-                    WHERE t.id = %s AND ct.conversation_id = %s
-                    """,
-                    (topic_id, conversation_id),
-                )
-                selected_topic = cursor.fetchone()
-                if selected_topic is None:
-                    raise RuntimeError(f"Topic introuvable: {topic_id}")
-                previous_summary = str(selected_topic[0] or "")
-
-                summary, summary_trace = summarize_topic_turn(
-                    summary_client,
-                    summary_model,
-                    previous_summary,
-                    question,
-                    answer,
-                )
-                embedding = _embedding(summary)
-                cursor.execute(
-                    """
-                    UPDATE chat.topics
-                    SET summary = %s, embedding = %s::vector, updated_at = now()
-                    WHERE id = %s
-                    """,
-                    (summary, _vector_literal(embedding), topic_id),
-                )
-            connection.commit()
-        return {"available": True, "topic_id": topic_id, "decision": "assigned_topic", "summary": summary, "embedded": embedding is not None, "summary_trace": summary_trace}
-    except Exception as exc:
-        return {"available": False, "reason": str(exc)}
-
-
 def load_reformulation_memory(
     conversation_id: int | None,
-    question: str,
+    _question: str,
     *,
     include_episodes: bool = True,
     embed_question: bool = False,
     exclude_topic_id: int | None = None,
 ) -> dict[str, Any]:
-    """Return recent exchanges, the active topic, and bounded older episodes."""
+    """Expose JSON memory in the legacy reformulation-context shape.
+
+    Topic IDs, embeddings and SQL similarity were retired with the normalized
+    topic tables.  The complete memory JSON is now the only topic context.
+    """
     if conversation_id is None:
         return {"available": False, "reason": "no_conversation_id", "immediate_history": [], "episodes": []}
-    try:
-        immediate_history, history_trace = fetch_conversation_history(
-            conversation_id,
-            limit=IMMEDIATE_HISTORY_EXCHANGES,
-            latest_topic_only=True,
-        )
-    except Exception as exc:
-        return {"available": False, "reason": str(exc), "immediate_history": [], "episodes": []}
-    # This path is used only for a non-follow-up, between the light and final
-    # reformulation calls. It makes the current question comparable to topic
-    # summary embeddings before the second LLM call.
-    question_embedding = (
-        _embedding(
-            question,
-            purpose="topic_match_query",
-            span_name="embedding",
-        )
-        if embed_question
-        else None
+    loaded = load_conversation_memory(conversation_id)
+    if not loaded["available"]:
+        return {"available": False, "reason": loaded.get("reason"), "immediate_history": [], "episodes": []}
+    memory = loaded["memory"]
+    current = memory["current_topic"]
+    immediate_history = [
+        {"role": str(message["role"]), "text": str(message["content"])}
+        for message in current["messages"][-6:]
+    ]
+    episodes = (
+        [
+            {"topic": topic["topic"], "content": topic["summary"]}
+            for topic in memory["previous_topics"]
+        ]
+        if include_episodes
+        else []
     )
-    try:
-        with connect_database() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT t.id, t.summary
-                    FROM chat.conversation_topics AS ct
-                    JOIN chat.topics AS t ON t.id = ct.topic_id
-                    WHERE ct.conversation_id = %s
-                    ORDER BY t.updated_at DESC
-                    LIMIT 1
-                    """,
-                    (conversation_id,),
-                )
-                active = cursor.fetchone()
-                if question_embedding:
-                    with trace_operation(
-                        "topic_similarity_search",
-                        kind="RETRIEVER",
-                        input_value={
-                            "conversation_id": conversation_id,
-                            "excluded_topic_id": exclude_topic_id,
-                            "result_limit": 3,
-                            "match_max_cosine_distance": TOPIC_MATCH_MAX_COSINE_DISTANCE,
-                        },
-                    ) as similarity_span:
-                        cursor.execute(
-                            """
-                            SELECT t.id, t.summary, t.embedding <=> %s::vector AS distance
-                            FROM chat.conversation_topics AS ct
-                            JOIN chat.topics AS t ON t.id = ct.topic_id
-                            WHERE ct.conversation_id = %s
-                              AND t.embedding IS NOT NULL
-                              AND (%s::bigint IS NULL OR t.id <> %s::bigint)
-                            ORDER BY t.embedding <=> %s::vector
-                            LIMIT 3
-                            """,
-                            (
-                                _vector_literal(question_embedding),
-                                conversation_id,
-                                exclude_topic_id,
-                                exclude_topic_id,
-                                _vector_literal(question_embedding),
-                            ),
-                        )
-                        related_topics = cursor.fetchall()
-                        similarity_span.set_output(
-                            {
-                                "result_count": len(related_topics),
-                                "matching_topic_count": sum(
-                                    float(row[2]) <= TOPIC_MATCH_MAX_COSINE_DISTANCE
-                                    for row in related_topics
-                                ),
-                                "results": [
-                                    {
-                                        "topic_id": int(row[0]),
-                                        "summary": str(row[1] or ""),
-                                        "distance": round(float(row[2]), 4),
-                                    }
-                                    for row in related_topics
-                                ],
-                            }
-                        )
-                else:
-                    related_topics = []
-                if include_episodes:
-                    cursor.execute(
-                        """
-                        SELECT id, topic_id, user_message, answer_message
-                        FROM chat.messages
-                        WHERE conversation_id = %s
-                        ORDER BY id DESC
-                        LIMIT 40
-                        """,
-                        (conversation_id,),
-                    )
-                    rows = cursor.fetchall()
-                else:
-                    rows = []
-    except Exception as exc:
-        return {"available": False, "reason": str(exc), "immediate_history": immediate_history, "episodes": [], "history": history_trace}
-
-    active_id = int(active[0]) if active else None
-    active_summary = str(active[1] or "") if active else ""
-    selected, used_chars = [], 0
-    for row in rows:
-        content = f"Question : {str(row[2] or '').strip()}\nRéponse : {str(row[3] or '').strip()}"
-        if used_chars + len(content) > MEMORY_TOKEN_BUDGET_CHARS and selected:
-            continue
-        selected.append({"message_id": int(row[0]), "topic_id": int(row[1]) if row[1] is not None else None, "content": content[:1_500]})
-        used_chars += len(content)
-        if len(selected) >= MEMORY_MESSAGE_LIMIT:
-            break
-
-    matching_topics = [
-        {"topic_id": int(row[0]), "summary": str(row[1] or ""), "distance": round(float(row[2]), 4)}
-        for row in related_topics
-        if float(row[2]) <= TOPIC_MATCH_MAX_COSINE_DISTANCE and str(row[1] or "").strip()
-    ][:1]
     return {
         "available": True,
-        "active_topic": active_summary,
-        "active_topic_id": active_id,
-        "related_topics": matching_topics,
+        "active_topic": current["topic"],
+        "related_topics": [],
         "immediate_history": immediate_history,
-        "episodes": selected,
-        "history": history_trace,
-        "retrieval": {"source": "chat.messages+conversation_topics", "candidate_count": len(rows), "selected_count": len(selected), "related_topic_count": len(related_topics), "matching_topic_count": len(matching_topics), "match_max_cosine_distance": TOPIC_MATCH_MAX_COSINE_DISTANCE, "char_budget": MEMORY_TOKEN_BUDGET_CHARS, "used_chars": used_chars, "question_embedded": question_embedding is not None},
+        "episodes": episodes,
+        "history": {"source": "chat.conversations.memory_json"},
+        "retrieval": {"source": "chat.conversations.memory_json", "question_embedded": False},
     }

@@ -58,6 +58,11 @@ def connect_analytics_database():
 
 
 def ensure_chat_schema() -> None:
+    """Create the JSON-backed chat storage and remove retired topic tables.
+
+    ``memory_json`` is the single source of truth for topic state.  The cleanup
+    is deliberately idempotent so existing installations converge safely.
+    """
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
@@ -88,73 +93,9 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     """
-                    DO $$
-                    BEGIN
-                        -- v1 stored topic content directly in conversation_topics.
-                        -- Preserve its ids so messages and Phoenix traces remain valid.
-                        IF to_regclass('chat.conversation_topics') IS NOT NULL
-                           AND EXISTS (
-                               SELECT 1 FROM information_schema.columns
-                               WHERE table_schema = 'chat'
-                                 AND table_name = 'conversation_topics'
-                                 AND column_name = 'summary'
-                           ) THEN
-                            IF to_regclass('chat.topics') IS NOT NULL THEN
-                                RAISE EXCEPTION 'Migration chat impossible: tables topics et conversation_topics (ancienne forme) coexistantes';
-                            END IF;
-                            ALTER TABLE chat.conversation_topics RENAME TO topics;
-                        END IF;
-                    END
-                    $$
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS chat.topics (
-                        id BIGSERIAL PRIMARY KEY,
-                        summary TEXT NOT NULL DEFAULT '',
-                        embedding vector(2000),
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS chat.conversation_topics (
-                        conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
-                        topic_id BIGINT NOT NULL REFERENCES chat.topics(id) ON DELETE CASCADE,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        PRIMARY KEY (conversation_id, topic_id)
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    DO $$
-                    BEGIN
-                        IF EXISTS (
-                            SELECT 1 FROM information_schema.columns
-                            WHERE table_schema = 'chat'
-                              AND table_name = 'topics'
-                              AND column_name = 'conversation_id'
-                        ) THEN
-                            INSERT INTO chat.conversation_topics (conversation_id, topic_id, created_at)
-                            SELECT conversation_id, id, created_at
-                            FROM chat.topics
-                            ON CONFLICT (conversation_id, topic_id) DO NOTHING;
-                            ALTER TABLE chat.topics DROP COLUMN conversation_id;
-                        END IF;
-                    END
-                    $$
-                    """
-                )
-                cursor.execute(
-                    """
                     CREATE TABLE IF NOT EXISTS chat.messages (
                         id BIGSERIAL PRIMARY KEY,
                         conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
-                        topic_id BIGINT,
                         user_message TEXT NOT NULL,
                         answer_message TEXT,
                         trace_id TEXT,
@@ -167,9 +108,6 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS trace_id TEXT"
-                )
-                cursor.execute(
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS topic_id BIGINT"
                 )
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN"
@@ -224,7 +162,6 @@ def ensure_chat_schema() -> None:
                               AND column_name NOT IN (
                                   'id',
                                   'conversation_id',
-                                  'topic_id',
                                   'user_message',
                                   'answer_message',
                                   'trace_id',
@@ -248,22 +185,10 @@ def ensure_chat_schema() -> None:
                 )
                 cursor.execute("DROP TABLE IF EXISTS chat.conversation_episodes")
                 cursor.execute("DROP TABLE IF EXISTS chat.topic_messages")
-                cursor.execute(
-                    """
-                    DO $$
-                    BEGIN
-                        ALTER TABLE chat.messages
-                        DROP CONSTRAINT IF EXISTS chat_messages_topic_id_fkey;
-                        ALTER TABLE chat.messages
-                        ADD CONSTRAINT chat_messages_topic_id_fkey
-                        FOREIGN KEY (topic_id) REFERENCES chat.topics(id)
-                        ON DELETE SET NULL;
-                    END
-                    $$
-                    """
-                )
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_topics_updated ON chat.topics(updated_at DESC)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_conversation_topics_conversation ON chat.conversation_topics(conversation_id, topic_id DESC)")
+                cursor.execute("ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS chat_messages_topic_id_fkey")
+                cursor.execute("ALTER TABLE chat.messages DROP COLUMN IF EXISTS topic_id")
+                cursor.execute("DROP TABLE IF EXISTS chat.conversation_topics")
+                cursor.execute("DROP TABLE IF EXISTS chat.topics")
             connection.commit()
 
         _SCHEMA_READY = True
@@ -293,8 +218,6 @@ def create_conversation() -> int:
 def fetch_conversation_history(
     conversation_id: int | None,
     limit: int = 8,
-    *,
-    latest_topic_only: bool = False,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     if conversation_id is None:
         return [], {"applied": False, "reason": "no_conversation_id", "message_count": 0}
@@ -310,37 +233,7 @@ def fetch_conversation_history(
     """
     with connect_database() as connection:
         with connection.cursor() as cursor:
-            latest_topic_id: int | None = None
-            if latest_topic_only:
-                cursor.execute(
-                    """
-                    SELECT topic_id
-                    FROM chat.messages
-                    WHERE conversation_id = %s AND topic_id IS NOT NULL
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (conversation_id,),
-                )
-                latest_topic = cursor.fetchone()
-                if latest_topic is not None:
-                    latest_topic_id = int(latest_topic[0])
-                    sql = """
-                        SELECT user_message, answer_message
-                        FROM chat.messages
-                        WHERE conversation_id = %s AND topic_id = %s
-                        ORDER BY id DESC
-                        LIMIT %s
-                    """
-                    parameters: tuple[int, ...] = (
-                        conversation_id,
-                        latest_topic_id,
-                        limit,
-                    )
-                else:
-                    parameters = (conversation_id, limit)
-            else:
-                parameters = (conversation_id, limit)
+            parameters = (conversation_id, limit)
             cursor.execute(sql, parameters)
             rows = cursor.fetchall()
 
@@ -359,8 +252,7 @@ def fetch_conversation_history(
         "message_count": len(items),
         "sql": sql,
         "params": list(parameters),
-        "latest_topic_only": latest_topic_only,
-        "topic_id": latest_topic_id,
+        "latest_topic_only": False,
     }
 
 
@@ -369,7 +261,6 @@ def store_chat_message(
     user_message: str,
     answer_message: str,
     trace_id: str | None,
-    topic_id: int | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
     user_message = user_message.replace("\x00", "")
@@ -383,17 +274,15 @@ def store_chat_message(
                 """
                 INSERT INTO chat.messages (
                     conversation_id,
-                    topic_id,
                     user_message,
                     answer_message,
                     trace_id
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     resolved_conversation_id,
-                    topic_id,
                     user_message,
                     answer_message,
                     trace_id,

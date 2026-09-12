@@ -127,25 +127,9 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
     date TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS chat.topics (
-    id BIGSERIAL PRIMARY KEY,
-    summary TEXT NOT NULL DEFAULT '',
-    embedding vector(2000),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS chat.conversation_topics (
-    conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
-    topic_id BIGINT NOT NULL REFERENCES chat.topics(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (conversation_id, topic_id)
-);
-
 CREATE TABLE IF NOT EXISTS chat.messages (
     id BIGSERIAL PRIMARY KEY,
     conversation_id BIGINT NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
-    topic_id BIGINT REFERENCES chat.topics(id) ON DELETE SET NULL,
     user_message TEXT NOT NULL,
     answer_message TEXT,
     trace_id TEXT,
@@ -170,5 +154,3 @@ CREATE INDEX IF NOT EXISTS idx_update_runs_started_at ON update_runs(started_at)
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_date ON chat.conversations(date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat.messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_trace_id ON chat.messages(trace_id);
-CREATE INDEX IF NOT EXISTS idx_chat_topics_updated ON chat.topics(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_chat_conversation_topics_conversation ON chat.conversation_topics(conversation_id, topic_id DESC);

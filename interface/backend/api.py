@@ -33,7 +33,6 @@ from interface.backend.config import (
     MAX_TOP_K,
 )
 from interface.backend.conversation_memory import (
-    assign_topic_id,
     remember_conversation_json_turn,
 )
 from interface.backend.generation import (
@@ -573,18 +572,17 @@ def _persist_response(
         if (title := str(source.get("video_title") or "").strip())
     ))
     reformulation = retrieval.get("question_reformulation") or {}
-    topic_assignment = assign_topic_id(
-        payload.conversationId,
-        bool(reformulation.get("follow_up", False)),
-    )
-    topic_id = topic_assignment.get("topic_id")
+    topic_context = {
+        "follow_up": bool(reformulation.get("follow_up", False)),
+        "topic": str(reformulation.get("topic") or ""),
+    }
     with trace_operation(
         "store_message",
         kind="TOOL",
         input_value={
             "conversation_id": payload.conversationId,
             "trace_id": trace_id,
-            "topic_assignment": topic_assignment,
+            "topic_context": topic_context,
         },
     ) as storage_span:
         conversation_id, message_id = store_chat_message(
@@ -592,7 +590,6 @@ def _persist_response(
             user_message=payload.question,
             answer_message=answer,
             trace_id=trace_id,
-            topic_id=topic_id,
         )
         with trace_operation(
             "conversation_memory.update",
@@ -602,7 +599,7 @@ def _persist_response(
                 "message_id": message_id,
                 "question": payload.question,
                 "videos_discussed": videos_discussed,
-                "topic_assignment": topic_assignment,
+                "topic_context": topic_context,
             },
         ) as memory_span:
             memory_update = remember_conversation_json_turn(
@@ -614,14 +611,13 @@ def _persist_response(
                 summary_client=answer_client,
                 summary_model=retrieval.get("answer_model") or DEFAULT_GENERATION_MODEL,
             )
-            memory_update["topic_assignment"] = topic_assignment
+            memory_update["topic_context"] = topic_context
             memory_span.set_output(memory_update)
         storage_span.set_session_id(conversation_id)
         storage_span.set_output(
             {
                 "conversation_id": conversation_id,
                 "message_id": message_id,
-                "topic_id": topic_id,
                 "memory": memory_update,
             }
         )

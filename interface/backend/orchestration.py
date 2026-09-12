@@ -11,12 +11,7 @@ from interface.backend.config import (
     DEFAULT_REFORMULATION_MODEL,
     DEFAULT_RERANK_MODEL,
 )
-from interface.backend.conversation_memory import (
-    TOPIC_MATCH_MAX_COSINE_DISTANCE,
-    assign_topic_id,
-    load_conversation_memory,
-    load_reformulation_memory,
-)
+from interface.backend.conversation_memory import load_conversation_memory
 from interface.backend.planner import (
     apply_deterministic_sql_policy,
     build_execution_plan,

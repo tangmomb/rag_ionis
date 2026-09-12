@@ -19,10 +19,8 @@ on:
       - "docker/postgres/init/**"
       - "deploy/deploy-vps.sh"
       - "deploy/sync-vps-config.sh"
-      - "deploy/deploy-scaleway-worker.sh"
       - "deploy/publish-image.sh"
       - "deploy/publish-images.sh"
-      - "deploy/publish-scaleway-image.sh"
       - "tests/test_command_builder.py"
       - "tests/test_docker_configuration.py"
       - ".github/workflows/deploy-vps.yml"
@@ -67,7 +65,6 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GPU_BUILD_RUNNER: ${{ vars.GPU_BUILD_RUNNER }}
         run: |
           set -euo pipefail
           api=false
@@ -95,7 +92,7 @@ jobs:
                 .dockerignore)
                   api=true; updater=true
                   ;;
-                .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh|deploy/publish-scaleway-image.sh)
+                .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh)
                   api=true; updater=true
                   ;;
                 Dockerfile.api|requirements-api.txt|interface/*)
@@ -155,16 +152,14 @@ jobs:
           bash -n \
             deploy/publish-image.sh \
             deploy/publish-images.sh \
-            deploy/publish-scaleway-image.sh \
             deploy/deploy-vps.sh \
-            deploy/sync-vps-config.sh \
-            deploy/deploy-scaleway-worker.sh
+            deploy/sync-vps-config.sh
 
       - name: Validate production Compose rendering
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production.example config --quiet
 
-      - name: Lint GitHub Actions workflow
-        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      - name: Lint the VPS workflow
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 .github/workflows/deploy-vps.yml
 
   build:
     needs: [changes, validate]

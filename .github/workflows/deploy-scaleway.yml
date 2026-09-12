@@ -29,14 +29,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Validate registry configuration
-        shell: bash
+        # Use the native Windows shell: bash can resolve to the WSL launcher.
+        shell: powershell
         env:
           REGISTRY_NAMESPACE: ${{ vars.SCW_REGISTRY_NAMESPACE }}
           REGISTRY_PASSWORD: ${{ secrets.SCW_REGISTRY_PASSWORD || secrets.SCW_SECRET_KEY }}
         run: |
-          set -euo pipefail
-          test -n "${REGISTRY_NAMESPACE}" || { echo 'Missing repository variable SCW_REGISTRY_NAMESPACE' >&2; exit 1; }
-          test -n "${REGISTRY_PASSWORD}" || { echo 'Missing secret SCW_REGISTRY_PASSWORD' >&2; exit 1; }
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:REGISTRY_NAMESPACE)) {
+            throw 'Missing repository variable SCW_REGISTRY_NAMESPACE'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:REGISTRY_PASSWORD)) {
+            throw 'Missing secret SCW_REGISTRY_PASSWORD or SCW_SECRET_KEY'
+          }
       - uses: docker/setup-buildx-action@v3
         with:
           driver: docker

@@ -25,6 +25,7 @@ concurrency:
 jobs:
   build:
     runs-on: [self-hosted, Windows, X64, gpu-image-builder]
+    environment: production-scaleway
     steps:
       - uses: actions/checkout@v5
       - name: Validate registry configuration

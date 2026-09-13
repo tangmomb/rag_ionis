@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import os
 import json
+import re
+import socket
+import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import psycopg
 from fastapi import FastAPI, HTTPException, Query
@@ -24,12 +29,22 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_TEXT_CHARS = 250_000
 load_project_env(PROJECT_DIR)
 
+LOCAL_DATABASE_URL = os.getenv("DATABASE_URL")
+ACTIVE_DATABASE_URL = os.getenv("DATABASE_BROWSER_DATABASE_URL") or LOCAL_DATABASE_URL
+ACTIVE_DATABASE_TARGET = "vps" if os.getenv("DATABASE_BROWSER_DATABASE_URL") else "local"
+MANAGED_TUNNEL: subprocess.Popen[bytes] | None = None
+MANAGED_TUNNEL_TARGET: str | None = None
+MANAGED_TUNNEL_IDENTITY: str | None = None
+
 app = FastAPI(title="RAG IONIS — Database browser")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 
 
 def database_url() -> str:
-    value = os.getenv("DATABASE_URL")
+    # This optional override keeps the standard local configuration untouched
+    # while allowing the read-only browser to use a PostgreSQL instance reached
+    # through an SSH tunnel (for example the production VPS).
+    value = ACTIVE_DATABASE_URL
     if not value:
         raise RuntimeError("DATABASE_URL manquant dans .env")
     # Sous Windows, libpq peut essayer l'adresse IPv6 de ``localhost`` pendant
@@ -43,6 +58,71 @@ def connection():
         row_factory=dict_row,
         connect_timeout=5,
     )
+
+
+class DatabaseTarget(BaseModel):
+    target: Literal["local", "vps"]
+    ssh_target: str = ""
+    ssh_identity_file: str = ""
+    database_user: str = "rag_ionis"
+    database_password: str = ""
+    database_name: str = "rag_ionis"
+
+
+def stop_managed_tunnel() -> None:
+    global MANAGED_TUNNEL, MANAGED_TUNNEL_TARGET, MANAGED_TUNNEL_IDENTITY
+    if MANAGED_TUNNEL is not None and MANAGED_TUNNEL.poll() is None:
+        MANAGED_TUNNEL.terminate()
+        try:
+            MANAGED_TUNNEL.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            MANAGED_TUNNEL.kill()
+    MANAGED_TUNNEL = None
+    MANAGED_TUNNEL_TARGET = None
+    MANAGED_TUNNEL_IDENTITY = None
+
+
+def start_tunnel(ssh_target: str, identity_file: str) -> None:
+    global MANAGED_TUNNEL, MANAGED_TUNNEL_TARGET, MANAGED_TUNNEL_IDENTITY
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+@[A-Za-z0-9_.:-]+", ssh_target):
+        raise HTTPException(status_code=400, detail="Hote SSH invalide (attendu : ubuntu@IP_DU_VPS)")
+    identity_path = Path(identity_file).expanduser()
+    if not identity_file or not identity_path.is_file():
+        raise HTTPException(status_code=400, detail="Fichier de cle SSH introuvable")
+    if MANAGED_TUNNEL is not None and MANAGED_TUNNEL.poll() is None:
+        if MANAGED_TUNNEL_TARGET == ssh_target and MANAGED_TUNNEL_IDENTITY == str(identity_path):
+            return
+        stop_managed_tunnel()
+    try:
+        MANAGED_TUNNEL = subprocess.Popen(
+            [
+                "ssh", "-i", str(identity_path), "-o", "IdentitiesOnly=yes",
+                "-o", "ExitOnForwardFailure=yes", "-N",
+                "-L", "127.0.0.1:15432:127.0.0.1:5432", ssh_target,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        MANAGED_TUNNEL_TARGET = ssh_target
+        MANAGED_TUNNEL_IDENTITY = str(identity_path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Impossible de lancer SSH : {exc}") from exc
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if MANAGED_TUNNEL.poll() is not None:
+            message = MANAGED_TUNNEL.stderr.read().decode("utf-8", errors="replace").strip()
+            stop_managed_tunnel()
+            raise HTTPException(status_code=502, detail=message or "Le tunnel SSH n'a pas pu demarrer")
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex(("127.0.0.1", 15432)) == 0:
+                return
+        time.sleep(0.1)
+    stop_managed_tunnel()
+    raise HTTPException(status_code=504, detail="Le tunnel SSH n'a pas repondu sur le port 15432")
 
 
 def quote_table(schema: str, table: str) -> sql.Composed:
@@ -581,9 +661,51 @@ def health() -> dict[str, Any]:
     try:
         with connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT current_database() AS database, now() AS server_time")
-            return {"ok": True, **cur.fetchone()}
+            return {
+                "ok": True,
+                "target": ACTIVE_DATABASE_TARGET,
+                "read_only": ACTIVE_DATABASE_TARGET == "vps",
+                **cur.fetchone(),
+            }
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "target": ACTIVE_DATABASE_TARGET, "error": str(exc)}
+
+
+@app.post("/api/database-target")
+def set_database_target(request: DatabaseTarget) -> dict[str, Any]:
+    """Switch the browser only; the project-wide DATABASE_URL is never changed."""
+    global ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET
+    if request.target == "local":
+        if not LOCAL_DATABASE_URL:
+            raise HTTPException(status_code=500, detail="DATABASE_URL locale manquante dans .env.local")
+        previous_url, previous_target = ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET
+        ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET = LOCAL_DATABASE_URL, "local"
+        try:
+            with connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT current_database()")
+        except Exception as exc:
+            ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET = previous_url, previous_target
+            raise HTTPException(status_code=502, detail=f"Base locale inaccessible : {exc}") from exc
+        stop_managed_tunnel()
+        return {"target": "local", "read_only": False}
+
+    if not request.database_password:
+        raise HTTPException(status_code=400, detail="Le mot de passe PostgreSQL du VPS est requis")
+    start_tunnel(request.ssh_target.strip(), request.ssh_identity_file.strip())
+    candidate = (
+        f"postgresql://{quote(request.database_user, safe='')}:"
+        f"{quote(request.database_password, safe='')}@127.0.0.1:15432/"
+        f"{quote(request.database_name, safe='')}"
+    )
+    previous_url, previous_target = ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET
+    ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET = candidate, "vps"
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT current_database()")
+    except Exception as exc:
+        ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET = previous_url, previous_target
+        raise HTTPException(status_code=502, detail=f"Connexion PostgreSQL du VPS refusee : {exc}") from exc
+    return {"target": "vps", "read_only": True}
 
 
 @app.get("/api/tables")
@@ -743,6 +865,8 @@ def table_data(
 
 @app.delete("/api/tables/{schema}/{table}")
 def clear_table(schema: str, table: str) -> dict[str, Any]:
+    if ACTIVE_DATABASE_TARGET == "vps":
+        raise HTTPException(status_code=403, detail="La base du VPS est strictement en lecture seule")
     if schema in {"pg_catalog", "information_schema"} or not allowed_table(schema, table):
         raise HTTPException(status_code=404, detail="Table introuvable")
 

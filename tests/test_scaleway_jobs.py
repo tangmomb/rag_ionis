@@ -180,7 +180,7 @@ class ScalewayWorkerTests(unittest.TestCase):
         with (
             patch.dict(
                 "os.environ",
-                {"S3_BUCKET_NAME": "bucket", "S3_REGION": "eu-west-3"},
+                {"S3_BUCKET_NAME": "bucket", "S3_REGION": "fr-par"},
             ),
             patch.object(scaleway_ingestion, "download_video") as download,
             patch.object(scaleway_ingestion, "run_pipeline") as pipeline,

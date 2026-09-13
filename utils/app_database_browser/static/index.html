@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Database browser · RAG IONIS</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=sortable-columns-1">
+  <link rel="stylesheet" href="/static/style.css?v=database-target-1">
 </head>
 <body class="database-page">
   <aside class="sidebar">
     <div class="brand"><span class="dot"></span><div><strong>RAG IONIS</strong><small>Database browser</small></div></div>
     <a class="mode-link" href="/videos">▣ Explorer les vidéos</a>
     <div class="connection"><span id="healthDot" class="health-dot"></span><span id="healthText">Connexion…</span></div>
+    <button id="databaseTarget" class="target-button" type="button">Changer de base</button>
     <label class="side-label" for="tableFilter">TABLES</label>
     <input id="tableFilter" class="filter" placeholder="Filtrer les tables…" autocomplete="off">
     <nav id="tableList" class="table-list"></nav>
@@ -28,6 +29,23 @@
       <footer class="pager"><button id="previous" class="button secondary">← Précédent</button><span id="pageInfo"></span><button id="next" class="button secondary">Suivant →</button></footer>
     </section>
   </main>
-  <script src="/static/app.js?v=sortable-columns-1"></script>
+  <dialog id="databaseDialog" class="database-dialog">
+    <form id="databaseForm" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">CONNEXION</p><h2>Choisir la base</h2></div><button id="closeDatabaseDialog" class="close-detail" type="button" aria-label="Fermer">Fermer ×</button></div>
+      <label class="target-choice"><input type="radio" name="target" value="local" checked> PostgreSQL local</label>
+      <label class="target-choice"><input type="radio" name="target" value="vps"> PostgreSQL du VPS, via tunnel SSH</label>
+      <div id="vpsFields" class="vps-fields hidden">
+        <label>Hôte SSH<input name="ssh_target" placeholder="ubuntu@IP_DU_VPS" autocomplete="username"></label>
+        <label>Clé privée SSH<input name="ssh_identity_file" placeholder="C:\\Users\\...\\.ssh\\id_ed25519"></label>
+        <label>Utilisateur PostgreSQL<input name="database_user" value="rag_ionis" autocomplete="username"></label>
+        <label>Mot de passe PostgreSQL<input name="database_password" type="password" autocomplete="current-password"></label>
+        <label>Base PostgreSQL<input name="database_name" value="rag_ionis"></label>
+        <p>Le tunnel reste local : PostgreSQL du VPS n’est jamais exposé publiquement.</p>
+      </div>
+      <p id="databaseError" class="dialog-error" role="alert"></p>
+      <div class="dialog-actions"><button id="cancelDatabase" class="button secondary" type="button">Annuler</button><button id="connectDatabase" class="button" type="submit">Connecter</button></div>
+    </form>
+  </dialog>
+  <script src="/static/app.js?v=database-target-1"></script>
 </body>
 </html>

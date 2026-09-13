@@ -273,9 +273,8 @@ class ScalewayClient:
 
 
 def s3_client(region: str | None = None):
-    access_key = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
-    session_token = os.getenv("AWS_SESSION_TOKEN")
+    access_key = os.getenv("S3_ACCESS_KEY_ID")
+    secret_key = os.getenv("S3_SECRET_ACCESS_KEY")
     endpoint_url = os.getenv("S3_ENDPOINT_URL")
     options = {}
     if region:
@@ -285,8 +284,6 @@ def s3_client(region: str | None = None):
     if access_key and secret_key:
         options["aws_access_key_id"] = access_key
         options["aws_secret_access_key"] = secret_key
-    if session_token:
-        options["aws_session_token"] = session_token
     return boto3.client("s3", **options)
 
 

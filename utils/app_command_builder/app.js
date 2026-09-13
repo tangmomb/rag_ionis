@@ -281,7 +281,7 @@ const actions = [
           { id: "videoDir", label: "Dossier à uploader", flag: "--video-dir", type: "text", placeholder: "Défaut : dernier dossier", full: true },
           { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube" },
           { id: "bucket", label: "Bucket S3", flag: "--bucket", type: "text", placeholder: "Défaut : S3_BUCKET_NAME" },
-          { id: "region", label: "Région AWS", flag: "--region", type: "text", placeholder: "Défaut : S3_REGION" },
+          { id: "region", label: "Région Scaleway", flag: "--region", type: "text", placeholder: "Défaut : S3_REGION" },
           { id: "prefix", label: "Préfixe S3", flag: "--prefix", type: "text", placeholder: "youtube/…", exclusive: "prefixMode" },
           { id: "noPrefix", label: "Uploader à la racine", flag: "--no-prefix", type: "boolean", help: "Incompatible avec un préfixe explicite.", exclusive: "prefixMode" },
           { id: "videoIds", label: "Limiter à des IDs vidéo", flag: "--video-id", type: "textarea", placeholder: "Un ID par ligne", help: "L’option --video-id sera répétée.", repeatable: true, full: true },

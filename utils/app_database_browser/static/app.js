@@ -8,11 +8,19 @@ async function getJson(url) {
   return body;
 }
 
+async function sendJson(url, payload) {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.detail || "Erreur serveur");
+  return body;
+}
+
 async function init() {
   try {
     const health = await getJson("/api/health");
     $("#healthDot").classList.toggle("online", health.ok);
-    $("#healthText").textContent = health.ok ? `Connecté · ${health.database}` : "Base inaccessible";
+    $("#healthText").textContent = health.ok ? `Connecté · ${health.target === "vps" ? "VPS" : "Local"} · ${health.database}` : "Base inaccessible";
+    $("#clearTable").classList.toggle("hidden", health.read_only === true);
     state.tables = await getJson("/api/tables");
     renderTables();
     if (state.selected) {
@@ -233,4 +241,22 @@ $("#clearTable").addEventListener("click", clearSelectedTable);
 $("#closeDetail").addEventListener("click", () => $("#cellDetail").classList.add("hidden"));
 $("#copySql").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#sqlValue").textContent); $("#copySql").textContent = "Copié"; setTimeout(() => $("#copySql").textContent = "Copier", 1200); } catch { $("#copySql").textContent = "Indisponible"; } });
 $("#copyJson").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#jsonValue").textContent); $("#copyJson").textContent = "Copié"; setTimeout(() => $("#copyJson").textContent = "Copier", 1200); } catch { $("#copyJson").textContent = "Indisponible"; } });
+$("#databaseTarget").addEventListener("click", () => { $("#databaseError").textContent = ""; $("#databaseDialog").showModal(); });
+$("#closeDatabaseDialog").addEventListener("click", () => $("#databaseDialog").close());
+$("#cancelDatabase").addEventListener("click", () => $("#databaseDialog").close());
+document.querySelectorAll('input[name="target"]').forEach((input) => input.addEventListener("change", () => $("#vpsFields").classList.toggle("hidden", input.value !== "vps" || !input.checked)));
+$("#databaseForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const button = $("#connectDatabase");
+  button.disabled = true; $("#databaseError").textContent = "";
+  try {
+    await sendJson("/api/database-target", Object.fromEntries(form));
+    $("#databaseDialog").close();
+    $("#databaseForm [name='database_password']").value = "";
+    state.tables = []; state.selected = null; state.offset = 0;
+    await init();
+  } catch (error) { $("#databaseError").textContent = error.message; }
+  finally { button.disabled = false; }
+});
 init();

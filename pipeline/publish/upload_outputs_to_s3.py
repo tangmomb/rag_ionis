@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import boto3
@@ -30,12 +31,15 @@ def latest_video_dir(parent_dir):
 
 
 def s3_client(region):
-    access_key = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    access_key = os.environ.get("S3_ACCESS_KEY_ID")
+    secret_key = os.environ.get("S3_SECRET_ACCESS_KEY")
+    endpoint_url = os.environ.get("S3_ENDPOINT_URL")
 
     options = {}
     if region:
         options["region_name"] = region
+    if endpoint_url:
+        options["endpoint_url"] = endpoint_url
     if access_key and secret_key:
         options["aws_access_key_id"] = access_key
         options["aws_secret_access_key"] = secret_key
@@ -58,16 +62,16 @@ def s3_key_for(path, root_dir, prefix):
     return relative_path
 
 
-def object_exists(client, bucket, key):
-    try:
-        client.head_object(Bucket=bucket, Key=key)
-        return True
-    except ClientError as error:
-        status_code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        error_code = error.response.get("Error", {}).get("Code")
-        if status_code == 404 or error_code in {"404", "NoSuchKey", "NotFound"}:
-            return False
-        raise
+def list_existing_objects(client, bucket, prefix):
+    """Return object sizes below *prefix* in a single paginated listing."""
+    normalized = normalize_prefix(prefix)
+    object_prefix = f"{normalized}/" if normalized else ""
+    objects = {}
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=object_prefix):
+        for item in page.get("Contents", []):
+            objects[item["Key"]] = item["Size"]
+    return objects
 
 
 def list_init_prefixes(client, bucket, root_prefix):
@@ -136,20 +140,33 @@ def upload_directory(client, bucket, root_dir, prefix="", force=False, dry_run=F
         print(f"Aucun fichier a uploader dans {root_dir}")
         return {"uploaded": 0, "skipped": 0}
 
-    uploaded = 0
-    skipped = 0
     total_files = len(files)
+    existing = {} if force or dry_run else list_existing_objects(client, bucket, prefix)
+    pending = []
+    skipped = 0
     for path in files:
         key = s3_key_for(path, root_dir, prefix)
-        if not dry_run and not force and object_exists(client, bucket, key):
+        if not force and existing.get(key) == path.stat().st_size:
             skipped += 1
-            print_step_progress("upload s3", uploaded + skipped, total_files)
             continue
+        pending.append((path, key))
 
-        if not dry_run:
-            client.upload_file(str(path), bucket, key)
-        uploaded += 1
-        print_step_progress("upload s3", uploaded + skipped, total_files)
+    if dry_run:
+        print_step_progress("upload s3", total_files, total_files)
+        return {"uploaded": len(pending), "skipped": skipped}
+
+    completed = skipped
+    uploaded = 0
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        futures = {
+            executor.submit(client.upload_file, str(path), bucket, key): path
+            for path, key in pending
+        }
+        for future in as_completed(futures):
+            future.result()
+            uploaded += 1
+            completed += 1
+            print_step_progress("upload s3", completed, total_files)
 
     return {"uploaded": uploaded, "skipped": skipped}
 
@@ -175,7 +192,7 @@ def parse_args():
     parser.add_argument(
         "--region",
         default=DEFAULT_S3_REGION,
-        help="Region AWS. Defaut: aucune",
+        help="Region Scaleway. Defaut: aucune",
     )
     parser.add_argument(
         "--prefix",

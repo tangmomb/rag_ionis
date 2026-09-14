@@ -101,6 +101,16 @@ Organisation des données :
 Règles :
 - Une seule requête SELECT/CTE, tables ci-dessus seulement, sans commentaire ni ;.
 - Toute valeur utilisateur va dans params via %s, dans le même ordre. Pas de SELECT *.
+- Cette règle s'applique à toutes les valeurs dynamiques, y compris les bornes de
+  dates ou périodes calculées pour comparer des snapshots : utilise `%s` et
+  `params`, jamais une date entre quotes dans le SQL. Si l'année ou une borne
+  temporelle nécessaire n'est pas explicitement fournie, utilise
+  `default_snapshot_year` du contexte comme année de référence. Cette valeur est
+  l'année la plus récente par défaut ; ne choisis jamais une autre année.
+- La liste `persons` du contexte contient les noms canoniques déjà résolus. Si elle
+  est présente, utilise chaque nom demandé comme filtre et recopie-le exactement
+  dans `params`, accents et orthographe compris. Ne le corrige pas, ne le raccourcis
+  pas et ne le remplace pas par la variante présente dans la question originale.
 - Pour les stats actuelles, prends le dernier snapshot de chaque vidéo avec un LIMIT 1
   corrélé (`WHERE stats.video_id = v.id`), jamais un LIMIT 1 global.
 - Toute requête qui lit `stats` doit sélectionner et retourner au moins une date
@@ -116,11 +126,14 @@ Règles :
 - Plusieurs speakers = OR/IN, jamais AND, sauf coapparition explicitement demandée.
 - La requête SQL doit résoudre le problème, pas renvoyer une population pour que
   le LLM de réponse choisisse ensuite. Si la question demande un seul gagnant,
-  une seule vidéo ou une valeur unique, calcule, trie si nécessaire et retourne
-  directement une ligne avec `LIMIT 1`. Pour une comparaison d'éléments nommés,
-  retourne uniquement tous ces éléments, sans limite arbitraire. Le `LIMIT 1`
-  final est autorisé ; le `LIMIT 1` qui sélectionne un snapshot reste corrélé à
-  sa vidéo.
+  une seule vidéo ou une valeur unique sans comparaison explicite, calcule, trie
+  si nécessaire et retourne directement une ligne avec `LIMIT 1`.
+- En cas de comparaison explicite entre plusieurs entités nommées (personnes,
+  entreprises, vidéos ou titres), retourne au moins un résultat pour chaque
+  entité demandée afin de montrer la comparaison. N'utilise jamais de `LIMIT 1`
+  final dans ce cas, même si la question demande laquelle est la plus élevée.
+  Le seul `LIMIT 1` autorisé est celui, corrélé à sa vidéo, qui sélectionne son
+  dernier snapshot de statistiques.
 - Pour une demande à une date ou entre deux dates de statistiques, travaille sur
   `stats.snapshot_date` (et non `videos.published_at`). Retourne les dates de
   snapshot effectivement retenues avec chaque valeur ; pour une comparaison,
@@ -147,6 +160,7 @@ Exemple unique — comparaison de speakers :
         "companies_resolved": database_companies or [],
         "published_after": query.published_after,
         "published_before": query.published_before,
+        "default_snapshot_year": date.today().year,
         "correction_feedback": (correction_feedback or "").strip() or None,
     }
     return system_prompt, json.dumps(context, ensure_ascii=False)
@@ -186,6 +200,34 @@ def _valid_param(value: Any) -> bool:
     if isinstance(value, list):
         return all(_valid_param(item) for item in value)
     return False
+
+
+def validate_resolved_person_params(
+    params: list[Any],
+    database_persons: list[str] | None,
+) -> dict[str, Any]:
+    """Ensure Text-to-SQL reuses every canonical person resolution verbatim."""
+    expected = list(
+        dict.fromkeys(
+            str(person).strip()
+            for person in database_persons or []
+            if str(person).strip()
+        )
+    )
+    if not expected:
+        return {"valid": True, "expected": [], "missing": []}
+
+    parameter_values = {
+        value.strip().strip("%").strip().casefold()
+        for value in params
+        if isinstance(value, str) and value.strip()
+    }
+    missing = [
+        person
+        for person in expected
+        if person.casefold() not in parameter_values
+    ]
+    return {"valid": not missing, "expected": expected, "missing": missing}
 
 
 def _uses_global_stats_limit_one(sql: str) -> bool:
@@ -268,7 +310,7 @@ def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
     if unknown_relations:
         errors.append("unknown_relations:" + ",".join(unknown_relations))
     if "stats" in relations and not re.search(
-        r"\bas\s+[a-z_]*snapshot_date\b", sql_without_literals, re.IGNORECASE
+        r"\bas\s+[a-z_]*snapshot_date[a-z_]*\b", sql_without_literals, re.IGNORECASE
     ):
         errors.append("stats_snapshot_date_required")
 
@@ -517,6 +559,14 @@ def run_analytics_text_to_sql(
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as validation_span:
         validation = validate_analytics_sql(sql, params)
+        resolved_person_validation = validate_resolved_person_params(
+            params if isinstance(params, list) else [],
+            database_persons,
+        )
+        validation["resolved_persons"] = resolved_person_validation
+        if not resolved_person_validation["valid"]:
+            validation["errors"].append("resolved_person_parameter_missing")
+            validation["valid"] = False
         validation_span.set_output(validation)
     trace.update(
         {
@@ -554,7 +604,7 @@ def run_analytics_text_to_sql(
 
     with trace_operation(
             "analytics.sql_execution",
-        kind="TOOL",
+        kind="CHAIN",
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as execution_span:
         try:

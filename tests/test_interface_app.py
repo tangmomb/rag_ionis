@@ -72,7 +72,6 @@ class InterfaceAppTests(unittest.TestCase):
 
     def test_all_structured_llm_steps_define_strict_schemas(self) -> None:
         from interface.backend.analytics_sql import ANALYTICS_SQL_RESPONSE_SCHEMA
-        from interface.backend.answer_evaluation import SHADOW_EVALUATION_RESPONSE_SCHEMA
 
         schemas = (
             planner.REFORMULATION_RESPONSE_SCHEMA,
@@ -80,7 +79,6 @@ class InterfaceAppTests(unittest.TestCase):
             planner.PLANNER_RESPONSE_SCHEMA,
             ANALYTICS_SQL_RESPONSE_SCHEMA,
             generation.ANSWER_RESPONSE_SCHEMA,
-            SHADOW_EVALUATION_RESPONSE_SCHEMA,
         )
         for schema in schemas:
             self.assertEqual(schema["type"], "object")

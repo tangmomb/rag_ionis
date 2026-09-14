@@ -4,6 +4,8 @@ import unittest
 
 from interface.backend.orchestration_graph import (
     _execution_plan_trace,
+    _exclude_ionis_stm_companies,
+    build_execution_plan,
     _resolved_plan_companies,
     _resolved_plan_persons,
     _resolved_plan_title_hint,
@@ -29,6 +31,47 @@ class ExecutionPlanTraceTests(unittest.TestCase):
         )
 
         self.assertEqual(companies, ["alk"])
+
+    def test_execution_companies_exclude_ionis_stm_variants(self) -> None:
+        self.assertEqual(
+            _exclude_ionis_stm_companies(
+                ["Ionis-STM", "IONIS STM", "Groupe Ionis-STM", "Novares"]
+            ),
+            ["Groupe Ionis-STM", "Novares"],
+        )
+
+    def test_execution_plan_drops_fuzzy_ionis_stm_company_suggestions(self) -> None:
+        question = "Pourquoi faire Ionis-STM ?"
+        result = build_execution_plan(
+            {
+                "payload": {"question": question},
+                "planner_plan": PlannerPlan(
+                    route="search", query_text=question, companies=["Ionis-STM"]
+                ).model_dump(),
+                "database_persons": [],
+                "person_resolution": {"ambiguous": False, "suggestion_transcripts": []},
+                "company_resolution": {
+                    "suggestion_companies": [
+                        {"company": "ionis stm", "score": 1.0},
+                        {"company": "lonis stm", "score": 0.889},
+                    ]
+                },
+                "resolved_title_hints": [],
+                "planner_prompt": None,
+                "planner_raw": None,
+                "pydantic_verification": True,
+                "reformulation_trace": {},
+                "contextual_question": question,
+                "reformulation_model": "test",
+                "planner_model": "test",
+                "analytics_sql_model": "test",
+                "title_resolution": {},
+                "database_company": [],
+                "topic_assignment": {},
+            }
+        )
+
+        self.assertEqual(result["execution_plan"]["companies"], [])
 
     def test_plan_title_hint_uses_the_resolved_title(self) -> None:
         self.assertEqual(

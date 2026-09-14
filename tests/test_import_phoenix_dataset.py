@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from utils.import_phoenix_dataset import load_examples
+from utils.import_phoenix_dataset import google_sheet_csv_url, load_examples
 
 
 class ImportPhoenixDatasetTests(unittest.TestCase):
@@ -41,6 +41,35 @@ class ImportPhoenixDatasetTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "shadow_issue invalide"):
                 load_examples(csv_path)
+
+    def test_load_examples_maps_golden_dataset_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "golden_dataset.csv"
+            csv_path.write_text(
+                "question,expected_execution_route,youtube_video_ids,relevant_chunk_ids\n"
+                "Question ?,vector_search,\"[\"\"video-1\"\"]\",\"[12,13]\"\n",
+                encoding="utf-8",
+            )
+
+            examples = load_examples(csv_path)
+
+        self.assertEqual(examples[0]["input"], {"question": "Question ?"})
+        self.assertEqual(
+            examples[0]["output"],
+            {
+                "expected_execution_route": "vector_search",
+                "youtube_video_ids": ["video-1"],
+                "relevant_chunk_ids": [12, 13],
+            },
+        )
+
+    def test_google_sheet_csv_url_preserves_gid(self) -> None:
+        self.assertEqual(
+            google_sheet_csv_url(
+                "https://docs.google.com/spreadsheets/d/sheet-id/edit?gid=123"
+            ),
+            "https://docs.google.com/spreadsheets/d/sheet-id/export?format=csv&gid=123",
+        )
 
 
 if __name__ == "__main__":

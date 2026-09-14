@@ -114,7 +114,7 @@ def trace_formatted_sql(span_name: str, trace: dict[str, Any]) -> None:
         )
         with trace_operation(
             formatted_span_name,
-            kind="RETRIEVER",
+            kind="CHAIN",
             input_value={"params": sql_trace.get("params", [])},
         ) as sql_span:
             query_results = sql_trace.get("query_results")
@@ -518,6 +518,7 @@ def lookup_video_document(
                 v.id,
                 v.title,
                 v.url,
+                v.thumbnail_medium_url,
                 v.description
             FROM videos v
             WHERE {where_sql}
@@ -534,11 +535,11 @@ def lookup_video_document(
                 "chunk_id": int(row[0]),
                 "video_title": row[1],
                 "video_url": row[2],
-                "thumbnail_medium_url": None,
+                "thumbnail_medium_url": row[3],
                 "chunk_index": 0,
-                "text": f"Titre: {row[1]}\nURL: {row[2]}\nDescription: {row[3] or ''}",
+                "text": f"Titre: {row[1]}\nURL: {row[2]}\nDescription: {row[4] or ''}",
                 "persons": [],
-                "video_description": row[3],
+                "video_description": row[4],
                 "bm25_score": None,
             }
             for row in rows

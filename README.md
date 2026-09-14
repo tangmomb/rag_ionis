@@ -1459,7 +1459,7 @@ Text-to-SQL et réponse finale — sont contraintes par un JSON Schema strict au
 niveau de l'API Mistral.
 Toutes les inférences RAG sont adressées à Mistral.
 
-Quand le planner choisit `sql_sub_intent=analytics`, un second appel LLM spécialisé
+Quand le planner choisit `analytics=true`, un second appel LLM spécialisé
 Text-to-SQL utilise le modèle du planner et un schéma analytique limité. La requête
 générée doit être un `SELECT` paramétré sur une liste blanche de tables. Les
 privilèges du compte `rag_ionis_analytics` limitent également les tables et
@@ -1527,56 +1527,10 @@ Le même adaptateur multi-fournisseur est utilisé par les expériences Phoenix 
 .\.venv\Scripts\python.exe utils/run_phoenix_experiment.py
 ```
 
-Pour calibrer l'évaluateur shadow sur un dataset Phoenix sans activer de
-correction automatique :
-
-```powershell
-.\.venv\Scripts\python.exe utils/import_phoenix_dataset.py `
-  --dataset cases_phoenix
-
-.\.venv\Scripts\python.exe utils/run_phoenix_experiment.py `
-  --dataset cases_phoenix `
-  --experiment-name rag-shadow-calibration `
-  --shadow-evaluation `
-  --shadow-evaluation-model gpt-5.6-terra `
-  --llm-timeout 60 `
-  --llm-max-retries 0
-```
-
-L'import place `expected.action`, `expected.shadow_verdict` et
-`expected.shadow_issue` dans chaque exemple. L'expérience publie
-`answer_action_match`, `shadow_verdict`, `shadow_issue`, `shadow_grounded`,
-`shadow_retrieval_quality`, `shadow_verdict_match` et `shadow_issue_match`. Ces
-labels mesurent le résultat de bout en bout attendu pour les cas versionnés.
-Une mesure stricte des faux positifs et faux négatifs du juge nécessite en plus
-une annotation humaine des réponses générées, car leur contenu peut changer
-d'une campagne à l'autre.
-
-Le verdict indique uniquement si la réponse affichée peut être conservée ou
-doit être corrigée. La cause est indépendante : une demande de précision bien
-formulée produit par exemple `verdict=acceptable` avec
-`issue=ambiguous_question`.
-
-Le modèle du juge est indépendant du modèle de réponse. En production, il peut
-être défini avec `RAG_SHADOW_EVALUATION_MODEL`; sans cette variable, le juge
-conserve le modèle de réponse pour préserver le comportement historique.
 Les options `--llm-timeout` et `--llm-max-retries` bornent chaque appel de la
 campagne indépendamment des reprises d'exemples configurées par `--retries`.
 En dehors des expériences, les mêmes limites peuvent être configurées avec
 `RAG_LLM_REQUEST_TIMEOUT_SECONDS` et `RAG_LLM_MAX_RETRIES`.
-
-La première boucle de correction LangGraph est disponible avec
-`RAG_CORRECTION_LOOP_ENABLED=true`. Elle est indépendante du shadow et ne traite
-que `action=abstain` : elle élargit la recherche jusqu'aux limites configurées,
-puis régénère une fois la réponse. Si la correction échoue, la réponse initiale
-est conservée.
-Pour une expérience isolée, utiliser `--shadow-evaluation --correction-loop` ;
-ce réglage est transmis uniquement au contexte LangGraph de la campagne.
-Phoenix publie alors aussi `correction_outcome`, `correction_count` et
-`correction_effectiveness` afin de comparer les réponses finales et le coût des
-corrections avec une baseline. L'activation en production doit rester
-désactivée tant qu'une campagne labellisée montre une régression de
-`answer_action_match`, même si le grounding s'améliore.
 
 ### LangSmith Studio
 

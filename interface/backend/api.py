@@ -13,11 +13,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from pydantic import BaseModel
 
-from interface.backend.answer_evaluation import (
-    evaluate_answer_shadow,
-    shadow_evaluation_enabled,
-    shadow_evaluation_model,
-)
 from interface.backend.database import (
     ConversationNotFoundError,
     connect_database,
@@ -29,8 +24,6 @@ from interface.backend.config import (
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PLANNER_MODEL,
     DEFAULT_REFORMULATION_MODEL,
-    MAX_FINAL_K,
-    MAX_TOP_K,
 )
 from interface.backend.conversation_memory import (
     remember_conversation_json_turn,
@@ -66,14 +59,10 @@ class RagResponseState(TypedDict, total=False):
     sources: list[dict[str, Any]]
     retrieval: dict[str, Any]
     answer_trace: dict[str, Any]
-    shadow_evaluation: dict[str, Any]
     answer_action: str
     carousel_sources: list[dict[str, Any]]
     conversation_id: int
     message_id: int
-    correction_count: int
-    correction_requested: bool
-    shadow_evaluation_history: list[dict[str, Any]]
 
 
 class MessageFeedbackRequest(BaseModel):
@@ -83,10 +72,6 @@ class MessageFeedbackRequest(BaseModel):
 @dataclass
 class RagResponseContext:
     answer_client: Any = None
-    shadow_evaluation_enabled_override: bool | None = None
-    shadow_evaluation_model_override: str | None = None
-    shadow_evaluation_sink: dict[str, Any] | None = None
-    correction_loop_enabled_override: bool | None = None
     stream_callback: Callable[[str], None] | None = None
     stage_callback: Callable[[str, str], None] | None = None
     response_ready_callback: Callable[[RagResponse], None] | None = None
@@ -213,329 +198,6 @@ def _generation_route(state: RagResponseState) -> Literal["generate", "accept_pr
     return "accept_precomputed" if state["answer"] else "generate"
 
 
-def _evaluate_response(
-    state: RagResponseState,
-    runtime: Runtime[RagResponseContext],
-) -> dict[str, Any]:
-    payload = _response_payload(state)
-    retrieval = state["retrieval"]
-    context = _runtime_context(runtime)
-    route = retrieval.get("route") or retrieval.get("retrieval_mode")
-    evaluation_enabled = context.shadow_evaluation_enabled_override
-    if evaluation_enabled is None:
-        evaluation_enabled = shadow_evaluation_enabled()
-    evaluation_model = (
-        context.shadow_evaluation_model_override
-        or shadow_evaluation_model(str(retrieval.get("answer_model") or ""))
-    )
-    evaluation_client = context.answer_client or get_llm_client()
-    context.answer_client = evaluation_client
-    input_value = {
-        "mode": "shadow",
-        "enabled": evaluation_enabled,
-        "model": evaluation_model,
-        "route": route,
-        "question": retrieval.get("contextual_question", payload.question),
-        "action": state["answer_trace"].get("action", "abstain"),
-        "source_count": len(state["sources"]),
-    }
-    with trace_operation(
-        "shadow_evaluation",
-        kind="EVALUATOR",
-        input_value=input_value,
-    ) as evaluation_span:
-        if not input_value["enabled"]:
-            evaluation = {
-                "enabled": False,
-                "mode": "shadow",
-                "verdict": "not_run",
-                "issue": "none",
-                "status": "not_run",
-                "reason": "disabled",
-            }
-        elif route == "direct":
-            evaluation = {
-                "enabled": True,
-                "mode": "shadow",
-                "verdict": "not_applicable",
-                "issue": "none",
-                "status": "not_applicable",
-                "reason": "direct_answer",
-            }
-        elif evaluation_client is None or not evaluation_model:
-            evaluation = {
-                "enabled": True,
-                "mode": "shadow",
-                "verdict": "not_run",
-                "issue": "none",
-                "status": "not_run",
-                "reason": "missing_client_or_model",
-            }
-        else:
-            try:
-                evaluation = evaluate_answer_shadow(
-                    evaluation_client,
-                    evaluation_model,
-                    retrieval.get("contextual_question", payload.question),
-                    state["answer"],
-                    state["answer_trace"].get("action", "abstain"),
-                    state["sources"],
-                )
-            except Exception as exc:  # Le mode shadow ne bloque jamais la réponse.
-                evaluation = {
-                    "enabled": True,
-                    "mode": "shadow",
-                    "verdict": "error",
-                    "issue": "none",
-                    "status": "error",
-                    "reason": str(exc),
-                }
-        evaluation_span.set_output(evaluation)
-    checkpoint_evaluation = {
-        key: value
-        for key, value in evaluation.items()
-        if key not in {"prompt", "response_raw"}
-    }
-    if context.shadow_evaluation_sink is not None:
-        context.shadow_evaluation_sink.clear()
-        context.shadow_evaluation_sink.update(checkpoint_evaluation)
-    correction_requested = bool(
-        state["answer_trace"].get("action") == "abstain"
-        and state.get("correction_count", 0) < 1
-        and route != "direct"
-    )
-    return {
-        "shadow_evaluation": checkpoint_evaluation,
-        "correction_requested": correction_requested,
-    }
-
-
-def _correction_prompt(
-    base_prompt: str | None,
-    evaluation: dict[str, Any],
-    previous_answer: str,
-) -> str:
-    correction_context = {
-        "issue": evaluation.get("issue"),
-        "reason": evaluation.get("reason"),
-        "suggested_correction": evaluation.get("suggested_correction"),
-        "previous_answer": previous_answer,
-    }
-    return (
-        f"{base_prompt or ''}\n\n"
-        "Correction interne obligatoire : produis une nouvelle réponse en "
-        "corrigeant uniquement le problème décrit ci-dessous. Reste strictement "
-        "fondé sur les mêmes sources et n'invente aucune information.\n"
-        f"{correction_context}"
-    ).strip()
-
-
-def _correct_response(
-    state: RagResponseState,
-    runtime: Runtime[RagResponseContext],
-) -> dict[str, Any]:
-    payload = _response_payload(state)
-    retrieval = dict(state["retrieval"])
-    evaluation = dict(state["shadow_evaluation"])
-    previous_answer = state["answer"]
-    answer_trace: dict[str, Any] = {}
-    correction_count = state.get("correction_count", 0) + 1
-    correction_metadata: dict[str, Any] = {
-        "attempted": True,
-        "count": correction_count,
-        "issue": evaluation.get("issue"),
-        "strategy": "regenerate_answer",
-    }
-    with trace_operation(
-        "correction",
-        kind="CHAIN",
-        input_value={
-            "question": retrieval.get("contextual_question", payload.question),
-            "model": retrieval.get("answer_model"),
-            "evaluation": evaluation,
-            "attempt": correction_count,
-        },
-    ) as correction_span:
-        try:
-            context = _runtime_context(runtime)
-            answer_client = context.answer_client or get_llm_client()
-            context.answer_client = answer_client
-            corrected_answer = generate_final_answer(
-                answer_client,
-                retrieval.get("contextual_question", payload.question),
-                retrieval["answer_model"],
-                retrieval,
-                state["sources"],
-                answer_trace,
-                _correction_prompt(payload.answerPrompt, evaluation, previous_answer),
-                stream_callback=context.stream_callback,
-            )
-            correction_metadata["succeeded"] = True
-        except Exception as exc:  # Une correction ne doit jamais perdre la réponse initiale.
-            corrected_answer = previous_answer
-            answer_trace = dict(state["answer_trace"])
-            correction_metadata.update({"succeeded": False, "error": str(exc)})
-        correction_span.set_output(
-            {
-                "succeeded": correction_metadata["succeeded"],
-                "answer": corrected_answer,
-                "trace": answer_trace,
-            }
-        )
-    retrieval["correction"] = correction_metadata
-    return {
-        "answer": corrected_answer,
-        "answer_trace": answer_trace,
-        "retrieval": retrieval,
-        "correction_count": correction_count,
-        "correction_requested": False,
-        "shadow_evaluation_history": [
-            *state.get("shadow_evaluation_history", []),
-            evaluation,
-        ],
-    }
-
-
-def _post_evaluation_route(
-    state: RagResponseState,
-) -> Literal["correct", "retry_retrieval", "expand_retrieval", "finalize"]:
-    if not state.get("correction_requested", False):
-        return "finalize"
-    if state.get("answer_trace", {}).get("action") == "abstain":
-        return "expand_retrieval"
-    issue = state.get("shadow_evaluation", {}).get("issue")
-    if issue == "bad_retrieval":
-        return "retry_retrieval"
-    if issue == "insufficient_sources":
-        return "expand_retrieval"
-    return "correct"
-
-
-def _retrieval_correction_prompt(
-    base_prompt: str | None,
-    strategy: str,
-    evaluation: dict[str, Any],
-    retry_query: str | None,
-) -> str:
-    if strategy == "retry_retrieval":
-        instruction = (
-            "Le retrieval précédent était hors sujet. Produis une requête de "
-            "recherche différente, plus précise, tout en conservant exactement "
-            "le sens de la question utilisateur."
-        )
-    else:
-        instruction = (
-            "Les sources précédentes étaient incomplètes. Produis une requête de "
-            "recherche plus large couvrant toutes les facettes de la question, "
-            "sans en modifier le sens."
-        )
-    return (
-        f"{base_prompt or ''}\n\n{instruction}\n"
-        f"Requête proposée par la génération : {retry_query or 'aucune'}. "
-        "Utilise cette proposition comme point de départ sans modifier le besoin utilisateur.\n"
-        f"Diagnostic interne : issue={evaluation.get('issue')}; "
-        f"reason={evaluation.get('reason')}; "
-        f"suggestion={evaluation.get('suggested_correction')}"
-    ).strip()
-
-
-def _retrieve_for_correction(
-    state: RagResponseState,
-    strategy: Literal["retry_retrieval", "expand_retrieval"],
-) -> dict[str, Any]:
-    payload = _response_payload(state)
-    evaluation = dict(state["shadow_evaluation"])
-    retry_query = state.get("answer_trace", {}).get("retry_query")
-    correction_count = state.get("correction_count", 0) + 1
-    if strategy == "expand_retrieval":
-        top_k = MAX_TOP_K
-        final_k = MAX_FINAL_K
-    else:
-        top_k = min(MAX_TOP_K, max(payload.topK + 10, payload.topK * 2))
-        final_k = min(MAX_FINAL_K, max(payload.finalK + 5, payload.finalK * 2))
-    corrected_payload = payload.model_copy(
-        update={
-            "topK": top_k,
-            "finalK": final_k,
-            "plannerPrompt": _retrieval_correction_prompt(
-                payload.plannerPrompt,
-                strategy,
-                evaluation,
-                retry_query if isinstance(retry_query, str) else None,
-            ),
-        }
-    )
-    correction_metadata: dict[str, Any] = {
-        "attempted": True,
-        "count": correction_count,
-        "issue": evaluation.get("issue"),
-        "strategy": strategy,
-        "retry_query": retry_query,
-        "top_k": top_k,
-        "final_k": final_k,
-    }
-    with trace_operation(
-        f"correction.{strategy}",
-        kind="RETRIEVER",
-        input_value={
-            "question": payload.question,
-            "evaluation": evaluation,
-            "top_k": top_k,
-            "final_k": final_k,
-        },
-    ) as correction_span:
-        try:
-            answer, sources, retrieval = orchestrate_request(corrected_payload)
-            retrieval = dict(retrieval)
-            retrieval["answer_prompt_override"] = _correction_prompt(
-                payload.answerPrompt,
-                evaluation,
-                state["answer"],
-            )
-            correction_metadata["succeeded"] = True
-        except Exception as exc:  # Le retrieval correctif ne bloque jamais la réponse.
-            answer = state["answer"]
-            sources = state["sources"]
-            retrieval = dict(state["retrieval"])
-            correction_metadata.update({"succeeded": False, "error": str(exc)})
-        retrieval["correction"] = correction_metadata
-        correction_span.set_output(
-            {
-                "succeeded": correction_metadata["succeeded"],
-                "answer_provided": bool(answer),
-                "source_count": len(sources),
-            }
-        )
-    return {
-        "answer": answer,
-        "sources": sources,
-        "retrieval": retrieval,
-        "correction_count": correction_count,
-        "correction_requested": False,
-        "shadow_evaluation_history": [
-            *state.get("shadow_evaluation_history", []),
-            evaluation,
-        ],
-    }
-
-
-def _retry_retrieval(state: RagResponseState) -> dict[str, Any]:
-    return _retrieve_for_correction(state, "retry_retrieval")
-
-
-def _expand_retrieval(state: RagResponseState) -> dict[str, Any]:
-    return _retrieve_for_correction(state, "expand_retrieval")
-
-
-def _post_retrieval_route(
-    state: RagResponseState,
-) -> Literal["generate", "accept_precomputed", "evaluate"]:
-    correction = state.get("retrieval", {}).get("correction", {})
-    if not correction.get("succeeded", False):
-        return "evaluate"
-    return _generation_route(state)
-
-
 def _finalize_response(
     state: RagResponseState,
     runtime: Runtime[RagResponseContext] | None = None,
@@ -546,6 +208,15 @@ def _finalize_response(
     answer_trace = state["answer_trace"]
     answer_action = answer_trace.get("action", "abstain")
     retrieval["answer_action"] = answer_action
+    # Preserve the actual retrieval result set for offline evaluation. Carousel
+    # sources only contain the citations selected after answer generation.
+    retrieval["retrieved_sources"] = [
+        {
+            "chunk_id": source.get("chunk_id"),
+            "video_url": source.get("video_url"),
+        }
+        for source in sources
+    ]
     if answer_action == "answer":
         answer, carousel_sources = select_answer_sources(
             answer,
@@ -557,10 +228,6 @@ def _finalize_response(
     retrieval["answer_source_indexes"] = [
         index for index, source in enumerate(sources, start=1) if source in carousel_sources
     ]
-    if state.get("shadow_evaluation_history"):
-        retrieval["shadow_evaluation_history"] = state[
-            "shadow_evaluation_history"
-        ]
     return {
         "answer": answer,
         "answer_action": answer_action,
@@ -593,7 +260,7 @@ def _persist_response(
     }
     with trace_operation(
         "store_message",
-        kind="TOOL",
+        kind="RETRIEVER",
         input_value={
             "conversation_id": payload.conversationId,
             "trace_id": trace_id,
@@ -724,10 +391,6 @@ def video_thumbnails() -> list[str]:
 def execute_rag(
     payload: RagRequest,
     *,
-    shadow_evaluation_enabled_override: bool | None = None,
-    shadow_evaluation_model_override: str | None = None,
-    shadow_evaluation_sink: dict[str, Any] | None = None,
-    correction_loop_enabled_override: bool | None = None,
     stream_callback: Callable[[str], None] | None = None,
     stage_callback: Callable[[str, str], None] | None = None,
     response_ready_callback: Callable[[RagResponse], None] | None = None,
@@ -741,16 +404,6 @@ def execute_rag(
         result = RAG_RESPONSE_GRAPH.invoke(
             {"payload": payload.model_dump()},
             context=RagResponseContext(
-                shadow_evaluation_enabled_override=(
-                    shadow_evaluation_enabled_override
-                ),
-                shadow_evaluation_model_override=(
-                    shadow_evaluation_model_override
-                ),
-                shadow_evaluation_sink=shadow_evaluation_sink,
-                correction_loop_enabled_override=(
-                    correction_loop_enabled_override
-                ),
                 stream_callback=stream_callback,
                 stage_callback=stage_callback,
                 response_ready_callback=response_ready_callback,
@@ -776,10 +429,6 @@ def execute_rag(
 def run_rag(
     payload: RagRequest,
     *,
-    shadow_evaluation_enabled_override: bool | None = None,
-    shadow_evaluation_model_override: str | None = None,
-    shadow_evaluation_sink: dict[str, Any] | None = None,
-    correction_loop_enabled_override: bool | None = None,
     stream_callback: Callable[[str], None] | None = None,
     stage_callback: Callable[[str, str], None] | None = None,
     response_ready_callback: Callable[[RagResponse], None] | None = None,
@@ -829,16 +478,6 @@ def run_rag(
         request_trace_id = current_trace_id()
         response = execute_rag(
             payload,
-            shadow_evaluation_enabled_override=(
-                shadow_evaluation_enabled_override
-            ),
-            shadow_evaluation_model_override=(
-                shadow_evaluation_model_override
-            ),
-            shadow_evaluation_sink=shadow_evaluation_sink,
-            correction_loop_enabled_override=(
-                correction_loop_enabled_override
-            ),
             stream_callback=(
                 instrumented_stream_callback if stream_callback is not None else None
             ),

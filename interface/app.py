@@ -75,6 +75,14 @@ def read_index() -> FileResponse:
     )
 
 
+@app.get("/faq")
+def read_faq() -> FileResponse:
+    return FileResponse(
+        INTERFACE_DIR / "faq.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/styles.css")
 def read_styles() -> FileResponse:
     return FileResponse(INTERFACE_DIR / "styles.css", media_type="text/css")

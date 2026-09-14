@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import parse_qs, urlparse
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
@@ -34,6 +37,7 @@ from interface.backend.llm_providers import (
     LLM_REQUEST_TIMEOUT_ENV,
     OPENAI_SERVICE_TIER_ENV,
     provider_for_model,
+    track_llm_costs,
 )
 from interface.backend.planner import (
     build_planner_prompt,
@@ -98,9 +102,7 @@ class RagExperimentSettings:
     top_k: int = DEFAULT_TOP_K
     final_k: int = DEFAULT_FINAL_K
     openai_service_tier: str | None = None
-    shadow_evaluation: bool = False
-    shadow_evaluation_model: str = DEFAULT_REFORMULATION_MODEL
-    correction_loop: bool = False
+    rerank_delay_seconds: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,13 @@ def non_negative_integer(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("la valeur doit etre superieure ou egale a 0")
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("la valeur doit etre positive ou nulle")
     return parsed
 
 
@@ -213,30 +222,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Desactive le reranking Cohere.",
     )
-    parser.add_argument(
-        "--shadow-evaluation",
-        action="store_true",
-        help=(
-            "Active l'evaluateur shadow et publie ses diagnostics comme metriques "
-            "de calibration Phoenix, sans corriger les reponses."
-        ),
-    )
-    parser.add_argument(
-        "--shadow-evaluation-model",
-        default=DEFAULT_REFORMULATION_MODEL,
-        help=(
-            "Modele dedie au juge shadow (defaut: modele de reformulation). "
-            "Il ne modifie jamais la reponse utilisateur."
-        ),
-    )
-    parser.add_argument(
-        "--correction-loop",
-        action="store_true",
-        help=(
-            "Autorise une correction maximum apres un verdict shadow "
-            "needs_correction."
-        ),
-    )
     parser.add_argument("--top-k", type=positive_integer, default=DEFAULT_TOP_K)
     parser.add_argument("--final-k", type=positive_integer, default=DEFAULT_FINAL_K)
     parser.add_argument(
@@ -273,6 +258,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=non_negative_integer,
         default=0,
         help="Reprises internes de chaque client LLM (defaut: 0).",
+    )
+    parser.add_argument(
+        "--rerank-delay-seconds",
+        type=non_negative_float,
+        default=10.0,
+        help=(
+            "Delai ajoute apres chaque cas utilisant le rerank Cohere, "
+            "pour respecter une limite de debit (defaut: 10)."
+        ),
     )
     return parser
 
@@ -318,11 +312,15 @@ def build_rag_request(
 
 def compact_experiment_output(
     response: RagResponse,
-    shadow_evaluation: Mapping[str, Any] | None = None,
+    llm_cost_usd: float | None = None,
+    priced_llm_calls: int = 0,
 ) -> dict[str, Any]:
     retrieval = response.retrieval
     execution_plan = retrieval.get("execution_plan") or {}
     telemetry = retrieval.get("telemetry") or {}
+    retrieved_sources = retrieval.get("retrieved_sources")
+    if not isinstance(retrieved_sources, list):
+        retrieved_sources = response.sources
     return {
         "answer": response.answer,
         "action": response.action,
@@ -336,9 +334,14 @@ def compact_experiment_output(
             }
             for source in response.sources
         ],
+        "retrieved_sources": [
+            compact_retrieved_source(source) for source in retrieved_sources
+        ],
         "trace_id": telemetry.get("trace_id"),
         "conversation_id": response.conversation_id,
         "message_id": response.message_id,
+        "estimated_llm_cost_usd": llm_cost_usd,
+        "priced_llm_calls": priced_llm_calls,
         "diagnostics": {
             "reformulation_model": retrieval.get("reformulation_model"),
             "reformulation_provider": model_provider_name(
@@ -357,27 +360,53 @@ def compact_experiment_output(
             "retrieval_mode": retrieval.get("retrieval_mode"),
             "used_rerank": retrieval.get("used_rerank"),
             "source_evaluation": retrieval.get("source_evaluation"),
-            "shadow_evaluation": dict(shadow_evaluation or {}),
-            "correction": retrieval.get("correction"),
-            "shadow_evaluation_history": retrieval.get(
-                "shadow_evaluation_history", []
-            ),
         },
+    }
+
+
+def source_value(source: Any, key: str) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key)
+    return getattr(source, key, None)
+
+
+def youtube_video_id_from_url(value: Any) -> str | None:
+    url = str(value or "").strip()
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host == "youtu.be":
+        return parsed.path.strip("/").split("/")[0] or None
+    if host in {"youtube.com", "m.youtube.com"}:
+        video_id = parse_qs(parsed.query).get("v", [""])[0].strip()
+        return video_id or None
+    return None
+
+
+def compact_retrieved_source(source: Any) -> dict[str, Any]:
+    video_url = source_value(source, "video_url")
+    return {
+        "chunk_id": source_value(source, "chunk_id"),
+        "youtube_video_id": youtube_video_id_from_url(video_url),
     }
 
 
 def build_rag_task(settings: RagExperimentSettings):
     def rag_ionis_task(input: Mapping[str, Any]) -> dict[str, Any]:
         request = build_rag_request(input, settings)
-        shadow_diagnostic: dict[str, Any] = {}
-        response = rag(
-            request,
-            shadow_evaluation_enabled_override=settings.shadow_evaluation,
-            shadow_evaluation_model_override=settings.shadow_evaluation_model,
-            shadow_evaluation_sink=shadow_diagnostic,
-            correction_loop_enabled_override=settings.correction_loop,
+        with track_llm_costs() as costs:
+            response = rag(request)
+        if (
+            settings.rerank_delay_seconds
+            and response.retrieval.get("used_rerank")
+        ):
+            time.sleep(settings.rerank_delay_seconds)
+        return compact_experiment_output(
+            response,
+            llm_cost_usd=costs.total_usd if costs.priced_calls else None,
+            priced_llm_calls=costs.priced_calls,
         )
-        return compact_experiment_output(response, shadow_diagnostic)
 
     return rag_ionis_task
 
@@ -385,6 +414,15 @@ def build_rag_task(settings: RagExperimentSettings):
 def response_nonempty(output: Mapping[str, Any] | None) -> bool:
     output = output or {}
     return bool(str(output.get("answer") or "").strip())
+
+
+def estimated_llm_cost_usd(
+    output: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    value = (output or {}).get("estimated_llm_cost_usd")
+    if not isinstance(value, (int, float)):
+        return None, "unlabeled", "Aucun tarif configure pour les appels LLM."
+    return float(value), "estimated", "Estimation USD des appels LLM du cas."
 
 
 def answer_action(output: Mapping[str, Any] | None) -> dict[str, str]:
@@ -410,156 +448,199 @@ def answer_action_match(
     )
 
 
-def _correction_diagnostic(output: Mapping[str, Any] | None) -> Mapping[str, Any]:
+def route_match(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
     output = output or {}
     diagnostics = output.get("diagnostics") or {}
-    if not isinstance(diagnostics, Mapping):
-        return {}
-    correction = diagnostics.get("correction") or {}
-    return correction if isinstance(correction, Mapping) else {}
+    actual_route = (
+        str(diagnostics.get("route") or "unknown")
+        if isinstance(diagnostics, Mapping)
+        else "unknown"
+    )
+    expected_route = str(
+        (expected or {}).get("expected_execution_route") or ""
+    ).strip()
+    if not expected_route:
+        return None, "unlabeled", "Le dataset ne fournit pas expected_execution_route."
+    matches = actual_route == expected_route
+    return (
+        float(matches),
+        "match" if matches else "mismatch",
+        f"attendu={expected_route}; obtenu={actual_route}",
+    )
 
 
-def correction_outcome(output: Mapping[str, Any] | None) -> dict[str, str]:
-    correction = _correction_diagnostic(output)
-    if not correction.get("attempted"):
-        return {"label": "not_attempted"}
-    succeeded = bool(correction.get("succeeded"))
-    return {
-        "label": "succeeded" if succeeded else "failed",
-        "explanation": str(
-            correction.get("error")
-            or f"strategy={correction.get('strategy')}; issue={correction.get('issue')}"
-        ),
-    }
+def expected_identifier_set(
+    expected: Mapping[str, Any] | None,
+    key: str,
+) -> set[str]:
+    value = (expected or {}).get(key, [])
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = []
+    if not isinstance(value, list):
+        return set()
+    return {str(item).strip() for item in value if str(item).strip()}
 
 
-def correction_count(output: Mapping[str, Any] | None) -> tuple[float, str]:
-    correction = _correction_diagnostic(output)
-    count = int(correction.get("count") or 0)
-    return float(count), "attempted" if count else "not_attempted"
-
-
-def correction_effectiveness(output: Mapping[str, Any] | None) -> dict[str, str]:
-    correction = _correction_diagnostic(output)
-    if not correction.get("attempted"):
-        return {"label": "not_attempted"}
-    if not correction.get("succeeded"):
-        return {
-            "label": "failed",
-            "explanation": str(correction.get("error") or "Correction échouée."),
-        }
-    verdict = str(_shadow_diagnostic(output).get("verdict") or "not_run")
-    return {
-        "label": "effective" if verdict == "acceptable" else "ineffective",
-        "explanation": f"final_verdict={verdict}",
-    }
-
-
-def _shadow_diagnostic(
+def retrieved_identifier_set(
     output: Mapping[str, Any] | None,
-) -> Mapping[str, Any]:
+    key: str,
+) -> set[str]:
     output = output or {}
-    diagnostics = output.get("diagnostics") or {}
-    if not isinstance(diagnostics, Mapping):
-        return {}
-    shadow = diagnostics.get("shadow_evaluation") or {}
-    return shadow if isinstance(shadow, Mapping) else {}
-
-
-def shadow_status(output: Mapping[str, Any] | None) -> dict[str, str]:
-    diagnostic = _shadow_diagnostic(output)
+    sources = output.get("retrieved_sources") or output.get("sources") or []
+    if not isinstance(sources, list):
+        return set()
     return {
-        "label": str(diagnostic.get("status") or "not_run"),
-        "explanation": str(diagnostic.get("reason") or "Diagnostic indisponible."),
+        str(source.get(key)).strip()
+        for source in sources
+        if isinstance(source, Mapping) and source.get(key) is not None
+        and str(source.get(key)).strip()
     }
 
 
-def shadow_verdict(output: Mapping[str, Any] | None) -> dict[str, str]:
-    diagnostic = _shadow_diagnostic(output)
-    return {
-        "label": str(diagnostic.get("verdict") or "not_run"),
-        "explanation": str(diagnostic.get("reason") or "Diagnostic indisponible."),
-    }
-
-
-def shadow_issue(output: Mapping[str, Any] | None) -> dict[str, str]:
-    diagnostic = _shadow_diagnostic(output)
-    return {
-        "label": str(diagnostic.get("issue") or "none"),
-        "explanation": str(diagnostic.get("reason") or "Diagnostic indisponible."),
-    }
-
-
-def shadow_grounded(
+def retrieval_recall(
     output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+    *,
+    expected_key: str,
+    actual_key: str,
 ) -> tuple[float | None, str, str]:
-    diagnostic = _shadow_diagnostic(output)
-    grounded = diagnostic.get("answer_grounded")
-    if not isinstance(grounded, bool):
-        return None, "not_run", "Diagnostic answer_grounded indisponible."
+    expected_ids = expected_identifier_set(expected, expected_key)
+    if not expected_ids:
+        return None, "unlabeled", f"Le dataset ne fournit pas {expected_key}."
+    actual_ids = retrieved_identifier_set(output, actual_key)
+    matched_ids = expected_ids & actual_ids
+    score = len(matched_ids) / len(expected_ids)
     return (
-        float(grounded),
-        "grounded" if grounded else "not_grounded",
-        str(diagnostic.get("reason") or ""),
+        score,
+        "measured",
+        f"retrouves={len(matched_ids)}/{len(expected_ids)}; retournes={len(actual_ids)}",
     )
 
 
-def shadow_retrieval_quality(
-    output: Mapping[str, Any] | None,
-) -> tuple[float | None, str, str]:
-    diagnostic = _shadow_diagnostic(output)
-    quality = diagnostic.get("retrieval_quality")
-    if not isinstance(quality, (int, float)) or isinstance(quality, bool):
-        return None, "not_run", "Diagnostic retrieval_quality indisponible."
-    score = float(quality)
-    return score, "measured", str(diagnostic.get("reason") or "")
-
-
-def shadow_status_match(
+def retrieval_precision(
     output: Mapping[str, Any] | None,
     expected: Mapping[str, Any] | None,
+    *,
+    expected_key: str,
+    actual_key: str,
 ) -> tuple[float | None, str, str]:
-    expected_status = str((expected or {}).get("shadow_status") or "").strip()
-    actual_status = str(_shadow_diagnostic(output).get("status") or "not_run")
-    if not expected_status:
-        return None, "unlabeled", "Le dataset ne fournit pas expected.shadow_status."
-    matches = actual_status == expected_status
+    expected_ids = expected_identifier_set(expected, expected_key)
+    if not expected_ids:
+        return None, "unlabeled", f"Le dataset ne fournit pas {expected_key}."
+    actual_ids = retrieved_identifier_set(output, actual_key)
+    if not actual_ids:
+        return 0.0, "measured", "Aucun resultat retourne."
+    matched_ids = expected_ids & actual_ids
+    score = len(matched_ids) / len(actual_ids)
     return (
-        float(matches),
-        "match" if matches else "mismatch",
-        f"attendu={expected_status}; obtenu={actual_status}",
+        score,
+        "measured",
+        f"pertinents={len(matched_ids)}/{len(actual_ids)}; attendus={len(expected_ids)}",
     )
 
 
-def shadow_verdict_match(
+def youtube_video_recall(
     output: Mapping[str, Any] | None,
     expected: Mapping[str, Any] | None,
 ) -> tuple[float | None, str, str]:
-    expected_verdict = str((expected or {}).get("shadow_verdict") or "").strip()
-    actual_verdict = str(_shadow_diagnostic(output).get("verdict") or "not_run")
-    if not expected_verdict:
-        return None, "unlabeled", "Le dataset ne fournit pas expected.shadow_verdict."
-    matches = actual_verdict == expected_verdict
-    return (
-        float(matches),
-        "match" if matches else "mismatch",
-        f"attendu={expected_verdict}; obtenu={actual_verdict}",
+    return retrieval_recall(
+        output,
+        expected,
+        expected_key="youtube_video_ids",
+        actual_key="youtube_video_id",
     )
 
 
-def shadow_issue_match(
+def youtube_video_precision(
     output: Mapping[str, Any] | None,
     expected: Mapping[str, Any] | None,
 ) -> tuple[float | None, str, str]:
-    expected_issue = str((expected or {}).get("shadow_issue") or "").strip()
-    actual_issue = str(_shadow_diagnostic(output).get("issue") or "none")
-    if not expected_issue:
-        return None, "unlabeled", "Le dataset ne fournit pas expected.shadow_issue."
-    matches = actual_issue == expected_issue
-    return (
-        float(matches),
-        "match" if matches else "mismatch",
-        f"attendu={expected_issue}; obtenu={actual_issue}",
+    return retrieval_precision(
+        output,
+        expected,
+        expected_key="youtube_video_ids",
+        actual_key="youtube_video_id",
+    )
+
+
+def route_scoped_video_metric(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+    *,
+    route: str,
+    metric: Callable[..., tuple[float | None, str, str]],
+) -> tuple[float | None, str, str]:
+    expected_route = str(
+        (expected or {}).get("expected_execution_route") or ""
+    ).strip()
+    if expected_route != route:
+        return None, "unlabeled", f"Metrique reservee aux cas {route}."
+    return metric(output, expected)
+
+
+def sql_youtube_video_recall(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return route_scoped_video_metric(
+        output, expected, route="sql_search", metric=youtube_video_recall
+    )
+
+
+def sql_youtube_video_precision(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return route_scoped_video_metric(
+        output, expected, route="sql_search", metric=youtube_video_precision
+    )
+
+
+def vector_youtube_video_recall(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return route_scoped_video_metric(
+        output, expected, route="vector_search", metric=youtube_video_recall
+    )
+
+
+def vector_youtube_video_precision(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return route_scoped_video_metric(
+        output, expected, route="vector_search", metric=youtube_video_precision
+    )
+
+
+def chunk_recall(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return retrieval_recall(
+        output,
+        expected,
+        expected_key="relevant_chunk_ids",
+        actual_key="chunk_id",
+    )
+
+
+def chunk_precision(
+    output: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return retrieval_precision(
+        output,
+        expected,
+        expected_key="relevant_chunk_ids",
+        actual_key="chunk_id",
     )
 
 
@@ -969,12 +1050,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         top_k=args.top_k,
         final_k=args.final_k,
         openai_service_tier=args.openai_service_tier,
-        shadow_evaluation=args.shadow_evaluation,
-        shadow_evaluation_model=normalize_model_name(
-            args.shadow_evaluation_model,
-            DEFAULT_REFORMULATION_MODEL,
-        ),
-        correction_loop=args.correction_loop,
+        rerank_delay_seconds=args.rerank_delay_seconds,
     )
 
     ensure_chat_schema()
@@ -993,29 +1069,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         evaluators = {
             "response_nonempty": response_nonempty,
+            "estimated_llm_cost_usd": estimated_llm_cost_usd,
             "answer_action": answer_action,
             "answer_action_match": answer_action_match,
+            "route_match": route_match,
+            "youtube_video_recall": youtube_video_recall,
+            "youtube_video_precision": youtube_video_precision,
+            "sql_youtube_video_recall": sql_youtube_video_recall,
+            "sql_youtube_video_precision": sql_youtube_video_precision,
+            "vector_youtube_video_recall": vector_youtube_video_recall,
+            "vector_youtube_video_precision": vector_youtube_video_precision,
+            "chunk_recall": chunk_recall,
+            "chunk_precision": chunk_precision,
         }
-        if settings.shadow_evaluation:
-            evaluators.update(
-                {
-                    "shadow_status": shadow_status,
-                    "shadow_verdict": shadow_verdict,
-                    "shadow_issue": shadow_issue,
-                    "shadow_grounded": shadow_grounded,
-                    "shadow_retrieval_quality": shadow_retrieval_quality,
-                    "shadow_verdict_match": shadow_verdict_match,
-                    "shadow_issue_match": shadow_issue_match,
-                }
-            )
-        if settings.correction_loop:
-            evaluators.update(
-                {
-                    "correction_outcome": correction_outcome,
-                    "correction_count": correction_count,
-                    "correction_effectiveness": correction_effectiveness,
-                }
-            )
         experiment = client.experiments.run_experiment(
             dataset=dataset,
             task=build_rag_task(settings),
@@ -1047,14 +1113,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "top_k": settings.top_k,
                 "final_k": settings.final_k,
                 "openai_service_tier": settings.openai_service_tier,
-                "shadow_evaluation": settings.shadow_evaluation,
-                "shadow_evaluation_model": settings.shadow_evaluation_model,
-                "shadow_evaluation_provider": model_provider_name(
-                    settings.shadow_evaluation_model
-                ),
-                "correction_loop": settings.correction_loop,
                 "llm_timeout_seconds": args.llm_timeout,
                 "llm_max_retries": args.llm_max_retries,
+                "rerank_delay_seconds": settings.rerank_delay_seconds,
             },
             dry_run=args.dry_run or False,
             timeout=args.timeout,

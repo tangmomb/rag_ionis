@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -17,6 +18,7 @@ from interface.backend.config import (
 )
 from interface.backend.planner import PERSON_NAME_PART_SIMILARITY_THRESHOLD
 from interface.backend.schemas import ExecutionPlan, ExecutionRoute, PlannerPlan, RagRequest
+from interface.backend.utilities import normalize_text
 
 
 class RagOrchestrationState(TypedDict, total=False):
@@ -113,6 +115,15 @@ def _resolved_plan_companies(state: RagOrchestrationState) -> list[str]:
         if float(item.get("score", 0)) >= 0.85
     ]
     return companies or _planner_plan(state).companies
+
+
+def _is_ionis_stm_company(company: str) -> bool:
+    return re.sub(r"[\s_-]+", "", normalize_text(company).strip()) == "ionisstm"
+
+
+def _exclude_ionis_stm_companies(companies: list[str]) -> list[str]:
+    """Ionis-STM is the corpus owner, never a company retrieval filter."""
+    return [company for company in companies if not _is_ionis_stm_company(company)]
 
 
 def _resolved_plan_title_hints(state: RagOrchestrationState) -> list[str]:
@@ -321,7 +332,14 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     planner_plan = _planner_plan(state)
     execution_plan = services.build_execution_plan(payload, planner_plan)
     execution_plan.persons = _resolved_plan_persons(state)
-    execution_plan.companies = _resolved_plan_companies(state)
+    # Do not let fuzzy company resolution reintroduce a misspelling such as
+    # "lonis stm" after the planner correctly identified Ionis-STM.
+    planner_companies = _planner_plan(state).companies
+    execution_plan.companies = (
+        []
+        if any(_is_ionis_stm_company(company) for company in planner_companies)
+        else _exclude_ionis_stm_companies(_resolved_plan_companies(state))
+    )
     execution_plan.title_hints = _resolved_plan_title_hints(state)
     # The LLM supplies only the coarse direct/search intent. Once entities have
     # been resolved, expose the exact graph branch on the final execution plan.
@@ -332,8 +350,9 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
     elif (
         execution_plan.route == "sql_search"
         or (
-            execution_plan.sql_sub_intent is None
+            not execution_plan.analytics_requested
             and not execution_plan.description_requested
+            and not execution_plan.transcription_requested
             and (
                 execution_plan.persons
                 or execution_plan.companies
@@ -357,7 +376,8 @@ def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
 
     base_retrieval = {
         "route": execution_plan.route,
-        "sql_sub_intent": execution_plan.sql_sub_intent,
+        "analytics_requested": execution_plan.analytics_requested,
+        "transcription_requested": execution_plan.transcription_requested,
         "planner_prompt": state["planner_prompt"],
         "planner_response_raw": state["planner_raw"],
         "pydantic_verification": state["pydantic_verification"],
@@ -453,14 +473,22 @@ def run_structured_lookup(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
     execution_plan = _execution_plan(state)
     execution_plan_trace = _execution_plan_trace(execution_plan)
-    sql_sub_intent = execution_plan.sql_sub_intent
-    lookup_intent = (
-        "analytics"
-        if sql_sub_intent == "analytics"
-        else "description"
-        if execution_plan.description_requested
-        else "specific_persons"
-    )
+    if execution_plan.analytics_requested:
+        lookup_intent = "analytics"
+    elif execution_plan.transcription_requested:
+        lookup_intent = "transcript_verbatim"
+    elif execution_plan.description_requested:
+        lookup_intent = "description"
+    else:
+        lookup_intent = "specific_persons"
+    if lookup_intent in {"description", "transcript_verbatim"} and not any(
+        [execution_plan.persons, execution_plan.companies, execution_plan.title_hints]
+    ):
+        return [], {
+            "mode": lookup_intent,
+            "status": "missing_document_entity",
+            "result_count": 0,
+        }, lookup_intent
     with services.trace_operation(
         "execution_plan",
         kind="CHAIN",
@@ -471,7 +499,8 @@ def run_structured_lookup(
             kind="CHAIN",
             input_value={
                 "execution_plan": execution_plan_trace,
-                "sql_sub_intent": sql_sub_intent,
+                "analytics_requested": execution_plan.analytics_requested,
+                "transcription_requested": execution_plan.transcription_requested,
                 "lookup_intent": lookup_intent,
             },
         ) as sql_span:
@@ -483,13 +512,91 @@ def run_structured_lookup(
                     database_persons=state["database_persons"],
                     database_companies=state["database_company"],
                 )
-            elif lookup_intent == "description":
+            elif lookup_intent in {"description", "transcript_verbatim"}:
+                person_candidate_sources: list[dict[str, Any]] = []
+                if execution_plan.persons:
+                    # Follow the same entity lookup sequence as a person route
+                    # before fetching the requested document. It both gives
+                    # Phoenix comparable spans and supplies precise video
+                    # candidates when no title was provided.
+                    for span_name, persons, filters in (
+                        (
+                            "person_in_speaker_lookup",
+                            state["database_persons"],
+                            {
+                                "database_persons": state["database_persons"],
+                                "database_company": [],
+                                "transcript_persons": [],
+                            },
+                        ),
+                        (
+                            "person_in_transcript_lookup",
+                            _resolved_transcript_persons(state),
+                            {
+                                "database_persons": [],
+                                "database_company": [],
+                                "transcript_persons": _resolved_transcript_persons(state),
+                            },
+                        ),
+                    ):
+                        if not persons:
+                            continue
+                        with services.trace_operation(
+                            span_name,
+                            kind="RETRIEVER",
+                            input_value={"lookup_intent": lookup_intent, "persons": persons},
+                        ) as person_lookup_span:
+                            candidate_sources, candidate_trace = services.lookup_video_document(
+                                execution_plan,
+                                "specific_persons",
+                                **filters,
+                            )
+                            person_lookup_span.set_output(
+                                {
+                                    "result_count": len(candidate_sources),
+                                    "lookup_strategy": candidate_trace.get("lookup_strategy"),
+                                }
+                            )
+                        person_candidate_sources.extend(candidate_sources)
+
+                candidate_titles = list(
+                    dict.fromkeys(
+                        source["video_title"]
+                        for source in person_candidate_sources
+                        if source.get("video_title")
+                    )
+                )
+                candidate_video_ids = {
+                    int(source["chunk_id"])
+                    for source in person_candidate_sources
+                    if source.get("chunk_id") is not None
+                }
+                if person_candidate_sources:
+                    with services.trace_operation(
+                        "deduplicate_videos",
+                        kind="RETRIEVER",
+                        input_value={
+                            "sources": ["persons_in_speakers", "persons_in_transcripts"],
+                            "input_count": len(person_candidate_sources),
+                        },
+                    ) as deduplication_span:
+                        deduplication_span.set_output(
+                            {
+                                "input_count": len(person_candidate_sources),
+                                "duplicate_count": len(person_candidate_sources) - len(candidate_video_ids),
+                                "output_count": len(candidate_video_ids),
+                                "key": "video_id",
+                            }
+                        )
+                document_plan = execution_plan.model_copy(
+                    update={"title_hints": candidate_titles}
+                ) if candidate_titles and not execution_plan.title_hints else execution_plan
                 sources, direct_trace = services.lookup_video_document(
-                    execution_plan,
+                    document_plan,
                     lookup_intent,
-                    database_persons=execution_plan.persons,
+                    database_persons=state["database_persons"],
                     database_company=state["database_company"],
-                    transcript_persons=execution_plan.persons,
+                    transcript_persons=_resolved_transcript_persons(state),
                 )
             else:
                 entity_queries: list[tuple[str, str, ExecutionPlan, dict[str, Any]]] = []
@@ -597,7 +704,7 @@ def run_structured_lookup(
                 "source_count": len(sources),
             }
         )
-    return sources, direct_trace, sql_sub_intent
+    return sources, direct_trace, lookup_intent
 
 
 def sql_search(
@@ -606,7 +713,7 @@ def sql_search(
 ) -> dict[str, Any]:
     payload = _payload(state)
     execution_plan = _execution_plan(state)
-    sources, direct_trace, sql_sub_intent = run_structured_lookup(
+    sources, direct_trace, lookup_intent = run_structured_lookup(
         state, _runtime_client(runtime)
     )
     retrieval = {
@@ -635,8 +742,11 @@ def sql_search(
         "rrf": {},
         "rerank": {},
         "direct_lookup": direct_trace,
-        "sql_sub_intent": sql_sub_intent,
+        "lookup_intent": lookup_intent,
+        "document_target_missing": direct_trace.get("status") == "missing_document_entity",
+        "analytics_requested": execution_plan.analytics_requested,
         "description_requested": execution_plan.description_requested,
+        "transcription_requested": execution_plan.transcription_requested,
     }
     return {"answer": "", "sources": sources, "retrieval": retrieval}
 

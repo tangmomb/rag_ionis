@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, Sequence
+from typing import Any, Callable, Iterator, Literal, Protocol, Sequence
 from google import genai
 from google.genai import types as google_types
 from langchain_openai import ChatOpenAI
@@ -20,6 +22,14 @@ LLM_REQUEST_TIMEOUT_ENV = "RAG_LLM_REQUEST_TIMEOUT_SECONDS"
 LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
 DEFAULT_OPENAI_SERVICE_TIER = "fast"
+LLM_COST_RATES_ENV = "RAG_LLM_COST_RATES_USD_PER_MILLION"
+# Prix standard USD / million de tokens. Les valeurs surchargeables par
+# environnement évitent de figer les tarifs quand un fournisseur les modifie.
+DEFAULT_LLM_COST_RATES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
+    "mistral-small-latest": (0.15, 0.6),
+    "mistral-medium-latest": (1.5, 7.5),
+    "mistral-large-latest": (0.5, 1.5),
+}
 GEMINI_THINKING_LEVELS = {
     "gemini-3.5-flash-lite": "low",
     "gemini-3.8-flash": "low",
@@ -83,6 +93,33 @@ class LLMProviderError(RuntimeError):
         self.provider = provider
         self.status_code = status_code
         self.payload = payload
+
+
+@dataclass
+class LLMCostTotals:
+    prompt_usd: float = 0.0
+    completion_usd: float = 0.0
+    priced_calls: int = 0
+
+    @property
+    def total_usd(self) -> float:
+        return self.prompt_usd + self.completion_usd
+
+
+_ACTIVE_LLM_COST_TOTALS: ContextVar[LLMCostTotals | None] = ContextVar(
+    "active_llm_cost_totals", default=None
+)
+
+
+@contextmanager
+def track_llm_costs() -> Iterator[LLMCostTotals]:
+    """Collect the priced LLM calls issued within one request or experiment run."""
+    totals = LLMCostTotals()
+    token = _ACTIVE_LLM_COST_TOTALS.set(totals)
+    try:
+        yield totals
+    finally:
+        _ACTIVE_LLM_COST_TOTALS.reset(token)
 
 
 def configured_request_timeout_seconds() -> float:
@@ -313,7 +350,7 @@ def invoke_langchain_model(
             "llm.output_messages",
             [{"role": "assistant", "content": output_text}],
         )
-        add_llm_usage_attributes(operation, response)
+        add_llm_usage_attributes(operation, response, model=model)
         return result
 
 
@@ -341,18 +378,76 @@ def langchain_result_text(result: Any) -> str:
     return content_text(getattr(raw_langchain_response(result), "content", "")).strip()
 
 
-def add_llm_usage_attributes(operation: Any, response: Any) -> None:
+def add_llm_usage_attributes(
+    operation: Any,
+    response: Any,
+    *,
+    model: str | None = None,
+) -> None:
     """Record usage from LangChain and provider-native response shapes."""
     usage = usage_from_response(response)
+    prompt_tokens = usage_value(usage, "input_tokens", "prompt_tokens")
+    completion_tokens = usage_value(usage, "output_tokens", "completion_tokens")
     operation.set_attribute(
         "llm.token_count.prompt",
-        usage_value(usage, "input_tokens", "prompt_tokens"),
+        prompt_tokens,
     )
     operation.set_attribute(
         "llm.token_count.completion",
-        usage_value(usage, "output_tokens", "completion_tokens"),
+        completion_tokens,
     )
     operation.set_attribute("llm.token_count.total", usage_value(usage, "total_tokens"))
+    costs = estimated_llm_cost_usd(model, prompt_tokens, completion_tokens)
+    if costs is not None:
+        prompt_cost, completion_cost = costs
+        operation.set_attribute("llm.cost.prompt", prompt_cost)
+        operation.set_attribute("llm.cost.completion", completion_cost)
+        operation.set_attribute("llm.cost.total", prompt_cost + completion_cost)
+        totals = _ACTIVE_LLM_COST_TOTALS.get()
+        if totals is not None:
+            totals.prompt_usd += prompt_cost
+            totals.completion_usd += completion_cost
+            totals.priced_calls += 1
+
+
+def configured_llm_cost_rates() -> dict[str, tuple[float, float]]:
+    """Return per-model input/output USD rates, per one million tokens."""
+    rates = dict(DEFAULT_LLM_COST_RATES_USD_PER_MILLION)
+    raw_value = os.getenv(LLM_COST_RATES_ENV, "").strip()
+    if not raw_value:
+        return rates
+    try:
+        overrides = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return rates
+    if not isinstance(overrides, dict):
+        return rates
+    for model, value in overrides.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            prompt_rate = float(value["prompt"])
+            completion_rate = float(value["completion"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if prompt_rate >= 0 and completion_rate >= 0:
+            rates[str(model).strip()] = (prompt_rate, completion_rate)
+    return rates
+
+
+def estimated_llm_cost_usd(
+    model: str | None,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> tuple[float, float] | None:
+    """Estimate input/output cost from provider usage and configured tariffs."""
+    if not model or prompt_tokens is None or completion_tokens is None:
+        return None
+    rates = configured_llm_cost_rates().get(model)
+    if rates is None:
+        return None
+    prompt_rate, completion_rate = rates
+    return (prompt_tokens * prompt_rate / 1_000_000, completion_tokens * completion_rate / 1_000_000)
 
 
 def usage_from_response(response: Any) -> Any:

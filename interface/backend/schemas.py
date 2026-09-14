@@ -23,10 +23,6 @@ ExecutionRoute = Literal[
     "sql_search",
     "vector_search",
 ]
-SqlSubIntent = Literal["analytics"]
-AnalyticsScope = Literal["global", "specific"]
-AnalyticsMetric = Literal["all", "views", "likes", "comments"]
-AnalyticsOrder = Literal["asc", "desc"]
 AnswerAction = Literal["answer", "abstain"]
 
 
@@ -61,12 +57,7 @@ class PlannerPlan(BaseModel):
     _output_rejection_reason: str | None = PrivateAttr(default=None)
 
     route: PlannerRoute = "search"
-    sql_sub_intent: SqlSubIntent | None = None
-    analytics_scope: AnalyticsScope | None = None
-    analytics_metric: AnalyticsMetric | None = None
-    analytics_order: AnalyticsOrder | None = None
-    analytics_rank_start: int | None = Field(default=None, ge=1, le=100)
-    analytics_rank_end: int | None = Field(default=None, ge=1, le=100)
+    analytics_requested: bool = False
     query_text: str
     query_text_bm25: str | None = None
     title_hints: list[str] = Field(default_factory=list)
@@ -75,33 +66,7 @@ class PlannerPlan(BaseModel):
     published_after: str | None = None
     published_before: str | None = None
     description_requested: bool = False
-
-    @model_validator(mode="after")
-    def _validate_analytics_scope(self) -> "PlannerPlan":
-        if self.sql_sub_intent == "analytics":
-            self.analytics_scope = (
-                "specific"
-                if self.title_hints or self.persons or self.companies
-                else self.analytics_scope or "specific"
-            )
-            if self.analytics_scope == "global":
-                self.analytics_metric = self.analytics_metric or "all"
-                self.analytics_rank_start = self.analytics_rank_start or 1
-                self.analytics_rank_end = self.analytics_rank_end or 3
-            else:
-                self.analytics_metric = None
-                self.analytics_order = None
-                self.analytics_rank_start = None
-                self.analytics_rank_end = None
-        else:
-            self.analytics_scope = None
-            self.analytics_metric = None
-            self.analytics_order = None
-            self.analytics_rank_start = None
-            self.analytics_rank_end = None
-        if self.analytics_rank_start and self.analytics_rank_end and self.analytics_rank_start > self.analytics_rank_end:
-            raise ValueError("analytics_rank_start doit être inférieur ou égal à analytics_rank_end.")
-        return self
+    transcription_requested: bool = False
 
     @property
     def title_hint(self) -> str | None:
@@ -119,12 +84,7 @@ class ExecutionPlan(BaseModel):
     # This is the final, deterministic graph branch.  It deliberately differs
     # from PlannerPlan.route, which is only the LLM's coarse direct/search intent.
     route: ExecutionRoute = "vector_search"
-    sql_sub_intent: SqlSubIntent | None = None
-    analytics_scope: AnalyticsScope | None = None
-    analytics_metric: AnalyticsMetric | None = None
-    analytics_order: AnalyticsOrder | None = None
-    analytics_rank_start: int | None = Field(default=None, ge=1, le=100)
-    analytics_rank_end: int | None = Field(default=None, ge=1, le=100)
+    analytics_requested: bool = False
     raw_question: str
     query_text: str
     query_text_bm25: str
@@ -134,35 +94,9 @@ class ExecutionPlan(BaseModel):
     published_after: str | None = None
     published_before: str | None = None
     description_requested: bool = False
+    transcription_requested: bool = False
     top_k: int | None = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     final_k: int | None = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
-
-    @model_validator(mode="after")
-    def _validate_analytics_scope(self) -> "ExecutionPlan":
-        if self.sql_sub_intent == "analytics":
-            self.analytics_scope = (
-                "specific"
-                if self.title_hints or self.persons or self.companies
-                else self.analytics_scope or "specific"
-            )
-            if self.analytics_scope == "global":
-                self.analytics_metric = self.analytics_metric or "all"
-                self.analytics_rank_start = self.analytics_rank_start or 1
-                self.analytics_rank_end = self.analytics_rank_end or 3
-            else:
-                self.analytics_metric = None
-                self.analytics_order = None
-                self.analytics_rank_start = None
-                self.analytics_rank_end = None
-        else:
-            self.analytics_scope = None
-            self.analytics_metric = None
-            self.analytics_order = None
-            self.analytics_rank_start = None
-            self.analytics_rank_end = None
-        if self.analytics_rank_start and self.analytics_rank_end and self.analytics_rank_start > self.analytics_rank_end:
-            raise ValueError("analytics_rank_start doit être inférieur ou égal à analytics_rank_end.")
-        return self
 
     @property
     def title_hint(self) -> str | None:

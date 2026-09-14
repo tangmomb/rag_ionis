@@ -36,8 +36,12 @@ ANSWER_ACTION_INSTRUCTION = (
     "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
     "abstain si la demande est ambiguë ou que les éléments fournis ne permettent pas "
     "d'y répondre fidèlement. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
-    "une question de recherche courte, autonome et plus précise qui pourrait permettre de "
-    "répondre. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
+    "une question de recherche autonome, détaillée et plus précise qui pourrait permettre de "
+    "répondre. Un échec provient souvent d'entités (personne, entreprise, vidéo ou intitulé) "
+    "non résolues : explicite-les avec leurs noms complets et tous les indices utiles. N'hésite pas "
+    "à formuler une question longue, en y incluant le maximum d'informations fiables de la demande "
+    "initiale et du contexte ; la question ayant échoué était peut-être trop courte ou insuffisamment "
+    "détaillée. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
     "Le champ `answer` contient uniquement le message final à afficher et "
     "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )
@@ -285,7 +289,7 @@ def format_global_analytics_context(sources: list[dict[str, Any]]) -> str | None
 def format_answer_sources(
     sources: list[dict[str, Any]],
     *,
-    sql_sub_intent: str | None = None,
+    lookup_intent: str | None = None,
 ) -> str:
     """Use a compact semantic layout for global analytics, otherwise source cards."""
     global_context = format_global_analytics_context(sources)
@@ -304,7 +308,7 @@ def format_answer_sources(
     )
     if not source_cards:
         return ""
-    if sql_sub_intent != "analytics":
+    if lookup_intent != "analytics":
         return source_cards
     result_intro = str(sources[0].get("result_intro") or "").strip()
     return f"{result_intro}\n\n{source_cards}" if result_intro else source_cards
@@ -383,8 +387,8 @@ def generate_answer(
     raise RuntimeError("Le modele n'a pas renvoye de texte exploitable.")
 
 
-def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
-    if sql_sub_intent == "analytics":
+def build_structured_lookup_prompt(lookup_intent: str | None) -> str:
+    if lookup_intent == "analytics":
         return (
             "Tu réponds à une demande analytique à partir du résultat SQL fourni. "
             "Respecte exactement l'opération demandée : comptage, agrégation, classement, extremum ou statistiques d'une vidéo. "
@@ -394,7 +398,7 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
             "Utilise seulement le ou les classements nécessaires à la question ; ne récite pas les autres. "
             "N'invente aucune valeur manquante et indique clairement lorsqu'une statistique n'est pas disponible. "
         )
-    if sql_sub_intent == "description":
+    if lookup_intent == "description":
         return (
             "Tu reponds a une demande de description d'une video. "
             "Identifie la video a partir des resultats fournis. "
@@ -402,13 +406,13 @@ def build_sql_sub_intent_prompt(sql_sub_intent: str | None) -> str:
             "Ne recopie jamais la description brute seule et n'ajoute aucune information absente de la description. "
             "Il s'agit de restituer la description de la video, pas de la resumer ni de l'analyser. "
         )
-    if sql_sub_intent == "transcript_verbatim":
+    if lookup_intent == "transcript_verbatim":
         return (
             "Tu reponds a une demande de transcript de video. "
             "Identifie la video correspondante dans les resultats fournis. "
             "Restitue le transcript fidelement, sans le remplacer par un resume, sans inventer de contenu et sans ajouter d'analyse non demandee. "
         )
-    if sql_sub_intent == "transcript_qa":
+    if lookup_intent == "transcript_qa":
         return (
             "Tu reponds a une demande d'analyse, de synthese ou a une question sur le contenu d'une video en utilisant son transcript enrichi avec timecodes comme source. "
             "Respecte exactement l'operation demandee, synthetise les passages pertinents et ne restitue pas le transcript en entier. "
@@ -429,7 +433,7 @@ def generate_sql_answer(
     client: LLMClientProtocol | None,
     question: str,
     answer_model: str | None,
-    sql_sub_intent: str | None,
+    lookup_intent: str | None,
     sources: list[dict[str, Any]],
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
@@ -439,20 +443,20 @@ def generate_sql_answer(
         if trace is not None:
             trace["action"] = "answer" if sources else "abstain"
         if not sources:
-            if sql_sub_intent == "specific_persons":
+            if lookup_intent == "specific_persons":
                 return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
             return (
                 "Je n'ai trouve aucun contenu correspondant a cette demande. "
                 "Si tu fais reference a une video precise, indique son titre exact ou un mot-cle du titre."
             )
-        if sql_sub_intent == "specific_persons":
+        if lookup_intent == "specific_persons":
             lines = ["Videos trouvees :"]
             for index, item in enumerate(sources, start=1):
                 lines.append(f"- [S{index}] {item['video_title']} ({item['video_url']})")
             return "\n".join(lines)
         return f"[S1] {sources[0]['text']}"
 
-    task_prompt = build_sql_sub_intent_prompt(sql_sub_intent)
+    task_prompt = build_structured_lookup_prompt(lookup_intent)
     source_marker_instruction = SOURCE_SELECTION_INSTRUCTION
     system_prompt = render_answer_system_prompt(
         prompt_template,
@@ -470,7 +474,7 @@ def generate_sql_answer(
                     + (
                         format_answer_sources(
                             sources,
-                            sql_sub_intent=sql_sub_intent,
+                            lookup_intent=lookup_intent,
                         )
                         or "Aucun résultat SQL exploitable."
                     )
@@ -532,6 +536,27 @@ def generate_person_clarification_answer(
     raise RuntimeError("Le modele n'a pas renvoye de clarification exploitable.")
 
 
+def generate_document_lookup_answer(
+    lookup_intent: str | None,
+    sources: list[dict[str, Any]],
+    trace: dict[str, Any] | None = None,
+) -> str:
+    """Return the SQL document payload directly, without an answer-model call."""
+    label = "transcription" if lookup_intent == "transcript_verbatim" else "description"
+    if not sources:
+        if trace is not None:
+            trace["action"] = "abstain"
+        return f"Je n'ai trouvé aucune {label} correspondant à cette demande."
+
+    if trace is not None:
+        trace["action"] = "answer"
+        trace["source_indexes"] = [1]
+    source = sources[0]
+    # `text` is the normalized payload built directly from the SQL row.
+    content = source.get("text")
+    return f"Voici la {label} :\n\n{content or 'Contenu non disponible.'}"
+
+
 def generate_final_answer(
     client: LLMClientProtocol | None,
     question: str,
@@ -565,11 +590,18 @@ def generate_final_answer(
             trace["action"] = "answer"
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
     if route == "sql_search":
+        lookup_intent = retrieval.get("lookup_intent")
+        if lookup_intent in {"description", "transcript_verbatim"}:
+            if retrieval.get("document_target_missing"):
+                if trace is not None:
+                    trace["action"] = "answer"
+                return "Oui, de quelle vidéo ?"
+            return generate_document_lookup_answer(lookup_intent, sources, trace)
         return generate_sql_answer(
             client,
             generation_question,
             answer_model,
-            "description" if retrieval.get("description_requested") else retrieval.get("sql_sub_intent"),
+            lookup_intent,
             sources,
             trace,
             prompt_template,

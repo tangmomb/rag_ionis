@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG YouTube IONIS-STM</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=10" />
+    <link rel="stylesheet" href="styles.css?v=11" />
   </head>
   <body>
     <main class="app">
@@ -43,19 +43,22 @@
                 </div>
               </div>
             </div>
-            <a
-              class="channel-link"
-              href="https://www.youtube.com/@IONIS-STM/videos"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Voir la chaîne YouTube IONIS-STM"
-            >
-              Voir la chaîne
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M7 17 17 7" />
-                <path d="M8 7h9v9" />
-              </svg>
-            </a>
+            <div class="topbar-links">
+              <a class="faq-link" href="/faq">FAQ</a>
+              <a
+                class="channel-link"
+                href="https://www.youtube.com/@IONIS-STM/videos"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Voir la chaîne YouTube IONIS-STM"
+              >
+                Voir la chaîne
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7 17 17 7" />
+                  <path d="M8 7h9v9" />
+                </svg>
+              </a>
+            </div>
           </div>
         </header>
 
@@ -75,7 +78,25 @@
                   Qui est Aymerich ?
                 </button>
                 <button type="button" class="suggested-question">
-                  J'ai besoin de la transcription d'une vidéo.
+                  J'ai besoin de la transcription de la vidéo de Salim.
+                </button>
+                <button type="button" class="suggested-question">
+                  Quelle vidéo a le plus de vues ?
+                </button>
+                <button type="button" class="suggested-question">
+                  Quelle vidéo a gagné le plus de vues entre août et septembre ?
+                </button>
+                <button type="button" class="suggested-question">
+                  J'ai besoin de la description de la vidéo de Gaëlle.
+                </button>
+                <button type="button" class="suggested-question">
+                  Des points communs entre Sophie Ollivier et Chloé Leprètre ?
+                </button>
+                <button type="button" class="suggested-question">
+                  Pourquoi faire Ionis-STM ?
+                </button>
+                <button type="button" class="suggested-question">
+                  C'est quoi l'océan rouge ?
                 </button>
                 <button type="button" class="suggested-question">
                   Quelles questions ont été posées à Fadila ?
@@ -292,13 +313,13 @@
           role === "assistant" && Number.isInteger(messageId)
             ? `
               <div class="message-actions">
-                <button type="button" class="icon-btn" aria-label="J'aime" data-feedback="true">
+                <button type="button" class="icon-btn" aria-label="J'aime" aria-pressed="false" data-feedback="true">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M14 10V5.5c0-1.4-.8-2.7-2-3.3L8.7 9.1A2 2 0 0 0 8 10.5V19a2 2 0 0 0 2 2h6.2a3 3 0 0 0 2.9-2.3l1.4-6A2 2 0 0 0 18.6 10H14Z" />
                     <path d="M4 10h4v11H4z" />
                   </svg>
                 </button>
-                <button type="button" class="icon-btn" aria-label="Je n'aime pas" data-feedback="false">
+                <button type="button" class="icon-btn" aria-label="Je n'aime pas" aria-pressed="false" data-feedback="false">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M10 14v4.5c0 1.4.8 2.7 2 3.3l3.3-6.9a2 2 0 0 0 .7-1.4V5a2 2 0 0 0-2-2H7.8a3 3 0 0 0-2.9 2.3l-1.4 6A2 2 0 0 0 5.4 14H10Z" />
                     <path d="M20 14h-4V3h4z" />
@@ -321,6 +342,12 @@
           feedbackButtons.forEach((button) => {
             button.addEventListener("click", async () => {
               const feedback = button.dataset.feedback === "true";
+              const previousStates = Array.from(feedbackButtons, (item) =>
+                item.getAttribute("aria-pressed"),
+              );
+              feedbackButtons.forEach((item) => {
+                item.setAttribute("aria-pressed", String(item === button));
+              });
               feedbackButtons.forEach((item) => (item.disabled = true));
               try {
                 const response = await fetch(
@@ -332,11 +359,12 @@
                   },
                 );
                 if (!response.ok) throw new Error("Sauvegarde du feedback impossible.");
-                feedbackButtons.forEach((item) => {
-                  item.setAttribute("aria-pressed", String(item === button));
-                });
-              } catch (_error) {
                 feedbackButtons.forEach((item) => (item.disabled = false));
+              } catch (_error) {
+                feedbackButtons.forEach((item, index) => {
+                  item.setAttribute("aria-pressed", previousStates[index] || "false");
+                  item.disabled = false;
+                });
               }
             });
           });

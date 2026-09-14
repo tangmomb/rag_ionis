@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FAQ · RAG YouTube IONIS-STM</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css?v=11" />
+  </head>
+  <body>
+    <main class="faq-page">
+      <section class="faq-content">
+        <a class="faq-back-link" href="/">← Retour à l'outil</a>
+        <div class="faq-list">
+          <details class="faq-item" open>
+            <summary>Quelles sont les valeurs de précision et de rappel du RAG ?</summary>
+            <div class="faq-answer">
+              <dl class="faq-metrics">
+                <div>
+                  <dt>Vidéos — recall</dt>
+                  <dd>86,4&nbsp;%</dd>
+                  <p>Part des vidéos attendues que le RAG retrouve.<br />Plus haut signifie moins de sources pertinentes manquées.</p>
+                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                </div>
+                <div>
+                  <dt>Vidéos — précision</dt>
+                  <dd>52,9&nbsp;%</dd>
+                  <p>Part des vidéos retournées qui sont pertinentes.<br />Plus haut signifie moins de résultats hors sujet.</p>
+                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                </div>
+                <div>
+                  <dt>Vidéos via route SQL — recall / précision</dt>
+                  <dd>88,9&nbsp;% / 83,3&nbsp;%</dd>
+                  <p>Mesure les vidéos des requêtes traitées en SQL.<br />Recall : couverture ; précision : pertinence des retours.</p>
+                  <span class="faq-metric-route">Route concernée : SQL</span>
+                </div>
+                <div>
+                  <dt>Vidéos via route vectorielle — recall / précision</dt>
+                  <dd>84,6&nbsp;% / 31,8&nbsp;%</dd>
+                  <p>Mesure les vidéos des requêtes traitées par recherche sémantique.<br />Recall : couverture ; précision : pertinence des retours.</p>
+                  <span class="faq-metric-route">Route concernée : vectorielle</span>
+                </div>
+                <div>
+                  <dt>Chunks — recall / précision</dt>
+                  <dd>84,6&nbsp;% / 18,5&nbsp;%</dd>
+                  <p>Mesure les passages attendus après la recherche et le rerank.<br />Recall : passages retrouvés ; précision : passages utiles.</p>
+                  <span class="faq-metric-route">Route concernée : vectorielle</span>
+                </div>
+                <div>
+                  <dt>Route attendue</dt>
+                  <dd>95,5&nbsp;%</dd>
+                  <p>Part des questions envoyées vers la bonne route SQL ou vectorielle.<br />Plus haut signifie un meilleur aiguillage initial.</p>
+                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                </div>
+                <div>
+                  <dt>Coût moyen par question</dt>
+                  <dd>0,0072&nbsp;$</dd>
+                  <p>Estimation du coût des appels LLM pour une question complète.<br />Elle inclut reformulation, planification et réponse.</p>
+                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                </div>
+              </dl>
+            </div>
+          </details>
+          <details class="faq-item">
+            <summary>Combien d'appels LLM sont effectués dans le pipeline de réponse ?</summary>
+            <div class="faq-answer">
+              <p>
+                Pour une question de recherche standard, le pipeline effectue <strong>3 appels LLM</strong> :
+                reformulation de la question, planification de la recherche, puis génération de la réponse.
+              </p>
+              <p>
+                Le reranking des résultats est réalisé séparément par Cohere.
+              </p>
+            </div>
+          </details>
+          <details class="faq-item">
+            <summary>Quel outil est utilisé pour le suivi du pipeline ?</summary>
+            <div class="faq-answer">
+              <p>
+                Le suivi est assuré par <strong>Phoenix</strong>. Il enregistre les traces de chaque requête —
+                reformulation, planification, recherche, génération et évaluation — afin d'observer le déroulement,
+                les latences et les résultats du RAG.
+              </p>
+            </div>
+          </details>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

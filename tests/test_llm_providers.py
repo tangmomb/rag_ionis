@@ -200,6 +200,7 @@ class LlmProviderTests(unittest.TestCase):
         llm_providers.add_llm_usage_attributes(
             operation,
             SimpleNamespace(usage=usage),
+            model="mistral-medium-latest",
         )
 
         attributes = {
@@ -209,6 +210,9 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(attributes["llm.token_count.prompt"], 12)
         self.assertEqual(attributes["llm.token_count.completion"], 4)
         self.assertEqual(attributes["llm.token_count.total"], 16)
+        self.assertEqual(attributes["llm.cost.prompt"], 0.000018)
+        self.assertEqual(attributes["llm.cost.completion"], 0.00003)
+        self.assertEqual(attributes["llm.cost.total"], 0.000048)
 
     def test_usage_from_stream_event_reads_nested_mistral_data(self) -> None:
         usage = {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}

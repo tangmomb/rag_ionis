@@ -86,22 +86,10 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             },
         )
         task = run_phoenix_experiment.build_rag_task(
-            run_phoenix_experiment.RagExperimentSettings(shadow_evaluation=True)
+            run_phoenix_experiment.RagExperimentSettings(rerank_delay_seconds=0.0)
         )
 
-        def run_with_shadow(_request, **kwargs):
-            self.assertTrue(kwargs["shadow_evaluation_enabled_override"])
-            self.assertEqual(
-                kwargs["shadow_evaluation_model_override"],
-                run_phoenix_experiment.DEFAULT_REFORMULATION_MODEL,
-            )
-            self.assertFalse(kwargs["correction_loop_enabled_override"])
-            kwargs["shadow_evaluation_sink"].update(
-                {
-                    "status": "acceptable",
-                    "reason": "Réponse étayée",
-                }
-            )
+        def run_with_shadow(_request):
             return response
 
         with patch.object(run_phoenix_experiment, "rag", side_effect=run_with_shadow):
@@ -114,10 +102,6 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         self.assertEqual(
             output["diagnostics"]["reformulation_provider"],
             None,
-        )
-        self.assertEqual(
-            output["diagnostics"]["shadow_evaluation"]["status"],
-            "acceptable",
         )
 
     def test_builtin_evaluators_capture_transport_quality_and_action(self) -> None:
@@ -183,6 +167,67 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             "match",
         )
 
+    def test_retrieval_evaluators_compare_routes_videos_and_chunks(self) -> None:
+        output = {
+            "diagnostics": {"route": "vector_search"},
+            "retrieved_sources": [
+                {"chunk_id": 12, "youtube_video_id": "video-1"},
+                {"chunk_id": 99, "youtube_video_id": "video-2"},
+            ],
+        }
+        expected = {
+            "expected_execution_route": "vector_search",
+            "youtube_video_ids": ["video-1"],
+            "relevant_chunk_ids": [12, 13],
+        }
+
+        self.assertEqual(run_phoenix_experiment.route_match(output, expected)[1], "match")
+        self.assertEqual(run_phoenix_experiment.youtube_video_recall(output, expected)[0], 1.0)
+        self.assertEqual(run_phoenix_experiment.youtube_video_precision(output, expected)[0], 0.5)
+        self.assertEqual(
+            run_phoenix_experiment.vector_youtube_video_recall(output, expected)[0],
+            1.0,
+        )
+        self.assertEqual(
+            run_phoenix_experiment.sql_youtube_video_recall(output, expected)[1],
+            "unlabeled",
+        )
+        self.assertEqual(run_phoenix_experiment.chunk_recall(output, expected)[0], 0.5)
+        self.assertEqual(run_phoenix_experiment.chunk_precision(output, expected)[0], 0.5)
+
+    def test_compact_output_extracts_youtube_id_from_retrieved_sources(self) -> None:
+        response = RagResponse(
+            conversation_id=1,
+            message_id=2,
+            answer="Réponse.",
+            action="answer",
+            sources=[],
+            retrieval={
+                "execution_plan": {"route": "sql_search"},
+                "retrieved_sources": [
+                    {
+                        "chunk_id": 42,
+                        "video_url": "https://www.youtube.com/watch?v=video-42",
+                    }
+                ],
+            },
+        )
+
+        output = run_phoenix_experiment.compact_experiment_output(response)
+
+        self.assertEqual(
+            output["retrieved_sources"],
+            [{"chunk_id": 42, "youtube_video_id": "video-42"}],
+        )
+
+    def test_estimated_llm_cost_is_a_numeric_experiment_metric(self) -> None:
+        result = run_phoenix_experiment.estimated_llm_cost_usd(
+            {"estimated_llm_cost_usd": 0.00125}
+        )
+
+        self.assertEqual(result[0], 0.00125)
+        self.assertEqual(result[1], "estimated")
+
     def test_parser_enables_shadow_calibration_explicitly(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args(
             ["--dataset", "questions-rag", "--shadow-evaluation"]
@@ -195,6 +240,30 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
         self.assertEqual(args.llm_timeout, 60)
         self.assertEqual(args.llm_max_retries, 0)
+        self.assertEqual(args.rerank_delay_seconds, 10.0)
+
+    def test_task_waits_after_a_reranked_case_when_requested(self) -> None:
+        response = RagResponse(
+            conversation_id=1,
+            message_id=1,
+            answer="Une reponse.",
+            action="answer",
+            sources=[],
+            retrieval={"used_rerank": True},
+        )
+        task = run_phoenix_experiment.build_rag_task(
+            run_phoenix_experiment.RagExperimentSettings(
+                rerank_delay_seconds=7.0
+            )
+        )
+
+        with (
+            patch.object(run_phoenix_experiment, "rag", return_value=response),
+            patch.object(run_phoenix_experiment.time, "sleep") as sleep,
+        ):
+            task({"question": "Question"})
+
+        sleep.assert_called_once_with(7.0)
 
     def test_parser_enables_bounded_correction_explicitly(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args(

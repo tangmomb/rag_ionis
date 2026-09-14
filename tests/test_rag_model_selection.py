@@ -10,6 +10,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from interface.backend import orchestration, orchestration_graph, planner
 from interface.backend.generation import (
     DEFAULT_ANSWER_PROMPT_TEMPLATE,
+    generate_final_answer,
     render_answer_system_prompt,
 )
 from interface.backend.schemas import ExecutionPlan, PlannerPlan, RagRequest
@@ -36,18 +37,26 @@ class RagModelSelectionTests(unittest.TestCase):
         properties = planner.PLANNER_RESPONSE_SCHEMA["properties"]
         self.assertEqual(properties["analytics"]["type"], "boolean")
         self.assertNotIn("sql_sub_intent", properties)
+        for field in (
+            "analytics_scope",
+            "analytics_metric",
+            "analytics_order",
+            "analytics_rank_start",
+            "analytics_rank_end",
+        ):
+            self.assertNotIn(field, properties)
 
     def test_planner_boolean_preserves_entities_and_execution_intent(self) -> None:
-        for analytics, scope, expected in ((False, None, None), (True, "specific", "analytics")):
+        for analytics in (False, True):
             with self.subTest(analytics=analytics):
                 client = _Client({
                     "route": "search", "analytics": analytics,
-                    "analytics_scope": scope, "query_text": "Fadila",
+                    "query_text": "Fadila",
                     "query_text_bm25": "Fadila", "persons": ["Fadila"],
                 })
                 plan, _, _, verified = planner.run_planner("Fadila", client)
                 self.assertTrue(verified)
-                self.assertEqual(plan.sql_sub_intent, expected)
+                self.assertEqual(plan.analytics_requested, analytics)
                 self.assertEqual(plan.persons, ["Fadila"])
                 self.assertEqual(plan.query_text_bm25, "Fadila")
 
@@ -57,50 +66,29 @@ class RagModelSelectionTests(unittest.TestCase):
                 client = _Client({"route": "search", "analytics": value, "query_text": "Fadila"})
                 plan, _, _, verified = planner.run_planner("Fadila", client)
                 self.assertFalse(verified)
-                self.assertIsNone(plan.sql_sub_intent)
+                self.assertFalse(plan.analytics_requested)
 
-    def test_planner_boolean_takes_precedence_over_legacy_intent(self) -> None:
+    def test_planner_discards_legacy_analytics_parameters(self) -> None:
         normalized = planner.normalize_planner_output({
-            "route": "search", "analytics": False,
-            "sql_sub_intent": "analytics", "analytics_scope": "global",
-        })
-        self.assertIsNone(normalized["sql_sub_intent"])
-        self.assertIsNone(normalized["analytics_scope"])
-
-    def test_planner_boolean_requires_analytics_scope(self) -> None:
-        client = _Client({"route": "search", "analytics": True, "query_text": "Vues"})
-        plan, _, _, verified = planner.run_planner("Vues", client)
-        self.assertFalse(verified)
-        self.assertEqual(plan.output_rejection_reason, "analytics_scope_missing")
-
-    def test_entity_filters_force_specific_analytics_scope(self) -> None:
-        normalized = planner.normalize_planner_output({
-            "route": "search",
-            "analytics": True,
+            "route": "search", "analytics": True,
             "analytics_scope": "global",
             "analytics_metric": "views",
             "analytics_order": "desc",
             "analytics_rank_start": 1,
-            "analytics_rank_end": 2,
-            "query_text": "Les deux vidéos Novares les plus vues",
-            "title_hints": ["Témoignage Tuteur : Loïc Maréchal, Directeur HSE, Novares"],
-            "persons": ["Loïc Maréchal"],
-            "companies": ["Novares"],
+            "analytics_rank_end": 5,
         })
-
-        self.assertEqual(normalized["analytics_scope"], "specific")
-        self.assertIsNone(normalized["analytics_metric"])
-        self.assertIsNone(normalized["analytics_order"])
-        self.assertIsNone(normalized["analytics_rank_start"])
-        self.assertIsNone(normalized["analytics_rank_end"])
-
-        plan = PlannerPlan(
-            query_text="Les deux vidéos Novares les plus vues",
-            sql_sub_intent="analytics",
-            analytics_scope="global",
-            title_hints=["Témoignage Tuteur : Loïc Maréchal, Directeur HSE, Novares"],
+        self.assertTrue(normalized["analytics_requested"])
+        self.assertFalse(
+            set(normalized).intersection(
+                {
+                    "analytics_scope",
+                    "analytics_metric",
+                    "analytics_order",
+                    "analytics_rank_start",
+                    "analytics_rank_end",
+                }
+            )
         )
-        self.assertEqual(plan.analytics_scope, "specific")
 
     def test_orchestration_graph_exposes_existing_planning_and_retrieval_routes(self) -> None:
         graph = orchestration_graph.RAG_ORCHESTRATION_GRAPH.get_graph()
@@ -164,6 +152,62 @@ class RagModelSelectionTests(unittest.TestCase):
             ),
             "vector_search",
         )
+
+    def test_transcript_and_description_requests_use_structured_lookup(self) -> None:
+        transcript_question = "J'ai besoin de la transcription de la vidéo de Salim."
+        transcript_plan = PlannerPlan(
+            route="search", query_text=transcript_question, persons=["Salim"]
+        )
+        planner.apply_deterministic_sql_policy(transcript_question, transcript_plan)
+        transcript_execution = planner.build_execution_plan(
+            RagRequest(question=transcript_question), transcript_plan
+        )
+
+        self.assertTrue(transcript_plan.transcription_requested)
+        self.assertEqual(transcript_execution.route, "sql_search")
+
+        description_question = "Quelle est la description de la vidéo « Témoignage Ionis » ?"
+        description_plan = PlannerPlan(route="search", query_text=description_question)
+        planner.apply_deterministic_sql_policy(description_question, description_plan)
+        description_execution = planner.build_execution_plan(
+            RagRequest(question=description_question), description_plan
+        )
+
+        self.assertTrue(description_plan.description_requested)
+        self.assertEqual(description_execution.route, "sql_search")
+
+    def test_document_lookup_answers_do_not_call_the_answer_model(self) -> None:
+        trace: dict = {}
+        answer = generate_final_answer(
+            object(),
+            "Donne-moi la transcription.",
+            "unused",
+            {"route": "sql_search", "lookup_intent": "transcript_verbatim"},
+            [{"text": "[00:00] Bonjour."}],
+            trace,
+        )
+
+        self.assertEqual(answer, "Voici la transcription :\n\n[00:00] Bonjour.")
+        self.assertEqual(trace["action"], "answer")
+        self.assertEqual(trace["source_indexes"], [1])
+
+    def test_document_lookup_without_an_entity_requests_a_video(self) -> None:
+        trace: dict = {}
+        answer = generate_final_answer(
+            object(),
+            "J'ai besoin de la transcription.",
+            "unused",
+            {
+                "route": "sql_search",
+                "lookup_intent": "transcript_verbatim",
+                "document_target_missing": True,
+            },
+            [],
+            trace,
+        )
+
+        self.assertEqual(answer, "Oui, de quelle vidéo ?")
+        self.assertEqual(trace["action"], "answer")
 
     def test_orchestration_state_is_checkpoint_serializable(self) -> None:
         self.assertNotIn("client", orchestration_graph.RagOrchestrationState.__annotations__)
@@ -367,12 +411,12 @@ class RagModelSelectionTests(unittest.TestCase):
         payload = RagRequest(question="Y a-t-il des commentaires ?")
         plan = PlannerPlan(
             route="search",
-            sql_sub_intent="analytics",
+            analytics_requested=True,
             query_text="Y a-t-il des commentaires ?",
         )
         empty_sql_trace = {
             "mode": "analytics",
-            "strategy": "deterministic_entity_stats",
+            "strategy": "llm_text_to_sql",
             "result_count": 0,
         }
         with (
@@ -387,7 +431,7 @@ class RagModelSelectionTests(unittest.TestCase):
                     {"ambiguous": False, "suggestion_transcripts": []},
                 ),
             ),
-            patch.object(orchestration, "run_deterministic_analytics", return_value=([], empty_sql_trace)),
+            patch.object(orchestration, "run_analytics_text_to_sql", return_value=([], empty_sql_trace)),
             patch.object(orchestration, "retrieve_chunks") as retrieve_chunks,
         ):
             _answer, sources, retrieval = orchestration.orchestrate_request(payload)

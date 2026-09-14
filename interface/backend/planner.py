@@ -20,7 +20,7 @@ from interface.backend.utilities import normalize_text, safe_json_loads, seriali
 
 PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "description": "Plan de requête : décider route et analytics en premier, puis remplir les paramètres associés et les champs de recherche.",
+    "description": "Plan de requête : décider route et analytics en premier, puis remplir les champs de recherche.",
     "properties": {
         "route": {
             "type": "string",
@@ -31,20 +31,6 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
             "type": "boolean",
             "description": "Deuxième décision : false pour le contenu des vidéos ; true uniquement pour les statistiques ou métadonnées des vidéos.",
         },
-        "analytics_scope": {
-            "anyOf": [
-                {"type": "string", "enum": ["global", "specific"]},
-                {"type": "null"},
-            ],
-        },
-        "analytics_metric": {
-            "anyOf": [{"type": "string", "enum": ["all", "views", "likes", "comments"]}, {"type": "null"}],
-        },
-        "analytics_order": {
-            "anyOf": [{"type": "string", "enum": ["asc", "desc"]}, {"type": "null"}],
-        },
-        "analytics_rank_start": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 100}, {"type": "null"}]},
-        "analytics_rank_end": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 100}, {"type": "null"}]},
         "query_text": {"type": "string"},
         "query_text_bm25": {"type": "string"},
         "title_hints": {
@@ -69,11 +55,6 @@ PLANNER_RESPONSE_SCHEMA: dict[str, Any] = {
     "required": [
         "route",
         "analytics",
-        "analytics_scope",
-        "analytics_metric",
-        "analytics_order",
-        "analytics_rank_start",
-        "analytics_rank_end",
         "query_text",
         "query_text_bm25",
         "title_hints",
@@ -180,19 +161,12 @@ def build_planner_prompt(
         "- analytics=true uniquement pour les statistiques des vidéos (vues, likes, commentaires, comptages, classements) ou leurs métadonnées (publication, durée, type, sous-titres).\n"
         "Une personne, un titre, un filtre de publication ou un chiffre cité dans un entretien ne justifient pas analytics.\n"
         "Exemples : « Qui est Lou Ann ? », « Quelles questions pose-t-on à Fadila ? » → search/false ; « Combien de vues a sa vidéo ? » → search/true.\n\n"
-        "2. Remplir les paramètres analytics.\n"
-        "- Si analytics=false : tous les champs analytics_* valent null.\n"
-        "- analytics_scope='global' est autorisé uniquement si title_hints, persons et companies sont tous vides : la statistique porte alors sur tout le corpus.\n"
-        "- Dès qu'au moins un élément est présent dans title_hints, persons ou companies, analytics_scope doit être 'specific', même si la question demande un classement ou « le plus de vues ».\n"
-        "- Scope specific : analytics_metric, analytics_order, analytics_rank_start et analytics_rank_end valent null.\n"
-        "- Scope global avec classement : analytics_metric='views', 'likes' ou 'comments' ; analytics_order='desc' pour les plus élevés, 'asc' pour les moins élevés ; analytics_rank_start/end délimitent les rangs demandés (top 5 : 1 à 5).\n"
-        "- Scope global sans classement : analytics_metric='all', analytics_order=null, rangs 1 à 3.\n\n"
-        "3. Préparer la recherche sans changer l'intention.\n"
+        "2. Préparer la recherche sans changer l'intention.\n"
         "- query_text : question autonome pour la recherche sémantique.\n"
         "- query_text_bm25 : mots-clés courts et précis.\n\n"
-        "4. Extraire les filtres explicites.\n"
+        "3. Extraire les filtres explicites.\n"
         "- title_hints : titres de vidéos ; persons et companies : personnes ou entreprises mentionnées.\n"
-        "- published_after/before : dates de publication au format YYYY-MM-DD, jamais les dates évoquées dans l'entretien.\n"
+        "- published_after/before : dates de publication au format YYYY-MM-DD, jamais les dates évoquées dans l'entretien. N'invente jamais une année ou une date : si la question ne la donne pas explicitement (par exemple « août et septembre » sans année), laisse ces deux champs à null.\n"
         "- Valeurs absentes : [] pour les listes, null pour les dates.\n\n"
         "Retourne les clés du schéma JSON, route et analytics en premier. Utilise true, false et null sans guillemets et du texte normal, sans Markdown."
     )
@@ -229,39 +203,26 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate the only planner choices retained by the current pipeline."""
     normalized = dict(payload)
     route = str(normalized.get("route") or "").strip()
-    sql_sub_intent = str(normalized.get("sql_sub_intent") or "").strip() or None
-    # Adapt the LLM boolean to the execution contract. Older saved plans and
-    # custom prompts may still supply sql_sub_intent.
-    if "analytics" in normalized:
-        analytics = normalized.pop("analytics")
-        if not isinstance(analytics, bool):
-            raise ValueError("analytics doit être un booléen JSON")
-        sql_sub_intent = "analytics" if analytics else None
+    # The LLM may only decide analytics. The two document flags are set by the
+    # deterministic policy after planning.
+    analytics = normalized.pop("analytics", False)
+    if not isinstance(analytics, bool):
+        raise ValueError("analytics doit être un booléen JSON")
     if route not in {"direct", "search"}:
         route = "search"
     if route == "direct":
-        sql_sub_intent = None
-    elif sql_sub_intent != "analytics":
-        sql_sub_intent = None
+        analytics = False
 
     normalized["route"] = route
-    normalized["sql_sub_intent"] = sql_sub_intent
-    analytics_scope = str(normalized.get("analytics_scope") or "").strip().lower() or None
-    normalized["analytics_scope"] = (
-        analytics_scope if sql_sub_intent == "analytics" and analytics_scope in {"global", "specific"} else None
-    )
-    if normalized["analytics_scope"] == "global" and any(
-        normalized.get(key) for key in ("title_hints", "persons", "companies")
+    normalized["analytics_requested"] = analytics
+    for key in (
+        "analytics_scope",
+        "analytics_metric",
+        "analytics_order",
+        "analytics_rank_start",
+        "analytics_rank_end",
     ):
-        normalized["analytics_scope"] = "specific"
-    if normalized["analytics_scope"] == "global":
-        metric = str(normalized.get("analytics_metric") or "").strip().lower()
-        order = str(normalized.get("analytics_order") or "").strip().lower() or None
-        normalized["analytics_metric"] = metric if metric in {"all", "views", "likes", "comments"} else None
-        normalized["analytics_order"] = order if order in {"asc", "desc"} else None
-    else:
-        for key in ("analytics_metric", "analytics_order", "analytics_rank_start", "analytics_rank_end"):
-            normalized[key] = None
+        normalized.pop(key, None)
     for derived_key in ("use_sql", "use_rag", "sql_main_source"):
         normalized.pop(derived_key, None)
     return normalized
@@ -270,7 +231,7 @@ def normalize_planner_output(payload: dict[str, Any]) -> dict[str, Any]:
 def derive_plan_sources(planner_plan: PlannerPlan) -> None:
     """Normalise les seules contraintes de source encore portées par le planner."""
     if planner_plan.route == "direct":
-        planner_plan.sql_sub_intent = None
+        planner_plan.analytics_requested = False
 
 
 def run_planner(
@@ -318,25 +279,6 @@ def run_planner(
 
     try:
         parsed = normalize_planner_output(safe_json_loads(raw))
-        if (
-            parsed.get("sql_sub_intent") == "analytics"
-            and parsed.get("analytics_scope") not in {"global", "specific"}
-        ):
-            raise ValueError("analytics_scope manquant ou invalide pour une intention analytics")
-        if parsed.get("analytics_scope") == "global" and (
-            parsed.get("analytics_metric") not in {"all", "views", "likes", "comments"}
-            or not isinstance(parsed.get("analytics_rank_start"), int)
-            or not isinstance(parsed.get("analytics_rank_end"), int)
-            or (
-                parsed.get("analytics_metric") != "all"
-                and parsed.get("analytics_order") not in {"asc", "desc"}
-            )
-            or (
-                parsed.get("analytics_metric") == "all"
-                and parsed.get("analytics_order") is not None
-            )
-        ):
-            raise ValueError("fenêtre de classement manquante ou invalide pour une intention analytics globale")
         if not parsed.get("route"):
             parsed["route"] = "search"
         if not parsed.get("query_text"):
@@ -349,11 +291,7 @@ def run_planner(
             route="search",
             query_text=question,
         )
-        fallback._output_rejection_reason = (
-            "analytics_scope_missing"
-            if "analytics_scope manquant ou invalide" in str(exc)
-            else "invalid_llm_plan"
-        )
+        fallback._output_rejection_reason = "invalid_llm_plan"
         derive_plan_sources(fallback)
         return fallback, raw_prompt, raw_response, False
 
@@ -368,8 +306,9 @@ def build_execution_plan(
         bm25_query = (planner_plan.query_text or payload.question).strip() or payload.question
 
     sql_search = (
-        planner_plan.sql_sub_intent == "analytics"
+        planner_plan.analytics_requested
         or planner_plan.description_requested
+        or planner_plan.transcription_requested
     )
     return ExecutionPlan(
         route=(
@@ -379,12 +318,7 @@ def build_execution_plan(
             if sql_search
             else "vector_search"
         ),
-        sql_sub_intent=planner_plan.sql_sub_intent,
-        analytics_scope=planner_plan.analytics_scope,
-        analytics_metric=planner_plan.analytics_metric,
-        analytics_order=planner_plan.analytics_order,
-        analytics_rank_start=planner_plan.analytics_rank_start,
-        analytics_rank_end=planner_plan.analytics_rank_end,
+        analytics_requested=planner_plan.analytics_requested,
         raw_question=payload.question,
         query_text=(planner_plan.query_text or payload.question).strip() or payload.question,
         query_text_bm25=bm25_query,
@@ -394,6 +328,7 @@ def build_execution_plan(
         published_after=planner_plan.published_after,
         published_before=planner_plan.published_before,
         description_requested=planner_plan.description_requested,
+        transcription_requested=planner_plan.transcription_requested,
         top_k=None if sql_search else DEFAULT_BM25_LIMIT,
         final_k=None if sql_search else DEFAULT_FINAL_K,
     )
@@ -414,6 +349,18 @@ def has_explicit_sql_request(question: str) -> bool:
         or re.search(r"\b(?:quelle?|quelles?)\s+(?:video|videos|url|lien|titre|date)\b", normalized)
         or re.search(r"\b(?:trouve|trouver|cherche|chercher|liste|lister)\b.*\b(?:video|videos|transcript|transcription)\b", normalized)
     )
+
+
+def has_verbatim_transcript_request(question: str) -> bool:
+    """Détecte une demande de restitution de la transcription d'une vidéo."""
+    normalized = normalize_text(question)
+    return bool(re.search(r"\btranscription\b", normalized))
+
+
+def has_description_request(question: str) -> bool:
+    """Détecte une demande de restitution de la description publiée."""
+    normalized = normalize_text(question)
+    return bool(re.search(r"\bdescription\b", normalized))
 
 
 def has_analytics_request(question: str) -> bool:
@@ -488,20 +435,26 @@ def apply_deterministic_sql_policy(
             planner_plan.route = "search"
             policy_correction = "direct_non_social_to_rag"
         else:
-            planner_plan.sql_sub_intent = None
+            planner_plan.analytics_requested = False
             derive_plan_sources(planner_plan)
             return None
 
-    planner_plan.description_requested = bool(
-        re.search(r"\b(?:description|descriptif|decris)\b", normalize_text(question))
-    )
-    if planner_plan.sql_sub_intent == "analytics" or has_analytics_request(question):
-        planner_plan.sql_sub_intent = "analytics"
-        planner_plan.analytics_scope = planner_plan.analytics_scope or "specific"
+    planner_plan.description_requested = has_description_request(question)
+    planner_plan.transcription_requested = has_verbatim_transcript_request(question)
+    if planner_plan.transcription_requested:
+        # The planner schema intentionally only lets the LLM select analytics.
+        # Transcript retrieval is a deterministic document lookup so a vague or
+        # invalid planner response cannot silently fall back to vector search.
+        planner_plan.description_requested = False
+        planner_plan.analytics_requested = False
+        derive_plan_sources(planner_plan)
+        return policy_correction
+    if planner_plan.analytics_requested or has_analytics_request(question):
+        planner_plan.analytics_requested = True
         derive_plan_sources(planner_plan)
         return policy_correction
 
-    planner_plan.sql_sub_intent = None
+    planner_plan.analytics_requested = False
     derive_plan_sources(planner_plan)
     return policy_correction
 

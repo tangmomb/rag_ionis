@@ -488,6 +488,9 @@ def run_rag(
             (time.perf_counter() - request_started_at) * 1_000
         )
         request_span.set_attribute("rag.completed_ms", latency_metrics["rag_completed_ms"])
+        # Preserve the span timings in the response used by offline
+        # experiments. Trace annotations remain the source for live metrics.
+        response.retrieval.update(latency_metrics)
         request_span.set_session_id(response.conversation_id)
         request_span.set_attribute("action", response.action)
         request_span.set_attribute("source_count", len(response.sources))

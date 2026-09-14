@@ -86,10 +86,11 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             },
         )
         task = run_phoenix_experiment.build_rag_task(
-            run_phoenix_experiment.RagExperimentSettings(rerank_delay_seconds=0.0)
+            run_phoenix_experiment.RagExperimentSettings(question_launch_delay_seconds=0.0)
         )
 
-        def run_with_shadow(_request):
+        def run_with_shadow(_request, *, stream_callback):
+            self.assertIsNotNone(stream_callback)
             return response
 
         with patch.object(run_phoenix_experiment, "rag", side_effect=run_with_shadow):
@@ -103,6 +104,19 @@ class RunPhoenixExperimentTests(unittest.TestCase):
             output["diagnostics"]["reformulation_provider"],
             None,
         )
+        self.assertIsNone(output["rag_answer_ready_ms"])
+
+    def test_question_launch_rate_limiter_spaces_all_requests(self) -> None:
+        limiter = run_phoenix_experiment.QuestionLaunchRateLimiter(7.0)
+
+        with (
+            patch.object(run_phoenix_experiment.time, "monotonic", side_effect=[10.0, 10.0, 17.0]),
+            patch.object(run_phoenix_experiment.time, "sleep") as sleep,
+        ):
+            limiter.wait()
+            limiter.wait()
+
+        sleep.assert_called_once_with(7.0)
 
     def test_builtin_evaluators_capture_transport_quality_and_action(self) -> None:
         output = {
@@ -240,30 +254,31 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
         self.assertEqual(args.llm_timeout, 60)
         self.assertEqual(args.llm_max_retries, 0)
-        self.assertEqual(args.rerank_delay_seconds, 10.0)
+    def test_latency_evaluators_return_milliseconds(self) -> None:
+        output = {
+            "rag_answer_ready_ms": 1_280,
+        }
 
-    def test_task_waits_after_a_reranked_case_when_requested(self) -> None:
-        response = RagResponse(
-            conversation_id=1,
-            message_id=1,
-            answer="Une reponse.",
-            action="answer",
-            sources=[],
-            retrieval={"used_rerank": True},
-        )
-        task = run_phoenix_experiment.build_rag_task(
-            run_phoenix_experiment.RagExperimentSettings(
-                rerank_delay_seconds=7.0
-            )
+        self.assertEqual(
+            run_phoenix_experiment.rag_answer_ready_ms(output)[:2],
+            (1280.0, "ms"),
         )
 
-        with (
-            patch.object(run_phoenix_experiment, "rag", return_value=response),
-            patch.object(run_phoenix_experiment.time, "sleep") as sleep,
-        ):
-            task({"question": "Question"})
+    def test_experiment_answer_ready_percentiles_aggregate_task_outputs(self) -> None:
+        percentiles = run_phoenix_experiment.experiment_answer_ready_percentiles_ms(
+            {
+                "task_runs": [
+                    {"output": {"rag_answer_ready_ms": 1_000}},
+                    {"output": {"rag_answer_ready_ms": 2_000}},
+                    {"output": {"rag_answer_ready_ms": 3_000}},
+                ]
+            }
+        )
 
-        sleep.assert_called_once_with(7.0)
+        self.assertEqual(percentiles["p50"], 2000.0)
+        self.assertEqual(percentiles["p75"], 2500.0)
+        self.assertEqual(percentiles["p90"], 2800.0)
+        self.assertEqual(percentiles["p95"], 2900.0)
 
     def test_parser_enables_bounded_correction_explicitly(self) -> None:
         args = run_phoenix_experiment.build_parser().parse_args(

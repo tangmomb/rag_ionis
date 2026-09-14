@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -102,7 +103,7 @@ class RagExperimentSettings:
     top_k: int = DEFAULT_TOP_K
     final_k: int = DEFAULT_FINAL_K
     openai_service_tier: str | None = None
-    rerank_delay_seconds: float = 10.0
+    question_launch_delay_seconds: float = 7.0
 
 
 @dataclass(frozen=True)
@@ -260,12 +261,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reprises internes de chaque client LLM (defaut: 0).",
     )
     parser.add_argument(
-        "--rerank-delay-seconds",
+        "--question-launch-delay-seconds",
         type=non_negative_float,
-        default=10.0,
+        default=7.0,
         help=(
-            "Delai ajoute apres chaque cas utilisant le rerank Cohere, "
-            "pour respecter une limite de debit (defaut: 10)."
+            "Espacement entre les lancements de questions pour respecter la limite "
+            "Cohere (defaut: 7). Il est hors de rag_answer_ready_ms."
         ),
     )
     return parser
@@ -342,6 +343,9 @@ def compact_experiment_output(
         "message_id": response.message_id,
         "estimated_llm_cost_usd": llm_cost_usd,
         "priced_llm_calls": priced_llm_calls,
+        # These timings are captured on the root Phoenix request span and are
+        # duplicated here so Phoenix can aggregate them per experiment.
+        "rag_answer_ready_ms": retrieval.get("rag_answer_ready_ms"),
         "diagnostics": {
             "reformulation_model": retrieval.get("reformulation_model"),
             "reformulation_provider": model_provider_name(
@@ -392,16 +396,38 @@ def compact_retrieved_source(source: Any) -> dict[str, Any]:
     }
 
 
+class QuestionLaunchRateLimiter:
+    """Space experiment requests without starting the RAG latency clock early."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        self._delay_seconds = delay_seconds
+        self._next_launch_at: float | None = None
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        if not self._delay_seconds:
+            return
+        with self._lock:
+            now = time.monotonic()
+            if self._next_launch_at is not None:
+                remaining = self._next_launch_at - now
+                if remaining > 0:
+                    time.sleep(remaining)
+                    now = time.monotonic()
+            self._next_launch_at = now + self._delay_seconds
+
+
 def build_rag_task(settings: RagExperimentSettings):
+    rate_limiter = QuestionLaunchRateLimiter(settings.question_launch_delay_seconds)
+
     def rag_ionis_task(input: Mapping[str, Any]) -> dict[str, Any]:
         request = build_rag_request(input, settings)
+        # This occurs before run_rag starts its root span and its latency clock.
+        rate_limiter.wait()
         with track_llm_costs() as costs:
-            response = rag(request)
-        if (
-            settings.rerank_delay_seconds
-            and response.retrieval.get("used_rerank")
-        ):
-            time.sleep(settings.rerank_delay_seconds)
+            # Keep the execution synchronous, while exercising the streamed
+            # generation path so the root span records the actual TTFT.
+            response = rag(request, stream_callback=lambda _fragment: None)
         return compact_experiment_output(
             response,
             llm_cost_usd=costs.total_usd if costs.priced_calls else None,
@@ -423,6 +449,56 @@ def estimated_llm_cost_usd(
     if not isinstance(value, (int, float)):
         return None, "unlabeled", "Aucun tarif configure pour les appels LLM."
     return float(value), "estimated", "Estimation USD des appels LLM du cas."
+
+
+def latency_metric(
+    metric_name: str,
+    output: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    value = (output or {}).get(metric_name)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None, "unlabeled", "Mesure indisponible pour ce cas."
+    return float(value), "ms", "Latence RAG mesuree en millisecondes."
+
+
+def rag_answer_ready_ms(
+    output: Mapping[str, Any] | None,
+) -> tuple[float | None, str, str]:
+    return latency_metric("rag_answer_ready_ms", output)
+
+
+LATENCY_PERCENTILES = (50, 75, 90, 95)
+
+
+def percentile(values: Sequence[int | float], percentile_value: int) -> float | None:
+    """Return a linearly interpolated percentile of numeric values."""
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    rank = (len(ordered) - 1) * (percentile_value / 100)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower)
+
+
+def experiment_answer_ready_percentiles_ms(
+    experiment: Mapping[str, Any],
+) -> dict[str, float | None]:
+    """Aggregate response-ready latency percentiles after an experiment."""
+    values: list[float] = []
+    for task_run in experiment.get("task_runs") or []:
+        if not isinstance(task_run, Mapping):
+            continue
+        output = task_run.get("output")
+        if not isinstance(output, Mapping):
+            continue
+        value = output.get("rag_answer_ready_ms")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.append(float(value))
+    return {
+        f"p{percentile_value}": percentile(values, percentile_value)
+        for percentile_value in LATENCY_PERCENTILES
+    }
 
 
 def answer_action(output: Mapping[str, Any] | None) -> dict[str, str]:
@@ -1050,7 +1126,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         top_k=args.top_k,
         final_k=args.final_k,
         openai_service_tier=args.openai_service_tier,
-        rerank_delay_seconds=args.rerank_delay_seconds,
+        question_launch_delay_seconds=args.question_launch_delay_seconds,
     )
 
     ensure_chat_schema()
@@ -1068,10 +1144,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         os.environ[OPENAI_SERVICE_TIER_ENV] = settings.openai_service_tier
     try:
         evaluators = {
-            "response_nonempty": response_nonempty,
             "estimated_llm_cost_usd": estimated_llm_cost_usd,
-            "answer_action": answer_action,
-            "answer_action_match": answer_action_match,
+            "rag_answer_ready_ms": rag_answer_ready_ms,
             "route_match": route_match,
             "youtube_video_recall": youtube_video_recall,
             "youtube_video_precision": youtube_video_precision,
@@ -1115,7 +1189,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "openai_service_tier": settings.openai_service_tier,
                 "llm_timeout_seconds": args.llm_timeout,
                 "llm_max_retries": args.llm_max_retries,
-                "rerank_delay_seconds": settings.rerank_delay_seconds,
+                "question_launch_delay_seconds": settings.question_launch_delay_seconds,
             },
             dry_run=args.dry_run or False,
             timeout=args.timeout,
@@ -1139,6 +1213,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         shutdown_telemetry()
 
     result = dict(experiment)
+    result["rag_answer_ready_percentiles_ms"] = (
+        experiment_answer_ready_percentiles_ms(experiment)
+    )
     if not args.dry_run:
         result["url"] = client.experiments.get_experiment_url(
             dataset_id=experiment["dataset_id"],
@@ -1183,6 +1260,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Dry run termine sur {args.dry_run} exemple(s). Rien n'a ete enregistre.")
     else:
         print(f"Experience terminee: {result['url']}")
+        percentiles = result["rag_answer_ready_percentiles_ms"]
+        for percentile_value in LATENCY_PERCENTILES:
+            value = percentiles[f"p{percentile_value}"]
+            if value is not None:
+                print(f"P{percentile_value} rag_answer_ready_ms: {value:.0f} ms")
     return 0
 
 

@@ -13,8 +13,9 @@
         <a class="faq-back-link" href="/">← Retour à l'outil</a>
         <div class="faq-list">
           <details class="faq-item" open>
-            <summary>Quelles sont les valeurs de précision et de rappel du RAG ?</summary>
+            <summary>Quelles sont les statistiques du RAG ?</summary>
             <div class="faq-answer">
+              <p>Ces chiffres proviennent du dernier benchmark Phoenix : 22 questions sur 22 ont abouti.</p>
               <dl class="faq-metrics">
                 <div>
                   <dt>Vidéos — recall</dt>
@@ -54,8 +55,14 @@
                 </div>
                 <div>
                   <dt>Coût moyen par question</dt>
-                  <dd>0,0072&nbsp;$</dd>
+                  <dd>0,0026&nbsp;$</dd>
                   <p>Estimation du coût des appels LLM pour une question complète.<br />Elle inclut reformulation, planification et réponse.</p>
+                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                </div>
+                <div>
+                  <dt>Latence «&nbsp;réponse prête&nbsp;» — P50 / P75 / P90 / P95</dt>
+                  <dd>4,18&nbsp;s / 4,74&nbsp;s / 4,98&nbsp;s / 5,09&nbsp;s</dd>
+                  <p>Temps entre l’envoi de la question et la réponse enregistrée, prête à être renvoyée.<br />Percentiles calculés sur les 22 réponses du dernier benchmark.</p>
                   <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
                 </div>
               </dl>

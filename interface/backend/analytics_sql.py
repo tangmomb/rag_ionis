@@ -107,10 +107,10 @@ Règles :
   temporelle nécessaire n'est pas explicitement fournie, utilise
   `default_snapshot_year` du contexte comme année de référence. Cette valeur est
   l'année la plus récente par défaut ; ne choisis jamais une autre année.
-- La liste `persons` du contexte contient les noms canoniques déjà résolus. Si elle
-  est présente, utilise chaque nom demandé comme filtre et recopie-le exactement
-  dans `params`, accents et orthographe compris. Ne le corrige pas, ne le raccourcis
-  pas et ne le remplace pas par la variante présente dans la question originale.
+- La liste `persons` du contexte contient les noms canoniques déjà résolus. Utilise-la
+  lorsqu'un filtre par personne est nécessaire pour répondre à la question ; ne la
+  transforme pas en filtre obligatoire lorsqu'un titre précis identifie déjà les
+  vidéos demandées.
 - Pour les stats actuelles, prends le dernier snapshot de chaque vidéo avec un LIMIT 1
   corrélé (`WHERE stats.video_id = v.id`), jamais un LIMIT 1 global.
 - Toute requête qui lit `stats` doit sélectionner et retourner au moins une date
@@ -200,34 +200,6 @@ def _valid_param(value: Any) -> bool:
     if isinstance(value, list):
         return all(_valid_param(item) for item in value)
     return False
-
-
-def validate_resolved_person_params(
-    params: list[Any],
-    database_persons: list[str] | None,
-) -> dict[str, Any]:
-    """Ensure Text-to-SQL reuses every canonical person resolution verbatim."""
-    expected = list(
-        dict.fromkeys(
-            str(person).strip()
-            for person in database_persons or []
-            if str(person).strip()
-        )
-    )
-    if not expected:
-        return {"valid": True, "expected": [], "missing": []}
-
-    parameter_values = {
-        value.strip().strip("%").strip().casefold()
-        for value in params
-        if isinstance(value, str) and value.strip()
-    }
-    missing = [
-        person
-        for person in expected
-        if person.casefold() not in parameter_values
-    ]
-    return {"valid": not missing, "expected": expected, "missing": missing}
 
 
 def _uses_global_stats_limit_one(sql: str) -> bool:
@@ -559,14 +531,6 @@ def run_analytics_text_to_sql(
         input_value={"sql": format_sql_for_trace(sql), "params": params},
     ) as validation_span:
         validation = validate_analytics_sql(sql, params)
-        resolved_person_validation = validate_resolved_person_params(
-            params if isinstance(params, list) else [],
-            database_persons,
-        )
-        validation["resolved_persons"] = resolved_person_validation
-        if not resolved_person_validation["valid"]:
-            validation["errors"].append("resolved_person_parameter_missing")
-            validation["valid"] = False
         validation_span.set_output(validation)
     trace.update(
         {

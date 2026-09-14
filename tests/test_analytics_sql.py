@@ -458,7 +458,6 @@ class AnalyticsSqlTests(unittest.TestCase):
             query_text="Parmi les vidéos discutées, laquelle a gagné le plus de vues ?",
             query_text_bm25="plus de vues",
             route="sql_search",
-            sql_sub_intent="analytics",
         )
         with (
             patch.object(
@@ -472,6 +471,7 @@ class AnalyticsSqlTests(unittest.TestCase):
                 query,
                 client,
                 "mistral-medium-latest",
+                database_persons=["Loïc Maréchal"],
             )
 
         self.assertEqual(
@@ -484,6 +484,7 @@ class AnalyticsSqlTests(unittest.TestCase):
             ],
         )
         self.assertEqual(trace["status"], "executed")
+        self.assertNotIn("resolved_persons", trace["validation"])
         self.assertEqual(
             trace["cost_validation"],
             {

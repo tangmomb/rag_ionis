@@ -16,26 +16,25 @@
     <main>
       <div class="tree-heading">
         <div>
-          <span class="section-index">Arbre de décision</span>
+          <span class="section-index">Pipeline vidéo · Explorateur</span>
           <h2>Chemin d’exécution</h2>
           <p class="manifest-note">
             Le manifeste vidéo est mis à jour tout au long du pipeline.
           </p>
         </div>
-        <div class="tree-tools">
-          <p>
-            Faites défiler horizontalement sur ordinateur. Sur mobile, seule la
-            route active est affichée.
-          </p>
-          <div class="tree-actions" aria-label="Actions d’affichage">
-            <button id="details-button" type="button" aria-pressed="true">
-              Masquer les détails
-            </button>
-            <button id="reset-button" type="button">Réinitialiser</button>
-          </div>
-        </div>
       </div>
-      <div id="pipeline-tree" class="tree"></div>
+      <div id="pipeline-tree" class="tree" tabindex="0" role="region" aria-label="Étapes du pipeline, défilement horizontal"></div>
+      <nav class="pipeline-navigation" aria-label="Navigation du pipeline">
+        <div class="navigation-status">
+          <span class="section-index">Parcours actif</span>
+          <span id="step-position" aria-live="polite"></span>
+        </div>
+        <div id="step-navigation" class="step-navigation" aria-label="Aller à une étape"></div>
+        <div class="navigation-arrows">
+          <button id="previous-step" type="button" aria-label="Étape précédente">←</button>
+          <button id="next-step" type="button" aria-label="Étape suivante">→</button>
+        </div>
+      </nav>
     </main>
   </body>
 </html>

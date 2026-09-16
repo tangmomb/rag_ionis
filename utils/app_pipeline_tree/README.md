@@ -18,9 +18,14 @@ Chaque carte détaille :
 - les règles essentielles du traitement ;
 - le contenu exact envoyé au LLM lorsqu’un appel a lieu.
 
-Le bouton **Masquer les détails** réduit l’arbre à ses titres et résumés. Sur
-mobile, seule la branche active est affichée afin d’éviter un large défilement
-horizontal.
+L’interface desktop en dark mode déroule le parcours actif de gauche à droite.
+La molette, le trackpad, les flèches de navigation et les numéros d’étapes
+permettent de se déplacer. Quand le parcours a le focus, les touches ← / →,
+Début et Fin permettent aussi de naviguer. Les détails longs défilent dans
+leur carte. Chaque décision conserve le libellé de la route non exécutée.
+
+Les détails restent toujours affichés dans les cartes.
+Aucune mise en page mobile n’est prévue.
 
 ## Entrées et source de vérité
 

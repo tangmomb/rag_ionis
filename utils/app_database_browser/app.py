@@ -664,7 +664,10 @@ def health() -> dict[str, Any]:
             return {
                 "ok": True,
                 "target": ACTIVE_DATABASE_TARGET,
-                "read_only": ACTIVE_DATABASE_TARGET == "vps",
+                # Both explicitly selected targets support the destructive
+                # action exposed by this local administration tool.  The UI
+                # still requires two confirmations before it calls it.
+                "read_only": False,
                 **cur.fetchone(),
             }
     except Exception as exc:
@@ -705,7 +708,7 @@ def set_database_target(request: DatabaseTarget) -> dict[str, Any]:
     except Exception as exc:
         ACTIVE_DATABASE_URL, ACTIVE_DATABASE_TARGET = previous_url, previous_target
         raise HTTPException(status_code=502, detail=f"Connexion PostgreSQL du VPS refusee : {exc}") from exc
-    return {"target": "vps", "read_only": True}
+    return {"target": "vps", "read_only": False}
 
 
 @app.get("/api/tables")
@@ -865,8 +868,6 @@ def table_data(
 
 @app.delete("/api/tables/{schema}/{table}")
 def clear_table(schema: str, table: str) -> dict[str, Any]:
-    if ACTIVE_DATABASE_TARGET == "vps":
-        raise HTTPException(status_code=403, detail="La base du VPS est strictement en lecture seule")
     if schema in {"pg_catalog", "information_schema"} or not allowed_table(schema, table):
         raise HTTPException(status_code=404, detail="Table introuvable")
 

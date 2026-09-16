@@ -1,0 +1,38 @@
+[DECLENCHEURS]
+Qui est directeur de l'école ?
+Qui est le directeur de l'école ?
+Qui est directeur de lécole ?
+Qui est le directeur de lécole ?
+Qui est la directrice de l'école ?
+Qui est la directrice de lécole ?
+Qui est directeur de ionis stm ?
+Qui est directeur de ionis-stm ?
+Qui est le directeur de ionis stm ?
+Qui est le directeur de ionis-stm ?
+Qui est la directrice de ionis stm ?
+Qui est la directrice de ionis-stm ?
+Qui dirige ionis stm ?
+Qui dirige ionis-stm ?
+Qui est à la direction de ionis stm ?
+Qui est à la direction de ionis-stm ?
+[/DECLENCHEURS]
+
+[CONNAISSANCES]
+
+## Guillaume Bardèche
+
+**Fonction :** Directeur Général de l'école d’Ionis-STM.
+
+Diplômé d’un master en lettres classiques, lauréat du CAPES et titulaire de l’Executive MBA Epitech, Guillaume Bardèche a été enseignant dans le secondaire avant de devenir rédacteur de contenu pour différentes structures et publications : Groupe L’Express-Roularta, Nonfiction.fr, Melty Group et IONIS Education Group. Ses travaux portent essentiellement sur des sujets liés à l’éducation, à la jeunesse, à la culture et à l’économie.
+
+En 2012, il devient responsable communication du pôle technologique du Groupe IONIS.
+
+En 2015, il fonde l’incubateur de startups Ionis 361, dont il conserve la direction pendant sept ans. Dans ce cadre, plusieurs centaines de projets entrepreneuriaux sont accompagnés. Durant cette période, associé au fonds CTO Partners, il exerce également des activités liées à l’accélération de startups.
+
+En 2018, il prend la direction du programme Executive MBA Epitech, destiné aux managers qui souhaitent accélérer leur carrière en lien avec les nouvelles technologies et la transformation numérique des entreprises.
+
+Depuis mai 2022, Guillaume Bardèche occupe le poste de Directeur Général d’Ionis-STM.
+
+Auparavant, Cécile Frankart de 2018 à 2022 et Valérie Pham-Trong de 2008 à 2018.
+
+[/CONNAISSANCES]

@@ -1,0 +1,94 @@
+[PERSONNES]
+Maryline Mattiocco
+Marine Orget
+Laura Tyan
+Guillaume Bardèche
+Lisa Cavaco
+Guéwen Gautier
+Solveig Roullet
+Jordan Marchand
+[/PERSONNES]
+
+[CONNAISSANCES]
+
+## Maryline Mattiocco
+
+**Fonction :** Responsable Admissions et Relations Entreprises.
+
+Experte des admissions, des relations entreprises et de l’accompagnement des talents, Maryline Mattiocco a piloté des dispositifs RH et de formation pour de grands comptes issus des secteurs de la tech et du conseil.
+
+À Ionis-STM, elle supervise le parcours des étudiants, depuis leur candidature jusqu’à leur insertion professionnelle. Elle développe les partenariats stratégiques avec les entreprises qui recrutent les diplômés et structure un accompagnement personnalisé vers l’emploi.
+
+## Marine Orget
+
+**Fonction :** Chargée de Communication et Marketing.
+
+Passionnée par la communication, Marine Orget a toujours évolué dans des environnements dynamiques. Au sein de l’Executive MBA by Ionis-STM, elle contribue au développement de son identité de marque, à l’événementiel étudiant et aux actions destinées aux Alumni.
+
+Elle a acquis une première année d’expérience au sein du technocentre de Renault, puis une seconde dans un café solidaire dans le cadre d’un service civique. Créatrice de liens et de contenus, elle a à cœur de porter des projets impactants et solidaires.
+
+En tant que chargée de communication et marketing, Marine Orget collabore au développement des stratégies de communication, de marketing et de l’événementiel de l’Executive MBA by Ionis-STM.
+
+## Laura Tyan
+
+**Fonction :** Responsable Communication et Marketing.
+
+**Statut :** A quitté Ionis-STM.
+
+Spécialiste de la communication et du marketing digital, Laura Tyan a toujours évolué au cœur des secteurs de la tech et de l’innovation.
+
+Après plusieurs expériences au sein de structures dédiées à l’entrepreneuriat, elle s’engage à accompagner Ionis-STM et l’Executive MBA Epitech by Ionis-STM dans le développement de leurs écosystèmes et dans la construction de leur identité de marque.
+
+Elle est titulaire d’une Licence en Lettres Françaises avec une mineure en Art Contemporain, d’un Master en Communication d’Influence de l’Université Catholique de Lille, ainsi que de plusieurs certifications de niveau managérial : MBA Essentials de la London School of Economics, Brand Management et Marketing Digital de l’Université du Cap.
+
+Après avoir vécu à Beyrouth, Stockholm et Paris, Laura Tyan place le multiculturalisme au cœur de son travail et de ses équipes. L’ouverture dans l’enseignement et la culture lui est également primordiale.
+
+En tant que Responsable Communication et Marketing, elle est en charge de la communication corporate de l’Executive MBA Epitech, du marketing digital et de l’événementiel.
+
+## Guillaume Bardèche
+
+**Fonction :** Directeur Général d’Ionis-STM.
+
+Diplômé d’un master en lettres classiques, lauréat du CAPES et titulaire de l’Executive MBA Epitech, Guillaume Bardèche a été enseignant dans le secondaire avant de devenir rédacteur de contenu pour différentes structures et publications : Groupe L’Express-Roularta, Nonfiction.fr, Melty Group et IONIS Education Group. Ses travaux portent essentiellement sur des sujets liés à l’éducation, à la jeunesse, à la culture et à l’économie.
+
+En 2012, il devient responsable communication du pôle technologique du Groupe IONIS.
+
+En 2015, il fonde l’incubateur de startups Ionis 361, dont il conserve la direction pendant sept ans. Dans ce cadre, plusieurs centaines de projets entrepreneuriaux sont accompagnés. Durant cette période, associé au fonds CTO Partners, il exerce également des activités liées à l’accélération de startups.
+
+En 2018, il prend la direction du programme Executive MBA Epitech, destiné aux managers qui souhaitent accélérer leur carrière en lien avec les nouvelles technologies et la transformation numérique des entreprises.
+
+Depuis mai 2022, Guillaume Bardèche occupe le poste de Directeur Général d’Ionis-STM.
+
+## Lisa Cavaco
+
+**Fonction :** Graphiste en alternance.
+
+L’équipe s’agrandit avec l’arrivée de Lisa Cavaco comme graphiste en alternance. Après deux mois de stage au sein de l’équipe, effectués pour clôturer sa Licence à e-artsup, elle poursuit naturellement l’aventure en alternance et contribue à imaginer de nouveaux projets créatifs.
+
+Elle est décrite comme apportant du talent, de la créativité et une vraie bulle de douceur à l’équipe.
+
+## Guéwen Gautier
+
+**Fonction :** Chargé de production médias à Ionis-STM.
+
+Guéwen Gautier réalise des contenus audiovisuels, gère des projets médias et mène des interviews auprès de la communauté étudiante de l’école.
+
+Passionné par l’image et la vidéo, il est réalisateur de courts-métrages primés et fondateur de l’auto-entreprise Studio Magik. Il a également exercé comme chargé de communication et photographe pour la Préfecture de l’Aube.
+
+## Solveig Roullet
+
+**Fonction :** Équipe Admissions et Relations Entreprises.
+
+Dans le cadre de ses fonctions au sein de l’équipe admissions et relations entreprises, Solveig Roullet accompagne les candidats tout au long de leur processus de candidature et d’admission au sein de l’école.
+
+Elle guide également les étudiants dans leur recherche d’alternance ou de premier emploi, notamment par la relecture de CV et la préparation aux entretiens.
+
+Ses missions comprennent enfin le développement de partenariats avec les entreprises qui recrutent des profils à double compétence technique et managériale, formés par l’école.
+
+## Jordan Marchand
+
+**Fonction :** Responsable de la coordination et du développement de l’Executive MBA Epitech au sein du pôle Ionis-STM.
+
+Il assure la coordination du programme Executive MBA Epitech. Il accompagne les professionnels et les candidats dans leur projet de formation et fait le lien entre les participants, les intervenants et les entreprises.
+
+[/CONNAISSANCES]

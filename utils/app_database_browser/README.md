@@ -23,7 +23,7 @@ autres sorties restent en lecture seule.
 
 L'explorateur vidéo indexe automatiquement `downloads/youtube/*_init`, puis permet d'ouvrir chaque vidéo et de consulter son transcript, les textes OCR, les images extraites, les chunks et les fichiers produits.
 
-L'application lit `DATABASE_URL` dans le fichier `.env`, liste les tables applicatives (y compris le schéma `chat`), affiche les données par pages et permet une recherche dans les colonnes texte. Elle ne propose aucune opération `INSERT`, `UPDATE` ou `DELETE`.
+L'application lit `DATABASE_URL` dans le fichier `.env`, liste les tables applicatives (y compris le schéma `chat`), affiche les données par pages et permet une recherche dans les colonnes texte. Le bouton **Vider la table** supprime toutes les lignes de la table sélectionnée, locale ou VPS, après deux confirmations. Il ne permet ni `INSERT` ni `UPDATE` et refuse les schémas système.
 
 ## Choisir la base locale ou celle du VPS
 
@@ -32,3 +32,6 @@ base locale ou celle du VPS. Pour le VPS, saisir l'hote SSH et les identifiants
 PostgreSQL dans la fenetre de connexion. L'application cree un tunnel SSH local
 `127.0.0.1:15432` et garde PostgreSQL non expose sur Internet. Les identifiants
 ne sont pas ecrits dans un fichier de configuration.
+
+Le vidage d'une table VPS est définitif : vérifiez la cible affichée dans la
+barre latérale avant de confirmer.

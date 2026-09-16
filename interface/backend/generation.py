@@ -4,6 +4,10 @@ import json
 import re
 from typing import Any, Callable
 
+from interface.backend.annex_knowledge import (
+    load_person_scoped_knowledge,
+    load_question_scoped_knowledge,
+)
 from interface.backend.llm_providers import LLMClientProtocol
 from interface.backend.schemas import AnswerAction
 from interface.backend.utilities import safe_json_loads, serialize_openai_response
@@ -229,10 +233,43 @@ def source_context_text(source: dict[str, Any]) -> str:
     section_context = source.get("section_context") or {}
     global_context = source.get("global_context") or {}
     if section_context.get("text"):
-        parts.append(f"Resume de section: {section_context['text']}")
+        parts.append(
+            f"Resume de la section dont provient cet extrait: {section_context['text']}"
+        )
     if global_context.get("text"):
-        parts.append(f"Resume global: {global_context['text']}")
+        parts.append(
+            f"Resume global de la vidéo dont provient l'extrait: {global_context['text']}"
+        )
     return "\n".join(part for part in parts if part)
+
+
+def format_person_scoped_knowledge(text: str | None) -> str:
+    """Keep targeted out-of-corpus knowledge visibly separate from video sources."""
+    knowledge = (text or "").strip()
+    if not knowledge:
+        return ""
+    return (
+        "\n\nConnaissances annexes :\n"
+        "Utilise-les seulement si elles sont pertinentes pour la question.\n"
+        f"{knowledge}"
+    )
+
+
+def combine_annex_knowledge(*knowledge_sets: str | None) -> str | None:
+    """Join independently gated annexes before they reach the answer prompt."""
+    content = [knowledge.strip() for knowledge in knowledge_sets if knowledge and knowledge.strip()]
+    return "\n\n".join(content) or None
+
+
+def person_scoped_knowledge_instruction(text: str | None) -> str:
+    """Describe the unnumbered annex in the answer contract when it is present."""
+    if not (text or "").strip():
+        return ""
+    return (
+        " Les connaissances annexes sont aussi une source autorisée, "
+        "mais elles ne sont associées à aucun numéro : ne les ajoute jamais à "
+        "source_indexes."
+    )
 
 
 def format_global_analytics_context(sources: list[dict[str, Any]]) -> str | None:
@@ -322,11 +359,14 @@ def generate_answer(
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
     stream_callback: Callable[[str], None] | None = None,
+    person_scoped_knowledge: str | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
             trace["action"] = "answer" if sources else "abstain"
         if not sources:
+            if person_scoped_knowledge:
+                return person_scoped_knowledge
             return "Je n'ai trouve aucun chunk pertinent dans la base pour repondre a cette question."
         return "\n\n".join(
             f"[S{index}] {source_context_text(source)}"
@@ -344,14 +384,20 @@ def generate_answer(
                     f"Titre: {source['video_title']}",
                     f"URL: {source['video_url']}",
                     f"Chunk detail: {source['chunk_index']}",
-                    f"Extrait pertinent: {source['text']}",
+                    f"Extrait pertinent de la vidéo: {source['text']}",
                     *(
-                        [f"Resume de section: {section_context['text']}"]
+                        [
+                            "Resume de la section dont provient cet extrait: "
+                            f"{section_context['text']}"
+                        ]
                         if section_context.get("text")
                         else []
                     ),
                     *(
-                        [f"Resume global: {global_context['text']}"]
+                        [
+                            "Resume global de la vidéo dont provient l'extrait: "
+                            f"{global_context['text']}"
+                        ]
                         if global_context.get("text")
                         else []
                     ),
@@ -367,8 +413,12 @@ def generate_answer(
                     route_instructions=(
                         "Tu es un assistant RAG. Réponds en français, de façon concise, "
                         "en t'appuyant uniquement sur les sources fournies."
+                        + person_scoped_knowledge_instruction(person_scoped_knowledge)
                     ),
-                    source_marker_instruction=SOURCE_SELECTION_INSTRUCTION,
+                    source_marker_instruction=(
+                        SOURCE_SELECTION_INSTRUCTION
+                        + person_scoped_knowledge_instruction(person_scoped_knowledge)
+                    ),
                 ),
             },
             {
@@ -376,6 +426,7 @@ def generate_answer(
                 "content": (
                     f"Question utilisateur: {question}\n\nSources pour répondre :\n\n"
                     + ("\n\n".join(context_blocks) or "Aucune source exploitable.")
+                    + format_person_scoped_knowledge(person_scoped_knowledge)
                 ),
             },
         ]
@@ -438,11 +489,14 @@ def generate_sql_answer(
     trace: dict[str, Any] | None = None,
     prompt_template: str | None = None,
     stream_callback: Callable[[str], None] | None = None,
+    person_scoped_knowledge: str | None = None,
 ) -> str:
     if client is None or not answer_model:
         if trace is not None:
             trace["action"] = "answer" if sources else "abstain"
         if not sources:
+            if person_scoped_knowledge:
+                return person_scoped_knowledge
             if lookup_intent == "specific_persons":
                 return "Je n'ai trouve aucune video correspondant a cette demande dans la base."
             return (
@@ -461,9 +515,14 @@ def generate_sql_answer(
     system_prompt = render_answer_system_prompt(
         prompt_template,
         route_instructions=(
-            task_prompt + "N'invente aucune information absente des resultats."
+            task_prompt
+            + "N'invente aucune information absente des resultats."
+            + person_scoped_knowledge_instruction(person_scoped_knowledge)
         ),
-        source_marker_instruction=source_marker_instruction,
+        source_marker_instruction=(
+            source_marker_instruction
+            + person_scoped_knowledge_instruction(person_scoped_knowledge)
+        ),
     )
     input_messages = [
             {"role": "system", "content": system_prompt},
@@ -478,6 +537,7 @@ def generate_sql_answer(
                         )
                         or "Aucun résultat SQL exploitable."
                     )
+                    + format_person_scoped_knowledge(person_scoped_knowledge)
                 ),
             },
         ]
@@ -574,8 +634,29 @@ def generate_final_answer(
             f"{question}\n\nCorrection interne obligatoire : {judge_feedback.strip()}"
         )
     route = retrieval.get("route") or retrieval.get("retrieval_mode")
+    execution_plan = retrieval.get("execution_plan") or {}
+    planner_plan = retrieval.get("planner_plan") or {}
+    planner_persons = (
+        planner_plan.get("persons", []) if isinstance(planner_plan, dict) else []
+    )
+    # L'annexe de personnes est strictement pilotée par l'entité extraite par
+    # le planner. Elle n'est pas dépendante de la table des intervenants.
+    person_scoped_knowledge, annex_trace = load_person_scoped_knowledge(planner_persons)
+    annex_trace["person_source"] = "planner_plan"
+    question_scoped_knowledge, question_annex_trace = load_question_scoped_knowledge(
+        retrieval.get("annex_question") or question
+    )
+    additional_knowledge = combine_annex_knowledge(
+        person_scoped_knowledge, question_scoped_knowledge
+    )
+    retrieval["person_scoped_annex"] = annex_trace
+    retrieval["question_scoped_annex"] = question_annex_trace
     person_resolution = retrieval.get("person_resolution") or {}
-    if route != "direct" and person_resolution.get("ambiguous"):
+    if (
+        route != "direct"
+        and person_resolution.get("ambiguous")
+        and not person_scoped_knowledge
+    ):
         return generate_person_clarification_answer(
             client,
             generation_question,
@@ -586,6 +667,17 @@ def generate_final_answer(
             stream_callback,
         )
     if route == "direct":
+        if additional_knowledge:
+            return generate_answer(
+                client,
+                generation_question,
+                answer_model,
+                sources,
+                trace,
+                prompt_template,
+                stream_callback,
+                additional_knowledge,
+            )
         if trace is not None:
             trace["action"] = "answer"
         return retrieval.get("direct_answer") or "Je peux repondre directement a cette demande."
@@ -606,11 +698,26 @@ def generate_final_answer(
             trace,
             prompt_template,
             stream_callback,
+            additional_knowledge,
         )
     if route == "vector_search":
         return generate_answer(
-            client, generation_question, answer_model, sources, trace, prompt_template, stream_callback
+            client,
+            generation_question,
+            answer_model,
+            sources,
+            trace,
+            prompt_template,
+            stream_callback,
+            additional_knowledge,
         )
     return generate_answer(
-        client, generation_question, answer_model, sources, trace, prompt_template, stream_callback
+        client,
+        generation_question,
+        answer_model,
+        sources,
+        trace,
+        prompt_template,
+        stream_callback,
+        additional_knowledge,
     )

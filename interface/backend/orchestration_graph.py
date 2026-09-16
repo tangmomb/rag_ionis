@@ -8,6 +8,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from interface.backend import orchestration as services
+from interface.backend.annex_knowledge import (
+    load_question_scoped_knowledge,
+    matching_person_scoped_annex_persons,
+)
 from interface.backend.config import (
     DEFAULT_ANALYTICS_SQL_MODEL,
     DEFAULT_EMBEDDING_MODEL,
@@ -262,6 +266,8 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
     planned_persons = [
         str(value).strip() for value in planner_plan.persons if str(value).strip()
     ]
+    annex_persons = matching_person_scoped_annex_persons(planned_persons)
+    persons_to_resolve = [person for person in planned_persons if person not in annex_persons]
     database_persons: list[str] = []
     person_resolution: dict[str, Any] = {
         "applied": False,
@@ -271,16 +277,23 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
         "suggestion_transcripts": [],
         "reason": "no_planned_persons",
     }
-    if planned_persons:
+    if persons_to_resolve:
         with services.trace_operation(
             "person_resolution",
             kind="CHAIN",
-            input_value={"planned_persons": planned_persons},
+            input_value={"planned_persons": persons_to_resolve},
         ) as person_span:
             database_persons, person_resolution = services.resolve_person_filters(
-                planned_persons
+                persons_to_resolve
             )
             person_span.set_output(person_resolution)
+    elif annex_persons:
+        person_resolution.update(
+            {
+                "requested": annex_persons,
+                "reason": "local_annex_persons_skip_database_resolution",
+            }
+        )
 
     planned_companies = [
         str(value).strip() for value in planner_plan.companies if str(value).strip()
@@ -325,6 +338,68 @@ def resolve_entities(state: RagOrchestrationState) -> dict[str, Any]:
         "resolved_title_hints": resolved_title_hints,
         "title_resolution": title_resolution,
     }
+
+
+def select_after_plan(
+    state: RagOrchestrationState,
+) -> Literal["annex_direct", "resolve_entities"]:
+    """Short-circuit for local knowledge handled after the planner."""
+    planner_persons = _planner_plan(state).persons
+    if matching_person_scoped_annex_persons(planner_persons):
+        return "annex_direct"
+    question_knowledge, _ = load_question_scoped_knowledge(_payload(state).question)
+    if question_knowledge:
+        return "annex_direct"
+    return "resolve_entities"
+
+
+def annex_direct(state: RagOrchestrationState) -> dict[str, Any]:
+    """Bypass resolution and retrieval; generation receives only local annexes."""
+    payload = _payload(state)
+    planner_plan = _planner_plan(state)
+    retrieval = {
+        "route": "annex_direct",
+        "retrieval_mode": "annex_direct",
+        "planner_prompt": state["planner_prompt"],
+        "planner_response_raw": state["planner_raw"],
+        "pydantic_verification": state["pydantic_verification"],
+        "question_reformulation": state["reformulation_trace"],
+        "contextual_question": state["contextual_question"],
+        "annex_question": payload.question,
+        "reformulation_model": state["reformulation_model"],
+        "planner_model": state["planner_model"],
+        "analytics_sql_model": state["analytics_sql_model"],
+        "planner_plan": planner_plan.model_dump(),
+        "execution_plan": None,
+        "validated_query": None,
+        "person_resolution": {
+            "applied": False,
+            "ambiguous": False,
+            "requested": matching_person_scoped_annex_persons(planner_plan.persons),
+            "reason": "local_annex_skip_remaining_pipeline",
+        },
+        "answer_model": services.normalize_model_name(
+            payload.answerModel, DEFAULT_GENERATION_MODEL
+        ),
+        "embedding_model": None,
+        "rerank_model": None,
+        "sql_prefilters": False,
+        "bm25_top_k": 0,
+        "vector_top_k": 0,
+        "rrf_top_n": 0,
+        "final_k": 0,
+        "used_rerank": False,
+        "general_question_only": False,
+        "sql_query": None,
+        "prefilter": {},
+        "sql_prefilters_trace": {},
+        "bm25": {},
+        "vector": {},
+        "rrf": {},
+        "rerank": {},
+        "direct_lookup": {},
+    }
+    return {"answer": "", "sources": [], "retrieval": retrieval}
 
 
 def build_execution_plan(state: RagOrchestrationState) -> dict[str, Any]:
@@ -767,6 +842,7 @@ def build_graph():
     graph.add_node("initialize", initialize)
     graph.add_node("reformulate", reformulate)
     graph.add_node("plan", plan)
+    graph.add_node("annex_direct", annex_direct)
     graph.add_node("resolve_entities", resolve_entities)
     graph.add_node("build_execution_plan", build_execution_plan)
     graph.add_node("person_clarification", person_clarification)
@@ -776,11 +852,12 @@ def build_graph():
     graph.add_edge(START, "initialize")
     graph.add_edge("initialize", "reformulate")
     graph.add_edge("reformulate", "plan")
-    graph.add_edge("plan", "resolve_entities")
+    graph.add_conditional_edges("plan", select_after_plan)
     graph.add_edge("resolve_entities", "build_execution_plan")
     graph.add_conditional_edges("build_execution_plan", select_route)
     for route in (
         "person_clarification",
+        "annex_direct",
         "direct",
         "sql_search",
         "vector_search",

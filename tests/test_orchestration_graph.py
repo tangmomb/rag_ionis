@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from interface.backend.orchestration_graph import (
     _execution_plan_trace,
@@ -11,12 +12,67 @@ from interface.backend.orchestration_graph import (
     _resolved_plan_title_hint,
     _resolved_plan_title_hints,
     _resolved_transcript_persons,
+    select_after_plan,
     _sql_parent_output,
 )
 from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class ExecutionPlanTraceTests(unittest.TestCase):
+
+    def test_allow_list_person_from_planner_short_circuits_the_pipeline(self) -> None:
+        state = {
+            "payload": {"question": "Qui est Laura Tyan ?"},
+            "planner_plan": PlannerPlan(
+                route="search", query_text="Qui est Laura Tyan ?", persons=["Laura Tyan"]
+            ).model_dump()
+        }
+        with patch(
+            "interface.backend.orchestration_graph.matching_person_scoped_annex_persons",
+            return_value=["Laura Tyan"],
+        ):
+            route = select_after_plan(state)
+
+        self.assertEqual(route, "annex_direct")
+
+    def test_non_allow_list_person_keeps_entity_resolution_pipeline(self) -> None:
+        state = {
+            "payload": {"question": "Qui est quelqu'un ?"},
+            "planner_plan": PlannerPlan(
+                route="search", query_text="Qui est quelqu'un ?", persons=["Quelqu'un"]
+            ).model_dump()
+        }
+        with patch(
+            "interface.backend.orchestration_graph.matching_person_scoped_annex_persons",
+            return_value=[],
+        ), patch(
+            "interface.backend.orchestration_graph.load_question_scoped_knowledge",
+            return_value=(None, {"enabled": False}),
+        ):
+            route = select_after_plan(state)
+
+        self.assertEqual(route, "resolve_entities")
+
+    def test_exact_question_trigger_short_circuits_the_pipeline(self) -> None:
+        state = {
+            "payload": {"question": "Question annexe précise"},
+            "planner_plan": PlannerPlan(
+                route="search", query_text="Question annexe précise"
+            ).model_dump(),
+        }
+        with (
+            patch(
+                "interface.backend.orchestration_graph.matching_person_scoped_annex_persons",
+                return_value=[],
+            ),
+            patch(
+                "interface.backend.orchestration_graph.load_question_scoped_knowledge",
+                return_value=("Connaissance annexe", {"enabled": True}),
+            ),
+        ):
+            route = select_after_plan(state)
+
+        self.assertEqual(route, "annex_direct")
 
     def test_plan_companies_uses_only_confident_suggestions(self) -> None:
         companies = _resolved_plan_companies(

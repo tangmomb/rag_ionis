@@ -5,93 +5,566 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FAQ · RAG YouTube IONIS-STM</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=11" />
+    <link rel="stylesheet" href="/styles.css?v=20" />
   </head>
   <body>
     <main class="faq-page">
       <section class="faq-content">
         <a class="faq-back-link" href="/">← Retour à l'outil</a>
-        <div class="faq-list">
-          <details class="faq-item" open>
-            <summary>Quelles sont les statistiques du RAG ?</summary>
-            <div class="faq-answer">
-              <p>Ces chiffres proviennent du dernier benchmark Phoenix : 22 questions sur 22 ont abouti.</p>
+        <div class="faq-toc-panel">
+          <span class="faq-toc-title">Sommaire - FAQ</span>
+          <nav class="faq-toc" aria-label="Sommaire de la FAQ">
+            <a class="suggested-question" href="#preparation-des-donnees"
+              >Préparation des données</a
+            >
+            <a class="suggested-question" href="#pipeline-de-reponse"
+              >Pipeline de réponse</a
+            >
+            <a class="suggested-question" href="#statistiques-et-performance"
+              >Statistiques et performance</a
+            >
+            <a class="suggested-question" href="#mise-a-jour-du-contenu"
+              >Mise à jour du contenu</a
+            >
+          </nav>
+        </div>
+
+        <section
+          class="faq-section"
+          id="preparation-des-donnees"
+          aria-labelledby="preparation-des-donnees-title"
+        >
+          <h2 id="preparation-des-donnees-title">Préparation des données</h2>
+          <div
+            class="faq-question-list"
+            role="tablist"
+            aria-label="Questions sur la préparation des données"
+          >
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="preparation-videos"
+              data-faq-answer="preparation-videos"
+            >
+              Des vidéos jusqu'aux chunks, comment se déroule la préparation ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="stockage-donnees"
+              data-faq-answer="stockage-donnees"
+            >
+              Où sont stockées les données ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="modele-embedding"
+              data-faq-answer="modele-embedding"
+            >
+              Quel modèle d'embedding et quelle taille de vecteur sont utilisés
+              ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="preparation-chunks"
+              data-faq-answer="preparation-chunks"
+            >
+              Comment sont préparés les chunks ?
+            </button>
+          </div>
+          <div class="faq-answers">
+            <div
+              class="faq-answer"
+              id="preparation-videos"
+              role="tabpanel"
+              hidden
+            >
+              <ol class="faq-steps">
+                <li>
+                  <strong>Récupération des informations.</strong> On appelle
+                  L'API YouTube, elle nous renvoie toutes les infos des vidéos
+                  de la chaine. On obtient 1 json par vidéo avec ses infos
+                  notamment titre, description, durée...
+                </li>
+                <li>
+                  <strong>Téléchargement des vidéos.</strong> Téléchargement
+                  avec <strong>yt-dlp</strong>.
+                </li>
+                <li>
+                  <strong>Traitement des vidéos.</strong> Chaque vidéo suit un
+                  pipeline de préparation stricte en fonction de divers
+                  paramètres (Est ce une vidéo très longue ? Une interview ? Un
+                  motion design ?) Cliquez-ici pour voir le traitement en
+                  détail.
+                </li>
+                <li>
+                  <strong>Publication pour le RAG.</strong> Le transcript validé
+                  est découpé en passages, transformé en embeddings puis
+                  synchronisé avec les métadonnées de la vidéo. C'est cette
+                  version publiée que le RAG peut ensuite retrouver et utiliser
+                  pour répondre.
+                </li>
+              </ol>
+            </div>
+            <div
+              class="faq-answer"
+              id="stockage-donnees"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Le stockage objet S3 conserve les artefacts produits pendant le
+                traitement : fichiers source, images, OCR, transcripts,
+                intervenants, chunks, embeddings et journaux d'exécution. Il
+                permet de garder une trace complète d'une préparation sans
+                alourdir la base de données opérationnelle.
+              </p>
+              <p>
+                PostgreSQL contient les données structurées que le RAG interroge
+                : vidéos, transcripts publiés, intervenants, chunks,
+                commentaires et statistiques. Les vecteurs des chunks y sont
+                stockés avec
+                <strong>pgvector</strong>, afin de combiner recherche sémantique
+                et filtres SQL. Les liens entre un chunk, sa vidéo et, pour les
+                longues vidéos, ses résumés parents sont également conservés en
+                base.
+              </p>
+            </div>
+            <div
+              class="faq-answer"
+              id="modele-embedding"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Les chunks sont vectorisés avec le modèle OpenAI
+                <strong>text-embedding-3-large</strong>. Chaque vecteur contient
+                <strong>2&nbsp;000 dimensions</strong>, une taille fixée pour
+                rester compatible avec les vecteurs déjà publiés dans la base.
+              </p>
+              <p>
+                Un embedding traduit le sens d'un passage en valeurs numériques.
+                Lorsqu'une question est posée, elle est vectorisée avec le même
+                modèle, puis comparée aux vecteurs des chunks : les passages les
+                plus proches sémantiquement peuvent être retrouvés même s'ils
+                n'emploient pas exactement les mêmes mots que la question.
+              </p>
+            </div>
+            <div
+              class="faq-answer"
+              id="preparation-chunks"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Le profil dépend de la durée. Jusqu'à 600 secondes incluses, le
+                transcript est découpé en chunks de
+                <strong>détail</strong>, c'est-à-dire des passages courts et
+                précisément rattachés à un moment de la vidéo. Ce sont eux qui
+                servent directement à la recherche BM25 et vectorielle.
+              </p>
+              <p>
+                Au-delà de 600 secondes, le pipeline conserve ces chunks de
+                détail mais construit aussi une hiérarchie : plusieurs détails
+                forment une <strong>section</strong> résumée, et les sections
+                sont réunies dans un résumé <strong>global</strong> de la vidéo.
+                Lors de la génération, ces niveaux parents peuvent redonner du
+                contexte autour du passage retrouvé, sans fausser son
+                classement.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section
+          class="faq-section"
+          id="pipeline-de-reponse"
+          aria-labelledby="pipeline-de-reponse-title"
+        >
+          <h2 id="pipeline-de-reponse-title">Pipeline de réponse</h2>
+          <div
+            class="faq-question-list"
+            role="tablist"
+            aria-label="Questions sur le pipeline de réponse"
+          >
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="appels-llm"
+              data-faq-answer="appels-llm"
+            >
+              Combien d'appels LLM sont effectués dans le pipeline de réponse ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="organisation-pipeline"
+              data-faq-answer="organisation-pipeline"
+            >
+              Comment s'organise le pipeline de réponse ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="suivi-reponse"
+              data-faq-answer="suivi-reponse"
+            >
+              Comment est suivi le pipeline de réponse ?
+            </button>
+          </div>
+          <div class="faq-answers">
+            <div class="faq-answer" id="appels-llm" role="tabpanel" hidden>
+              <p>
+                Pour une question de recherche standard, le pipeline effectue
+                généralement <strong>3 appels LLM</strong> : reformulation de la
+                question, planification de la recherche, puis génération de la
+                réponse. La reformulation tient compte du contexte récent de la
+                conversation pour rendre une relance autonome sans modifier le
+                message enregistré.
+              </p>
+              <p>
+                Certaines demandes nécessitent des appels supplémentaires. Une
+                question analytique déclenche un appel
+                <strong>Text-to-SQL</strong> pour produire une requête SQL
+                encadrée ; une demande ambiguë peut nécessiter une
+                clarification. Le reranking des passages reste, lui, réalisé
+                séparément par <strong>Cohere</strong> et ne compte pas comme un
+                appel au LLM conversationnel.
+              </p>
+            </div>
+            <div
+              class="faq-answer"
+              id="organisation-pipeline"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Chaque message entre d'abord dans un sous-graphe qui initialise
+                la requête, reformule si nécessaire, planifie la recherche et
+                résout les personnes ou organisations citées. Le plan est
+                ensuite complété par des règles déterministes pour sélectionner
+                l'une des routes finales : réponse directe, demande de précision
+                sur une personne, SQL ou recherche documentaire.
+              </p>
+              <p>
+                Les questions factuelles ou analytiques exploitent SQL sur les
+                données structurées. Les questions sur le contenu des vidéos
+                combinent une recherche plein texte BM25 et une recherche
+                vectorielle dans pgvector ; leurs résultats sont fusionnés,
+                filtrés puis rerankés par Cohere. Les meilleurs chunks reçoivent
+                leur contexte de section ou de vidéo avant d'être transmis au
+                modèle de réponse.
+              </p>
+              <p>
+                Le modèle génère alors une réponse uniquement à partir des
+                sources retenues. S'il estime que les preuves sont insuffisantes
+                ou que la demande reste ambiguë, il peut s'abstenir plutôt que
+                d'inventer une réponse.
+              </p>
+            </div>
+            <div class="faq-answer" id="suivi-reponse" role="tabpanel" hidden>
+              <p>
+                Le pipeline est suivi dans <strong>Phoenix</strong> par des
+                traces OpenTelemetry. Chaque requête laisse une chronologie des
+                étapes : reformulation, planification, résolution d'entités,
+                recherche, reranking, génération et persistance de la
+                conversation.
+              </p>
+              <p>
+                Pour chaque étape, les traces permettent d'examiner la route
+                choisie, les sources retrouvées, les scores de reranking, les
+                appels aux modèles, les erreurs éventuelles et la durée
+                d'exécution. Les routes SQL disposent aussi de traces distinctes
+                pour la génération, la validation et l'exécution de la requête.
+                Cela facilite l'analyse d'une réponse sans exposer les clés
+                d'API.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section
+          class="faq-section"
+          id="statistiques-et-performance"
+          aria-labelledby="statistiques-et-performance-title"
+        >
+          <h2 id="statistiques-et-performance-title">
+            Statistiques et performance
+          </h2>
+          <div
+            class="faq-question-list"
+            role="tablist"
+            aria-label="Questions sur les statistiques et performances"
+          >
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="statistiques-rag"
+              data-faq-answer="statistiques-rag"
+            >
+              Quelles sont les statistiques du RAG ?
+            </button>
+          </div>
+          <div class="faq-answers">
+            <div
+              class="faq-answer"
+              id="statistiques-rag"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Ces chiffres proviennent du dernier benchmark Phoenix : 22
+                questions sur 22 ont abouti.
+              </p>
+              <p>
+                Ils décrivent ce jeu de test et non une garantie pour toutes les
+                questions. Le recall mesure la couverture des éléments attendus
+                ; la précision mesure la part de résultats retournés qui sont
+                effectivement pertinents.
+              </p>
               <dl class="faq-metrics">
                 <div>
                   <dt>Vidéos — recall</dt>
                   <dd>86,4&nbsp;%</dd>
-                  <p>Part des vidéos attendues que le RAG retrouve.<br />Plus haut signifie moins de sources pertinentes manquées.</p>
-                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                  <p>
+                    Part des vidéos attendues que le RAG retrouve.<br />Plus
+                    haut signifie moins de sources pertinentes manquées.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : SQL et vectorielle</span
+                  >
                 </div>
                 <div>
                   <dt>Vidéos — précision</dt>
                   <dd>52,9&nbsp;%</dd>
-                  <p>Part des vidéos retournées qui sont pertinentes.<br />Plus haut signifie moins de résultats hors sujet.</p>
-                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                  <p>
+                    Part des vidéos retournées qui sont pertinentes.<br />Plus
+                    haut signifie moins de résultats hors sujet.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : SQL et vectorielle</span
+                  >
                 </div>
                 <div>
                   <dt>Vidéos via route SQL — recall / précision</dt>
                   <dd>88,9&nbsp;% / 83,3&nbsp;%</dd>
-                  <p>Mesure les vidéos des requêtes traitées en SQL.<br />Recall : couverture ; précision : pertinence des retours.</p>
+                  <p>
+                    Mesure les vidéos des requêtes traitées en SQL.<br />Recall
+                    : couverture ; précision : pertinence des retours.
+                  </p>
                   <span class="faq-metric-route">Route concernée : SQL</span>
                 </div>
                 <div>
                   <dt>Vidéos via route vectorielle — recall / précision</dt>
                   <dd>84,6&nbsp;% / 31,8&nbsp;%</dd>
-                  <p>Mesure les vidéos des requêtes traitées par recherche sémantique.<br />Recall : couverture ; précision : pertinence des retours.</p>
-                  <span class="faq-metric-route">Route concernée : vectorielle</span>
+                  <p>
+                    Mesure les vidéos des requêtes traitées par recherche
+                    sémantique.<br />Recall : couverture ; précision :
+                    pertinence des retours.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : vectorielle</span
+                  >
                 </div>
                 <div>
                   <dt>Chunks — recall / précision</dt>
                   <dd>84,6&nbsp;% / 18,5&nbsp;%</dd>
-                  <p>Mesure les passages attendus après la recherche et le rerank.<br />Recall : passages retrouvés ; précision : passages utiles.</p>
-                  <span class="faq-metric-route">Route concernée : vectorielle</span>
+                  <p>
+                    Mesure les passages attendus après la recherche et le
+                    rerank.<br />Recall : passages retrouvés ; précision :
+                    passages utiles.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : vectorielle</span
+                  >
                 </div>
                 <div>
                   <dt>Route attendue</dt>
                   <dd>95,5&nbsp;%</dd>
-                  <p>Part des questions envoyées vers la bonne route SQL ou vectorielle.<br />Plus haut signifie un meilleur aiguillage initial.</p>
-                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                  <p>
+                    Part des questions envoyées vers la bonne route SQL ou
+                    vectorielle.<br />Plus haut signifie un meilleur aiguillage
+                    initial.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : SQL et vectorielle</span
+                  >
                 </div>
                 <div>
                   <dt>Coût moyen par question</dt>
                   <dd>0,0026&nbsp;$</dd>
-                  <p>Estimation du coût des appels LLM pour une question complète.<br />Elle inclut reformulation, planification et réponse.</p>
-                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                  <p>
+                    Estimation du coût des appels LLM pour une question
+                    complète.<br />Elle inclut reformulation, planification et
+                    réponse.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : SQL et vectorielle</span
+                  >
                 </div>
                 <div>
-                  <dt>Latence «&nbsp;réponse prête&nbsp;» — P50 / P75 / P90 / P95</dt>
+                  <dt>
+                    Latence «&nbsp;réponse prête&nbsp;» — P50 / P75 / P90 / P95
+                  </dt>
                   <dd>4,18&nbsp;s / 4,74&nbsp;s / 4,98&nbsp;s / 5,09&nbsp;s</dd>
-                  <p>Temps entre l’envoi de la question et la réponse enregistrée, prête à être renvoyée.<br />Percentiles calculés sur les 22 réponses du dernier benchmark.</p>
-                  <span class="faq-metric-route">Route concernée : SQL et vectorielle</span>
+                  <p>
+                    Temps entre l’envoi de la question et la réponse
+                    enregistrée, prête à être renvoyée.<br />Percentiles
+                    calculés sur les 22 réponses du dernier benchmark.
+                  </p>
+                  <span class="faq-metric-route"
+                    >Route concernée : SQL et vectorielle</span
+                  >
                 </div>
               </dl>
             </div>
-          </details>
-          <details class="faq-item">
-            <summary>Combien d'appels LLM sont effectués dans le pipeline de réponse ?</summary>
-            <div class="faq-answer">
+          </div>
+        </section>
+
+        <section
+          class="faq-section"
+          id="mise-a-jour-du-contenu"
+          aria-labelledby="mise-a-jour-du-contenu-title"
+        >
+          <h2 id="mise-a-jour-du-contenu-title">Mise à jour du contenu</h2>
+          <div
+            class="faq-question-list"
+            role="tablist"
+            aria-label="Questions sur la mise à jour du contenu"
+          >
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="ajout-videos"
+              data-faq-answer="ajout-videos"
+            >
+              Comment les nouvelles vidéos sont-elles ajoutées ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="mise-a-jour-systeme"
+              data-faq-answer="mise-a-jour-systeme"
+            >
+              Comment est mis à jour le système ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="ajout-statistiques"
+              data-faq-answer="ajout-statistiques"
+            >
+              Comment sont ajoutées de nouvelles statistiques ?
+            </button>
+          </div>
+          <div class="faq-answers">
+            <div class="faq-answer" id="ajout-videos" role="tabpanel" hidden>
               <p>
-                Pour une question de recherche standard, le pipeline effectue <strong>3 appels LLM</strong> :
-                reformulation de la question, planification de la recherche, puis génération de la réponse.
+                La mise à jour des vidéos compare directement les identifiants
+                renvoyés par l'API YouTube avec ceux présents dans PostgreSQL.
+                Les vidéos déjà publiées sont ignorées ; chaque vidéo absente
+                est téléchargée, reçoit ses commentaires, passe dans le pipeline
+                de préparation, puis ses embeddings sont créés avant la
+                synchronisation complète en base.
               </p>
               <p>
-                Le reranking des résultats est réalisé séparément par Cohere.
+                Une vidéo n'est rendue disponible au RAG qu'une fois ce parcours
+                terminé. En cas d'échec, elle reste absente de la table des
+                vidéos et sera donc automatiquement retentée à la prochaine
+                exécution. Le journal de mise à jour conserve la liste des
+                vidéos détectées et le détail des traitements réalisés.
               </p>
             </div>
-          </details>
-          <details class="faq-item">
-            <summary>Quel outil est utilisé pour le suivi du pipeline ?</summary>
-            <div class="faq-answer">
+            <div
+              class="faq-answer"
+              id="mise-a-jour-systeme"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                Le suivi est assuré par <strong>Phoenix</strong>. Il enregistre les traces de chaque requête —
-                reformulation, planification, recherche, génération et évaluation — afin d'observer le déroulement,
-                les latences et les résultats du RAG.
+                Deux commandes indépendantes assurent la maintenance : l'une
+                actualise les statistiques et les commentaires des vidéos déjà
+                publiées ; l'autre détecte et traite uniquement les nouvelles
+                vidéos. Elles peuvent être planifiées séparément et partagent un
+                verrou PostgreSQL, afin d'éviter deux mises à jour concurrentes.
+              </p>
+              <p>
+                Chaque exécution crée une archive horodatée et un journal. En
+                local, ils sont conservés sous
+                <code>downloads/youtube/</code> ; en production, ils sont
+                archivés dans S3. Cette séparation permet d'actualiser les
+                statistiques sans utiliser de GPU, tandis que l'ajout d'une
+                vidéo déclenche le pipeline de préparation complet.
               </p>
             </div>
-          </details>
-        </div>
+            <div
+              class="faq-answer"
+              id="ajout-statistiques"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                La mise à jour des statistiques interroge l'API YouTube pour
+                chaque vidéo déjà enregistrée dans PostgreSQL. Elle écrit un
+                <strong>snapshot quotidien</strong> dans la table
+                <code>stats</code> : l'historique est ainsi conservé, même
+                lorsqu'une métrique n'a pas changé depuis la veille.
+              </p>
+              <p>
+                La même opération synchronise les commentaires et leurs réponses
+                : elle détecte les ajouts, les modifications et les
+                suppressions. Elle ne télécharge pas de nouvelle vidéo et ne les
+                publie pas dans le RAG ; cette responsabilité appartient à la
+                mise à jour dédiée aux nouvelles vidéos.
+              </p>
+            </div>
+          </div>
+        </section>
       </section>
     </main>
+    <script>
+      document.querySelectorAll(".faq-section").forEach((section) => {
+        const questions = section.querySelectorAll("[data-faq-answer]");
+        const answers = section.querySelectorAll(".faq-answer");
+
+        questions.forEach((question) => {
+          question.addEventListener("click", () => {
+            const selectedId = question.dataset.faqAnswer;
+
+            questions.forEach((item) => {
+              item.setAttribute("aria-selected", String(item === question));
+              item.classList.toggle("is-active", item === question);
+            });
+            answers.forEach((answer) => {
+              answer.hidden = answer.id !== selectedId;
+            });
+          });
+        });
+      });
+    </script>
   </body>
 </html>

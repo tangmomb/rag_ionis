@@ -7,6 +7,11 @@ from .environment import load_project_env
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 INTERFACE_DIR = Path(__file__).resolve().parents[1]
+# Cette base reste distincte du corpus vidéo et n'est lue que lorsqu'un plan
+# d'exécution a résolu au moins une personne précise.
+PERSON_SCOPED_KNOWLEDGE_FILE = INTERFACE_DIR / "connaissances_personnes.txt"
+# Annexe indépendante, déclenchée par des expressions précises de la question.
+QUESTION_SCOPED_KNOWLEDGE_FILE = INTERFACE_DIR / "connaissances_annexes.txt"
 load_project_env(PROJECT_DIR)
 
 DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"

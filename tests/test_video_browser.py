@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +12,23 @@ from utils.app_database_browser import app as browser
 
 
 class VideoBrowserTests(unittest.TestCase):
+    def test_remote_table_can_be_cleared_after_explicit_selection(self) -> None:
+        cursor = MagicMock()
+        cursor.rowcount = 4
+        connection = MagicMock()
+        connection.__enter__.return_value.cursor.return_value.__enter__.return_value = cursor
+
+        with (
+            patch.object(browser, "ACTIVE_DATABASE_TARGET", "vps"),
+            patch.object(browser, "allowed_table", return_value=True),
+            patch.object(browser, "connection", return_value=connection),
+        ):
+            result = browser.clear_table("data", "documents")
+
+        self.assertEqual(result, {"schema": "data", "table": "documents", "deleted": 4})
+        cursor.execute.assert_called_once()
+        connection.__enter__.return_value.commit.assert_called_once()
+
     def test_current_init_video_outputs_are_indexed_for_graphical_browsing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

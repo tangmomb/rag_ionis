@@ -8,7 +8,6 @@ const defaults = {
 };
 
 const state = { ...defaults };
-let detailsVisible = true;
 let tooltipCounter = 0;
 
 function artifact(path, description = "") {
@@ -147,6 +146,7 @@ function box(title, options = {}) {
       ${options.summary ? `<p class="node-summary">${options.summary}</p>` : ""}
       <div class="node-details">${details}</div>
       ${buttons}
+      ${options.routeChoice || ""}
     </article>
   `;
 }
@@ -156,27 +156,6 @@ function oneChild(parent, child) {
     <div class="tree-node">
       ${parent}
       <div class="single-child">${child}</div>
-    </div>
-  `;
-}
-
-function branch(label, selected, content) {
-  return `
-    <div class="branch ${selected ? "" : "inactive"}">
-      <span class="branch-label ${selected ? "selected" : ""}">${label}</span>
-      ${content}
-    </div>
-  `;
-}
-
-function inactiveResult(text) {
-  return `
-    <div class="tree-node">
-      ${box(text, {
-        kind: "result",
-        active: false,
-        summary: "Branche non exécutée.",
-      })}
     </div>
   `;
 }
@@ -191,26 +170,18 @@ function decisionNode(
   options = {},
 ) {
   const yesSelected = state[decisionKey];
-  const yesBranch = branch(
-    "Oui",
-    yesSelected,
-    yesSelected ? yesContent : inactiveResult(yesInactiveLabel),
-  );
-  const noBranch = branch(
-    "Non",
-    !yesSelected,
-    !yesSelected ? noContent : inactiveResult(noInactiveLabel),
-  );
   return `
     <div class="tree-node">
       ${box(question, {
         ...options,
         kind: "decision",
         decisionKey,
+        routeChoice: `<div class="route-choice">
+          <strong>→ ${yesSelected ? yesInactiveLabel : noInactiveLabel}</strong>
+          <span>Non exécuté : ${yesSelected ? noInactiveLabel : yesInactiveLabel}</span>
+        </div>`,
       })}
-      <div class="children">
-        ${yesSelected ? `${yesBranch}${noBranch}` : `${noBranch}${yesBranch}`}
-      </div>
+      ${yesSelected ? yesContent : noContent}
     </div>
   `;
 }
@@ -865,19 +836,33 @@ function renderTree() {
     }),
     durationDecision(),
   );
-  document.querySelector("#pipeline-tree").innerHTML = start;
+  const template = document.createElement("template");
+  template.innerHTML = start;
+  const cards = [...template.content.querySelectorAll(".node-box")];
+  const tree = document.querySelector("#pipeline-tree");
+  tree.replaceChildren(...cards);
+  const navigation = document.querySelector("#step-navigation");
+  navigation.replaceChildren();
+  cards.forEach((card, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    const label = card.querySelector("h3").textContent;
+    const step = document.createElement("span");
+    step.className = "step-number";
+    step.textContent = `ÉTAPE ${number}`;
+    card.prepend(step);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = number;
+    button.title = label;
+    button.setAttribute("aria-label", `Étape ${index + 1} : ${label}`);
+    button.addEventListener("click", () => goToStep(index));
+    navigation.append(button);
+  });
+  updateNavigation();
 }
 
 function render() {
   renderTree();
-}
-
-function setDetailsVisibility(visible) {
-  detailsVisible = visible;
-  document.body.classList.toggle("details-hidden", !visible);
-  const button = document.querySelector("#details-button");
-  button.setAttribute("aria-pressed", String(visible));
-  button.textContent = visible ? "Masquer les détails" : "Afficher les détails";
 }
 
 document.querySelector("#pipeline-tree").addEventListener("click", (event) => {
@@ -889,17 +874,60 @@ document.querySelector("#pipeline-tree").addEventListener("click", (event) => {
   render();
   document
     .querySelector(`[data-decision="${key}"][data-value="${value}"]`)
-    ?.focus();
+    ?.focus({ preventScroll: true });
 });
 
-document.querySelector("#details-button").addEventListener("click", () => {
-  setDetailsVisibility(!detailsVisible);
-});
+const tree = document.querySelector("#pipeline-tree");
+let currentStep = 0;
 
-document.querySelector("#reset-button").addEventListener("click", () => {
-  Object.assign(state, defaults);
-  render();
+function updateNavigation() {
+  const cards = [...tree.querySelectorAll(".node-box")];
+  if (!cards.length) return;
+  const origin = tree.getBoundingClientRect().left + 36;
+  currentStep = cards.reduce((nearest, card, index) =>
+    Math.abs(card.getBoundingClientRect().left - origin) <
+    Math.abs(cards[nearest].getBoundingClientRect().left - origin) ? index : nearest, 0);
+  const atEnd = tree.scrollLeft >= tree.scrollWidth - tree.clientWidth - 2;
+  document.querySelector("#step-position").textContent = `${String(currentStep + 1).padStart(2, "0")} / ${String(cards.length).padStart(2, "0")}`;
+  document.querySelectorAll("#step-navigation button").forEach((button, index) => {
+    if (index === currentStep) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
+  });
+  document.querySelector("#previous-step").disabled = tree.scrollLeft <= 1;
+  document.querySelector("#next-step").disabled = atEnd;
+}
+
+function goToStep(index, smooth = true) {
+  const cards = tree.querySelectorAll(".node-box");
+  const card = cards[Math.max(0, Math.min(index, cards.length - 1))];
+  if (!card) return;
+  tree.scrollTo({
+    left: tree.scrollLeft + card.getBoundingClientRect().left - tree.getBoundingClientRect().left - 36,
+    behavior: smooth && !matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "instant",
+  });
+  updateNavigation();
+}
+
+// A vertical mouse wheel advances the route; overflowing details keep their own scroll.
+tree.addEventListener("wheel", (event) => {
+  if (event.ctrlKey || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  const detail = event.target.closest(".node-details, .info-tooltip-content");
+  if (detail && detail.scrollHeight > detail.clientHeight + 1) return;
+  event.preventDefault();
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? tree.clientWidth : 1;
+  tree.scrollLeft += event.deltaY * unit;
+}, { passive: false });
+
+tree.addEventListener("keydown", (event) => {
+  if (event.target !== tree) return;
+  const destinations = { ArrowRight: currentStep + 1, ArrowLeft: currentStep - 1, Home: 0, End: tree.children.length - 1 };
+  if (!(event.key in destinations)) return;
+  event.preventDefault();
+  goToStep(destinations[event.key]);
 });
+tree.addEventListener("scroll", updateNavigation, { passive: true });
+window.addEventListener("resize", updateNavigation);
+document.querySelector("#previous-step").addEventListener("click", () => goToStep(currentStep - 1));
+document.querySelector("#next-step").addEventListener("click", () => goToStep(currentStep + 1));
 
 render();
-setDetailsVisibility(true);

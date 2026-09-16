@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from interface.app import RagRequest, app
-from interface.backend import api, generation, orchestration, planner, retrieval
+from interface.backend import annex_knowledge, api, generation, orchestration, planner, retrieval
 from interface.backend.config import (
     DEFAULT_ANALYTICS_SQL_MODEL,
     DEFAULT_GENERATION_MODEL,
@@ -1059,8 +1061,232 @@ class InterfaceAppTests(unittest.TestCase):
         )
 
         self.assertIn("Contenu detail", text)
-        self.assertIn("Resume de section", text)
-        self.assertIn("Resume global", text)
+        self.assertIn(
+            "Resume de la section dont provient cet extrait: Resume de section", text
+        )
+        self.assertIn(
+            "Resume global de la vidéo dont provient l'extrait: Resume global", text
+        )
+
+    def test_person_scoped_annex_is_not_read_without_execution_plan_persons(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances.txt"
+            knowledge_path.write_text("Information privée", encoding="utf-8")
+            with patch.object(
+                annex_knowledge, "PERSON_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, trace = annex_knowledge.load_person_scoped_knowledge([])
+
+        self.assertIsNone(content)
+        self.assertEqual(trace["reason"], "no_execution_plan_persons")
+
+    def test_person_scoped_annex_loads_for_execution_plan_persons(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances.txt"
+            knowledge_path.write_text(
+                "[PERSONNES]\nCecile Francard\n[/PERSONNES]\n"
+                "[CONNAISSANCES]\n# Commentaire local\n"
+                "Information annexe utile\n[/CONNAISSANCES]",
+                encoding="utf-8",
+            )
+            with patch.object(
+                annex_knowledge, "PERSON_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, trace = annex_knowledge.load_person_scoped_knowledge(
+                    ["Cécile Francard"]
+                )
+
+        self.assertEqual(content, "Information annexe utile")
+        self.assertEqual(trace["reason"], "loaded")
+        self.assertEqual(trace["persons"], ["Cécile Francard"])
+        self.assertEqual(trace["matched_persons"], ["Cécile Francard"])
+
+    def test_person_scoped_annex_preserves_markdown_headings(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances.txt"
+            knowledge_path.write_text(
+                "[PERSONNES]\nCécile Francard\n[/PERSONNES]\n"
+                "[CONNAISSANCES]\n# Note interne\n## Cécile Francard\n"
+                "Biographie utile\n[/CONNAISSANCES]",
+                encoding="utf-8",
+            )
+            with patch.object(
+                annex_knowledge, "PERSON_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, _ = annex_knowledge.load_person_scoped_knowledge(
+                    ["Cécile Francard"]
+                )
+
+        self.assertEqual(content, "## Cécile Francard\nBiographie utile")
+
+    def test_person_scoped_annex_requires_allow_list_match(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances.txt"
+            knowledge_path.write_text(
+                "[PERSONNES]\nCécile Francard\n[/PERSONNES]\n"
+                "[CONNAISSANCES]\nInformation annexe utile\n[/CONNAISSANCES]",
+                encoding="utf-8",
+            )
+            with patch.object(
+                annex_knowledge, "PERSON_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, trace = annex_knowledge.load_person_scoped_knowledge(
+                    ["Autre personne"]
+                )
+
+        self.assertIsNone(content)
+        self.assertFalse(trace["enabled"])
+        self.assertEqual(trace["reason"], "no_matching_allowed_person")
+
+    def test_question_scoped_annex_requires_a_python_matched_trigger(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances_annexes.txt"
+            knowledge_path.write_text(
+                "[DECLENCHEURS]\nquelles sont les modalités de candidature\n[/DECLENCHEURS]\n"
+                "[CONNAISSANCES]\nInformation annexe utile\n[/CONNAISSANCES]",
+                encoding="utf-8",
+            )
+            with patch.object(
+                annex_knowledge, "QUESTION_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, trace = annex_knowledge.load_question_scoped_knowledge(
+                    "Quelles sont les modalités de candidature ?"
+                )
+
+        self.assertEqual(content, "Information annexe utile")
+        self.assertTrue(trace["enabled"])
+        self.assertEqual(
+            trace["matched_triggers"], ["quelles sont les modalités de candidature"]
+        )
+
+    def test_question_annex_matches_director_question_with_article(self) -> None:
+        knowledge, trace = annex_knowledge.load_question_scoped_knowledge(
+            "qui est le directeur de l'école ?"
+        )
+
+        self.assertIsNotNone(knowledge)
+        self.assertTrue(trace["enabled"])
+        self.assertIn("Qui est le directeur de l'école ?", trace["matched_triggers"])
+
+    def test_question_annex_matches_configured_director_variants(self) -> None:
+        for question in (
+            "Qui est la directrice de l'école ?",
+            "qui dirige ionis-stm ?",
+            "QUI EST À LA DIRECTION DE IONIS STM ?",
+        ):
+            knowledge, trace = annex_knowledge.load_question_scoped_knowledge(question)
+            self.assertIsNotNone(knowledge, question)
+            self.assertTrue(trace["enabled"], question)
+
+    def test_question_scoped_annex_is_not_loaded_without_matching_trigger(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances_annexes.txt"
+            knowledge_path.write_text(
+                "[DECLENCHEURS]\nModalités de candidature\n[/DECLENCHEURS]\n"
+                "[CONNAISSANCES]\nInformation annexe utile\n[/CONNAISSANCES]",
+                encoding="utf-8",
+            )
+            with patch.object(
+                annex_knowledge, "QUESTION_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, trace = annex_knowledge.load_question_scoped_knowledge(
+                    "Quel est le directeur de l'école ?"
+                )
+
+        self.assertIsNone(content)
+        self.assertFalse(trace["enabled"])
+        self.assertEqual(trace["reason"], "no_matching_trigger")
+
+    def test_question_scoped_annex_does_not_match_only_part_of_a_question(self) -> None:
+        with TemporaryDirectory() as directory:
+            knowledge_path = Path(directory) / "connaissances_annexes.txt"
+            knowledge_path.write_text(
+                "[DECLENCHEURS]\nModalités de candidature\n[/DECLENCHEURS]\n"
+                "[CONNAISSANCES]\nInformation annexe utile\n[/CONNAISSANCES]",
+                encoding="utf-8",
+            )
+            with patch.object(
+                annex_knowledge, "QUESTION_SCOPED_KNOWLEDGE_FILE", knowledge_path
+            ):
+                content, trace = annex_knowledge.load_question_scoped_knowledge(
+                    "Pouvez-vous détailler les modalités de candidature ?"
+                )
+
+        self.assertIsNone(content)
+        self.assertEqual(trace["reason"], "no_matching_trigger")
+
+    def test_final_answer_loads_annex_from_planner_persons(self) -> None:
+        retrieval = {
+            "route": "vector_search",
+            "execution_plan": {"persons": []},
+            "planner_plan": {"persons": ["Cécile Francard"]},
+        }
+        annex_trace = {"enabled": True, "reason": "loaded"}
+        with patch.object(
+            generation,
+            "load_person_scoped_knowledge",
+            return_value=("Information annexe utile", annex_trace),
+        ) as load_annex:
+            answer = generation.generate_final_answer(
+                None, "Question spécifique", None, retrieval, []
+            )
+
+        load_annex.assert_called_once_with(["Cécile Francard"])
+        self.assertEqual(answer, "Information annexe utile")
+        self.assertEqual(retrieval["person_scoped_annex"], annex_trace)
+        self.assertEqual(retrieval["person_scoped_annex"]["person_source"], "planner_plan")
+
+    def test_question_annex_is_used_even_when_plan_route_is_direct(self) -> None:
+        retrieval = {"route": "direct", "execution_plan": {"persons": []}}
+        with (
+            patch.object(
+                generation,
+                "load_person_scoped_knowledge",
+                return_value=(None, {"enabled": False}),
+            ),
+            patch.object(
+                generation,
+                "load_question_scoped_knowledge",
+                return_value=("Information annexe utile", {"enabled": True}),
+            ),
+        ):
+            answer = generation.generate_final_answer(
+                None, "Question spécifique", None, retrieval, []
+            )
+
+        self.assertEqual(answer, "Information annexe utile")
+        self.assertTrue(retrieval["question_scoped_annex"]["enabled"])
+
+    def test_person_annex_falls_back_to_planner_person_when_resolution_is_ambiguous(
+        self,
+    ) -> None:
+        retrieval = {
+            "route": "person_clarification",
+            "execution_plan": {"persons": []},
+            "planner_plan": {"persons": ["Laura Tyan"]},
+            "person_resolution": {"ambiguous": True},
+        }
+        with (
+            patch.object(
+                generation,
+                "load_person_scoped_knowledge",
+                return_value=("Bio de Laura", {"enabled": True}),
+            ) as load_person_annex,
+            patch.object(
+                generation,
+                "load_question_scoped_knowledge",
+                return_value=(None, {"enabled": False}),
+            ),
+        ):
+            answer = generation.generate_final_answer(
+                None, "Qui est Laura Tyan ?", None, retrieval, []
+            )
+
+        load_person_annex.assert_called_once_with(["Laura Tyan"])
+        self.assertEqual(answer, "Bio de Laura")
+        self.assertEqual(
+            retrieval["person_scoped_annex"]["person_source"], "planner_plan"
+        )
 
     def test_interface_uses_sanitized_markdown_renderer(self) -> None:
         response = TestClient(app).get("/")

@@ -45,6 +45,7 @@ button {
 .workspace {
   display: grid;
   grid-template-rows: auto 1fr auto;
+  min-width: 0;
 }
 
 .topbar {
@@ -529,21 +530,26 @@ button {
 }
 
 .chat {
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 26px 24px 28px;
 }
 
 .messages {
   display: grid;
   gap: 22px;
+  width: min(840px, 100%);
   max-width: 840px;
   margin: 50px auto 0;
   min-height: 0;
+  min-width: 0;
   align-content: start;
 }
 
 .message {
   display: block;
+  min-width: 0;
 }
 
 .message-body {
@@ -562,6 +568,7 @@ button {
 }
 
 .message.assistant .message-body {
+  width: min(640px, 100%);
   max-width: 640px;
   padding-top: 4px;
 }
@@ -616,6 +623,8 @@ button {
 }
 
 .message-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
   white-space: normal;
   line-height: 1.65;
   font-size: 15px;
@@ -726,6 +735,7 @@ button {
 
 .message-content pre {
   overflow-x: auto;
+  overflow-wrap: normal;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -1019,13 +1029,41 @@ button {
   }
 
   .header-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
     padding: 16px 14px;
   }
 
+  .brand-youtube-icon {
+    display: none;
+  }
+
+  .brand-inline {
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .brand-copy,
+  .topbar-links {
+    min-width: 0;
+  }
+
+  .topbar-links {
+    align-self: flex-start;
+    flex: 0 0 auto;
+  }
+
   .channel-link {
-    margin-left: 12px;
-    padding: 9px;
-    font-size: 0;
+    margin-left: 0;
+    padding: 6px 9px;
+    font-size: 11px;
+  }
+
+  .channel-link svg {
+    width: 14px;
+    height: 14px;
   }
 
   .topbar-links {
@@ -1051,6 +1089,16 @@ button {
     letter-spacing: 0.08em;
   }
 
+  .brand-title {
+    font-size: 19px;
+    white-space: nowrap;
+  }
+
+  .brand-subtitle {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
   .suggested-question {
     width: 100%;
   }
@@ -1058,6 +1106,18 @@ button {
   .message.assistant .message-body {
     max-width: 100%;
   }
+}
+
+@media (max-width: 360px) {
+  .brand-inline {
+    gap: 9px;
+  }
+
+  .brand-kicker {
+    font-size: 8px;
+    white-space: nowrap;
+  }
+
 }
 
 @media (prefers-reduced-motion: reduce) {

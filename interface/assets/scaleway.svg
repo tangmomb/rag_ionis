@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title">
+  <title>Scaleway</title>
+  <defs>
+    <linearGradient id="scaleway-gradient" x1="19" y1="18" x2="76" y2="78" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff4f8b" />
+      <stop offset="1" stop-color="#6547e8" />
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="20" fill="#17132a" />
+  <g fill="url(#scaleway-gradient)">
+    <rect x="19" y="19" width="17" height="17" rx="4" />
+    <rect x="40" y="19" width="17" height="17" rx="4" />
+    <rect x="61" y="19" width="17" height="17" rx="4" />
+    <rect x="19" y="40" width="17" height="17" rx="4" />
+    <rect x="40" y="40" width="17" height="17" rx="4" />
+    <rect x="19" y="61" width="17" height="17" rx="4" />
+    <rect x="40" y="61" width="17" height="17" rx="4" />
+    <rect x="61" y="61" width="17" height="17" rx="4" />
+  </g>
+</svg>

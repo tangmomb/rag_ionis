@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from interface.backend.api import execute_rag, router
 from interface.backend.config import INTERFACE_DIR
@@ -21,6 +24,7 @@ from interface.backend.telemetry import (
 
 
 _STARTED_AT: datetime | None = None
+_TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 app = FastAPI(title="RAG IONIS API")
 public_origins = [
@@ -37,6 +41,21 @@ if public_origins:
         allow_headers=["*"],
     )
 app.include_router(router, prefix="/api")
+app.mount(
+    "/pipeline_reponse",
+    StaticFiles(directory=INTERFACE_DIR / "pipeline_reponse", html=True),
+    name="pipeline_reponse",
+)
+app.mount(
+    "/pipeline_preparation_videos",
+    StaticFiles(directory=INTERFACE_DIR / "pipeline_preparation_videos", html=True),
+    name="pipeline_preparation_videos",
+)
+app.mount(
+    "/assets",
+    StaticFiles(directory=INTERFACE_DIR / "assets"),
+    name="assets",
+)
 
 
 @app.on_event("startup")
@@ -67,6 +86,51 @@ def version() -> dict[str, Any]:
     }
 
 
+@app.get("/api/pipeline-reponse/traces/{trace_id}")
+def read_pipeline_response_trace(trace_id: str) -> dict[str, Any]:
+    """Expose les sorties déjà enregistrées par Phoenix pour le visualiseur."""
+    if not _TRACE_ID_PATTERN.fullmatch(trace_id):
+        return {"trace_id": trace_id, "spans": []}
+
+    collector_endpoint = os.getenv(
+        "PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces"
+    ).rstrip("/")
+    base_url = collector_endpoint.removesuffix("/v1/traces")
+    project_name = os.getenv("PHOENIX_PROJECT_NAME", "rag-ionis")
+
+    try:
+        from phoenix.client import Client
+
+        raw_spans = Client(base_url=base_url).spans.get_spans(
+            project_identifier=project_name,
+            trace_ids=[trace_id],
+            limit=1_000,
+            timeout=10,
+        )
+    except Exception as exc:
+        return {"trace_id": trace_id, "spans": [], "error": str(exc)}
+
+    spans: list[dict[str, Any]] = []
+    for span in raw_spans:
+        attributes = span.get("attributes") or {}
+        output = attributes.get("output.value")
+        if output is None:
+            continue
+        if isinstance(output, str):
+            try:
+                output = json.loads(output)
+            except json.JSONDecodeError:
+                pass
+        spans.append(
+            {
+                "name": span.get("name"),
+                "output": output,
+                "start_time": span.get("start_time"),
+            }
+        )
+    return {"trace_id": trace_id, "spans": spans}
+
+
 @app.get("/")
 def read_index() -> FileResponse:
     return FileResponse(
@@ -80,6 +144,23 @@ def read_faq() -> FileResponse:
     return FileResponse(
         INTERFACE_DIR / "faq.html",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/phoenix.png")
+def read_phoenix_image() -> FileResponse:
+    return FileResponse(INTERFACE_DIR.parent / "phoenix.png", media_type="image/png")
+
+
+@app.get("/memory.png")
+def read_memory_image() -> FileResponse:
+    return FileResponse(INTERFACE_DIR.parent / "memory.png", media_type="image/png")
+
+
+@app.get("/golden-dataset.png")
+def read_golden_dataset_image() -> FileResponse:
+    return FileResponse(
+        INTERFACE_DIR.parent / "golden-dataset.png", media_type="image/png"
     )
 
 

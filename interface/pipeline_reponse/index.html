@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Le parcours d’une question — RAG IONIS</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><a href="/faq#pipeline-de-reponse">← Retour à la FAQ</a><h1>Le parcours d’une question</h1><p>Tout le pipeline, un seul chemin éclairé.</p></div>
+      <div class="question-picker"><label for="scenario">Choisir une question d’exemple</label><select id="scenario"></select><span>Parcours vérifiés dans Phoenix, sans nouvelle exécution du RAG.</span></div>
+    </header>
+    <section class="workspace" aria-label="Explorateur du pipeline">
+      <div class="graph-panel">
+        <div class="graph-heading"><span>GRAPHE DE RÉPONSE</span><div class="legend"><span><i class="on"></i>Parcours emprunté</span><span><i></i>Autres branches</span></div></div>
+        <div class="graph-viewport"><svg id="pipeline-graph" viewBox="0 0 1160 860" role="img" aria-labelledby="graph-title graph-description"></svg></div>
+        <p class="graph-note">Lecture de haut en bas · Les liens colorés indiquent le chemin de la question.</p>
+      </div>
+      <aside id="scenario-details" aria-live="polite" aria-atomic="true"></aside>
+    </section>
+  </main>
+</body>
+</html>

@@ -147,23 +147,6 @@ def read_faq() -> FileResponse:
     )
 
 
-@app.get("/phoenix.png")
-def read_phoenix_image() -> FileResponse:
-    return FileResponse(INTERFACE_DIR.parent / "phoenix.png", media_type="image/png")
-
-
-@app.get("/memory.png")
-def read_memory_image() -> FileResponse:
-    return FileResponse(INTERFACE_DIR.parent / "memory.png", media_type="image/png")
-
-
-@app.get("/golden-dataset.png")
-def read_golden_dataset_image() -> FileResponse:
-    return FileResponse(
-        INTERFACE_DIR.parent / "golden-dataset.png", media_type="image/png"
-    )
-
-
 @app.get("/styles.css")
 def read_styles() -> FileResponse:
     return FileResponse(INTERFACE_DIR / "styles.css", media_type="text/css")

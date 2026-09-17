@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FAQ · RAG YouTube IONIS-STM</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=23" />
+    <link rel="stylesheet" href="/styles.css?v=34" />
   </head>
   <body>
     <main class="faq-page">
@@ -85,6 +85,16 @@
             >
               Quelles métadonnées sont ajoutées ?
             </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detection-types-videos"
+              data-faq-answer="detection-types-videos"
+            >
+              Comment détecter les types de vidéo ?
+            </button>
           </div>
           <div class="faq-answers">
             <div
@@ -95,10 +105,10 @@
             >
               <ol class="faq-steps">
                 <li>
-                  <strong>Récupération des informations.</strong> On appelle
-                  L'API YouTube, elle nous renvoie toutes les infos des vidéos
-                  de la chaine. On obtient 1 json par vidéo avec ses infos
-                  notamment titre, description, durée...
+                  <strong>Récupération des informations.</strong> J’appelle
+                  l’API YouTube, qui me renvoie toutes les informations des
+                  vidéos. J’obtiens un JSON par vidéo avec notamment ses titre,
+                  description, durée...
                 </li>
                 <li>
                   <strong>Téléchargement des vidéos.</strong> Téléchargement
@@ -107,7 +117,7 @@
                 <li>
                   <strong>Traitement des vidéos.</strong>
                   <p>
-                    On veut extraire la transcription et les speakers pour
+                    Je veux extraire la transcription et les speakers pour
                     chaque vidéo, mais aussi répondre aux questions suivantes :
                   </p>
                   <ul class="faq-detail-list">
@@ -118,10 +128,7 @@
                           >?</span
                         >
                         <span class="faq-tooltip" role="tooltip">
-                          <img
-                            src="/assets/faq-tooltip-placeholder.png"
-                            alt=""
-                          />
+                          <img src="/assets/speaker.png" alt="" />
                           <span
                             >Exemple provisoire&nbsp;: le pipeline relie une
                             prise de parole à son intervenant et à son
@@ -138,10 +145,7 @@
                           >?</span
                         >
                         <span class="faq-tooltip" role="tooltip">
-                          <img
-                            src="/assets/faq-tooltip-placeholder.png"
-                            alt=""
-                          />
+                          <img src="/assets/02_12.jpg" alt="" />
                           <span
                             >Exemple provisoire&nbsp;: l'OCR permet de conserver
                             une question visible, même sans voix dans la
@@ -158,10 +162,7 @@
                           >?</span
                         >
                         <span class="faq-tooltip" role="tooltip">
-                          <img
-                            src="/assets/faq-tooltip-placeholder.png"
-                            alt=""
-                          />
+                          <img src="/assets/sous-titre.png" alt="" />
                           <span
                             >Exemple provisoire&nbsp;: les sous-titres apportent
                             un second signal pour corriger un mot mal
@@ -178,10 +179,7 @@
                           >?</span
                         >
                         <span class="faq-tooltip" role="tooltip">
-                          <img
-                            src="/assets/faq-tooltip-placeholder.png"
-                            alt=""
-                          />
+                          <img src="/assets/info-speaker.png" alt="" />
                           <span
                             >Exemple provisoire&nbsp;: un cartouche à l'écran
                             peut préciser le nom ou le rôle d'un
@@ -190,13 +188,28 @@
                         </span>
                       </span>
                     </li>
-                    <li>Quel est le type de vidéo&nbsp;?</li>
+                    <li>
+                      Quel est le type de vidéo&nbsp;?
+                      <span class="faq-info">
+                        <span class="faq-info-trigger" aria-hidden="true"
+                          >?</span
+                        >
+                        <span class="faq-tooltip" role="tooltip">
+                          <img src="/assets/video_type.png" alt="" />
+                          <span
+                            >Exemple provisoire&nbsp;: le pipeline identifie le
+                            format de la vidéo pour adapter son
+                            traitement.</span
+                          >
+                        </span>
+                      </span>
+                    </li>
                   </ul>
                   <p>
                     Chaque vidéo suit donc un pipeline de préparation stricte
                     selon plusieurs paramètres détectés au fil du pipeline
                     (vidéo très longue, interview, motion design&nbsp;?).<br />
-                    A la toute fin, on obtient notamment un transcript enrichi
+                    À la toute fin, j’obtiens notamment un transcript enrichi
                     (avec timecodes, speakers, questions posées) et un
                     transcript classique. C'est le transcript classique qui est
                     découpé en chunks, puis les chunks partent vers le modèle
@@ -242,7 +255,7 @@
               hidden
             >
               <p>
-                On a d'un côté les vidéos et leurs artefacts produits par le
+                J’ai d’un côté les vidéos et leurs artefacts produits par le
                 pipeline de préparation, stockés chez Scaleway et de l'autre les
                 infos nécessaires à la recherche qui sont stockées dans
                 PostgreSQL avec pgvector pour les embeddings.
@@ -272,8 +285,14 @@
                 </figure>
               </div>
               <figure class="faq-integration-logo">
-                <img src="/assets/scaleway.svg" alt="Logo Scaleway" />
-                <img src="/assets/postgresql.svg" alt="Logo PostgreSQL" />
+                <img
+                  src="https://cdn.simpleicons.org/scaleway"
+                  alt="Logo Scaleway"
+                />
+                <img
+                  src="https://cdn.simpleicons.org/postgresql"
+                  alt="Logo PostgreSQL"
+                />
                 <img src="/assets/pgvector.svg" alt="Logo pgvector" />
                 <figcaption>Scaleway · PostgreSQL · pgvector</figcaption>
               </figure>
@@ -285,18 +304,116 @@
               hidden
             >
               <p>
-                Des tests ont été menés pour choisir le modèle d'embedding
-                OpenAI et la dimension des vecteurs les plus adaptées au RAG. Le
-                modèle <strong>text-embedding-3-large</strong> a obtenu les
-                meilleurs résultats de recherche ; c'est donc celui qui est
-                utilisé pour vectoriser les chunks.
+                Le choix a été fait à partir d'un benchmark reproductible, mené
+                sur les chunks réellement produits par le pipeline et 45
+                questions annotées. Il mesure si le bon chunk est retrouvé dans
+                les premiers résultats (Recall@K) et à quel rang il apparaît
+                (MRR).
+              </p>
+              <p>Les résultats du test vectoriel sont les suivants&nbsp;:</p>
+              <div
+                class="faq-benchmark-table"
+                role="region"
+                aria-label="Résultats des configurations d'embedding testées"
+                tabindex="0"
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Configuration</th>
+                      <th scope="col">Modèle</th>
+                      <th scope="col">Dimensions</th>
+                      <th scope="col">Recall@1</th>
+                      <th scope="col">Recall@5</th>
+                      <th scope="col">Recall@10</th>
+                      <th scope="col">MRR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>small-512</td>
+                      <td><code>text-embedding-3-small</code></td>
+                      <td>512</td>
+                      <td>64,4&nbsp;%</td>
+                      <td>82,2&nbsp;%</td>
+                      <td>88,9&nbsp;%</td>
+                      <td>74,3&nbsp;%</td>
+                    </tr>
+                    <tr>
+                      <td>small-1024</td>
+                      <td><code>text-embedding-3-small</code></td>
+                      <td>1&nbsp;024</td>
+                      <td>62,2&nbsp;%</td>
+                      <td>86,7&nbsp;%</td>
+                      <td>88,9&nbsp;%</td>
+                      <td>72,5&nbsp;%</td>
+                    </tr>
+                    <tr>
+                      <td>large-1024</td>
+                      <td><code>text-embedding-3-large</code></td>
+                      <td>1&nbsp;024</td>
+                      <td>62,2&nbsp;%</td>
+                      <td>84,4&nbsp;%</td>
+                      <td>91,1&nbsp;%</td>
+                      <td>72,3&nbsp;%</td>
+                    </tr>
+                    <tr>
+                      <td>large-1536</td>
+                      <td><code>text-embedding-3-large</code></td>
+                      <td>1&nbsp;536</td>
+                      <td>66,7&nbsp;%</td>
+                      <td>82,2&nbsp;%</td>
+                      <td>93,3&nbsp;%</td>
+                      <td>74,8&nbsp;%</td>
+                    </tr>
+                    <tr>
+                      <td>large-2000</td>
+                      <td><code>text-embedding-3-large</code></td>
+                      <td>2&nbsp;000</td>
+                      <td>66,7&nbsp;%</td>
+                      <td>86,7&nbsp;%</td>
+                      <td>93,3&nbsp;%</td>
+                      <td>75,6&nbsp;%</td>
+                    </tr>
+                    <tr>
+                      <td>large-3072</td>
+                      <td><code>text-embedding-3-large</code></td>
+                      <td>3&nbsp;072</td>
+                      <td>66,7&nbsp;%</td>
+                      <td>93,3&nbsp;%</td>
+                      <td>93,3&nbsp;%</td>
+                      <td>76,8&nbsp;%</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>
+                Les finalistes ont ensuite été vérifiés dans les conditions de
+                la recherche hybride : recherche lexicale, recherche
+                vectorielle, fusion RRF et reranking Cohere.
               </p>
               <p>
-                Les tests de dimension n'ont pas montré d'amélioration avec des
-                vecteurs plus grands que <strong>2&nbsp;000 dimensions</strong>.
-                Cette taille offre donc le meilleur compromis entre qualité de
-                recherche, volume de stockage et temps de calcul.
+                Le modèle <strong>text-embedding-3-large</strong> est donc
+                utilisé pour vectoriser les chunks. La version en
+                <strong>2&nbsp;000 dimensions</strong> atteint 93,3&nbsp;% de
+                Recall@10 et 75,6&nbsp;% de MRR sur le test vectoriel. En
+                passant à 3&nbsp;072 dimensions, le Recall@10 ne progresse pas
+                et, après reranking, les deux tailles sont à égalité. Il ne sert
+                donc à rien d'alourdir la base pour une amélioration aussi
+                faible : 2&nbsp;000 dimensions offrent le meilleur compromis
+                entre qualité de recherche, stockage et temps de calcul.
               </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/cases_test_embedding.png"
+                    alt="Exemples de cas de test utilisés pour évaluer les embeddings"
+                  />
+                </button>
+                <figcaption>
+                  Exemples de questions utilisées pour le test.
+                </figcaption>
+              </figure>
             </div>
             <div
               class="faq-answer"
@@ -314,8 +431,8 @@
                 que les métadonnées de leur vidéo source : URL, titre, date de
                 publication, intervenants détectés et leur rôle, statistiques,
                 miniature, type de vidéo et présence de sous-titres. Les chunks
-                conservent aussi leurs timecodes et les liens avec leur vidéo ou
-                leurs résumés parents éventuels.
+                conservent les liens avec leur vidéo ou leurs résumés parents
+                éventuels.
               </p>
               <figure class="faq-metadata-example">
                 <button class="faq-lightbox-trigger" type="button">
@@ -392,49 +509,174 @@
                 <span class="llm-role llm-reformulation">reformulation</span>,
                 <span class="llm-role llm-planification">planification</span>,
                 <span class="llm-role llm-sql">génération SQL</span>,
-                <span class="llm-role llm-reponse">génération de réponse</span> et
-                <span class="llm-role llm-resume">résumé de conversation</span>. Ces rôles peuvent être assurés
-                par un même modèle.
+                <span class="llm-role llm-reponse">génération de réponse</span>
+                et
+                <span class="llm-role llm-resume">résumé de conversation</span>.
+                Ces rôles peuvent être assurés par un même modèle ou par des
+                modèles différents, selon les besoins.
               </p>
               <p>
-                Selon la route choisie et l’historique de la conversation,
-                on passe couramment de <strong>2 à 5 appels</strong> par question.
-                Le <span class="llm-role llm-resume">résumé</span> intervient lors d’un changement de sujet, plutôt
-                qu’après un nombre fixe de messages.
+                Selon la route choisie et l’historique de la conversation, je
+                passe couramment de <strong>2 à 5 appels</strong> par question.
+                Le <span class="llm-role llm-resume">résumé</span> intervient
+                lors d’un changement de sujet, plutôt qu’après un nombre fixe de
+                messages.
               </p>
-              <ul>
-                <li>
-                  <strong>2 appels</strong> — « J’ai besoin de la transcription
-                  de la vidéo de Salim. » :
-                  <span class="llm-role llm-reformulation">reformulation</span> et
-                  <span class="llm-role llm-planification">planification</span>,
-                  puis restitution du document sans LLM de réponse.
-                </li>
-                <li>
-                  <strong>3 appels</strong> — « Pourquoi faire Ionis-STM ? » :
-                  <span class="llm-role llm-reformulation">reformulation</span>,
-                  <span class="llm-role llm-planification">planification</span> et
-                  <span class="llm-role llm-reponse">génération de la réponse</span>
-                  à partir des passages retrouvés.
-                </li>
-                <li>
-                  <strong>4 appels</strong> — « Quelle vidéo a le plus de vues ? » :
-                  <span class="llm-role llm-reformulation">reformulation</span>,
-                  <span class="llm-role llm-planification">planification</span>,
-                  <span class="llm-role llm-sql">génération SQL</span> et
-                  <span class="llm-role llm-reponse">réponse</span>.
-                </li>
-                <li>
-                  <strong>5 appels</strong> — la même question analytique lors
-                  d’un changement de sujet : les quatre appels précédents,
-                  plus le <span class="llm-role llm-resume">résumé du sujet quitté</span>.
-                </li>
-              </ul>
+              <div
+                class="faq-llm-calls-table"
+                role="region"
+                aria-label="LLM appelés selon le type de question"
+                tabindex="0"
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Exemple</th>
+                      <th scope="col">
+                        <span class="llm-role llm-reformulation"
+                          >Reformulation</span
+                        >
+                      </th>
+                      <th scope="col">
+                        <span class="llm-role llm-planification"
+                          >Planification</span
+                        >
+                      </th>
+                      <th scope="col">
+                        <span class="llm-role llm-sql">SQL</span>
+                      </th>
+                      <th scope="col">
+                        <span class="llm-role llm-reponse">Réponse</span>
+                      </th>
+                      <th scope="col">
+                        <span class="llm-role llm-resume">Résumé</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <th scope="row">
+                        <strong>2 appels</strong><br />« J’ai besoin de la
+                        transcription de la vidéo de Salim. »
+                      </th>
+                      <td>
+                        <span
+                          class="llm-role llm-reformulation"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span
+                          class="llm-role llm-planification"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td aria-label="Non">—</td>
+                      <td aria-label="Non">—</td>
+                      <td aria-label="Non">—</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">
+                        <strong>3 appels</strong><br />« Pourquoi faire
+                        Ionis-STM ? »
+                      </th>
+                      <td>
+                        <span
+                          class="llm-role llm-reformulation"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span
+                          class="llm-role llm-planification"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td aria-label="Non">—</td>
+                      <td>
+                        <span class="llm-role llm-reponse" aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td aria-label="Non">—</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">
+                        <strong>4 appels</strong><br />« Quelle vidéo a le plus
+                        de vues ? »
+                      </th>
+                      <td>
+                        <span
+                          class="llm-role llm-reformulation"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span
+                          class="llm-role llm-planification"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span class="llm-role llm-sql" aria-label="Oui">✓</span>
+                      </td>
+                      <td>
+                        <span class="llm-role llm-reponse" aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td aria-label="Non">—</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">
+                        <strong>5 appels</strong><br />Question analytique après
+                        un changement de sujet
+                      </th>
+                      <td>
+                        <span
+                          class="llm-role llm-reformulation"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span
+                          class="llm-role llm-planification"
+                          aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span class="llm-role llm-sql" aria-label="Oui">✓</span>
+                      </td>
+                      <td>
+                        <span class="llm-role llm-reponse" aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                      <td>
+                        <span class="llm-role llm-resume" aria-label="Oui"
+                          >✓</span
+                        >
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
               <p>
-                Les trois premiers exemples supposent qu’aucun
+                Les trois exemples cités ci-dessus supposent qu’aucun
                 <span class="llm-role llm-resume">résumé</span> n’est
-                nécessaire. Après <strong>10 sujets dans une même conversation</strong>,
-                une <span class="llm-role llm-resume">consolidation périodique des anciens sujets</span>
+                nécessaire. Après
+                <strong>10 sujets dans une même conversation</strong>, une
+                <span class="llm-role llm-resume"
+                  >consolidation périodique des anciens sujets</span
+                >
                 ajoute un appel et peut porter le total à 6. Ces nombres
                 excluent les nouvelles tentatives en cas d’erreur, ainsi que
                 l’embedding et le reranking Cohere.
@@ -452,9 +694,9 @@
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>
                 <span>
-                  Les appels de résumé ne bloquent pas l’affichage de la
-                  réponse : ils sont traités en arrière-plan et ne retardent
-                  donc pas la réponse envoyée à l’utilisateur.
+                  Les appels de résumé ne bloquent pas l’affichage de la réponse
+                  : ils sont traités en arrière-plan et ne retardent donc pas la
+                  réponse envoyée à l’utilisateur.
                 </span>
               </aside>
             </div>
@@ -468,19 +710,39 @@
                 Le pipeline reformule la question, puis choisit la meilleure
                 approche : connaissances annexes, recherche SQL ou recherche
                 hybride dans les vidéos. Il prépare ensuite une réponse à partir
-                des informations trouvées, ou demande une précision si nécessaire.
+                des informations trouvées, ou demande une précision si
+                nécessaire.
               </p>
               <p>
                 Pour voir en détail,
-                <a href="/pipeline_reponse/" target="_blank" rel="noopener noreferrer">cliquez ici</a>.
+                <a
+                  href="/pipeline_reponse/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >cliquez ici</a
+                >.
+              </p>
+              <p>
+                La prochaine amélioration consistera à brancher un système de
+                <em>retry</em> lorsqu'une réponse échoue. La clé nécessaire est
+                déjà prévue dans le JSON renvoyé par le LLM de réponse ; il
+                restera à l'utiliser pour relancer la génération de manière
+                contrôlée.
               </p>
               <figure class="faq-pipeline-preview">
-                <a href="/pipeline_reponse/" target="_blank" rel="noopener noreferrer">
-                  <img src="/assets/screenshot_pipeline_reponse.png"
-                    alt="Graphe complet du pipeline de réponse RAG, avec le parcours de la question éclairé" />
+                <a
+                  href="/pipeline_reponse/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img
+                    src="/assets/screenshot_pipeline_reponse.png?v=2"
+                    alt="Graphe complet du pipeline de réponse RAG, avec le parcours de la question éclairé"
+                  />
                 </a>
                 <figcaption>
-                  De la question à la réponse — cliquez pour explorer les parcours.
+                  De la question à la réponse — cliquez pour explorer les
+                  parcours.
                 </figcaption>
               </figure>
               <figure class="faq-pipeline-example">
@@ -492,6 +754,18 @@
                 </button>
                 <figcaption>
                   Visualisation du graphe LangGraph dans LangSmith Studio.
+                </figcaption>
+              </figure>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/llm_reponse_output.png"
+                    alt="Exemple de sortie JSON produite par le LLM de réponse"
+                  />
+                </button>
+                <figcaption>
+                  Exemple de sortie JSON du LLM de réponse, incluant la clé
+                  prévue pour une nouvelle tentative.
                 </figcaption>
               </figure>
             </div>
@@ -512,7 +786,7 @@
               <figure class="faq-pipeline-example">
                 <button class="faq-lightbox-trigger" type="button">
                   <img
-                    src="/phoenix.png"
+                    src="/assets/phoenix.png"
                     alt="Interface Phoenix affichant les traces OpenTelemetry du pipeline de réponse"
                   />
                 </button>
@@ -528,17 +802,18 @@
               hidden
             >
               <p>
-                La mémoire est organisée par <strong>sujets de conversation</strong>.
-                Le sujet en cours conserve les derniers échanges et les vidéos
-                évoquées, ce qui permet de comprendre les relances sans que
-                l’utilisateur ait à répéter le contexte.
+                La mémoire est organisée par
+                <strong>sujets de conversation</strong>. Le sujet en cours
+                conserve les derniers échanges et les vidéos évoquées, ce qui
+                permet de comprendre les relances sans que l’utilisateur ait à
+                répéter le contexte.
               </p>
               <p>
                 Lorsqu’un nouveau sujet est détecté, le précédent est résumé et
                 conservé parmi les sujets passés. Après dix sujets dans une même
                 conversation, leurs résumés sont consolidés dans un résumé
-                global, afin de garder les informations importantes sans alourdir
-                le contexte transmis aux modèles.
+                global, afin de garder les informations importantes sans
+                alourdir le contexte transmis aux modèles.
               </p>
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>
@@ -551,13 +826,26 @@
               <figure class="faq-pipeline-example">
                 <button class="faq-lightbox-trigger" type="button">
                   <img
-                    src="/memory.png"
+                    src="/assets/memory.png"
                     alt="Représentation de la mémoire conversationnelle"
                   />
                 </button>
                 <figcaption>
                   Exemple de mémoire conversationnelle envoyée au LLM de
                   reformulation au tour suivant.
+                </figcaption>
+              </figure>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/llm_reformulation_output.png"
+                    alt="Exemple de sortie du LLM de reformulation"
+                  />
+                </button>
+                <figcaption>
+                  Exemple de sortie du LLM de reformulation : la clé
+                  <code>follow_up</code> indique s’il y a un changement de sujet
+                  ou non.
                 </figcaption>
               </figure>
             </div>
@@ -702,7 +990,7 @@
               <figure class="faq-pipeline-example">
                 <button class="faq-lightbox-trigger" type="button">
                   <img
-                    src="/golden-dataset.png"
+                    src="/assets/golden-dataset.png"
                     alt="Golden dataset utilisé pour le benchmark Phoenix"
                   />
                 </button>
@@ -710,6 +998,28 @@
                   Golden dataset utilisé pour le benchmark Phoenix.
                 </figcaption>
               </figure>
+              <div class="faq-benchmark-images">
+                <figure>
+                  <button class="faq-lightbox-trigger" type="button">
+                    <img
+                      src="/assets/benchmark1.png"
+                      alt="Premier aperçu des résultats du benchmark Phoenix"
+                    />
+                  </button>
+                  <figcaption>Résultats du benchmark Phoenix.</figcaption>
+                </figure>
+                <figure>
+                  <button class="faq-lightbox-trigger" type="button">
+                    <img
+                      src="/assets/benchmark2.png"
+                      alt="Second aperçu des résultats du benchmark Phoenix"
+                    />
+                  </button>
+                  <figcaption>
+                    Résultats détaillés du benchmark Phoenix.
+                  </figcaption>
+                </figure>
+              </div>
             </div>
           </div>
         </section>
@@ -750,11 +1060,11 @@
             <div class="faq-answer" id="ajout-videos" role="tabpanel" hidden>
               <p>
                 Un appel à l’API YouTube est effectué une fois par semaine via
-                une tâche cron. La dernière liste de vidéos récupérée est ensuite
-                comparée à celles déjà présentes dans PostgreSQL.
-                Les vidéos déjà publiées sont ignorées ; chaque vidéo absente
-                est téléchargée, reçoit ses commentaires, passe dans le pipeline
-                de préparation, puis ses embeddings sont créés avant la
+                une tâche cron. La dernière liste de vidéos récupérée est
+                ensuite comparée à celles déjà présentes dans PostgreSQL. Les
+                vidéos déjà publiées sont ignorées ; chaque vidéo absente est
+                téléchargée, reçoit ses commentaires, passe dans le pipeline de
+                préparation, puis ses embeddings sont créés avant la
                 synchronisation complète en base.
               </p>
               <p>
@@ -772,6 +1082,18 @@
                   le pipeline de préparation.
                 </span>
               </aside>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/vm_scaleway.png"
+                    alt="Machine virtuelle GPU Scaleway utilisée pour traiter les vidéos"
+                  />
+                </button>
+                <figcaption>
+                  La VM GPU Scaleway attend un job avant d’être allumée pour
+                  traiter les nouvelles vidéos.
+                </figcaption>
+              </figure>
             </div>
             <div
               class="faq-answer"
@@ -794,6 +1116,17 @@
                 publie pas dans le RAG ; cette responsabilité appartient à la
                 mise à jour dédiée aux nouvelles vidéos.
               </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/table_stats.png"
+                    alt="Exemple de table de suivi des mises à jour"
+                  />
+                </button>
+                <figcaption>
+                  Exemple de table de suivi de l’état des mises à jour.
+                </figcaption>
+              </figure>
             </div>
           </div>
         </section>
@@ -831,21 +1164,25 @@
             </button>
           </div>
           <div class="faq-answers">
-            <div
-              class="faq-answer"
-              id="deploiement-rag"
-              role="tabpanel"
-              hidden
-            >
+            <div class="faq-answer" id="deploiement-rag" role="tabpanel" hidden>
               <p>
-                Le RAG est déployé avec Docker sur un VPS. L’interface et
-                l’API y sont exécutées dans des conteneurs, avec un conteneur
+                Le RAG est déployé avec Docker sur un VPS. L’interface et l’API
+                y sont exécutées dans des conteneurs, avec un conteneur
                 PostgreSQL équipé de pgvector, dont les données sont stockées
                 dans un volume Docker.
               </p>
               <figure class="faq-integration-logo">
                 <img src="/assets/docker.svg" alt="Logo Docker" />
                 <figcaption>Docker</figcaption>
+              </figure>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/vps_infomaniak.png"
+                    alt="VPS Infomaniak hébergeant le RAG"
+                  />
+                </button>
+                <figcaption>VPS Infomaniak qui héberge le RAG.</figcaption>
               </figure>
             </div>
             <div
@@ -860,22 +1197,27 @@
                 avec un tag correspondant au commit.
               </p>
               <p>
-                <strong>En cas de modification du RAG</strong> — interface,
-                API ou dépendances associées — GitHub Actions recrée l’image du
-                VPS. Le VPS récupère cette nouvelle image depuis le registre et
+                <strong>En cas de modification du RAG</strong> — interface, API
+                ou dépendances associées — GitHub Actions recrée l’image du VPS.
+                Le VPS récupère cette nouvelle image depuis le registre et
                 redéploie le service concerné.
               </p>
               <p>
-                <strong>En cas de modification du pipeline de préparation</strong>
+                <strong
+                  >En cas de modification du pipeline de préparation</strong
+                >
                 — code de traitement vidéo, modèle ou dépendances GPU — GitHub
                 Actions recrée l’image de la VM GPU. La VM Scaleway reste
-                arrêtée hors traitement et récupère sa nouvelle image lorsqu’elle
-                est allumée manuellement, ce qui évite de maintenir la VM
-                allumée et d’engendrer des frais importants.
+                arrêtée hors traitement et récupère sa nouvelle image
+                lorsqu’elle est allumée manuellement, ce qui évite de maintenir
+                la VM allumée et d’engendrer des frais importants.
               </p>
               <figure class="faq-integration-logo">
                 <img src="/assets/github.svg" alt="Logo GitHub" />
-                <img src="/assets/github-actions.svg" alt="Logo GitHub Actions" />
+                <img
+                  src="/assets/github-actions.svg"
+                  alt="Logo GitHub Actions"
+                />
                 <figcaption>GitHub · GitHub Actions</figcaption>
               </figure>
             </div>
@@ -887,125 +1229,163 @@
           id="problemes-rencontres"
           aria-labelledby="problemes-rencontres-title"
         >
-          <h2 id="problemes-rencontres-title">Problèmes rencontrés</h2>
-          <div
-            class="faq-question-list"
-            role="tablist"
-            aria-label="Questions sur les problèmes rencontrés"
+          <h2 id="problemes-rencontres-title">
+            Problèmes rencontrés
+            <span class="faq-warning-icon" role="img" aria-label="Avertissement"
+              >⚠</span
+            >
+          </h2>
+          <section
+            class="faq-subsection"
+            aria-labelledby="problemes-preparation-title"
           >
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="image-cloud"
-              data-faq-answer="image-cloud"
+            <h3 id="problemes-preparation-title">Préparation des données</h3>
+            <div
+              class="faq-question-list"
+              role="tablist"
+              aria-label="Questions sur les problèmes de préparation des données"
             >
-              Pourquoi l’image est-elle trop lourde pour être créée gratuitement
-              dans le cloud ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="indisponibilite-gpu-scaleway"
-              data-faq-answer="indisponibilite-gpu-scaleway"
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="image-cloud"
+                data-faq-answer="image-cloud"
+              >
+                Image Docker trop lourde pour le cloud
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="indisponibilite-gpu-scaleway"
+                data-faq-answer="indisponibilite-gpu-scaleway"
+              >
+                Indisponibilité des GPU Scaleway
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="cout-scaleway"
+                data-faq-answer="cout-scaleway"
+              >
+                Coût Scaleway
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="migration-s3-scaleway"
+                data-faq-answer="migration-s3-scaleway"
+              >
+                Migration d’Amazon S3 vers Scaleway
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="mots-cles-videos"
+                data-faq-answer="mots-cles-videos"
+              >
+                Extraction des mots-clés vidéo
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="duplication-speakers"
+                data-faq-answer="duplication-speakers"
+              >
+                Duplication des speakers
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="questions-ecrites-videos"
+                data-faq-answer="questions-ecrites-videos"
+              >
+                Reconnaissance des questions écrites
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="detection-sous-titres"
+                data-faq-answer="detection-sous-titres"
+              >
+                Détection des sous-titres
+              </button>
+            </div>
+          </section>
+          <section class="faq-subsection" aria-labelledby="problemes-rag-title">
+            <h3 id="problemes-rag-title">RAG et réponse</h3>
+            <div
+              class="faq-question-list"
+              role="tablist"
+              aria-label="Questions sur le RAG et les réponses"
             >
-              Comment gérer l’indisponibilité des GPU chez Scaleway ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="cout-scaleway"
-              data-faq-answer="cout-scaleway"
-            >
-              Comment maîtriser le coût excessif chez Scaleway ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="migration-s3-scaleway"
-              data-faq-answer="migration-s3-scaleway"
-            >
-              Comment migrer d’Amazon S3 vers Scaleway ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="mots-cles-videos"
-              data-faq-answer="mots-cles-videos"
-            >
-              Comment récupérer les mots-clés des vidéos ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="duplication-speakers"
-              data-faq-answer="duplication-speakers"
-            >
-              Comment éviter la duplication des speakers ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="questions-ecrites-videos"
-              data-faq-answer="questions-ecrites-videos"
-            >
-              Pourquoi est-il difficile de reconnaître les questions écrites
-              dans les vidéos ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="latence-rag"
-              data-faq-answer="latence-rag"
-            >
-              Comment réduire la latence excessive du RAG ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="complexite-pipeline-reponse"
-              data-faq-answer="complexite-pipeline-reponse"
-            >
-              Pourquoi le pipeline de réponse est-il sur-complexe ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="json-schema-llm"
-              data-faq-answer="json-schema-llm"
-            >
-              Pourquoi le LLM ne respecte-t-il pas toujours le JSON Schema ?
-            </button>
-            <button
-              class="suggested-question"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="longues-conversations"
-              data-faq-answer="longues-conversations"
-            >
-              Pourquoi est-il difficile de gérer les longues conversations ?
-            </button>
-          </div>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="latence-rag"
+                data-faq-answer="latence-rag"
+              >
+                Latence excessive du RAG
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="complexite-pipeline-reponse"
+                data-faq-answer="complexite-pipeline-reponse"
+              >
+                Complexité du pipeline de réponse
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="json-schema-llm"
+                data-faq-answer="json-schema-llm"
+              >
+                JSON Schema non respecté par le LLM
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="payload-fournisseurs-llm"
+                data-faq-answer="payload-fournisseurs-llm"
+              >
+                Différences de payload des fournisseurs LLM
+              </button>
+              <button
+                class="suggested-question"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="longues-conversations"
+                data-faq-answer="longues-conversations"
+              >
+                Gestion des longues conversations
+              </button>
+            </div>
+          </section>
           <div class="faq-answers">
             <div class="faq-answer" id="image-cloud" role="tabpanel" hidden>
               <p>
@@ -1015,152 +1395,485 @@
                 GitHub standard gratuit.
               </p>
               <p>
-                Le build est réalisé sur un runner self-hosted disposant d’au
-                moins 60&nbsp;Go libres, puis l’image est envoyée dans le
-                Container Registry Scaleway. Les images plus légères de l’API et
-                de l’updater peuvent, elles, être construites sur GitHub Actions.
+                Il a donc fallu paramétrer le workflow pour qu’il exécute la
+                construction de l’image sur mon PC personnel, configuré comme
+                runner auto-hébergé.
               </p>
             </div>
-            <div class="faq-answer" id="indisponibilite-gpu-scaleway" role="tabpanel" hidden>
+            <div
+              class="faq-answer"
+              id="indisponibilite-gpu-scaleway"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                La disponibilité d’un GPU n’est pas garantie dans une zone
-                Scaleway donnée. Le pipeline dépend d’une instance GPU dédiée,
-                utilisée pour un seul job à la fois.
+                Deux modèles ont été envisagés : le <strong>L4</strong>, le plus
+                petit et le moins cher, et le <strong>L40S</strong>, plus
+                puissant mais plus coûteux. Le L4 est déjà suffisamment puissant
+                pour ce traitement. Cependant, des appels réguliers à l’API de
+                disponibilité de Scaleway ont montré qu’il était très rarement
+                disponible.
               </p>
               <p>
-                Un outil permet de vérifier les disponibilités par zone avant le
-                lancement. Si le type d’instance demandé est indisponible, le
-                traitement est reporté ou la configuration doit être orientée vers
-                une zone qui dispose de capacité.
+                J’utilise donc le L40S lorsqu’il faut lancer le pipeline. Cela
+                rend d’autant plus important de ne pas laisser les services
+                allumés en permanence, afin de maîtriser la facture.
               </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/gpu_dispo.png"
+                    alt="Résultat du contrôle de disponibilité des GPU Scaleway"
+                  />
+                </button>
+                <figcaption>
+                  Exemple de résultat du contrôle de disponibilité des GPU.
+                </figcaption>
+              </figure>
             </div>
             <div class="faq-answer" id="cout-scaleway" role="tabpanel" hidden>
               <p>
-                Le principal coût provient de la VM GPU. Pour le limiter, elle
-                est démarrée uniquement lorsqu’une nouvelle vidéo doit être
-                préparée et elle est arrêtée automatiquement à la fin du job.
+                En plus de son coût lorsqu’elle est allumée, la VM Scaleway a
+                besoin d’une adresse IP et d’un Block Storage associé, ce qui
+                fait encore grimper la facture.
               </p>
               <p>
-                Un seul traitement GPU peut être exécuté à la fois. Les coûts
-                résiduels concernent surtout le stockage objet, les transferts et
-                les ressources persistantes associées à la VM.
+                Le choix a donc été fait de demander une adresse IP uniquement
+                lorsque c’est nécessaire et de ne conserver qu’un snapshot du
+                Block Storage, plutôt que de garder ce dernier en permanence.
               </p>
             </div>
-            <div class="faq-answer" id="migration-s3-scaleway" role="tabpanel" hidden>
+            <div
+              class="faq-answer"
+              id="migration-s3-scaleway"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                Les artefacts sont accédés via l’API compatible S3 de boto3. La
-                migration consiste donc à recopier les préfixes d’artefacts dans
-                un bucket Scaleway Object Storage en conservant leur organisation.
+                Au départ, les artefacts étaient stockés sur AWS S3. Cela
+                ajoutait toutefois un fournisseur de plus à gérer.
               </p>
               <p>
-                Il faut ensuite mettre à jour le bucket, la région, l’endpoint et
-                les clés d’accès sur le VPS comme sur le worker GPU, puis vérifier
-                les URI enregistrées en base. Le code accepte déjà un endpoint S3
-                configurable ; le transfert des données reste une opération à
-                planifier et à contrôler.
-              </p>
-            </div>
-            <div class="faq-answer" id="mots-cles-videos" role="tabpanel" hidden>
-              <p>
-                Les métadonnées actuellement importées depuis YouTube conservent
-                le titre, la description, la durée, la miniature et les
-                statistiques, mais pas une liste de mots-clés indexée séparément.
-              </p>
-              <p>
-                Les tags YouTube ne constituent pas une source fiable pour toutes
-                les vidéos. Une solution serait d’extraire des mots-clés depuis le
-                titre, la description et le transcript, puis de les valider et de
-                les stocker comme métadonnées de recherche.
+                Scaleway proposant désormais aussi du stockage objet compatible
+                S3, j’ai choisi de migrer cette partie afin de simplifier
+                l’infrastructure et de centraliser les services chez un même
+                fournisseur.
               </p>
             </div>
-            <div class="faq-answer" id="duplication-speakers" role="tabpanel" hidden>
+            <div
+              class="faq-answer"
+              id="mots-cles-videos"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                Une même personne peut être détectée sous des variantes de nom,
-                par exemple avec une faute de transcription, un accent ou une
-                fonction différente. Cela peut créer plusieurs lignes de speaker
-                pour une seule personne.
+                Au départ, je voulais aussi intégrer aux métadonnées les
+                mots-clés présents dans les vidéos. L’OCR effectuait un premier
+                travail, mais restait imparfait : certains mots du décor étaient
+                détectés, les mots-clés animés compliquaient encore
+                l’extraction, et des mots isolés perdaient parfois tout leur
+                sens sans les autres mots du groupe. De plus, les mots-clés
+                n’apparaissaient pas toujours tous en même temps à l’écran, ce
+                qui compliquait davantage leur regroupement et leur
+                interprétation.
               </p>
               <p>
-                La base conserve un speaker global et une table de liaison avec
-                les vidéos. Un outil de maintenance repère les noms proches, puis
-                permet de choisir une fiche canonique et de fusionner les doublons
-                sans perdre les liens avec les vidéos.
+                J’ai ensuite ajouté un appel LLM pour chaque mot-clé détecté
+                afin que GPT‑4.1 confirme ou non sa pertinence. Le prompt
+                utilisé était : « Voici 2 screenshots d’un supposé mot-clé
+                ajouté au montage, détecté via OCR, confirmes-tu son ajout au
+                montage ? »
               </p>
+              <p>
+                Malgré l’envoi des requêtes en mode batch, le coût de
+                vérification de tous les mots-clés était trop élevé. L’idée a
+                donc été abandonnée. Ce n’est pas impossible, mais j’ai préféré
+                me concentrer sur les besoins essentiels.
+              </p>
+              <figure class="faq-keyword-examples">
+                <div class="faq-keyword-images">
+                  <button class="faq-lightbox-trigger" type="button">
+                    <img
+                      src="/assets/keyword1.png"
+                      alt="Premier screenshot d’un mot-clé détecté par OCR"
+                    />
+                  </button>
+                  <button class="faq-lightbox-trigger" type="button">
+                    <img
+                      src="/assets/keyword2.png"
+                      alt="Second screenshot d’un mot-clé détecté par OCR"
+                    />
+                  </button>
+                </div>
+                <figcaption>Exemple d’images envoyées à GPT.</figcaption>
+              </figure>
             </div>
-            <div class="faq-answer" id="questions-ecrites-videos" role="tabpanel" hidden>
+            <div
+              class="faq-answer"
+              id="duplication-speakers"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                L’OCR doit d’abord lire correctement le texte, puis distinguer
-                une question utile d’un sous-titre, d’un décor permanent, d’un
-                titre ou d’un cartouche. La typographie, les animations, le fond
-                et la faible durée d’affichage rendent cette distinction fragile.
+                Un script final repère les speakers dont les orthographes sont
+                très semblables, par exemple à cause d’une faute de
+                transcription ou d’un accent. Il demande ensuite comment les
+                dédupliquer afin de rattacher les différentes variantes à un
+                même intervenant.
               </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/doublon.png"
+                    alt="Interface Tkinter proposant la fusion de deux speakers aux orthographes proches"
+                  />
+                </button>
+                <figcaption>
+                  Exemple de rapprochement proposé par l’outil.
+                </figcaption>
+              </figure>
+            </div>
+            <div
+              class="faq-answer"
+              id="questions-ecrites-videos"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                Le pipeline applique un seuil de confiance, filtre les éléments
-                décoratifs et regroupe les textes visuels. Les éléments conservés
-                sont traités comme des intercalaires, mais une compréhension
-                sémantique plus fine reste nécessaire pour identifier avec
-                certitude les questions écrites.
+                Dans les montages, les questions n’apparaissent pas toujours
+                d’un coup à l’écran. Il a donc fallu gérer une continuité entre
+                les détections OCR de plusieurs frames, afin de reconstituer une
+                même question au fur et à mesure de son apparition. Ce
+                rapprochement doit également tolérer les petites erreurs de
+                lecture que l’OCR peut produire d’une frame à l’autre.
               </p>
+              <div class="faq-question-images">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/02_11.jpg"
+                    alt="Premier exemple de texte détecté dans une vidéo"
+                  />
+                </button>
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/02_11_500.jpg"
+                    alt="Deuxième exemple de texte détecté dans une vidéo"
+                  />
+                </button>
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/02_12.jpg"
+                    alt="Troisième exemple de texte détecté dans une vidéo"
+                  />
+                </button>
+              </div>
             </div>
             <div class="faq-answer" id="latence-rag" role="tabpanel" hidden>
               <p>
-                Une réponse peut enchaîner plusieurs appels externes :
-                reformulation, planification, embedding de la question,
-                recherches SQL/BM25/vectorielle, reranking Cohere et génération
-                finale. Les questions analytiques ajoutent la génération et
-                l’exécution encadrée d’une requête SQL.
+                Grâce à Phoenix, je sais précisément quelles étapes sont les
+                plus coûteuses en temps lors de la préparation d’une réponse :
+                il s’agit principalement des appels aux API de LLM. L’enjeu est
+                donc de réduire leur nombre. Par exemple, le LLM qui détectait
+                une nouvelle question et le LLM de reformulation ont été
+                fusionnés dans un seul appel.
               </p>
               <p>
-                Le pipeline limite les volumes traités : 40 résultats BM25, 40
-                résultats vectoriels, 30 après fusion et 5 passages finaux. Les
-                pré-filtres SQL évitent aussi de chercher dans toute la base, et
-                Phoenix permet d’identifier précisément l’étape qui ralentit une
-                requête.
+                Des tests ont ensuite permis de comparer le meilleur compromis
+                entre délai, prix et qualité selon les fournisseurs. OpenAI
+                répondait trop lentement, malgré l’utilisation de GPT‑5.6 Luna,
+                un petit modèle, et du mode Fast. Gemini et Mistral offraient de
+                bien meilleurs délais ; le choix s’est finalement porté sur
+                Mistral.
               </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/phoenix.png"
+                    alt="Trace Phoenix détaillant les durées des étapes d’une réponse"
+                  />
+                </button>
+                <figcaption>
+                  Exemple de trace de performance dans Phoenix.
+                </figcaption>
+              </figure>
+              <div class="faq-provider-logos" aria-label="Fournisseurs testés">
+                <div class="faq-provider-logo faq-provider-logo-openai">
+                  <img src="/assets/openai.svg" alt="OpenAI" />
+                  <span>OpenAI</span>
+                </div>
+                <div class="faq-provider-logo">
+                  <img src="/assets/gemini.svg" alt="Google Gemini" />
+                  <span>Gemini</span>
+                </div>
+                <div class="faq-provider-logo">
+                  <img src="/assets/mistral.svg" alt="Mistral AI" />
+                  <span>Mistral</span>
+                </div>
+              </div>
+              <p>
+                Des tests en lot, organisés sous forme d’expériences Phoenix,
+                ont ensuite confirmé ces hypothèses sur la latence, le coût et
+                la qualité des réponses.
+              </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/exp-phoenix-llm.png"
+                    alt="Expérience Phoenix comparant les performances de fournisseurs LLM"
+                  />
+                </button>
+                <figcaption>
+                  Expérience Phoenix exécutée en lot pour comparer les LLM.
+                </figcaption>
+              </figure>
             </div>
-            <div class="faq-answer" id="complexite-pipeline-reponse" role="tabpanel" hidden>
+            <div
+              class="faq-answer"
+              id="complexite-pipeline-reponse"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                Le pipeline de réponse doit choisir entre une réponse directe,
-                une demande de précision, une recherche documentaire et une
-                recherche SQL. Pour les vidéos, il combine recherche textuelle,
-                recherche vectorielle, fusion, reranking et contexte hiérarchique.
+                Au fil du projet, le principal risque a été de trop travailler
+                le pipeline de réponse pour l’adapter à chaque question posée. À
+                force d’ajouter des cas particuliers, le pipeline se transforme
+                en un sac de nœuds difficile à comprendre.
               </p>
               <p>
-                Cette séparation améliore la qualité et la traçabilité, mais elle
-                rend le parcours plus complexe. Les rôles sont isolés dans des
-                étapes explicites et suivis dans Phoenix afin de pouvoir simplifier
-                ou ajuster chaque branche sans casser les autres.
+                Il a donc fallu prendre du recul et le revoir entièrement pour
+                construire un pipeline plus simple à comprendre, à maintenir et
+                à améliorer.
               </p>
             </div>
             <div class="faq-answer" id="json-schema-llm" role="tabpanel" hidden>
               <p>
-                Le JSON Schema est transmis au fournisseur pour contraindre la
-                réponse, mais il ne rend pas la génération infaillible. Selon le
-                modèle ou le fournisseur, une sortie peut être tronquée, ne pas
-                être du JSON valide ou omettre un champ obligatoire.
+                Mistral a récemment annoncé servir le modèle GLM‑5.2. Les tests
+                ont montré qu’il offrait le meilleur compromis entre vitesse,
+                qualité des réponses et coût.
               </p>
               <p>
-                Le projet relit donc chaque sortie et vérifie lui-même la forme
-                de l’objet ainsi que les champs requis avant de l’utiliser. Une
-                réponse invalide est rejetée ou ramenée vers un comportement sûr,
-                et la sortie brute reste visible dans les traces pour diagnostiquer
-                le problème.
+                Cependant, malgré la demande d’une réponse au format JSON
+                Schema, le modèle renvoyait souvent des JSON incomplets. Le
+                choix a donc été fait de basculer vers Mistral Medium Latest.
+                Ces réponses incomplètes bloquaient toute la suite du pipeline,
+                qui dépend des champs attendus pour continuer son exécution.
               </p>
             </div>
-            <div class="faq-answer" id="longues-conversations" role="tabpanel" hidden>
+            <div
+              class="faq-answer"
+              id="payload-fournisseurs-llm"
+              role="tabpanel"
+              hidden
+            >
               <p>
-                Plus une conversation est longue, plus il devient difficile de
-                transmettre tout son historique aux modèles sans augmenter la
-                latence, le coût et le risque de mélanger des sujets anciens avec
-                la question en cours.
+                Chaque fournisseur attend un payload différent. OpenAI passe par
+                LangChain et son mode de sortie structurée, Mistral attend des
+                <em>messages</em> et un <em>response_format</em> spécifique,
+                tandis que Gemini sépare l’instruction système, les contenus et
+                le schéma JSON dans sa configuration.
               </p>
               <p>
-                La mémoire est donc organisée par sujets : le sujet actif reste
-                prioritaire, les sujets quittés sont résumés et, après dix sujets,
-                leurs résumés sont consolidés dans un résumé global. Ce compromis
-                conserve le contexte utile sans envoyer toute la conversation à
-                chaque tour.
+                J’ai donc créé une couche d’adaptation dédiée. Elle normalise
+                d’abord toutes les entrées dans un même format de messages
+                (<em>system</em>, <em>user</em>, <em>assistant</em>), puis
+                choisit le fournisseur à partir du nom du modèle et construit le
+                payload correspondant à son SDK.
               </p>
+              <p>
+                Quelle que soit l’API appelée, cette couche renvoie ensuite le
+                texte et le payload brut dans un format unique. Les réponses
+                JSON sont enfin relues et vérifiées contre les champs
+                obligatoires du schéma avant d’être utilisées par le pipeline.
+              </p>
+              <p>
+                Une petite app a été créée pour visualiser les payloads envoyés
+                aux fournisseurs LLM.
+              </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/interface_test_payload.png"
+                    alt="Interface de test des payloads envoyés aux fournisseurs LLM"
+                  />
+                </button>
+                <figcaption>
+                  Interface de test des payloads envoyés par les fournisseurs
+                  LLM. Ici il est demandé de répondre en texte brut,
+                  contrairement au json_schema dans le RAG.
+                </figcaption>
+              </figure>
+            </div>
+            <div
+              class="faq-answer"
+              id="longues-conversations"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Une première solution consistait à créer un embedding pour
+                chaque sujet de conversation, puis à effectuer une recherche
+                vectorielle dans l’historique de la conversation. Cette approche
+                fonctionnait, mais elle ajoutait de la complexité.
+              </p>
+              <p>
+                Une solution plus simple a finalement été retenue. La mémoire
+                est organisée par sujets : le sujet actif reste prioritaire, les
+                sujets quittés sont résumés et, après dix sujets, leurs résumés
+                sont consolidés dans un résumé global. Ce compromis conserve le
+                contexte utile sans envoyer toute la conversation à chaque tour.
+              </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/memory.png"
+                    alt="Historique de conversation organisé par sujets et résumés"
+                  />
+                </button>
+                <figcaption>
+                  Historique de conversation organisé par sujets.
+                </figcaption>
+              </figure>
+            </div>
+            <div
+              class="faq-answer"
+              id="detection-sous-titres"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                L’OCR renvoie d’abord tous les textes qu’il voit dans les
+                images, sans savoir s’il s’agit de sous-titres, d’un titre, d’un
+                décor ou d’un cartouche. Un script applique ensuite une série de
+                règles pour déterminer quels textes sont réellement des
+                sous-titres. Cette logique a été travaillée et affinée au fil
+                des mauvaises classifications rencontrées.
+              </p>
+              <p>
+                Pour qu’un groupe soit considéré comme des sous-titres, toutes
+                les conditions suivantes doivent être respectées :
+              </p>
+              <ul class="faq-detail-list">
+                <li>
+                  Les centres des boxes doivent rester proches d’une frame à
+                  l’autre, avec une tolérance de 16&nbsp;% sur l’axe horizontal
+                  et de 5,5&nbsp;% sur l’axe vertical.
+                </li>
+                <li>
+                  Le groupe doit être centré horizontalement autour du milieu de
+                  l’image : 50&nbsp;% ± 10&nbsp;%.
+                </li>
+                <li>
+                  Le signal doit persister de manière continue pendant au moins
+                  10&nbsp;secondes.
+                </li>
+                <li>Il doit contenir au moins trois variantes de texte.</li>
+              </ul>
+              <p>
+                Le texte peut évoluer pendant la phrase ; les variantes très
+                proches sont regroupées afin de tolérer les petites erreurs de
+                lecture de l’OCR (seuil de similarité de 0,82). Enfin, les
+                répétitions sur des frames voisines sont filtrées.
+              </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/exemple-sous-titre-diffcile.png"
+                    alt="Exemple difficile où les sous-titres sont proches de textes dans le décor"
+                  />
+                </button>
+                <figcaption>
+                  Exemple difficile : les sous-titres sont proches de textes
+                  dans le décor.
+                </figcaption>
+              </figure>
+            </div>
+            <div
+              class="faq-answer"
+              id="detection-types-videos"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Détecter le type de vidéo permet d’adopter le bon pipeline de
+                préparation. Cela aide aussi à repérer les interviews et, par
+                exemple, les questions graphiques qui les entrecoupent.
+              </p>
+              <p>
+                Une interview est souvent constituée d’un plan fixe, entrecoupé
+                de questions graphiques. À l’inverse, les vidéos best-of ou de
+                motion design contiennent de nombreuses images différentes. Ces
+                indices visuels permettent de distinguer les grands types de
+                vidéos.
+              </p>
+              <p>
+                Des essais avec des scripts fondés sur la luminance, la variance
+                des images et d’autres mesures simples n’ont pas permis
+                d’obtenir une détection suffisamment fiable. Un modèle
+                personnalisé a donc été entraîné à partir d’images annotées dans
+                trois classes : prises de vue réelles (<em>footage</em>),
+                visuels entièrement graphiques (<em>graphic</em>) et prises de
+                vue mêlées à des éléments graphiques importants
+                (<em>mixture</em>).
+              </p>
+              <p>
+                Chaque image est représentée par la concaténation de deux
+                embeddings issus de DINOv2 et de CLIP, soit un vecteur de
+                1&nbsp;280 dimensions. Ces représentations alimentent un
+                classifieur par régression logistique qui classe les frames. Les
+                frames réelles sont ensuite utilisées pour détecter les
+                séquences stables caractéristiques des interviews, tandis que la
+                répartition entre les trois classes oriente le type de vidéo et
+                le pipeline à appliquer.
+              </p>
+              <p>
+                Après la classification des images par le modèle, les conditions
+                suivantes déterminent le type de vidéo à appliquer :
+              </p>
+              <ul class="faq-detail-list">
+                <li>
+                  Une vidéo courte (moins de 180&nbsp;secondes) est classée
+                  comme un motion design si moins de 15&nbsp;% de ses frames
+                  sont
+                  <em>footage</em>, ou si aucune frame n’est classée
+                  <em>footage</em>.
+                </li>
+                <li>
+                  Pour détecter une interview, le pipeline n’analyse que les
+                  frames du dossier <em>footage</em>. Il recherche alors un
+                  groupe visuellement dominant grâce aux embeddings DINOv2, avec
+                  une similarité minimale de 0,88 entre les images du groupe.
+                </li>
+                <li>
+                  Ce groupe stable doit représenter au moins 50&nbsp;% des
+                  frames
+                  <em>footage</em> et au moins 30&nbsp;% de toutes les frames de
+                  la vidéo. Lorsque ces deux seuils sont atteints, la vidéo est
+                  considérée comme une interview ; cette détection est
+                  prioritaire sur celle d’un motion design.
+                </li>
+                <li>
+                  Si aucune de ces conditions n’est remplie, la vidéo est
+                  traitée comme un enregistrement vidéo classique.
+                </li>
+              </ul>
+              <p>
+                Pour voir le projet de ce modèle,
+                <a
+                  href="https://github.com/tangmomb/rag_ionis_images_classifier"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >cliquez ici</a
+                >.
+              </p>
+              <figure class="faq-pipeline-example">
+                <button class="faq-lightbox-trigger" type="button">
+                  <img
+                    src="/assets/github_classifier.png"
+                    alt="Dépôt GitHub du classifieur d’images"
+                  />
+                </button>
+                <figcaption>Dépôt GitHub du classifieur d’images.</figcaption>
+              </figure>
             </div>
           </div>
         </section>
@@ -1184,14 +1897,61 @@
       <img id="faqLightboxImage" alt="" />
     </div>
     <script>
-      document.querySelectorAll(".faq-section").forEach((section) => {
+      const videoTypeAnswer = document.getElementById("detection-types-videos");
+      const preparationAnswers = document.querySelector(
+        "#preparation-des-donnees .faq-answers",
+      );
+
+      if (videoTypeAnswer && preparationAnswers) {
+        preparationAnswers.append(videoTypeAnswer);
+      }
+
+      const faqSections = document.querySelectorAll(".faq-section");
+
+      function reserveAnswerSpace(section) {
+        const answerContainer = section.querySelector(".faq-answers");
+        const answers = section.querySelectorAll(".faq-answer");
+        const hiddenStates = [...answers].map((answer) => answer.hidden);
+
+        answerContainer.style.removeProperty("--faq-answer-space");
+        answers.forEach((answer) => {
+          answer.hidden = false;
+        });
+
+        const tallestAnswer = Math.max(
+          0,
+          ...[...answers].map((answer) => {
+            const margins = getComputedStyle(answer);
+            return (
+              answer.getBoundingClientRect().height +
+              parseFloat(margins.marginTop) +
+              parseFloat(margins.marginBottom)
+            );
+          }),
+        );
+
+        hiddenStates.forEach((wasHidden, index) => {
+          answers[index].hidden = wasHidden;
+        });
+        answerContainer.style.setProperty(
+          "--faq-answer-space",
+          `${Math.ceil(tallestAnswer)}px`,
+        );
+      }
+
+      function reserveLastSectionAnswerSpace() {
+        reserveAnswerSpace(faqSections[faqSections.length - 1]);
+      }
+
+      faqSections.forEach((section) => {
         const questions = section.querySelectorAll("[data-faq-answer]");
         const answers = section.querySelectorAll(".faq-answer");
 
         questions.forEach((question) => {
           question.addEventListener("click", () => {
             const selectedId = question.dataset.faqAnswer;
-            const isSelected = question.getAttribute("aria-selected") === "true";
+            const isSelected =
+              question.getAttribute("aria-selected") === "true";
 
             if (isSelected) {
               question.setAttribute("aria-selected", "false");
@@ -1212,6 +1972,10 @@
           });
         });
       });
+
+      reserveLastSectionAnswerSpace();
+      window.addEventListener("load", reserveLastSectionAnswerSpace);
+      window.addEventListener("resize", reserveLastSectionAnswerSpace);
 
       const lightbox = document.getElementById("faqLightbox");
       const lightboxImage = document.getElementById("faqLightboxImage");

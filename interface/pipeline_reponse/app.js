@@ -315,6 +315,37 @@ const scenarios = {
     "observedAt": "2026-09-16T21:55:49.298987+00:00"
   }
 };
+// Sorties LLM enregistrées avec les scénarios : le visualiseur reste autonome
+// même si les traces Phoenix sont purgées ou indisponibles.
+const recordedLlmOutputs = {
+  aymerich: { reformulate: { follow_up: false, reformulated_question: "Qui est Aymerich ?", topic: "Aymerich" }, plan: { route: "search", analytics: false, query_text: "Qui est Aymerich ?", query_text_bm25: "Aymerich identité", title_hints: [], persons: ["Aymerich"], companies: [], published_after: null, published_before: null } },
+  salim: { reformulate: { follow_up: false, reformulated_question: "Pouvez-vous fournir la transcription de la vidéo de Salim ?", topic: "transcription de la vidéo de Salim" }, plan: { route: "search", analytics: false, query_text: "Quelle est la transcription de la vidéo de Salim ?", query_text_bm25: "transcription vidéo Salim", title_hints: [], persons: ["Salim"], companies: [], published_after: null, published_before: null } },
+  views: { reformulate: { follow_up: false, reformulated_question: "Quelle vidéo a le plus de vues ?", topic: "vidéos" }, plan: { route: "search", analytics: true, query_text: "Quelle vidéo a le plus de vues ?", query_text_bm25: "vidéo plus vues", title_hints: [], persons: [], companies: [], published_after: null, published_before: null } },
+  views_growth: { reformulate: { follow_up: false, reformulated_question: "Quelle vidéo a gagné le plus de vues entre août et septembre ?", topic: "vidéos et vues entre août et septembre" }, plan: { route: "search", analytics: true, query_text: "Quelle vidéo a gagné le plus de vues entre août et septembre ?", query_text_bm25: "vidéo plus vues août septembre", title_hints: [], persons: [], companies: [], published_after: null, published_before: null } },
+  gaelle: { reformulate: { follow_up: false, reformulated_question: "Quelle est la description de la vidéo de Gaëlle ?", topic: "description de la vidéo de Gaëlle" }, plan: { route: "search", analytics: false, query_text: "Quelle est la description de la vidéo de Gaëlle ?", query_text_bm25: "description vidéo Gaëlle", title_hints: [], persons: ["Gaëlle"], companies: [], published_after: null, published_before: null } },
+  comparison: { reformulate: { follow_up: false, reformulated_question: "Quels sont les points communs entre Sophie Ollivier et Chloé Leprètre ?", topic: "points communs entre Sophie Ollivier et Chloé Leprètre" }, plan: { route: "search", analytics: false, query_text: "Quels sont les points communs entre Sophie Ollivier et Chloé Leprètre ?", query_text_bm25: "points communs Sophie Ollivier Chloé Leprètre", title_hints: [], persons: ["Sophie Ollivier", "Chloé Leprètre"], companies: [], published_after: null, published_before: null } },
+  ionis: { reformulate: { follow_up: false, reformulated_question: "Pourquoi choisir de faire des études à Ionis-STM ?", topic: "choix des études à Ionis-STM" }, plan: { route: "search", analytics: false, query_text: "Pourquoi choisir de faire des études à Ionis-STM ?", query_text_bm25: "études Ionis-STM raisons choix", title_hints: [], persons: [], companies: ["Ionis-STM"], published_after: null, published_before: null } },
+  ocean: { reformulate: { follow_up: false, reformulated_question: "Qu'est-ce que l'océan rouge ?", topic: "océan rouge" }, plan: { route: "search", analytics: false, analytics_scope: null, analytics_metric: null, analytics_order: null, analytics_rank_start: null, analytics_rank_end: null, query_text: "Qu'est-ce que l'océan rouge ?", query_text_bm25: "océan rouge définition", title_hints: [], persons: [], companies: [], published_after: null, published_before: null } },
+  fadila: { reformulate: { follow_up: false, reformulated_question: "Quelles questions ont été posées à Fadila ?", topic: "questions posées à Fadila" }, plan: { route: "search", analytics: false, query_text: "Quelles questions ont été posées à Fadila ?", query_text_bm25: "questions posées Fadila", title_hints: [], persons: ["Fadila"], companies: [], published_after: null, published_before: null } },
+  laura: { reformulate: { follow_up: false, reformulated_question: "Qui est Laura Tyan ?", topic: "Laura Tyan" }, plan: { route: "search", analytics: false, query_text: "Qui est Laura Tyan ?", query_text_bm25: "Laura Tyan identité biographie", title_hints: [], persons: ["Laura Tyan"], companies: [], published_after: null, published_before: null } },
+};
+const staticStepOutputs = {
+  initialize: "La requête, la conversation et les modèles sont préparés.",
+  resolve_entities: "Les personnes, entreprises et titres extraits sont rapprochés des données connues.",
+  build_execution_plan: "Le plan du LLM est complété par les règles de routage déterministes.",
+  annex_direct: "La fiche locale correspondante est ajoutée au contexte de réponse.",
+  person_clarification: "Une demande de précision est préparée pour identifier la personne visée.",
+  direct: "La réponse sociale déjà prête est sélectionnée, sans recherche documentaire.",
+  sql_search: "Les données structurées et les vidéos candidates sont recherchées en SQL.",
+  vector_search: "La recherche hybride prépare les requêtes BM25 et vectorielle.",
+  analytics: "La requête Text-to-SQL est validée puis exécutée avec des droits de lecture seuls.",
+  lookup: "Les documents, descriptions ou transcriptions demandés sont récupérés.",
+  retrieval: "Les passages sont classés, fusionnés puis enrichis de leur contexte hiérarchique.",
+  generate: "Le LLM produit la réponse à partir du contexte et des sources retenues.",
+  format: "La réponse ou le document déjà prêt est mis en forme sans appel LLM.",
+  persist: "La réponse, les sources et le contexte de conversation sont enregistrés.",
+  end: "La réponse finale est renvoyée à l’utilisateur.",
+};
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const edgeId = (from, to) => `${from}--${to}`;
 function edgePath(from, to) {
@@ -331,46 +362,11 @@ function edgePath(from, to) {
 const svg = document.querySelector("#pipeline-graph");
 svg.setAttribute("viewBox", "0 0 1160 925");
 svg.innerHTML = `<title id="graph-title">Graphe complet du pipeline de réponse RAG</title><desc id="graph-description"></desc>
-  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#455066" stroke-width="1.3"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#6fe0ca" stroke-width="1.6"/></marker></defs>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#383838" stroke-width="1.3"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#ffffff" stroke-width="1.6"/></marker></defs>
   <g class="edges">${edges.map(([from,to]) => `<path id="${edgeId(from,to)}" class="edge" d="${edgePath(from,to)}" marker-end="url(#arrow)"/>`).join("")}</g>
-  <g class="nodes">${nodes.map(n => `<g id="node-${n.id}" class="node ${n.terminal ? "terminal" : ""}" transform="translate(${n.x-n.w/2},${n.y})"><title>${escapeHtml(n.label)}${n.sub ? ` — ${escapeHtml(n.sub)}` : ""}</title><rect width="${n.w}" height="${n.h}" rx="7"/><text x="${n.w/2}" y="${n.sub ? 20 : 20}">${escapeHtml(n.label)}</text>${n.sub ? `<text class="subtitle" x="${n.w/2}" y="36">${escapeHtml(n.sub)}</text>` : ""}${n.extra ? `<text class="subtitle" x="${n.w/2}" y="52">${escapeHtml(n.extra)}</text>` : ""}</g>`).join("")}</g>`;
+  <g class="nodes">${nodes.map(n => `<g id="node-${n.id}" class="node ${n.terminal ? "terminal" : ""}" transform="translate(${n.x-n.w/2},${n.y})"><rect width="${n.w}" height="${n.h}" rx="7"/><text x="${n.w/2}" y="${n.sub ? 20 : 20}">${escapeHtml(n.label)}</text>${n.sub ? `<text class="subtitle" x="${n.w/2}" y="36">${escapeHtml(n.sub)}</text>` : ""}${n.extra ? `<text class="subtitle" x="${n.w/2}" y="52">${escapeHtml(n.extra)}</text>` : ""}</g>`).join("")}</g>`;
 const select = document.querySelector("#scenario");
 select.innerHTML = Object.entries(scenarios).map(([id, s]) => `<option value="${id}">${escapeHtml(s.question)}</option>`).join("");
-const traceStates = new Map();
-const outputSpanPrefixes = {
-  start: ["request"],
-  initialize: [],
-  reformulate: ["reformulation"],
-  plan: ["planner"],
-  resolve_entities: ["person_resolution", "company_resolution", "title_resolution"],
-  build_execution_plan: ["execution_plan"],
-  annex_direct: ["orchestration"],
-  person_clarification: ["orchestration"],
-  direct: ["orchestration"],
-  sql_search: ["sql"],
-  vector_search: ["retrieval."],
-  analytics: ["analytics."],
-  lookup: ["person_in_", "company_in_", "title_lookup", "deduplicate_videos"],
-  retrieval: ["retrieval."],
-  generate: ["generation"],
-  format: [],
-  persist: ["store_message", "conversation_memory.update"],
-  end: ["request"],
-};
-
-async function loadTrace(scenario) {
-  if (!scenario.traceId || traceStates.has(scenario.traceId)) return;
-  traceStates.set(scenario.traceId, { loading: true, spans: [] });
-  try {
-    const response = await fetch(`/api/pipeline-reponse/traces/${scenario.traceId}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const trace = await response.json();
-    traceStates.set(scenario.traceId, { loading: false, spans: trace.spans || [], error: trace.error });
-  } catch (error) {
-    traceStates.set(scenario.traceId, { loading: false, spans: [], error: String(error) });
-  }
-  if (tooltipNode && scenarios[select.value].traceId === scenario.traceId) showTooltip(tooltipNode);
-}
 
 function render() {
   const s = scenarios[select.value];
@@ -387,7 +383,6 @@ function render() {
   svg.querySelectorAll(".edge.active").forEach(line => line.parentNode.append(line));
   document.querySelector("#graph-description").textContent = `Question : ${s.question}. Parcours éclairé : ${s.path.map(id => byId[id].label).join(" → ")}. Toutes les autres branches restent visibles en grisé.`;
   document.querySelector("#scenario-details").innerHTML = `<span class="eyebrow">Parcours de la question</span><h2>${escapeHtml(s.title)}</h2><span class="route-tag">${s.route}</span><p>${escapeHtml(s.explanation)}</p><h3>Ce qui se passe</h3><ol>${s.steps.map(step => `<li>${escapeHtml(step)}</li>`).join("")}</ol><div class="context"><h3>${s.traceId ? "Parcours observé" : "Règle vérifiée"}</h3><p>${escapeHtml(s.note)}</p></div>`;
-  loadTrace(s);
 }
 select.addEventListener("change", render);
 render();
@@ -406,6 +401,7 @@ function hideTooltip() {
   tooltipNode = null;
   tooltip.hidden = true;
 }
+
 function showTooltip(node) {
   clearTimeout(closeTimer);
   tooltipNode?.removeAttribute("aria-describedby");
@@ -413,29 +409,18 @@ function showTooltip(node) {
   const id = node.id.slice(5);
   const scenario = scenarios[select.value];
   const active = scenario.path.includes(id);
-  const traceState = scenario.traceId ? traceStates.get(scenario.traceId) : null;
   let outputMarkup = "";
-  if (!active) {
+  if (id === "start") {
+    outputMarkup = `<p>${escapeHtml(scenario.question)}</p>`;
+  } else if (!active) {
     outputMarkup = "<p>Aucune sortie : cette étape n'est pas empruntée par la question sélectionnée.</p>";
-  } else if (!scenario.traceId) {
-    outputMarkup = "<p>Aucune trace Phoenix n'est disponible pour ce scénario.</p>";
-  } else if (!traceState || traceState.loading) {
-    outputMarkup = "<p>Chargement de la sortie Phoenix…</p>";
-  } else if (traceState.error) {
-    outputMarkup = `<p>Impossible de charger la sortie Phoenix : ${escapeHtml(traceState.error)}</p>`;
+  } else if (id === "reformulate" || id === "plan") {
+    const output = recordedLlmOutputs[select.value]?.[id];
+    outputMarkup = output
+      ? `<pre>${escapeHtml(JSON.stringify(output, null, 2))}</pre>`
+      : "<p>Sortie enregistrée indisponible pour cet exemple.</p>";
   } else {
-    const prefixes = outputSpanPrefixes[id] || [];
-    const matchingSpans = traceState.spans.filter(span =>
-      prefixes.some(prefix => span.name === prefix || span.name.startsWith(prefix))
-    );
-    if (!matchingSpans.length) {
-      outputMarkup = "<p>Aucune sortie télémétrique n'a été enregistrée pour cette étape.</p>";
-    } else {
-      const output = matchingSpans.length === 1
-        ? matchingSpans[0].output
-        : Object.fromEntries(matchingSpans.map(span => [span.name, span.output]));
-      outputMarkup = `<pre>${escapeHtml(JSON.stringify(output, null, 2))}</pre>`;
-    }
+    outputMarkup = `<p>${escapeHtml(staticStepOutputs[id] || "Cette étape produit la suite du parcours.")}</p>`;
   }
   tooltip.innerHTML = `<strong>${escapeHtml(byId[id].label)} · Sortie</strong>${outputMarkup}`;
   tooltip.hidden = false;
@@ -451,7 +436,6 @@ function scheduleHide() { closeTimer = setTimeout(hideTooltip, 140); }
 svg.querySelectorAll(".node").forEach(node => {
   node.setAttribute("tabindex", "0");
   node.setAttribute("aria-label", byId[node.id.slice(5)].label);
-  node.querySelector("title")?.remove();
   node.addEventListener("mouseenter", () => showTooltip(node));
   node.addEventListener("mouseleave", scheduleHide);
   node.addEventListener("focus", () => showTooltip(node));

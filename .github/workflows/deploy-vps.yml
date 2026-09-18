@@ -294,8 +294,9 @@ jobs:
           set -euo pipefail
           cd "$1"
           compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production)
-          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging pull staging-api
-          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging up -d staging-postgres
+          export STAGING_API_IMAGE_TAG="$2"
+          "${compose[@]}" --profile staging pull staging-api
+          "${compose[@]}" --profile staging up -d staging-postgres
           # The corpus is copied into the isolated staging database; chat data
           # is not copied and production is never written by this gate.
           "${compose[@]}" --profile staging exec -T staging-postgres sh -c \
@@ -304,8 +305,8 @@ jobs:
             'pg_dump --data-only --schema=data -U "$POSTGRES_USER" "$POSTGRES_DB"' | \
             "${compose[@]}" --profile staging exec -T staging-postgres sh -c \
               'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"'
-          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging up -d --no-deps staging-api
-          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging exec -T staging-api \
+          "${compose[@]}" --profile staging up -d --no-deps staging-api
+          "${compose[@]}" --profile staging exec -T staging-api \
             python -m interface.backend.golden_recall
           REMOTE
 

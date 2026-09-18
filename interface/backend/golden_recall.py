@@ -1,4 +1,7 @@
-"""Quality gate Golden Dataset executed in the isolated staging API."""
+"""Quality gate Golden Dataset executed in the isolated staging API.
+
+The computed recall follows the Phoenix experiment aggregation semantics.
+"""
 
 from __future__ import annotations
 

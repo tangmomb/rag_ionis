@@ -294,10 +294,6 @@ jobs:
           set -euo pipefail
           cd "$1"
           compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production)
-          registry="$(awk -F= '$1 == "CONTAINER_REGISTRY" {print $2; exit}' .env.production)"
-          test -n "${registry}" || { echo 'CONTAINER_REGISTRY is missing from .env.production' >&2; exit 1; }
-          test -r /etc/rag-ionis/registry.secret || { echo 'Registry credential file is missing' >&2; exit 1; }
-          docker login "${registry%/}" -u nologin --password-stdin < /etc/rag-ionis/registry.secret
           STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging pull staging-api
           STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging up -d staging-postgres
           # The corpus is copied into the isolated staging database; chat data

@@ -99,7 +99,7 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("Staging corpus copied", vps_workflow)
         self.assertIn("Golden Dataset loaded", vps_workflow)
         self.assertIn("exec -T staging-postgres sh -c", vps_workflow)
-        self.assertIn("SELECT tablename FROM pg_tables", vps_workflow)
+        self.assertIn("TRUNCATE data.videos, data.speakers", vps_workflow)
         self.assertIn("< /dev/null", vps_workflow)
         self.assertIn("python -m interface.backend.golden_recall", vps_workflow)
         self.assertIn("GOLDEN_DATASET_MIN_RECALL", production_compose)

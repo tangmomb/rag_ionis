@@ -90,6 +90,24 @@ class GoldenRecallTests(unittest.TestCase):
         self.assertEqual(result["video_recall"], 0.75)
         self.assertEqual(result["video_recall_micro"], 2 / 3)
 
+    def test_evaluate_waits_between_questions(self) -> None:
+        cases = golden_recall.parse_golden_cases(
+            "question,youtube_video_ids,relevant_chunk_ids\n"
+            'Q1,"[""a""]",[]\n'
+            'Q2,"[""b""]",[]\n'
+        )
+
+        class Response:
+            retrieval = {"retrieved_sources": []}
+
+        with (
+            patch.object(golden_recall, "run_rag", return_value=Response()),
+            patch.object(golden_recall.time, "sleep") as sleep,
+        ):
+            golden_recall.evaluate(cases, request_delay_seconds=10.0)
+
+        sleep.assert_called_once_with(10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

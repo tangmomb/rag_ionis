@@ -11,6 +11,7 @@ import io
 import json
 import os
 import sys
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,7 @@ DEFAULT_GOOGLE_SHEET_URL = (
     "1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140"
 )
 DEFAULT_MIN_RECALL = 0.85
+DEFAULT_REQUEST_DELAY_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -106,13 +108,17 @@ def source_value(source: Any, key: str) -> Any:
     return getattr(source, key, None)
 
 
-def evaluate(cases: Iterable[GoldenCase]) -> dict[str, Any]:
+def evaluate(
+    cases: Iterable[GoldenCase], *, request_delay_seconds: float = 0.0
+) -> dict[str, Any]:
     cases = list(cases)
     video_matches = video_expected = chunk_matches = chunk_expected = 0
     video_case_recalls: list[float] = []
     chunk_case_recalls: list[float] = []
     failures: list[str] = []
-    for case in cases:
+    for case_index, case in enumerate(cases):
+        if case_index and request_delay_seconds:
+            time.sleep(request_delay_seconds)
         try:
             response = run_rag(RagRequest(question=case.question))
         except Exception as exc:
@@ -169,6 +175,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=float(os.getenv("GOLDEN_DATASET_MIN_RECALL", DEFAULT_MIN_RECALL)),
         help="Seuil bloquant du recall global des vidéos attendues.",
     )
+    parser.add_argument(
+        "--request-delay-seconds",
+        type=float,
+        default=float(
+            os.getenv(
+                "GOLDEN_DATASET_REQUEST_DELAY_SECONDS",
+                DEFAULT_REQUEST_DELAY_SECONDS,
+            )
+        ),
+        help="Pause entre deux questions pour respecter les limites du reranker.",
+    )
     return parser
 
 
@@ -176,7 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not 0 <= args.min_recall <= 1:
         raise SystemExit("Le seuil de recall doit etre compris entre 0 et 1.")
-    result = evaluate(load_golden_cases(args.google_sheet_url))
+    if args.request_delay_seconds < 0:
+        raise SystemExit("Le délai entre les requêtes ne peut pas etre negatif.")
+    result = evaluate(
+        load_golden_cases(args.google_sheet_url),
+        request_delay_seconds=args.request_delay_seconds,
+    )
     print(json.dumps(result, ensure_ascii=False), flush=True)
     if result["failed_cases"]:
         print("Le test Golden Dataset a rencontre des erreurs de requete.", file=sys.stderr)

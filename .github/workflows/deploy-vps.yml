@@ -311,7 +311,16 @@ jobs:
             'pg_dump --data-only --schema=data -U "$POSTGRES_USER" "$POSTGRES_DB"' | \
             "${compose[@]}" --profile staging exec -T staging-postgres sh -c \
               'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"'
+          staging_video_count="$("${compose[@]}" --profile staging exec -T staging-postgres sh -c \
+            'psql -At -U "$POSTGRES_USER" "$POSTGRES_DB" -c "SELECT count(*) FROM data.videos"')"
+          [[ "${staging_video_count}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Staging corpus copy failed: expected videos, got ${staging_video_count:-empty}." >&2
+            exit 1
+          }
+          printf 'Staging corpus copied: %s videos.\n' "${staging_video_count}"
           "${compose[@]}" --profile staging up -d --no-deps staging-api
+              "${compose[@]}" --profile staging exec -T staging-api \
+                python -c 'import os; from interface.backend.golden_recall import load_golden_cases; print("Golden Dataset loaded: %s cases." % len(load_golden_cases(os.environ["GOLDEN_DATASET_URL"])))'
           "${compose[@]}" --profile staging exec -T staging-api \
             python -m interface.backend.golden_recall
           REMOTE

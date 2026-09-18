@@ -96,6 +96,8 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.api == 'true'", vps_workflow)
         self.assertIn("staging-postgres", vps_workflow)
         self.assertIn("STAGING_API_IMAGE_TAG", vps_workflow)
+        self.assertIn("Staging corpus copied", vps_workflow)
+        self.assertIn("Golden Dataset loaded", vps_workflow)
         self.assertIn("python -m interface.backend.golden_recall", vps_workflow)
         self.assertIn("GOLDEN_DATASET_MIN_RECALL", production_compose)
 

@@ -1,6 +1,6 @@
 """Quality gate Golden Dataset executed in the isolated staging API.
 
-The computed recall follows the Phoenix experiment aggregation semantics.
+The computed recall follows Phoenix experiment aggregation semantics.
 """
 
 from __future__ import annotations

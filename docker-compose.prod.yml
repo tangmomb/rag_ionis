@@ -79,7 +79,7 @@ services:
 
   staging-api:
     profiles: ["staging"]
-    image: ${CONTAINER_REGISTRY:?CONTAINER_REGISTRY is required}/rag-ionis-api:${STAGING_API_IMAGE_TAG:?STAGING_API_IMAGE_TAG is required}
+    image: ${CONTAINER_REGISTRY:?CONTAINER_REGISTRY is required}/rag-ionis-api:${STAGING_API_IMAGE_TAG:-${API_IMAGE_TAG:?API_IMAGE_TAG is required}}
     environment:
       RAG_IONIS_ENV: staging
       RAG_IONIS_ENV_FILE_OPTIONAL: "1"

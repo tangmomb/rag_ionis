@@ -6,7 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-SUPPORTED_ENVIRONMENTS = frozenset({"local", "production"})
+SUPPORTED_ENVIRONMENTS = frozenset({"local", "production", "staging"})
 
 
 def load_project_env(project_root: Path, *, override: bool = True) -> Path:

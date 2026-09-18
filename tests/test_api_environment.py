@@ -26,6 +26,24 @@ class ApiEnvironmentTests(unittest.TestCase):
                     Path(temporary_dir) / ".env.production",
                 )
 
+    def test_allows_injected_staging_environment_without_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with patch.dict(
+                os.environ,
+                {
+                    "RAG_IONIS_ENV": "staging",
+                    "RAG_IONIS_ENV_FILE_OPTIONAL": "1",
+                    "PIPELINE_EXECUTION_BACKEND": "scaleway",
+                },
+                clear=True,
+            ):
+                selected = load_project_env(Path(temporary_dir))
+
+                self.assertEqual(
+                    selected,
+                    Path(temporary_dir) / ".env.staging",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

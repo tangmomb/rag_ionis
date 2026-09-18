@@ -51,6 +51,11 @@ from interface.backend.utilities import get_llm_client, normalize_model_name
 router = APIRouter()
 
 
+# A retry must be bounded: an abstaining answer model can suggest a query, but
+# it must never be able to create an unbounded retrieval/generation loop.
+MAX_ANSWER_RETRY_ATTEMPTS = 1
+
+
 class RagResponseState(TypedDict, total=False):
     """State passed between the existing response-pipeline steps."""
 
@@ -59,6 +64,7 @@ class RagResponseState(TypedDict, total=False):
     sources: list[dict[str, Any]]
     retrieval: dict[str, Any]
     answer_trace: dict[str, Any]
+    answer_retry_count: int
     answer_action: str
     carousel_sources: list[dict[str, Any]]
     conversation_id: int
@@ -198,6 +204,69 @@ def _generation_route(state: RagResponseState) -> Literal["generate", "accept_pr
     return "accept_precomputed" if state["answer"] else "generate"
 
 
+def _answer_retry_route(
+    state: RagResponseState,
+) -> Literal["retry_orchestrate", "finalize"]:
+    """Retry retrieval once when generation abstains with a usable query."""
+    answer_trace = state.get("answer_trace") or {}
+    retry_query = answer_trace.get("retry_query")
+    retry_count = state.get("answer_retry_count", 0)
+    if (
+        answer_trace.get("action") == "abstain"
+        and isinstance(retry_query, str)
+        and retry_query.strip()
+        and retry_count < MAX_ANSWER_RETRY_ATTEMPTS
+    ):
+        return "retry_orchestrate"
+    return "finalize"
+
+
+def _retry_orchestrate_response(
+    state: RagResponseState,
+    runtime: Runtime[RagResponseContext],
+) -> dict[str, Any]:
+    """Run a second retrieval pass without changing the persisted user request."""
+    payload = _response_payload(state)
+    answer_trace = state["answer_trace"]
+    retry_query = str(answer_trace["retry_query"]).strip()
+    retry_count = state.get("answer_retry_count", 0) + 1
+    retry_payload_data = payload.model_dump()
+    retry_payload_data["question"] = retry_query
+    retry_payload = RagRequest.model_validate(retry_payload_data)
+
+    with trace_operation(
+        "answer_retry_orchestration",
+        kind="CHAIN",
+        input_value={
+            "original_question": payload.question,
+            "retry_query": retry_query,
+            "attempt": retry_count,
+        },
+    ) as retry_span:
+        answer, sources, retrieval = orchestrate_request(retry_payload)
+        retry_span.set_output(
+            {
+                "answer_provided": bool(answer),
+                "sources": sources,
+                "retrieval": retrieval,
+            }
+        )
+
+    retrieval["answer_retry"] = {
+        "attempt": retry_count,
+        "query": retry_query,
+        "initial_action": answer_trace.get("action"),
+        "initial_retrieval_mode": state.get("retrieval", {}).get("retrieval_mode"),
+    }
+    return {
+        "answer": answer,
+        "sources": sources,
+        "retrieval": retrieval,
+        "answer_trace": {},
+        "answer_retry_count": retry_count,
+    }
+
+
 def _finalize_response(
     state: RagResponseState,
     runtime: Runtime[RagResponseContext] | None = None,
@@ -329,12 +398,17 @@ def build_rag_response_graph():
     )
     graph.add_node("orchestrate", _stage_node("orchestrate", _orchestrate_response))
     graph.add_node("generate", _stage_node("generate", _generate_response))
+    graph.add_node(
+        "retry_orchestrate",
+        _stage_node("retry_orchestrate", _retry_orchestrate_response),
+    )
     graph.add_node("accept_precomputed", _stage_node("accept_precomputed", _accept_precomputed_response))
     graph.add_node("finalize", _stage_node("finalize", _finalize_response))
     graph.add_node("persist", _stage_node("persist", _persist_response))
     graph.add_edge(START, "orchestrate")
     graph.add_conditional_edges("orchestrate", _generation_route)
-    graph.add_edge("generate", "finalize")
+    graph.add_conditional_edges("generate", _answer_retry_route)
+    graph.add_edge("retry_orchestrate", "generate")
     graph.add_edge("accept_precomputed", "finalize")
     graph.add_edge("finalize", "persist")
     graph.add_edge("persist", END)

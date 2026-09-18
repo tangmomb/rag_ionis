@@ -1469,20 +1469,23 @@ timeout et une limite de lignes. Phoenix expose séparément les spans
 `analytics.sql_generation`, `analytics.sql_validation`,
 `analytics.sql_cost_validation` et `analytics.sql_execution`.
 
-Le modèle de réponse produit en un seul appel un objet JSON contenant le message
-final et l'action `answer` ou `abstain`. Il choisit `answer` seulement si les
-sources permettent de répondre suffisamment ; il choisit `abstain` si la demande
-est ambiguë ou les preuves insuffisantes. Cette décision est enregistrée dans
-`generation`; aucun appel
-LLM d'évaluation ou de révision supplémentaire n'est effectué.
+Le modèle de réponse produit un objet JSON contenant le message final et l'action
+`answer` ou `abstain`. Il choisit `answer` seulement si les sources permettent de
+répondre suffisamment ; il choisit `abstain` si la demande est ambiguë ou les
+preuves insuffisantes. Dans ce dernier cas, il peut fournir une `retry_query` : le
+pipeline relance alors une seule fois l'orchestration et la recherche avec cette
+question plus précise. La question initiale reste celle stockée dans la
+conversation. Une seconde abstention, ou l'absence de `retry_query`, est rendue
+telle quelle.
 
-Le pipeline de réponse est exécuté par un graphe LangGraph séquentiel :
-`orchestrate` mène soit à `generate`, soit à `accept_precomputed`, puis les deux
-branches rejoignent `finalize` et `persist`. Les nœuds appellent la logique métier
-existante sans modifier ses prompts, ses routes, son retrieval ou ses traces. Le
-LLM de réponse décide directement entre `answer` et `abstain` à partir des
-sources fournies ; aucune étape de jugement ou de correction séparée ne suit la
-génération.
+Le pipeline de réponse est exécuté par un graphe LangGraph : `orchestrate` mène
+soit à `generate`, soit à `accept_precomputed`. Après `generate`, une réponse
+`abstain` dotée d'une `retry_query` valide mène une fois à
+`retry_orchestrate`, puis à une nouvelle génération ; sinon le flux rejoint
+`finalize` puis `persist`. Les nœuds appellent la logique métier existante sans
+modifier les prompts ni les routes de recherche. Le LLM de réponse décide
+directement entre `answer` et `abstain` à partir des sources fournies ; il n'y a
+pas de LLM de jugement séparé.
 
 Le nœud `orchestrate` appelle lui-même un sous-graphe : `initialize`,
 `reformulate`, `plan`, `resolve_entities` et `build_execution_plan`, puis une

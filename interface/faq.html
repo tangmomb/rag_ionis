@@ -723,11 +723,12 @@
                 >.
               </p>
               <p>
-                La prochaine amélioration consistera à brancher un système de
-                <em>retry</em> lorsqu'une réponse échoue. La clé nécessaire est
-                déjà prévue dans le JSON renvoyé par le LLM de réponse ; il
-                restera à l'utiliser pour relancer la génération de manière
-                contrôlée.
+                Lorsqu'une réponse s'abstient faute d'éléments suffisants, le
+                LLM peut proposer une question de recherche plus précise. Le
+                pipeline relance alors une seule fois l'orchestration et la
+                recherche avec cette question, de manière contrôlée. Si cette
+                seconde tentative échoue aussi, il renvoie l'abstention sans
+                réessayer en boucle.
               </p>
               <figure class="faq-pipeline-preview">
                 <a

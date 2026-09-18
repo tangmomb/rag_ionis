@@ -20,6 +20,75 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class InterfaceAppTests(unittest.TestCase):
+    def test_answer_retry_route_requires_abstain_and_retry_query(self) -> None:
+        self.assertEqual(
+            api._answer_retry_route(
+                {
+                    "answer_trace": {
+                        "action": "abstain",
+                        "retry_query": "Question de recherche plus précise",
+                    }
+                }
+            ),
+            "retry_orchestrate",
+        )
+        self.assertEqual(
+            api._answer_retry_route(
+                {"answer_trace": {"action": "abstain", "retry_query": None}}
+            ),
+            "finalize",
+        )
+        self.assertEqual(
+            api._answer_retry_route(
+                {
+                    "answer_retry_count": api.MAX_ANSWER_RETRY_ATTEMPTS,
+                    "answer_trace": {
+                        "action": "abstain",
+                        "retry_query": "Question de recherche plus précise",
+                    },
+                }
+            ),
+            "finalize",
+        )
+
+    def test_answer_retry_uses_retry_query_but_preserves_original_payload(self) -> None:
+        payload = RagRequest(question="Question initiale", conversationId=42)
+        state = {
+            "payload": payload.model_dump(),
+            "answer": "Je ne peux pas répondre.",
+            "sources": [],
+            "retrieval": {"retrieval_mode": "vector_search"},
+            "answer_trace": {
+                "action": "abstain",
+                "retry_query": "Question autonome plus détaillée",
+            },
+        }
+        retry_sources = [{"chunk_id": 7, "video_url": "https://example.test/video"}]
+        retry_retrieval = {"retrieval_mode": "sql_search"}
+
+        with patch.object(
+            api,
+            "orchestrate_request",
+            return_value=("", retry_sources, retry_retrieval),
+        ) as orchestrate:
+            result = api._retry_orchestrate_response(state, api.RagResponseContext())
+
+        retry_payload = orchestrate.call_args.args[0]
+        self.assertEqual(retry_payload.question, "Question autonome plus détaillée")
+        self.assertEqual(retry_payload.conversationId, 42)
+        self.assertEqual(state["payload"]["question"], "Question initiale")
+        self.assertEqual(result["answer_retry_count"], 1)
+        self.assertEqual(result["sources"], retry_sources)
+        self.assertEqual(
+            result["retrieval"]["answer_retry"],
+            {
+                "attempt": 1,
+                "query": "Question autonome plus détaillée",
+                "initial_action": "abstain",
+                "initial_retrieval_mode": "vector_search",
+            },
+        )
+
     def test_answer_video_url_selects_source_without_marker(self) -> None:
         sources = [
             {"video_url": "https://www.youtube.com/watch?v=video-1"},

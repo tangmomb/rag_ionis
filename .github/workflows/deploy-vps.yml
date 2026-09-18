@@ -104,7 +104,13 @@ jobs:
                 pipeline/*)
                   updater=true
                   ;;
-                docker-compose.yml|docker-compose.prod.yml|Caddyfile|docker/postgres/init/*|deploy/deploy-vps.sh)
+                docker-compose.prod.yml)
+                  # Production/staging API wiring changed: rebuild and verify
+                  # the API candidate before it can be promoted.
+                  api=true
+                  vps_config=true
+                  ;;
+                docker-compose.yml|Caddyfile|docker/postgres/init/*|deploy/deploy-vps.sh)
                   vps_config=true
                   ;;
               esac

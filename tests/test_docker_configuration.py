@@ -99,6 +99,12 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("python -m interface.backend.golden_recall", vps_workflow)
         self.assertIn("GOLDEN_DATASET_MIN_RECALL", production_compose)
 
+    def test_production_compose_changes_rebuild_the_api_candidate(self) -> None:
+        vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("docker-compose.prod.yml)", vps_workflow)
+        self.assertIn("api=true", vps_workflow)
+
     def test_analytics_password_is_not_hardcoded_in_sql(self) -> None:
         sql = ANALYTICS_SQL_PATH.read_text(encoding="utf-8")
 

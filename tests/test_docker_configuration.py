@@ -73,6 +73,7 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("docker pull", vps_deploy)
         self.assertIn("rolling back", vps_deploy)
         self.assertIn("State.Health", vps_deploy)
+        self.assertIn("caddy reload", vps_deploy)
 
     def test_vps_workflow_uses_registry_cache(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -83,6 +84,20 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("actionlint@sha256:", vps_workflow)
         self.assertIn("docker/build-push-action@v7", vps_workflow)
         self.assertIn("cache-from: type=registry", vps_workflow)
+
+    def test_vps_workflow_tests_candidate_before_deployment(self) -> None:
+        vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+        production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "Refresh staging corpus and verify candidate API recall",
+            vps_workflow,
+        )
+        self.assertIn("needs.changes.outputs.api == 'true'", vps_workflow)
+        self.assertIn("staging-postgres", vps_workflow)
+        self.assertIn("STAGING_API_IMAGE_TAG", vps_workflow)
+        self.assertIn("python -m interface.backend.golden_recall", vps_workflow)
+        self.assertIn("GOLDEN_DATASET_MIN_RECALL", production_compose)
 
     def test_analytics_password_is_not_hardcoded_in_sql(self) -> None:
         sql = ANALYTICS_SQL_PATH.read_text(encoding="utf-8")

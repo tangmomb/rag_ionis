@@ -38,6 +38,8 @@ services:
       PHOENIX_ENABLED: "true"
       PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-rag-ionis}
+      GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
+      GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.85}
     expose:
       - "8006"
     depends_on:
@@ -55,6 +57,47 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  staging-postgres:
+    profiles: ["staging"]
+    image: pgvector/pgvector:0.8.2-pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      ANALYTICS_DATABASE_PASSWORD: ${ANALYTICS_DATABASE_PASSWORD:?ANALYTICS_DATABASE_PASSWORD is required}
+      TZ: Europe/Paris
+    command: ["postgres", "-c", "timezone=Europe/Paris"]
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  staging-api:
+    profiles: ["staging"]
+    image: ${CONTAINER_REGISTRY:?CONTAINER_REGISTRY is required}/rag-ionis-api:${STAGING_API_IMAGE_TAG:?STAGING_API_IMAGE_TAG is required}
+    environment:
+      RAG_IONIS_ENV: staging
+      RAG_IONIS_ENV_FILE_OPTIONAL: "1"
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@staging-postgres:5432/${POSTGRES_DB}
+      ANALYTICS_DATABASE_URL: postgresql://rag_ionis_analytics:${ANALYTICS_DATABASE_PASSWORD}@staging-postgres:5432/${POSTGRES_DB}
+      ANALYTICS_MAX_TOTAL_COST: ${ANALYTICS_MAX_TOTAL_COST:-100000}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:?GOOGLE_API_KEY is required}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:?MISTRAL_API_KEY is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      COHERE_API_KEY: ${COHERE_API_KEY:?COHERE_API_KEY is required}
+      OPENAI_SERVICE_TIER: ${OPENAI_SERVICE_TIER:-fast}
+      PHOENIX_ENABLED: "false"
+      GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
+      GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.85}
+    depends_on:
+      staging-postgres:
+        condition: service_healthy
+
 
   # Commande ponctuelle, absente de `up -d` grace au profil jobs :
   # docker compose ... --profile jobs run --rm updater
@@ -135,3 +178,5 @@ volumes:
     name: rag_ionis_caddy_data
   caddy_config:
     name: rag_ionis_caddy_config
+  staging_postgres_data:
+    name: rag_ionis_staging_postgres_data

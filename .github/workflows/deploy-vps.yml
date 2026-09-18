@@ -278,6 +278,37 @@ jobs:
           bash "$HOME/$1/deploy/sync-vps-config.sh" "$1"
           REMOTE
 
+      - name: Refresh staging corpus and verify candidate API recall
+        if: needs.changes.outputs.api == 'true'
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
+          remote="${VPS_USER}@${VPS_HOST}"
+          ssh "${remote}" bash -s -- "${deploy_path}" "${IMAGE_TAG}" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production)
+          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging pull staging-api
+          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging up -d staging-postgres
+          # The corpus is copied into the isolated staging database; chat data
+          # is not copied and production is never written by this gate.
+          "${compose[@]}" --profile staging exec -T staging-postgres sh -c \
+            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB" -c "TRUNCATE data.videos CASCADE"'
+          "${compose[@]}" exec -T postgres sh -c \
+            'pg_dump --data-only --schema=data -U "$POSTGRES_USER" "$POSTGRES_DB"' | \
+            "${compose[@]}" --profile staging exec -T staging-postgres sh -c \
+              'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"'
+          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging up -d --no-deps staging-api
+          STAGING_API_IMAGE_TAG="$2" "${compose[@]}" --profile staging exec -T staging-api \
+            python -m interface.backend.golden_recall
+          REMOTE
+
       - name: Deploy affected VPS services
         shell: bash
         env:

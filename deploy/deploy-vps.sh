@@ -136,6 +136,8 @@ while (( SECONDS < deadline )); do
     case "${health_status}" in
       healthy)
         "${compose[@]}" up -d --no-deps caddy
+        "${compose[@]}" exec -T caddy caddy reload \
+          --config /etc/caddy/Caddyfile --adapter caddyfile
         printf 'API %s is healthy.\n' "${image_tag}"
         exit 0
         ;;

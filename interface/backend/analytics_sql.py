@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from interface.backend.database import connect_analytics_database
-from interface.backend.llm_providers import LLMClientProtocol
+from interface.backend.llm_providers import LLMClientProtocol, add_llm_usage_attributes
 from interface.backend.schemas import ExecutionPlan
 from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import (
@@ -498,6 +498,7 @@ def run_analytics_text_to_sql(
                 max_output_tokens=2_000,
                 response_schema=ANALYTICS_SQL_RESPONSE_SCHEMA,
             )
+            add_llm_usage_attributes(generation_span, response, model=model)
             raw_response = serialize_openai_response(response)
             payload = safe_json_loads(
                 str(getattr(response, "output_text", "") or "").strip()

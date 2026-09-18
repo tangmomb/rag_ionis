@@ -886,7 +886,7 @@
             >
               <p>
                 Ces chiffres proviennent du dernier benchmark Phoenix sur le
-                golden dataset : 22 questions sur 22 ont abouti.
+                golden dataset : 75 questions sur 75 ont abouti.
               </p>
               <p>
                 Le recall mesure la couverture des éléments attendus ; la
@@ -896,7 +896,7 @@
               <dl class="faq-metrics">
                 <div>
                   <dt>Vidéos — recall</dt>
-                  <dd>86,4&nbsp;%</dd>
+                  <dd>88,0&nbsp;%</dd>
                   <p>
                     Part des vidéos attendues que le RAG retrouve.<br />Plus
                     haut signifie moins de sources pertinentes manquées.
@@ -907,7 +907,7 @@
                 </div>
                 <div>
                   <dt>Vidéos — précision</dt>
-                  <dd>52,9&nbsp;%</dd>
+                  <dd>57,6&nbsp;%</dd>
                   <p>
                     Part des vidéos retournées qui sont pertinentes.<br />Plus
                     haut signifie moins de résultats hors sujet.
@@ -918,7 +918,7 @@
                 </div>
                 <div>
                   <dt>Vidéos via route SQL — recall / précision</dt>
-                  <dd>88,9&nbsp;% / 83,3&nbsp;%</dd>
+                  <dd>90,0&nbsp;% / 73,5&nbsp;%</dd>
                   <p>
                     Mesure les vidéos des requêtes traitées en SQL.<br />Recall
                     : couverture ; précision : pertinence des retours.
@@ -927,7 +927,7 @@
                 </div>
                 <div>
                   <dt>Vidéos via route vectorielle — recall / précision</dt>
-                  <dd>84,6&nbsp;% / 31,8&nbsp;%</dd>
+                  <dd>84,0&nbsp;% / 25,7&nbsp;%</dd>
                   <p>
                     Mesure les vidéos des requêtes traitées par recherche
                     sémantique.<br />Recall : couverture ; précision :
@@ -939,7 +939,7 @@
                 </div>
                 <div>
                   <dt>Chunks — recall / précision</dt>
-                  <dd>84,6&nbsp;% / 18,5&nbsp;%</dd>
+                  <dd>84,0&nbsp;% / 17,6&nbsp;%</dd>
                   <p>
                     Mesure les passages attendus après la recherche et le
                     rerank.<br />Recall : passages retrouvés ; précision :
@@ -951,7 +951,7 @@
                 </div>
                 <div>
                   <dt>Route attendue</dt>
-                  <dd>95,5&nbsp;%</dd>
+                  <dd>92,0&nbsp;%</dd>
                   <p>
                     Part des questions envoyées vers la bonne route SQL ou
                     vectorielle.<br />Plus haut signifie un meilleur aiguillage
@@ -963,11 +963,11 @@
                 </div>
                 <div>
                   <dt>Coût moyen par question</dt>
-                  <dd>0,0026&nbsp;$</dd>
+                  <dd>0,0027&nbsp;$</dd>
                   <p>
                     Estimation du coût des appels LLM pour une question
-                    complète.<br />Elle inclut reformulation, planification et
-                    réponse.
+                    complète.<br />Elle inclut reformulation, planification,
+                    réponse et Text-to-SQL lorsqu’il est appelé.
                   </p>
                   <span class="faq-metric-route"
                     >Route concernée : SQL et vectorielle</span
@@ -977,11 +977,11 @@
                   <dt>
                     Latence «&nbsp;réponse prête&nbsp;» — P50 / P75 / P90 / P95
                   </dt>
-                  <dd>4,18&nbsp;s / 4,74&nbsp;s / 4,98&nbsp;s / 5,09&nbsp;s</dd>
+                  <dd>4,38&nbsp;s / 5,89&nbsp;s / 6,63&nbsp;s / 7,07&nbsp;s</dd>
                   <p>
                     Temps entre l’envoi de la question et la réponse
                     enregistrée, prête à être renvoyée.<br />Percentiles
-                    calculés sur les 22 réponses du dernier benchmark.
+                    calculés sur les 75 réponses du dernier benchmark.
                   </p>
                   <span class="faq-metric-route"
                     >Route concernée : SQL et vectorielle</span

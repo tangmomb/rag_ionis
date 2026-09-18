@@ -1,6 +1,12 @@
 {$APP_DOMAIN} {
 	encode zstd gzip
 
+	# Preproduction is intentionally a separate API and database.  It is used by
+	# the Golden Dataset gate before an image can be promoted to the root route.
+	handle_path /staging/* {
+		reverse_proxy staging-api:8006
+	}
+
 	reverse_proxy api:8006
 
 	header {

@@ -466,6 +466,7 @@ class AnalyticsSqlTests(unittest.TestCase):
                 return_value=_Connection(cursor),
             ),
             patch.object(analytics_sql, "trace_operation", side_effect=record_trace),
+            patch.object(analytics_sql, "add_llm_usage_attributes") as record_usage,
         ):
             sources, trace = analytics_sql.run_analytics_text_to_sql(
                 query,
@@ -483,6 +484,9 @@ class AnalyticsSqlTests(unittest.TestCase):
                 "analytics.sql_execution",
             ],
         )
+        self.assertEqual(record_usage.call_count, 1)
+        self.assertEqual(record_usage.call_args.args[1].output_text, responses.output_text)
+        self.assertEqual(record_usage.call_args.kwargs, {"model": "mistral-medium-latest"})
         self.assertEqual(trace["status"], "executed")
         self.assertNotIn("resolved_persons", trace["validation"])
         self.assertEqual(

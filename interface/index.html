@@ -145,8 +145,13 @@
       const suggestedQuestions = document.getElementById("suggestedQuestions");
       const headerThumbnails = document.getElementById("headerThumbnails");
       let conversationId = null;
+      // Caddy strips /staging before proxying to the isolated staging API.
+      // Keep this preview from accidentally sending its requests to production.
+      const apiPrefix = window.location.pathname.startsWith("/staging")
+        ? "/staging/api"
+        : "/api";
       const RAG_CONFIG = {
-        apiUrl: "/api/rag",
+        apiUrl: `${apiPrefix}/rag`,
         embeddingModel: "meme modele que la base",
         rerankModel: "cohere rerank",
         topK: 40,
@@ -167,7 +172,7 @@
 
       async function loadHeaderThumbnails() {
         try {
-          const response = await fetch("/api/video-thumbnails");
+          const response = await fetch(`${apiPrefix}/video-thumbnails`);
           if (!response.ok) return;
           const thumbnails = await response.json();
           if (!thumbnails.length) return;

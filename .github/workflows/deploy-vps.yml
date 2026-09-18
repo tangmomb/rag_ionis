@@ -305,8 +305,9 @@ jobs:
           "${compose[@]}" --profile staging up -d staging-postgres
           # The corpus is copied into the isolated staging database; chat data
           # is not copied and production is never written by this gate.
-          "${compose[@]}" --profile staging exec -T staging-postgres sh -c \
-            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB" -c "TRUNCATE data.videos CASCADE"' < /dev/null
+          "${compose[@]}" --profile staging exec -T staging-postgres \
+            psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB" \
+            -c "DO \$\$ DECLARE table_row record; BEGIN FOR table_row IN SELECT tablename FROM pg_tables WHERE schemaname = 'data' LOOP EXECUTE format('TRUNCATE TABLE data.%I CASCADE', table_row.tablename); END LOOP; END \$\$;" < /dev/null
           "${compose[@]}" exec -T postgres sh -c \
             'pg_dump --data-only --schema=data -U "$POSTGRES_USER" "$POSTGRES_DB"' < /dev/null | \
             "${compose[@]}" --profile staging exec -T staging-postgres sh -c \

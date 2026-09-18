@@ -1,4 +1,4 @@
-"""Smoke test de recall du Golden Dataset contre l'API de production."""
+"""Quality gate Golden Dataset executed in the isolated staging API."""
 
 from __future__ import annotations
 

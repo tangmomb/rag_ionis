@@ -6,16 +6,16 @@ Ce projet transforme les vidéos de la chaîne YouTube IONIS-STM en une base int
 
 ### Application
 
-![Accueil de l'application RAG](utils/img_for_readme/accueil.png)
+[![Accueil de l'application RAG](utils/img_for_readme/accueil.png)](https://ionis.tanguym.fr)
 
 ### FAQ
 
-![FAQ du projet](utils/img_for_readme/faq.png)
+[![FAQ du projet](utils/img_for_readme/faq.png)](https://ionis.tanguym.fr/faq)
 
 ### Pipeline de préparation des vidéos
 
-![Parcours du pipeline de préparation des vidéos](utils/img_for_readme/pipeline_prepa_videos.png)
+[![Parcours du pipeline de préparation des vidéos](utils/img_for_readme/pipeline_prepa_videos.png)](https://ionis.tanguym.fr/pipeline_preparation_videos/)
 
 ### Pipeline de réponse
 
-![Parcours d'une question dans le pipeline de réponse](utils/img_for_readme/pipeline_reponse.png)
+[![Parcours d'une question dans le pipeline de réponse](utils/img_for_readme/pipeline_reponse.png)](https://ionis.tanguym.fr/pipeline_reponse/)

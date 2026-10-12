@@ -100,15 +100,24 @@ class DatabaseTests(unittest.TestCase):
                 "trace\x00",
                 answer_action="abstain",
                 contextual_question="Question\x00 reformulée",
+                search_hint="Piste\x00 de recherche",
             )
 
         self.assertEqual(result, (3, 9))
         self.assertEqual(
             connection.cursor_instance.parameters,
-            (3, "Question", "Réponse corrigée", "trace", "abstain", "Question reformulée"),
+            (
+                3,
+                "Question",
+                "Réponse corrigée",
+                "trace",
+                "abstain",
+                "Question reformulée",
+                "Piste de recherche",
+            ),
         )
 
-    def test_schema_cleanup_keeps_web_fallback_columns(self) -> None:
+    def test_schema_cleanup_keeps_expanded_search_columns(self) -> None:
         connection = _Connection()
         with (
             patch.object(database, "_SCHEMA_READY", False),
@@ -119,7 +128,12 @@ class DatabaseTests(unittest.TestCase):
         cleanup = next(
             sql for sql, _ in connection.cursor_instance.calls if "column_to_drop" in sql
         )
-        for column in ("answer_action", "contextual_question", "web_answer"):
+        for column in (
+            "answer_action",
+            "contextual_question",
+            "search_hint",
+            "expanded_answer",
+        ):
             self.assertIn(f"'{column}'", cleanup)
 
     def test_store_message_feedback_updates_only_answer_messages(self) -> None:

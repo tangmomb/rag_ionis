@@ -694,6 +694,15 @@
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>
                 <span>
+                  En cas d’abstention, aucun appel n’est ajouté
+                  automatiquement. Si l’utilisateur clique sur « Élargir la
+                  recherche ? », l’agent ajoute en général 2 à 6 appels LLM,
+                  selon les outils qu’il choisit.
+                </span>
+              </aside>
+              <aside class="faq-exception" aria-label="À noter">
+                <strong>À noter</strong>
+                <span>
                   Les appels de résumé ne bloquent pas l’affichage de la réponse
                   : ils sont traités en arrière-plan et ne retardent donc pas la
                   réponse envoyée à l’utilisateur.
@@ -723,12 +732,22 @@
                 >.
               </p>
               <p>
-                Lorsqu'une réponse s'abstient faute d'éléments suffisants, le
-                LLM peut proposer une question de recherche plus précise. Le
-                pipeline relance alors une seule fois l'orchestration et la
-                recherche avec cette question, de manière contrôlée. Si cette
-                seconde tentative échoue aussi, il renvoie l'abstention sans
-                réessayer en boucle.
+                Lorsque les éléments trouvés ne suffisent pas, le pipeline
+                s'abstient au lieu d'inventer ou de répondre à une question
+                voisine : « À première vue, je n'ai pas la réponse dans les
+                vidéos », avec un bouton
+                <strong>« Élargir la recherche ? »</strong>.
+              </p>
+              <p>
+                Ce bouton lance un agent autonome. Il choisit lui-même ses
+                outils : la recherche hybride dans les vidéos, les statistiques
+                via un SQL validé en lecture seule, et le web en dernier recours.
+                Il peut décomposer une question, par exemple une comparaison
+                entre deux entreprises, en plusieurs recherches. Il est limité à
+                6 appels d'outils et ne peut pas renoncer sans avoir tenté le
+                web. Sa réponse s'affiche à part, avec les vidéos citées et les
+                sources web : une information du web n'est jamais présentée
+                comme venant des vidéos.
               </p>
               <figure class="faq-pipeline-preview">
                 <a

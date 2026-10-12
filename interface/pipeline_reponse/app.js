@@ -21,6 +21,7 @@ const nodes = [
   { id: "format", label: "Restitution sans LLM", sub: "Document ou réponse déjà prête", x: 700, y: 710, w: 220 },
   { id: "persist", label: "Finalisation et mémoire", sub: "Réponse, sources et conversation", x: 580, y: 794, w: 240 },
   { id: "end", label: "Réponse", x: 580, y: 874, w: 130, h: 30, terminal: true },
+  { id: "agent", label: "Recherche élargie", sub: "Agent : vidéos, stats, web", x: 870, y: 865, w: 230 },
 ].map(n => ({ w: 208, h: 48, ...n }));
 const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
 const edges = [
@@ -33,6 +34,8 @@ const edges = [
   ["analytics", "generate"], ["lookup", "generate"], ["retrieval", "generate"],
   ["lookup", "format"], ["direct", "format"],
   ["generate", "persist"], ["format", "persist"], ["persist", "end"],
+  // api.py: after an abstention, "Élargir la recherche ?" starts the agent.
+  ["end", "agent"],
 ];
 // Questions reprises de la page d’accueil, dans le même ordre.
 // Routes vérifiées sur les traces Phoenix référencées dans chaque scénario.
@@ -313,6 +316,35 @@ const scenarios = {
     "note": "Parcours observé dans Phoenix le 16/09/2026. La sélection affiche cette trace enregistrée ; elle ne relance pas le RAG.",
     "traceId": "d015c3afa2aeb3550edb5bb5d5fc7fe6",
     "observedAt": "2026-09-16T21:55:49.298987+00:00"
+  },
+  "australie": {
+    "question": "Quelle est la capitale de l'Australie ?",
+    "title": "S’abstenir, puis élargir la recherche",
+    "route": "vector_search",
+    "path": [
+      "start",
+      "initialize",
+      "reformulate",
+      "plan",
+      "resolve_entities",
+      "build_execution_plan",
+      "vector_search",
+      "retrieval",
+      "generate",
+      "persist",
+      "end",
+      "agent"
+    ],
+    "explanation": "Aucune vidéo ne parle de la capitale de l’Australie. Plutôt que d’inventer, le RAG répond « À première vue, je n’ai pas la réponse dans les vidéos » et propose d’élargir la recherche. L’agent trouve alors la réponse sur le web.",
+    "steps": [
+      "La recherche hybride ne trouve aucun passage qui réponde à la question.",
+      "Le LLM s’abstient ; sa piste de recherche (« capitale officielle de l’Australie ») est conservée.",
+      "La réponse affiche « À première vue, je n’ai pas la réponse dans les vidéos » et le bouton « Élargir la recherche ? ».",
+      "Au clic, l’agent choisit ses outils. Il n’a rien cherché dans la base ici ; invité à tenter le web avant de renoncer, il y trouve « Canberra », avec ses sources."
+    ],
+    "note": "Parcours observé dans Phoenix le 13/10/2026 : trace RAG bbdb64bb…, puis trace de l’agent 52c24a10…, lancée au clic. La sélection affiche ces traces enregistrées ; elle ne relance pas le RAG.",
+    "traceId": "bbdb64bbfb35607b8e88d38f6269ca19",
+    "observedAt": "2026-10-12T22:50:55.650593+00:00"
   }
 };
 // Sorties LLM enregistrées avec les scénarios : le visualiseur reste autonome
@@ -328,6 +360,7 @@ const recordedLlmOutputs = {
   ocean: { reformulate: { follow_up: false, reformulated_question: "Qu'est-ce que l'océan rouge ?", topic: "océan rouge" }, plan: { route: "search", analytics: false, analytics_scope: null, analytics_metric: null, analytics_order: null, analytics_rank_start: null, analytics_rank_end: null, query_text: "Qu'est-ce que l'océan rouge ?", query_text_bm25: "océan rouge définition", title_hints: [], persons: [], companies: [], published_after: null, published_before: null } },
   fadila: { reformulate: { follow_up: false, reformulated_question: "Quelles questions ont été posées à Fadila ?", topic: "questions posées à Fadila" }, plan: { route: "search", analytics: false, query_text: "Quelles questions ont été posées à Fadila ?", query_text_bm25: "questions posées Fadila", title_hints: [], persons: ["Fadila"], companies: [], published_after: null, published_before: null } },
   laura: { reformulate: { follow_up: false, reformulated_question: "Qui est Laura Tyan ?", topic: "Laura Tyan" }, plan: { route: "search", analytics: false, query_text: "Qui est Laura Tyan ?", query_text_bm25: "Laura Tyan identité biographie", title_hints: [], persons: ["Laura Tyan"], companies: [], published_after: null, published_before: null } },
+  australie: { reformulate: { follow_up: false, reformulated_question: "Quelle est la capitale de l'Australie ?", topic: "capitale de l'Australie" }, plan: { route: "search", analytics: false, query_text: "Quelle est la capitale de l'Australie ?", query_text_bm25: "capitale Australie", title_hints: [], persons: [], companies: [], published_after: null, published_before: null }, agent: { search_hint: "Quelle est la capitale officielle de l'Australie ?", tool_calls: [], web_nudged: true, web_searched: true, answer: "D'après le web, la capitale officielle de l'Australie est **Canberra**.", web_sources: ["https://fr.wikipedia.org/wiki/Canberra", "https://fr.wikipedia.org/wiki/Australie", "https://www.universalis.fr/encyclopedie/canberra/"] } },
 };
 const staticStepOutputs = {
   initialize: "La requête, la conversation et les modèles sont préparés.",
@@ -345,6 +378,7 @@ const staticStepOutputs = {
   format: "La réponse ou le document déjà prêt est mis en forme sans appel LLM.",
   persist: "La réponse, les sources et le contexte de conversation sont enregistrés.",
   end: "La réponse finale est renvoyée à l’utilisateur.",
+  agent: "Après une abstention, le bouton « Élargir la recherche ? » lance un agent autonome : recherche dans les vidéos, statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
 };
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const edgeId = (from, to) => `${from}--${to}`;
@@ -357,6 +391,7 @@ function edgePath(from, to) {
   if (from === "retrieval") return `M 930 683 C 850 683, 530 660, 455 734`;
   if (from === "direct") return `M 580 ${sy} C 580 665, 700 655, 700 ${ey}`;
   if (from === "lookup" && to === "generate") return `M 905 ${sy} C 905 650, 430 650, 430 ${ey}`;
+  if (to === "agent") return `M 645 889 L 755 889`;
   return `M ${a.x} ${sy} C ${a.x} ${(sy+ey)/2}, ${b.x} ${(sy+ey)/2}, ${b.x} ${ey}`;
 }
 const svg = document.querySelector("#pipeline-graph");
@@ -414,7 +449,7 @@ function showTooltip(node) {
     outputMarkup = `<p>${escapeHtml(scenario.question)}</p>`;
   } else if (!active) {
     outputMarkup = "<p>Aucune sortie : cette étape n'est pas empruntée par la question sélectionnée.</p>";
-  } else if (id === "reformulate" || id === "plan") {
+  } else if (id === "reformulate" || id === "plan" || (id === "agent" && recordedLlmOutputs[select.value]?.agent)) {
     const output = recordedLlmOutputs[select.value]?.[id];
     outputMarkup = output
       ? `<pre>${escapeHtml(JSON.stringify(output, null, 2))}</pre>`

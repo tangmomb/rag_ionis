@@ -20,6 +20,12 @@ La finalisation et la persistance sont regroupées en un nœud pédagogique.
 
 Styles autonomes ; aucune dépendance au simulateur de préparation vidéo.
 
+La question « Quelle est la capitale de l'Australie ? » illustre l’abstention :
+le RAG répond « À première vue, je n’ai pas la réponse dans les vidéos », puis le
+bouton « Élargir la recherche ? » lance l’agent (`research_agent.py`, via
+`POST /api/rag/messages/{id}/expand`). Son parcours vient des traces Phoenix du
+13/10/2026 : la trace RAG, puis la trace séparée de l’agent, lancée au clic.
+
 La question supplémentaire « Qui est Laura Tyan ? » illustre `annex_direct`.
 Son parcours est vérifié avec la règle actuelle `select_after_plan` et la fiche
 locale de Laura Tyan, sans prétendre provenir d’une nouvelle trace Phoenix.

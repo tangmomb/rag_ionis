@@ -97,6 +97,11 @@ Organisation des données :
 - `speakers` et `video_speakers` relient les personnes aux vidéos.
 - `comments` contient les commentaires individuels ; `is_deleted=false`
   désigne les commentaires encore actifs.
+- Les seules métriques disponibles sont les vues, les likes et les commentaires.
+  Partages, durée ou temps de visionnage, abonnés et impressions n'existent pas :
+  ne les approxime jamais par une autre colonne et renvoie alors `sql` vide.
+  Un alias de compteur garde le nom de sa métrique (`like_count AS likes`, jamais
+  `like_count AS shares_count`).
 
 Règles :
 - Une seule requête SELECT/CTE, tables ci-dessus seulement, sans commentaire ni ;.
@@ -250,6 +255,26 @@ def _uses_global_stats_limit_one(sql: str) -> bool:
     return False
 
 
+STATS_COUNTER_ALIAS = re.compile(
+    r"\b(view|like|comment)_count\s*\)?\s+as\s+([a-z_][a-z0-9_]*)",
+    re.IGNORECASE,
+)
+# Metrics YouTube exposes but the corpus does not store: an alias naming one
+# of them can only be a relabelled counter (e.g. likes presented as shares).
+UNAVAILABLE_METRIC_ALIAS = re.compile(
+    r"\bas\s+[a-z0-9_]*(?:share|partage|watch|visionnage|subscri|abonn|impression|dislike)[a-z0-9_]*\b",
+    re.IGNORECASE,
+)
+
+
+def _mislabelled_counter_aliases(sql: str) -> list[str]:
+    return [
+        f"{counter}_count->{alias}"
+        for counter, alias in STATS_COUNTER_ALIAS.findall(sql)
+        if counter.lower() not in alias.lower()
+    ]
+
+
 def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
     normalized = str(sql or "").strip()
     errors: list[str] = []
@@ -273,6 +298,10 @@ def validate_analytics_sql(sql: str, params: list[Any]) -> dict[str, Any]:
         errors.append("disallowed_object")
     if _uses_global_stats_limit_one(sql_without_literals):
         errors.append("stats_latest_snapshot_not_per_video")
+    if UNAVAILABLE_METRIC_ALIAS.search(sql_without_literals):
+        errors.append("unavailable_metric")
+    if mislabelled := _mislabelled_counter_aliases(sql_without_literals):
+        errors.append("mislabelled_counter_alias:" + ",".join(mislabelled))
 
     relations = _relation_names(sql_without_literals)
     ctes = _cte_names(sql_without_literals)

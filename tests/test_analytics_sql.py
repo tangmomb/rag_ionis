@@ -140,6 +140,48 @@ class AnalyticsSqlTests(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertIn("stats_snapshot_date_required", validation["errors"])
 
+    def test_validator_rejects_counter_relabelled_as_missing_metric(self) -> None:
+        # Real failure: "combien de partages" was answered with likes.
+        sql = (
+            "SELECT v.id AS video_id, s.snapshot_date AS stats_snapshot_date, "
+            "s.like_count AS shares_count FROM videos v JOIN LATERAL (SELECT snapshot_date, "
+            "like_count, view_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC "
+            "LIMIT 1) s ON TRUE ORDER BY s.view_count DESC LIMIT %s"
+        )
+
+        validation = analytics_sql.validate_analytics_sql(sql, [1])
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("unavailable_metric", validation["errors"])
+        self.assertIn(
+            "mislabelled_counter_alias:like_count->shares_count",
+            validation["errors"],
+        )
+
+    def test_validator_rejects_counter_relabelled_as_other_counter(self) -> None:
+        sql = (
+            "SELECT v.id AS video_id, s.snapshot_date AS stats_snapshot_date, "
+            "s.comment_count AS views FROM videos v JOIN LATERAL (SELECT snapshot_date, "
+            "comment_count FROM stats WHERE video_id = v.id ORDER BY snapshot_date DESC "
+            "LIMIT 1) s ON TRUE LIMIT %s"
+        )
+
+        validation = analytics_sql.validate_analytics_sql(sql, [1])
+
+        self.assertIn("mislabelled_counter_alias:comment_count->views", validation["errors"])
+
+    def test_validator_accepts_consistent_counter_aliases(self) -> None:
+        sql = (
+            "SELECT v.id AS video_id, max(s.snapshot_date) AS stats_snapshot_date, "
+            "max(s.view_count) - min(s.view_count) AS views_gained, "
+            "sum(s.like_count) AS total_likes FROM videos v JOIN stats s ON s.video_id = v.id "
+            "WHERE s.snapshot_date >= %s GROUP BY v.id"
+        )
+
+        validation = analytics_sql.validate_analytics_sql(sql, ["2026-08-01"])
+
+        self.assertTrue(validation["valid"], validation["errors"])
+
     def test_validator_rejects_global_latest_stats_cte(self) -> None:
         sql = (
             "WITH latest_stats AS (SELECT video_id, view_count FROM stats "

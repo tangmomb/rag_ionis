@@ -1,6 +1,10 @@
 """Quality gate Golden Dataset executed in the isolated staging API.
 
-The computed recall follows Phoenix experiment aggregation semantics.
+The computed recall follows Phoenix experiment aggregation semantics.  Only the
+retrieval is exercised: the gate measures retrieved sources, so answer
+generation, persistence and memory updates would add cost without signal.
+Questions without expected sources (e.g. abstention traps) are skipped; they
+are scored by the Phoenix experiment instead.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
-from interface.backend.api import run_rag
+from interface.backend.orchestration import orchestrate_request
 from interface.backend.schemas import RagRequest
 
 
@@ -28,7 +32,6 @@ DEFAULT_GOOGLE_SHEET_URL = (
 )
 DEFAULT_MIN_RECALL = 0.85
 DEFAULT_REQUEST_DELAY_SECONDS = 10.0
-VALID_ACTIONS = {"answer", "clarify", "abstain"}
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,6 @@ class GoldenCase:
     question: str
     youtube_video_ids: frozenset[str]
     relevant_chunk_ids: frozenset[int]
-    expected_action: str | None = None
 
 
 def google_sheet_csv_url(google_sheet_url: str) -> str:
@@ -74,15 +76,11 @@ def parse_golden_cases(csv_text: str) -> list[GoldenCase]:
         question = (row.get("question") or "").strip()
         if not question:
             raise ValueError(f"Ligne {row_number}: question vide.")
-        expected_action = (row.get("expected_action") or "").strip() or None
-        if expected_action not in {None, *VALID_ACTIONS}:
-            raise ValueError(f"Ligne {row_number}: expected_action invalide: {expected_action!r}.")
         cases.append(
             GoldenCase(
                 question=question,
                 youtube_video_ids=_json_set(row.get("youtube_video_ids", ""), field="youtube_video_ids", row_number=row_number, item_type=str),
                 relevant_chunk_ids=_json_set(row.get("relevant_chunk_ids", ""), field="relevant_chunk_ids", row_number=row_number, item_type=int),
-                expected_action=expected_action,
             )
         )
     return cases
@@ -122,29 +120,21 @@ def evaluate(
     video_case_recalls: list[float] = []
     chunk_case_recalls: list[float] = []
     failures: list[str] = []
-    action_matches = action_expected = 0
-    action_mismatches: list[str] = []
-    for case_index, case in enumerate(cases):
+    measured_cases = [
+        case for case in cases if case.youtube_video_ids or case.relevant_chunk_ids
+    ]
+    for case_index, case in enumerate(measured_cases):
         if case_index and request_delay_seconds:
             time.sleep(request_delay_seconds)
         try:
-            response = run_rag(RagRequest(question=case.question))
+            # Raw retrieval result, i.e. what Phoenix evaluates as
+            # ``retrieved_sources`` (not the citations kept after generation).
+            _answer, sources, _retrieval = orchestrate_request(
+                RagRequest(question=case.question)
+            )
         except Exception as exc:
             failures.append(f"{case.question!r}: {exc}")
             continue
-        # This is the exact source set evaluated by Phoenix.  ``sources`` only
-        # contains citations selected after answer generation and must not be
-        # used to assess retrieval quality.
-        if case.expected_action:
-            actual_action = response.retrieval.get("answer_action")
-            action_expected += 1
-            if actual_action == case.expected_action:
-                action_matches += 1
-            else:
-                action_mismatches.append(
-                    f"{case.question!r}: attendu={case.expected_action}; obtenu={actual_action}"
-                )
-        sources = response.retrieval.get("retrieved_sources") or []
         actual_videos = (
             youtube_video_id(source_value(source, "video_url")) for source in sources
         )
@@ -163,6 +153,7 @@ def evaluate(
             chunk_case_recalls.append(matched / expected)
     return {
         "case_count": len(cases),
+        "measured_case_count": len(measured_cases),
         "failed_cases": failures,
         "video_recall": (
             sum(video_case_recalls) / len(video_case_recalls)
@@ -180,11 +171,6 @@ def evaluate(
         "chunk_recall_micro": chunk_matches / chunk_expected if chunk_expected else None,
         "chunk_matches": chunk_matches,
         "chunk_expected": chunk_expected,
-        # Reported only: unanswerable questions do not gate the deployment yet.
-        "action_accuracy": action_matches / action_expected if action_expected else None,
-        "action_matches": action_matches,
-        "action_expected": action_expected,
-        "action_mismatches": action_mismatches,
     }
 
 

@@ -49,6 +49,7 @@ jobs:
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
       api: ${{ steps.detect.outputs.api }}
+      recall_gate: ${{ steps.detect.outputs.recall_gate }}
       updater: ${{ steps.detect.outputs.updater }}
       vps: ${{ steps.detect.outputs.vps }}
     steps:
@@ -70,11 +71,14 @@ jobs:
           api=false
           updater=false
           vps_config=false
+          # The golden recall gate costs ~300 paid LLM calls: run it only when
+          # retrieval can change, not for front-end-only API releases.
+          recall_gate=false
 
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             case "${REQUESTED_COMPONENTS}" in
-              all) api=true; updater=true ;;
-              api) api=true ;;
+              all) api=true; updater=true; recall_gate=true ;;
+              api) api=true; recall_gate=true ;;
               updater) updater=true ;;
               *) printf 'Unknown component selection: %s\n' "${REQUESTED_COMPONENTS}" >&2; exit 2 ;;
             esac
@@ -90,12 +94,16 @@ jobs:
             while IFS= read -r path; do
               case "${path}" in
                 .dockerignore)
-                  api=true; updater=true
+                  api=true; updater=true; recall_gate=true
                   ;;
                 .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh)
-                  api=true; updater=true
+                  api=true; updater=true; recall_gate=true
                   ;;
-                Dockerfile.api|requirements-api.txt|interface/*)
+                Dockerfile.api|requirements-api.txt|interface/backend/*|interface/connaissances_*)
+                  api=true; recall_gate=true
+                  ;;
+                interface/*)
+                  # Static pages and assets: the image is rebuilt, retrieval is unchanged.
                   api=true
                   ;;
                 Dockerfile.vps|requirements-vps.txt)
@@ -109,6 +117,7 @@ jobs:
                   # the API candidate before it can be promoted.
                   api=true
                   vps_config=true
+                  recall_gate=true
                   ;;
                 docker-compose.yml|Caddyfile|docker/postgres/init/*|deploy/deploy-vps.sh)
                   vps_config=true
@@ -117,6 +126,7 @@ jobs:
                   # Workflow changes must exercise the staging gate as well.
                   api=true
                   vps_config=true
+                  recall_gate=true
                   ;;
               esac
             done <<<"${changed_files}"
@@ -138,6 +148,7 @@ jobs:
           {
             printf 'matrix=%s\n' "${matrix}"
             printf 'api=%s\n' "${api}"
+            printf 'recall_gate=%s\n' "${recall_gate}"
             printf 'updater=%s\n' "${updater}"
             printf 'vps=%s\n' "${vps}"
           } >>"${GITHUB_OUTPUT}"
@@ -290,7 +301,7 @@ jobs:
           REMOTE
 
       - name: Refresh staging corpus and verify candidate API recall
-        if: needs.changes.outputs.api == 'true'
+        if: needs.changes.outputs.recall_gate == 'true'
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}

@@ -93,7 +93,7 @@ class VpsConfigurationTests(unittest.TestCase):
             "Refresh staging corpus and verify candidate API recall",
             vps_workflow,
         )
-        self.assertIn("needs.changes.outputs.api == 'true'", vps_workflow)
+        self.assertIn("needs.changes.outputs.recall_gate == 'true'", vps_workflow)
         self.assertIn("staging-postgres", vps_workflow)
         self.assertIn("STAGING_API_IMAGE_TAG", vps_workflow)
         self.assertIn("Staging corpus copied", vps_workflow)
@@ -105,6 +105,17 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("< /dev/null", vps_workflow)
         self.assertIn("python -m interface.backend.golden_recall", vps_workflow)
         self.assertIn("GOLDEN_DATASET_MIN_RECALL", production_compose)
+
+    def test_recall_gate_skips_front_end_only_changes(self) -> None:
+        vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        backend_case = vps_workflow.index("interface/backend/*|interface/connaissances_*)")
+        static_case = vps_workflow.index("                interface/*)")
+        # Bash case uses the first matching pattern: backend must come first.
+        self.assertLess(backend_case, static_case)
+        static_branch = vps_workflow[static_case:vps_workflow.index(";;", static_case)]
+        self.assertIn("api=true", static_branch)
+        self.assertNotIn("recall_gate=true", static_branch)
 
     def test_production_compose_changes_rebuild_the_api_candidate(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")

@@ -299,12 +299,13 @@
         `;
       }
 
-      function renderWebAnswer(webAnswer) {
-        const sources = (webAnswer.sources || []).filter((source) =>
+      function renderExpandedAnswer(expanded) {
+        const webSources = (expanded.web_sources || []).filter((source) =>
           /^https?:\/\//i.test(String(source.url || "")),
         );
-        const sourcesHtml = sources.length
-          ? `<ol class="web-answer-sources">${sources
+        const webSourcesHtml = webSources.length
+          ? `<div class="expanded-answer-label">Sources web · hors base</div>
+            <ol class="expanded-answer-sources">${webSources
               .map(
                 (source) =>
                   `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(source.title || source.url)} ↗</a></li>`,
@@ -312,33 +313,34 @@
               .join("")}</ol>`
           : "";
         return `
-          <div class="web-answer-label">Hors base · réponse issue du web</div>
-          <div class="message-content">${renderMarkdown(webAnswer.answer)}</div>
-          ${sourcesHtml}
+          <div class="expanded-answer-label">Recherche élargie</div>
+          <div class="message-content">${renderMarkdown(expanded.answer)}</div>
+          ${renderVideoThumbnails(expanded.sources || [])}
+          ${webSourcesHtml}
         `;
       }
 
-      function bindWebSearch(article, messageId) {
-        const button = article.querySelector("[data-web-search]");
+      function bindExpandSearch(article, messageId) {
+        const button = article.querySelector("[data-expand-search]");
         if (!button) return;
         button.addEventListener("click", async () => {
           button.disabled = true;
-          button.textContent = "Recherche sur le web…";
+          button.textContent = "Recherche élargie en cours…";
           try {
             const response = await fetch(
-              `${RAG_CONFIG.apiUrl}/messages/${messageId}/web-search`,
+              `${RAG_CONFIG.apiUrl}/messages/${messageId}/expand`,
               { method: "POST" },
             );
-            if (!response.ok) throw new Error("Recherche web impossible.");
-            const webAnswer = await response.json();
+            if (!response.ok) throw new Error("Recherche élargie impossible.");
+            const expanded = await response.json();
             const block = document.createElement("div");
-            block.className = "web-answer";
-            block.innerHTML = renderWebAnswer(webAnswer);
+            block.className = "expanded-answer";
+            block.innerHTML = renderExpandedAnswer(expanded);
             button.replaceWith(block);
             block.scrollIntoView({ behavior: "smooth", block: "nearest" });
           } catch (_error) {
             button.disabled = false;
-            button.textContent = "La recherche web a échoué · réessayer";
+            button.textContent = "La recherche élargie a échoué · réessayer";
           }
         });
       }
@@ -376,21 +378,21 @@
               </div>
             `
             : "";
-        const canSearchWeb =
+        const canExpandSearch =
           role === "assistant" && action === "abstain" && Number.isInteger(messageId);
-        const webSearchHtml = canSearchWeb
-          ? `<button type="button" class="web-search-btn" data-web-search>Chercher sur le web ?</button>`
+        const expandSearchHtml = canExpandSearch
+          ? `<button type="button" class="expand-search-btn" data-expand-search>Élargir la recherche ?</button>`
           : "";
         article.innerHTML = `
           <div class="message-body">
             ${metaHtml}
             <div class="message-content">${renderedContent}</div>
             ${videoHtml}
-            ${webSearchHtml}
+            ${expandSearchHtml}
             ${actionsHtml}
           </div>
         `;
-        if (canSearchWeb) bindWebSearch(article, messageId);
+        if (canExpandSearch) bindExpandSearch(article, messageId);
 
         if (role === "assistant" && Number.isInteger(messageId)) {
           const feedbackButtons = article.querySelectorAll("[data-feedback]");

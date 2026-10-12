@@ -20,81 +20,26 @@ from interface.backend.schemas import ExecutionPlan, PlannerPlan
 
 
 class InterfaceAppTests(unittest.TestCase):
-    def test_answer_retry_route_requires_abstain_and_retry_query(self) -> None:
-        self.assertEqual(
-            api._answer_retry_route(
-                {
-                    "answer_trace": {
-                        "action": "abstain",
-                        "retry_query": "Question de recherche plus précise",
-                    }
-                }
-            ),
-            "retry_orchestrate",
-        )
-        self.assertEqual(
-            api._answer_retry_route(
-                {"answer_trace": {"action": "abstain", "retry_query": None}}
-            ),
-            "finalize",
-        )
-        self.assertEqual(
-            api._answer_retry_route(
-                {
-                    "answer_retry_count": api.MAX_ANSWER_RETRY_ATTEMPTS,
-                    "answer_trace": {
-                        "action": "abstain",
-                        "retry_query": "Question de recherche plus précise",
-                    },
-                }
-            ),
-            "finalize",
-        )
+    def test_abstention_goes_straight_to_finalize_without_retry(self) -> None:
+        graph = api.build_rag_response_graph().get_graph()
+        self.assertNotIn("retry_orchestrate", graph.nodes)
+        self.assertIn(("generate", "finalize"), {(e.source, e.target) for e in graph.edges})
 
-    def test_answer_retry_uses_retry_query_but_preserves_original_payload(self) -> None:
-        payload = RagRequest(question="Question initiale", conversationId=42)
+    def test_finalize_replaces_abstention_with_stable_message(self) -> None:
         state = {
-            "payload": payload.model_dump(),
-            "answer": "Je ne peux pas répondre.",
-            "sources": [],
-            "retrieval": {
-                "retrieval_mode": "vector_search",
-                "contextual_question": "Question initiale reformulée",
-            },
-            "answer_trace": {
-                "action": "abstain",
-                "retry_query": "Question autonome plus détaillée",
-            },
+            "answer": "Les sources ne parlent pas de la capitale de l'Australie.",
+            "sources": [{"chunk_id": 1, "video_url": "https://example.test/v"}],
+            "retrieval": {},
+            "answer_trace": {"action": "abstain", "retry_query": "Capitale officielle ?"},
         }
-        retry_sources = [{"chunk_id": 7, "video_url": "https://example.test/video"}]
-        retry_retrieval = {"retrieval_mode": "sql_search"}
 
-        with patch.object(
-            api,
-            "orchestrate_request",
-            return_value=("", retry_sources, retry_retrieval),
-        ) as orchestrate:
-            result = api._retry_orchestrate_response(state, api.RagResponseContext())
+        result = api._finalize_response(state)
 
-        retry_payload = orchestrate.call_args.args[0]
-        self.assertEqual(retry_payload.question, "Question autonome plus détaillée")
-        self.assertEqual(retry_payload.conversationId, 42)
-        self.assertEqual(state["payload"]["question"], "Question initiale")
-        self.assertEqual(result["answer_retry_count"], 1)
-        self.assertEqual(result["sources"], retry_sources)
-        # Generation must still judge sufficiency against the user's question.
+        self.assertEqual(result["answer"], api.ABSTAIN_ANSWER)
+        self.assertEqual(result["carousel_sources"], [])
         self.assertEqual(
-            result["retrieval"]["contextual_question"],
-            "Question initiale reformulée",
-        )
-        self.assertEqual(
-            result["retrieval"]["answer_retry"],
-            {
-                "attempt": 1,
-                "query": "Question autonome plus détaillée",
-                "initial_action": "abstain",
-                "initial_retrieval_mode": "vector_search",
-            },
+            state["retrieval"]["abstain_detail"],
+            "Les sources ne parlent pas de la capitale de l'Australie.",
         )
 
     def test_abstain_with_cited_sources_stays_abstain(self) -> None:

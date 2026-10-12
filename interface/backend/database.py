@@ -113,8 +113,9 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN"
                 )
-                # Web fallback: only abstained answers may trigger a web search,
-                # which runs on the contextual question and is cached once done.
+                # Expanded search: only abstained answers may start the research
+                # agent, which runs on the contextual question (plus the model's
+                # search hint) and is cached once done.
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_action TEXT"
                 )
@@ -122,7 +123,10 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS contextual_question TEXT"
                 )
                 cursor.execute(
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS web_answer JSONB"
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS search_hint TEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS expanded_answer JSONB"
                 )
                 cursor.execute(
                     """
@@ -180,7 +184,8 @@ def ensure_chat_schema() -> None:
                                   'feedback',
                                   'answer_action',
                                   'contextual_question',
-                                  'web_answer'
+                                  'search_hint',
+                                  'expanded_answer'
                               )
                         LOOP
                             EXECUTE format(
@@ -278,6 +283,7 @@ def store_chat_message(
     trace_id: str | None,
     answer_action: str | None = None,
     contextual_question: str | None = None,
+    search_hint: str | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
     user_message = user_message.replace("\x00", "")
@@ -285,6 +291,8 @@ def store_chat_message(
     trace_id = trace_id.replace("\x00", "") if trace_id is not None else None
     if contextual_question is not None:
         contextual_question = contextual_question.replace("\x00", "")
+    if search_hint is not None:
+        search_hint = search_hint.replace("\x00", "")
 
     with connect_database() as connection:
         resolved_conversation_id = ensure_conversation(connection, conversation_id)
@@ -297,9 +305,10 @@ def store_chat_message(
                     answer_message,
                     trace_id,
                     answer_action,
-                    contextual_question
+                    contextual_question,
+                    search_hint
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -309,6 +318,7 @@ def store_chat_message(
                     trace_id,
                     answer_action,
                     contextual_question,
+                    search_hint,
                 ),
             )
             message_id = int(cursor.fetchone()[0])
@@ -316,14 +326,14 @@ def store_chat_message(
     return resolved_conversation_id, message_id
 
 
-def fetch_web_search_message(message_id: int) -> dict[str, Any] | None:
-    """Return what the web fallback needs to know about an assistant message."""
+def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
+    """Return what the expanded search needs to know about an assistant message."""
     ensure_chat_schema()
     with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_message, contextual_question, answer_action, web_answer
+                SELECT user_message, contextual_question, search_hint, answer_action, expanded_answer
                 FROM chat.messages
                 WHERE id = %s AND answer_message IS NOT NULL
                 """,
@@ -335,18 +345,19 @@ def fetch_web_search_message(message_id: int) -> dict[str, Any] | None:
     return {
         "user_message": row[0],
         "contextual_question": row[1],
-        "answer_action": row[2],
-        "web_answer": row[3],
+        "search_hint": row[2],
+        "answer_action": row[3],
+        "expanded_answer": row[4],
     }
 
 
-def store_web_answer(message_id: int, web_answer: dict[str, Any]) -> None:
+def store_expanded_answer(message_id: int, expanded_answer: dict[str, Any]) -> None:
     ensure_chat_schema()
     with connect_database() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE chat.messages SET web_answer = %s WHERE id = %s",
-                (Jsonb(web_answer), message_id),
+                "UPDATE chat.messages SET expanded_answer = %s WHERE id = %s",
+                (Jsonb(expanded_answer), message_id),
             )
         connection.commit()
 

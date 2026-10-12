@@ -17,10 +17,10 @@ from interface.backend.database import (
     ConversationNotFoundError,
     connect_database,
     create_conversation,
-    fetch_web_search_message,
+    fetch_expanded_search_message,
     store_message_feedback,
     store_chat_message,
-    store_web_answer,
+    store_expanded_answer,
 )
 from interface.backend.config import (
     DEFAULT_GENERATION_MODEL,
@@ -48,15 +48,13 @@ from interface.backend.telemetry import (
     trace_operation,
 )
 from interface.backend.utilities import get_llm_client, normalize_model_name
-from interface.backend.web_search import search_web
+from interface.backend.research_agent import run_research_agent
 
 
 router = APIRouter()
 
 
-# A retry must be bounded: an abstaining answer model can suggest a query, but
-# it must never be able to create an unbounded retrieval/generation loop.
-MAX_ANSWER_RETRY_ATTEMPTS = 1
+ABSTAIN_ANSWER = "À première vue, je n'ai pas la réponse dans les vidéos."
 
 
 class RagResponseState(TypedDict, total=False):
@@ -67,7 +65,6 @@ class RagResponseState(TypedDict, total=False):
     sources: list[dict[str, Any]]
     retrieval: dict[str, Any]
     answer_trace: dict[str, Any]
-    answer_retry_count: int
     answer_action: str
     carousel_sources: list[dict[str, Any]]
     conversation_id: int
@@ -207,73 +204,6 @@ def _generation_route(state: RagResponseState) -> Literal["generate", "accept_pr
     return "accept_precomputed" if state["answer"] else "generate"
 
 
-def _answer_retry_route(
-    state: RagResponseState,
-) -> Literal["retry_orchestrate", "finalize"]:
-    """Retry retrieval once when generation abstains with a usable query."""
-    answer_trace = state.get("answer_trace") or {}
-    retry_query = answer_trace.get("retry_query")
-    retry_count = state.get("answer_retry_count", 0)
-    if (
-        answer_trace.get("action") == "abstain"
-        and isinstance(retry_query, str)
-        and retry_query.strip()
-        and retry_count < MAX_ANSWER_RETRY_ATTEMPTS
-    ):
-        return "retry_orchestrate"
-    return "finalize"
-
-
-def _retry_orchestrate_response(
-    state: RagResponseState,
-    runtime: Runtime[RagResponseContext],
-) -> dict[str, Any]:
-    """Run a second retrieval pass without changing the persisted user request."""
-    payload = _response_payload(state)
-    # The retry query only drives retrieval: the answer must still be judged
-    # against the user's question, not the broader query the model proposed.
-    original_question = state.get("retrieval", {}).get("contextual_question") or payload.question
-    answer_trace = state["answer_trace"]
-    retry_query = str(answer_trace["retry_query"]).strip()
-    retry_count = state.get("answer_retry_count", 0) + 1
-    retry_payload_data = payload.model_dump()
-    retry_payload_data["question"] = retry_query
-    retry_payload = RagRequest.model_validate(retry_payload_data)
-
-    with trace_operation(
-        "answer_retry_orchestration",
-        kind="CHAIN",
-        input_value={
-            "original_question": payload.question,
-            "retry_query": retry_query,
-            "attempt": retry_count,
-        },
-    ) as retry_span:
-        answer, sources, retrieval = orchestrate_request(retry_payload)
-        retry_span.set_output(
-            {
-                "answer_provided": bool(answer),
-                "sources": sources,
-                "retrieval": retrieval,
-            }
-        )
-
-    retrieval["contextual_question"] = original_question
-    retrieval["answer_retry"] = {
-        "attempt": retry_count,
-        "query": retry_query,
-        "initial_action": answer_trace.get("action"),
-        "initial_retrieval_mode": state.get("retrieval", {}).get("retrieval_mode"),
-    }
-    return {
-        "answer": answer,
-        "sources": sources,
-        "retrieval": retrieval,
-        "answer_trace": {},
-        "answer_retry_count": retry_count,
-    }
-
-
 def _finalize_response(
     state: RagResponseState,
     runtime: Runtime[RagResponseContext] | None = None,
@@ -301,6 +231,11 @@ def _finalize_response(
         )
     else:
         carousel_sources = []
+    if answer_action == "abstain":
+        # One stable wording before "Élargir la recherche ?"; the model's own
+        # explanation stays in the trace.
+        retrieval["abstain_detail"] = answer
+        answer = ABSTAIN_ANSWER
     retrieval["answer_source_indexes"] = [
         index for index, source in enumerate(sources, start=1) if source in carousel_sources
     ]
@@ -350,6 +285,7 @@ def _persist_response(
             trace_id=trace_id,
             answer_action=state["answer_action"],
             contextual_question=retrieval.get("contextual_question"),
+            search_hint=state.get("answer_trace", {}).get("retry_query"),
         )
         response_ready_callback = _runtime_context(runtime).response_ready_callback
         if response_ready_callback is not None:
@@ -407,17 +343,12 @@ def build_rag_response_graph():
     )
     graph.add_node("orchestrate", _stage_node("orchestrate", _orchestrate_response))
     graph.add_node("generate", _stage_node("generate", _generate_response))
-    graph.add_node(
-        "retry_orchestrate",
-        _stage_node("retry_orchestrate", _retry_orchestrate_response),
-    )
     graph.add_node("accept_precomputed", _stage_node("accept_precomputed", _accept_precomputed_response))
     graph.add_node("finalize", _stage_node("finalize", _finalize_response))
     graph.add_node("persist", _stage_node("persist", _persist_response))
     graph.add_edge(START, "orchestrate")
     graph.add_conditional_edges("orchestrate", _generation_route)
-    graph.add_conditional_edges("generate", _answer_retry_route)
-    graph.add_edge("retry_orchestrate", "generate")
+    graph.add_edge("generate", "finalize")
     graph.add_edge("accept_precomputed", "finalize")
     graph.add_edge("finalize", "persist")
     graph.add_edge("persist", END)
@@ -621,30 +552,30 @@ def save_message_feedback(
     return {"message_id": message_id, "feedback": payload.feedback}
 
 
-@router.post("/rag/messages/{message_id}/web-search")
-def web_search_message(message_id: int) -> dict[str, Any]:
-    """Search the web for an abstained answer; the result is cached per message.
+@router.post("/rag/messages/{message_id}/expand")
+def expand_search_message(message_id: int) -> dict[str, Any]:
+    """Run the research agent on an abstained answer; cached per message.
 
     The question is read from the stored message, never from the request, so
-    this public endpoint cannot be used as a general-purpose web search proxy.
+    this public endpoint cannot be used as a general-purpose agent or web proxy.
     """
-    message = fetch_web_search_message(message_id)
+    message = fetch_expanded_search_message(message_id)
     if message is None:
         raise HTTPException(status_code=404, detail="Message assistant introuvable.")
     if message["answer_action"] != "abstain":
         raise HTTPException(
             status_code=409,
-            detail="La recherche web n'est proposée que lorsque la base ne répond pas.",
+            detail="La recherche élargie n'est proposée que lorsque la base ne répond pas.",
         )
-    if message["web_answer"]:
-        return {"message_id": message_id, **message["web_answer"]}
+    if message["expanded_answer"]:
+        return {"message_id": message_id, **message["expanded_answer"]}
     question = message["contextual_question"] or message["user_message"]
     try:
-        web_answer = search_web(question)
+        expanded_answer = run_research_agent(question, message["search_hint"])
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="La recherche web a échoué.") from exc
-    store_web_answer(message_id, web_answer)
-    return {"message_id": message_id, **web_answer}
+        raise HTTPException(status_code=502, detail="La recherche élargie a échoué.") from exc
+    store_expanded_answer(message_id, expanded_answer)
+    return {"message_id": message_id, **expanded_answer}
 
 
 @router.post("/rag/stream")

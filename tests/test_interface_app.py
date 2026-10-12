@@ -57,7 +57,10 @@ class InterfaceAppTests(unittest.TestCase):
             "payload": payload.model_dump(),
             "answer": "Je ne peux pas répondre.",
             "sources": [],
-            "retrieval": {"retrieval_mode": "vector_search"},
+            "retrieval": {
+                "retrieval_mode": "vector_search",
+                "contextual_question": "Question initiale reformulée",
+            },
             "answer_trace": {
                 "action": "abstain",
                 "retry_query": "Question autonome plus détaillée",
@@ -79,6 +82,11 @@ class InterfaceAppTests(unittest.TestCase):
         self.assertEqual(state["payload"]["question"], "Question initiale")
         self.assertEqual(result["answer_retry_count"], 1)
         self.assertEqual(result["sources"], retry_sources)
+        # Generation must still judge sufficiency against the user's question.
+        self.assertEqual(
+            result["retrieval"]["contextual_question"],
+            "Question initiale reformulée",
+        )
         self.assertEqual(
             result["retrieval"]["answer_retry"],
             {
@@ -88,6 +96,32 @@ class InterfaceAppTests(unittest.TestCase):
                 "initial_retrieval_mode": "vector_search",
             },
         )
+
+    def test_abstain_with_cited_sources_stays_abstain(self) -> None:
+        trace: dict = {}
+
+        answer = generation.parse_answer_output(
+            '{"answer": "Les sources ne traitent pas de ce point.", "action": "abstain", '
+            '"source_indexes": [1, 2], "retry_query": "Question plus précise"}',
+            trace,
+        )
+
+        self.assertEqual(answer, "Les sources ne traitent pas de ce point.")
+        self.assertEqual(trace["action"], "abstain")
+        self.assertEqual(trace["source_indexes"], [])
+        self.assertEqual(trace["retry_query"], "Question plus précise")
+        self.assertEqual(trace["action_normalization"]["source_indexes"], [1, 2])
+
+    def test_empty_abstain_answer_uses_fallback_message(self) -> None:
+        trace: dict = {}
+
+        answer = generation.parse_answer_output(
+            '{"answer": "", "action": "abstain", "source_indexes": [], "retry_query": null}',
+            trace,
+        )
+
+        self.assertEqual(answer, generation.ABSTAIN_FALLBACK_ANSWER)
+        self.assertEqual(trace["action"], "abstain")
 
     def test_answer_video_url_selects_source_without_marker(self) -> None:
         sources = [

@@ -227,6 +227,9 @@ def _retry_orchestrate_response(
 ) -> dict[str, Any]:
     """Run a second retrieval pass without changing the persisted user request."""
     payload = _response_payload(state)
+    # The retry query only drives retrieval: the answer must still be judged
+    # against the user's question, not the broader query the model proposed.
+    original_question = state.get("retrieval", {}).get("contextual_question") or payload.question
     answer_trace = state["answer_trace"]
     retry_query = str(answer_trace["retry_query"]).strip()
     retry_count = state.get("answer_retry_count", 0) + 1
@@ -252,6 +255,7 @@ def _retry_orchestrate_response(
             }
         )
 
+    retrieval["contextual_question"] = original_question
     retrieval["answer_retry"] = {
         "attempt": retry_count,
         "query": retry_query,

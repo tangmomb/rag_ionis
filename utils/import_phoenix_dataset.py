@@ -64,14 +64,24 @@ def _load_golden_dataset_examples(rows: list[dict[str, Any]]) -> list[dict[str, 
             raise ValueError(
                 f"Ligne {row_number}: relevant_chunk_ids doit contenir des entiers."
             )
+        # Optional: unanswerable questions are labelled abstain so that
+        # answer_action_match can score them.
+        action = str(row.get("expected_action") or "").strip()
+        if action and action not in VALID_ACTIONS:
+            raise ValueError(
+                f"Ligne {row_number}: expected_action invalide: {action!r}."
+            )
+        output = {
+            "expected_execution_route": route,
+            "youtube_video_ids": youtube_video_ids,
+            "relevant_chunk_ids": relevant_chunk_ids,
+        }
+        if action:
+            output["action"] = action
         examples.append(
             {
                 "input": {"question": question},
-                "output": {
-                    "expected_execution_route": route,
-                    "youtube_video_ids": youtube_video_ids,
-                    "relevant_chunk_ids": relevant_chunk_ids,
-                },
+                "output": output,
             }
         )
     return examples

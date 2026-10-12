@@ -5,6 +5,7 @@ import threading
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 
 # État d'initialisation partagé par les accès SQL du backend.
@@ -112,6 +113,17 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN"
                 )
+                # Web fallback: only abstained answers may trigger a web search,
+                # which runs on the contextual question and is cached once done.
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_action TEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS contextual_question TEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS web_answer JSONB"
+                )
                 cursor.execute(
                     """
                     DO $$
@@ -165,7 +177,10 @@ def ensure_chat_schema() -> None:
                                   'user_message',
                                   'answer_message',
                                   'trace_id',
-                                  'feedback'
+                                  'feedback',
+                                  'answer_action',
+                                  'contextual_question',
+                                  'web_answer'
                               )
                         LOOP
                             EXECUTE format(
@@ -261,11 +276,15 @@ def store_chat_message(
     user_message: str,
     answer_message: str,
     trace_id: str | None,
+    answer_action: str | None = None,
+    contextual_question: str | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
     user_message = user_message.replace("\x00", "")
     answer_message = answer_message.replace("\x00", "")
     trace_id = trace_id.replace("\x00", "") if trace_id is not None else None
+    if contextual_question is not None:
+        contextual_question = contextual_question.replace("\x00", "")
 
     with connect_database() as connection:
         resolved_conversation_id = ensure_conversation(connection, conversation_id)
@@ -276,9 +295,11 @@ def store_chat_message(
                     conversation_id,
                     user_message,
                     answer_message,
-                    trace_id
+                    trace_id,
+                    answer_action,
+                    contextual_question
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -286,11 +307,48 @@ def store_chat_message(
                     user_message,
                     answer_message,
                     trace_id,
+                    answer_action,
+                    contextual_question,
                 ),
             )
             message_id = int(cursor.fetchone()[0])
         connection.commit()
     return resolved_conversation_id, message_id
+
+
+def fetch_web_search_message(message_id: int) -> dict[str, Any] | None:
+    """Return what the web fallback needs to know about an assistant message."""
+    ensure_chat_schema()
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_message, contextual_question, answer_action, web_answer
+                FROM chat.messages
+                WHERE id = %s AND answer_message IS NOT NULL
+                """,
+                (message_id,),
+            )
+            row = cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "user_message": row[0],
+        "contextual_question": row[1],
+        "answer_action": row[2],
+        "web_answer": row[3],
+    }
+
+
+def store_web_answer(message_id: int, web_answer: dict[str, Any]) -> None:
+    ensure_chat_schema()
+    with connect_database() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE chat.messages SET web_answer = %s WHERE id = %s",
+                (Jsonb(web_answer), message_id),
+            )
+        connection.commit()
 
 
 def store_message_feedback(message_id: int, feedback: bool) -> bool:

@@ -27,6 +27,11 @@ FINAL_ANSWER_STYLE = (
 )
 
 
+ABSTAIN_FALLBACK_ANSWER = (
+    "Je n'ai pas trouvé dans les vidéos d'élément permettant de répondre à cette question."
+)
+
+
 SOURCE_SELECTION_INSTRUCTION = (
     "Renseigne `source_indexes` avec les numéros des sources réellement utilisées "
     "pour construire la réponse, par exemple [1, 3]. Utilise une liste vide si aucune "
@@ -39,10 +44,15 @@ ANSWER_ACTION_INSTRUCTION = (
     "Choisis l'action answer ou abstain. Choisis answer uniquement si "
     "le message répond suffisamment à la question à partir des éléments fournis. Choisis "
     "abstain si la demande est ambiguë ou que les éléments fournis ne permettent pas "
-    "d'y répondre fidèlement. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
+    "d'y répondre fidèlement. Une réponse partielle n'est pas une réponse : si la question "
+    "porte sur plusieurs entités, périodes ou éléments (comparaison, « et », énumération) "
+    "et que les sources n'en couvrent qu'une partie, choisis abstain. De même, si les sources "
+    "traitent d'un sujet voisin ou d'autres personnes que celles demandées (par exemple des "
+    "enseignants au lieu de tuteurs en entreprise), choisis abstain. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
     "une question de recherche autonome, détaillée et plus précise qui pourrait permettre de "
     "répondre. Un échec provient souvent d'entités (personne, entreprise, vidéo ou intitulé) "
-    "non résolues : explicite-les avec leurs noms complets et tous les indices utiles. N'hésite pas "
+    "non résolues : explicite-les avec leurs noms complets et tous les indices utiles. Si les sources "
+    "ne couvrent qu'une partie de la question, retry_query cible les éléments manquants. N'hésite pas "
     "à formuler une question longue, en y incluant le maximum d'informations fiables de la demande "
     "initiale et du contexte ; la question ayant échoué était peut-être trop courte ou insuffisamment "
     "détaillée. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
@@ -186,18 +196,20 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
             else None
         )
         if action == "abstain" and source_indexes:
-            trace["action"] = "answer"
-            trace["retry_query"] = None
+            # Never upgrade an abstention: sources close to the topic are not
+            # an answer. Drop the citations so no carousel is shown.
+            trace["source_indexes"] = []
             trace["action_normalization"] = {
                 "reason": "abstain_with_cited_sources",
                 "from_action": "abstain",
-                "to_action": "answer",
+                "to_action": "abstain",
                 "source_indexes": source_indexes,
             }
-        else:
-            trace["action"] = action
-            trace["retry_query"] = retry_query
+        trace["action"] = action
+        trace["retry_query"] = retry_query
     answer = str(payload.get("answer") or "").strip()
+    if not answer and action == "abstain":
+        return ABSTAIN_FALLBACK_ANSWER
     return answer or raw_answer
 
 

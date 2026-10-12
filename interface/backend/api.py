@@ -17,8 +17,10 @@ from interface.backend.database import (
     ConversationNotFoundError,
     connect_database,
     create_conversation,
+    fetch_web_search_message,
     store_message_feedback,
     store_chat_message,
+    store_web_answer,
 )
 from interface.backend.config import (
     DEFAULT_GENERATION_MODEL,
@@ -46,6 +48,7 @@ from interface.backend.telemetry import (
     trace_operation,
 )
 from interface.backend.utilities import get_llm_client, normalize_model_name
+from interface.backend.web_search import search_web
 
 
 router = APIRouter()
@@ -227,6 +230,9 @@ def _retry_orchestrate_response(
 ) -> dict[str, Any]:
     """Run a second retrieval pass without changing the persisted user request."""
     payload = _response_payload(state)
+    # The retry query only drives retrieval: the answer must still be judged
+    # against the user's question, not the broader query the model proposed.
+    original_question = state.get("retrieval", {}).get("contextual_question") or payload.question
     answer_trace = state["answer_trace"]
     retry_query = str(answer_trace["retry_query"]).strip()
     retry_count = state.get("answer_retry_count", 0) + 1
@@ -252,6 +258,7 @@ def _retry_orchestrate_response(
             }
         )
 
+    retrieval["contextual_question"] = original_question
     retrieval["answer_retry"] = {
         "attempt": retry_count,
         "query": retry_query,
@@ -341,6 +348,8 @@ def _persist_response(
             user_message=payload.question,
             answer_message=answer,
             trace_id=trace_id,
+            answer_action=state["answer_action"],
+            contextual_question=retrieval.get("contextual_question"),
         )
         response_ready_callback = _runtime_context(runtime).response_ready_callback
         if response_ready_callback is not None:
@@ -610,6 +619,32 @@ def save_message_feedback(
     if not store_message_feedback(message_id, payload.feedback):
         raise HTTPException(status_code=404, detail="Message assistant introuvable.")
     return {"message_id": message_id, "feedback": payload.feedback}
+
+
+@router.post("/rag/messages/{message_id}/web-search")
+def web_search_message(message_id: int) -> dict[str, Any]:
+    """Search the web for an abstained answer; the result is cached per message.
+
+    The question is read from the stored message, never from the request, so
+    this public endpoint cannot be used as a general-purpose web search proxy.
+    """
+    message = fetch_web_search_message(message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message assistant introuvable.")
+    if message["answer_action"] != "abstain":
+        raise HTTPException(
+            status_code=409,
+            detail="La recherche web n'est proposée que lorsque la base ne répond pas.",
+        )
+    if message["web_answer"]:
+        return {"message_id": message_id, **message["web_answer"]}
+    question = message["contextual_question"] or message["user_message"]
+    try:
+        web_answer = search_web(question)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="La recherche web a échoué.") from exc
+    store_web_answer(message_id, web_answer)
+    return {"message_id": message_id, **web_answer}
 
 
 @router.post("/rag/stream")

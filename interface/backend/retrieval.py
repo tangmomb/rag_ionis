@@ -1031,16 +1031,32 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
             rerank_span.set_attribute("reranker.model_name", rerank_model)
             rerank_span.set_attribute("reranker.top_k", final_k)
             rerank_span.set_documents("reranker.input_documents", fused_chunks)
-            final_chunks, rerank_debug = rerank_chunks(
-                execution_plan.query_text,
-                fused_chunks,
-                final_k,
-                rerank_model,
-            )
+            try:
+                final_chunks, rerank_debug = rerank_chunks(
+                    execution_plan.query_text,
+                    fused_chunks,
+                    final_k,
+                    rerank_model,
+                )
+                rerank_applied = True
+            except RuntimeError as exc:
+                # A Cohere outage or quota error must not fail the visitor's
+                # request: keep the RRF order, which is already a ranking.
+                final_chunks = fused_chunks[:final_k]
+                rerank_applied = False
+                rerank_debug = {
+                    "applied": False,
+                    "reason": "rerank_failed",
+                    "error": str(exc)[:500],
+                    "input_count": len(fused_chunks),
+                    "output_count": len(final_chunks),
+                    "selected_chunk_ids": [item["chunk_id"] for item in final_chunks],
+                }
             rerank_span.set_documents("reranker.output_documents", final_chunks)
             rerank_span.set_output({"trace": rerank_debug, "results": final_chunks})
     else:
         final_chunks = fused_chunks[:final_k]
+        rerank_applied = False
         rerank_debug = {
             "applied": False,
             "reason": "disabled",
@@ -1072,7 +1088,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
         "vector_top_k": DEFAULT_VECTOR_LIMIT,
         "rrf_top_n": DEFAULT_RRF_TOP_N,
         "final_k": final_k,
-        "used_rerank": payload.useRerank and bool(final_chunks),
+        "used_rerank": rerank_applied and bool(final_chunks),
         "sql_prefilters": prefilter_debug["applied"],
         "general_question_only": prefilter_debug["general_question_only"],
         "sql_query": None,

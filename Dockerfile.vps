@@ -3,11 +3,16 @@
 ARG NODE_BASE=node:22.18.0-bullseye-slim
 FROM ${NODE_BASE} AS node-runtime
 
+FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
+
 FROM python:3.12.14-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    PATH=/opt/venv/bin:$PATH \
     RAG_IONIS_ENV=production \
     RAG_IONIS_ENV_FILE_OPTIONAL=1 \
     PIPELINE_EXECUTION_BACKEND=scaleway
@@ -20,10 +25,10 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 RUN node --version \
     && test "$(node --version | cut -d. -f1)" = "v22"
 
-COPY requirements-vps.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --upgrade pip \
-    && python -m pip install --requirement requirements-vps.txt
+COPY --from=uv /uv /usr/local/bin/uv
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-default-groups --group vps
 
 COPY --chown=app:app pipeline ./pipeline
 

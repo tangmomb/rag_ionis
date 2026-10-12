@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import unittest
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 local environment.
+    import tomli as tomllib
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -9,7 +16,7 @@ COMPOSE_PATH = ROOT_DIR / "docker-compose.yml"
 PRODUCTION_COMPOSE_PATH = ROOT_DIR / "docker-compose.prod.yml"
 API_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.api"
 VPS_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.vps"
-VPS_REQUIREMENTS_PATH = ROOT_DIR / "requirements-vps.txt"
+PYPROJECT_PATH = ROOT_DIR / "pyproject.toml"
 VPS_DEPLOY_SCRIPT_PATH = ROOT_DIR / "deploy" / "deploy-vps.sh"
 VPS_WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "deploy-vps.yml"
 ANALYTICS_SQL_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "002_analytics_readonly.sql"
@@ -51,14 +58,29 @@ class VpsConfigurationTests(unittest.TestCase):
     def test_vps_updater_is_cpu_only_and_opt_in(self) -> None:
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
         dockerfile = VPS_DOCKERFILE_PATH.read_text(encoding="utf-8")
-        requirements = VPS_REQUIREMENTS_PATH.read_text(encoding="utf-8")
+        pyproject = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+        requirements = "\n".join(pyproject["dependency-groups"]["vps"])
 
         self.assertIn('profiles: ["jobs"]', production_compose)
         self.assertIn("rag-ionis-updater:${UPDATER_IMAGE_TAG", production_compose)
         self.assertIn("USER app", dockerfile)
+        self.assertIn("--no-default-groups --group vps", dockerfile)
         self.assertNotIn("torch", requirements)
         self.assertNotIn("paddle", requirements)
         self.assertNotIn("fastapi", requirements)
+
+    def test_vps_updater_starts_without_ytdlp(self) -> None:
+        # The updater image has no yt-dlp: downloads happen on the Scaleway worker.
+        # A fresh interpreter keeps the import chain honest even where it is installed.
+        script = "import sys; sys.modules['yt_dlp'] = None; import pipeline.update_runs"
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_production_compose_uses_immutable_published_images(self) -> None:
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")

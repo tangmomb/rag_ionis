@@ -7,7 +7,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
-import yt_dlp
 from imageio_ffmpeg import get_ffmpeg_exe
 
 from pipeline.support.environment import load_project_env
@@ -244,6 +243,10 @@ def ffmpeg_exe():
 
 
 def download_video_360p(youtube_video_id):
+    # yt-dlp n'est pas installe sur le VPS : l'updater importe ce module
+    # pour les metadonnees seulement, le telechargement se fait sur Scaleway.
+    import yt_dlp
+
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     existing = sorted(
         path

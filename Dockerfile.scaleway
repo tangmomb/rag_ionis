@@ -99,13 +99,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     sed -e '/^--extra-index-url /d' \
         -e '/^paddlepaddle-gpu==/d' -e '/^paddleocr==/d' \
         -e '/^torch==/d' -e '/^torchvision==/d' -e '/^torchaudio==/d' \
-        -e '/^openai-whisper==/d' -e '/^whisperx==/d' -e '/^transformers/d' \
+        -e '/^whisperx==/d' -e '/^transformers/d' \
         requirements-gpu.txt > /tmp/requirements-core.txt \
     && python3 -m pip install --requirement /tmp/requirements-core.txt
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install \
     --timeout 300 --retries 10 \
     pyannote-database==6.1.1 \
-    openai-whisper==20250625 whisperx==3.8.6 transformers==4.57.6
+    whisperx==3.8.6 transformers==4.57.6
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install \
     paddleocr==3.7.0
 

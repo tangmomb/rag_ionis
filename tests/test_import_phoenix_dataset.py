@@ -63,6 +63,21 @@ class ImportPhoenixDatasetTests(unittest.TestCase):
             },
         )
 
+    def test_golden_dataset_expected_action_is_imported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "golden_dataset.csv"
+            csv_path.write_text(
+                "question,expected_execution_route,youtube_video_ids,relevant_chunk_ids,expected_action\n"
+                "Question piège ?,vector_search,[],[],abstain\n"
+                "Question ?,vector_search,\"[\"\"video-1\"\"]\",[],\n",
+                encoding="utf-8",
+            )
+
+            examples = load_examples(csv_path)
+
+        self.assertEqual(examples[0]["output"]["action"], "abstain")
+        self.assertNotIn("action", examples[1]["output"])
+
     def test_google_sheet_csv_url_preserves_gid(self) -> None:
         self.assertEqual(
             google_sheet_csv_url(

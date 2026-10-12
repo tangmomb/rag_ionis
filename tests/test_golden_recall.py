@@ -45,6 +45,37 @@ class GoldenRecallTests(unittest.TestCase):
         self.assertEqual(result["video_recall_micro"], 1.0)
         self.assertEqual(result["case_count"], 1)
 
+    def test_evaluate_reports_expected_action_without_affecting_recall(self) -> None:
+        cases = golden_recall.parse_golden_cases(
+            "question,youtube_video_ids,relevant_chunk_ids,expected_action\n"
+            "Question piège,[],[],abstain\n"
+            "Autre piège,[],[],abstain\n"
+        )
+
+        class Response:
+            sources = []
+
+            def __init__(self, action: str) -> None:
+                self.retrieval = {"answer_action": action, "retrieved_sources": []}
+
+        with patch.object(
+            golden_recall,
+            "run_rag",
+            side_effect=[Response("abstain"), Response("answer")],
+        ):
+            result = golden_recall.evaluate(cases)
+
+        self.assertEqual(result["action_accuracy"], 0.5)
+        self.assertEqual(len(result["action_mismatches"]), 1)
+        self.assertIsNone(result["video_recall"])
+
+    def test_invalid_expected_action_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            golden_recall.parse_golden_cases(
+                "question,youtube_video_ids,relevant_chunk_ids,expected_action\n"
+                "Question,[],[],refuse\n"
+            )
+
     def test_main_fails_when_global_recall_threshold_is_missed(self) -> None:
         with (
             patch.object(golden_recall, "load_golden_cases", return_value=[]),

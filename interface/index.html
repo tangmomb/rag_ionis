@@ -299,7 +299,51 @@
         `;
       }
 
-      function addMessage(role, content, meta, sources = [], messageId = null) {
+      function renderWebAnswer(webAnswer) {
+        const sources = (webAnswer.sources || []).filter((source) =>
+          /^https?:\/\//i.test(String(source.url || "")),
+        );
+        const sourcesHtml = sources.length
+          ? `<ol class="web-answer-sources">${sources
+              .map(
+                (source) =>
+                  `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(source.title || source.url)} ↗</a></li>`,
+              )
+              .join("")}</ol>`
+          : "";
+        return `
+          <div class="web-answer-label">Hors base · réponse issue du web</div>
+          <div class="message-content">${renderMarkdown(webAnswer.answer)}</div>
+          ${sourcesHtml}
+        `;
+      }
+
+      function bindWebSearch(article, messageId) {
+        const button = article.querySelector("[data-web-search]");
+        if (!button) return;
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          button.textContent = "Recherche sur le web…";
+          try {
+            const response = await fetch(
+              `${RAG_CONFIG.apiUrl}/messages/${messageId}/web-search`,
+              { method: "POST" },
+            );
+            if (!response.ok) throw new Error("Recherche web impossible.");
+            const webAnswer = await response.json();
+            const block = document.createElement("div");
+            block.className = "web-answer";
+            block.innerHTML = renderWebAnswer(webAnswer);
+            button.replaceWith(block);
+            block.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          } catch (_error) {
+            button.disabled = false;
+            button.textContent = "La recherche web a échoué · réessayer";
+          }
+        });
+      }
+
+      function addMessage(role, content, meta, sources = [], messageId = null, action = null) {
         const article = document.createElement("article");
         article.className = role === "assistant"
           ? "message assistant answer-enter"
@@ -332,14 +376,21 @@
               </div>
             `
             : "";
+        const canSearchWeb =
+          role === "assistant" && action === "abstain" && Number.isInteger(messageId);
+        const webSearchHtml = canSearchWeb
+          ? `<button type="button" class="web-search-btn" data-web-search>Chercher sur le web ?</button>`
+          : "";
         article.innerHTML = `
           <div class="message-body">
             ${metaHtml}
             <div class="message-content">${renderedContent}</div>
             ${videoHtml}
+            ${webSearchHtml}
             ${actionsHtml}
           </div>
         `;
+        if (canSearchWeb) bindWebSearch(article, messageId);
 
         if (role === "assistant" && Number.isInteger(messageId)) {
           const feedbackButtons = article.querySelectorAll("[data-feedback]");
@@ -467,6 +518,7 @@
                   meta,
                   finalResponse.sources || [],
                   finalResponse.message_id,
+                  finalResponse.action,
                 );
                 loadingMessage.remove();
                 setComposerLocked(true, "Mise à jour de la mémoire…");

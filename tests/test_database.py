@@ -9,6 +9,7 @@ from interface.backend import database
 class _Cursor:
     def __init__(self) -> None:
         self.parameters = None
+        self.calls = []
 
     def __enter__(self):
         return self
@@ -16,7 +17,8 @@ class _Cursor:
     def __exit__(self, *_args) -> None:
         return None
 
-    def execute(self, _sql, parameters) -> None:
+    def execute(self, sql, parameters=None) -> None:
+        self.calls.append((sql, parameters))
         self.parameters = parameters
 
     def fetchone(self):
@@ -96,13 +98,29 @@ class DatabaseTests(unittest.TestCase):
                 "Question\x00",
                 "Réponse\x00 corrigée",
                 "trace\x00",
+                answer_action="abstain",
+                contextual_question="Question\x00 reformulée",
             )
 
         self.assertEqual(result, (3, 9))
         self.assertEqual(
             connection.cursor_instance.parameters,
-            (3, "Question", "Réponse corrigée", "trace"),
+            (3, "Question", "Réponse corrigée", "trace", "abstain", "Question reformulée"),
         )
+
+    def test_schema_cleanup_keeps_web_fallback_columns(self) -> None:
+        connection = _Connection()
+        with (
+            patch.object(database, "_SCHEMA_READY", False),
+            patch.object(database, "connect_database", return_value=connection),
+        ):
+            database.ensure_chat_schema()
+
+        cleanup = next(
+            sql for sql, _ in connection.cursor_instance.calls if "column_to_drop" in sql
+        )
+        for column in ("answer_action", "contextual_question", "web_answer"):
+            self.assertIn(f"'{column}'", cleanup)
 
     def test_store_message_feedback_updates_only_answer_messages(self) -> None:
         connection = _Connection()

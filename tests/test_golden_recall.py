@@ -15,29 +15,19 @@ class GoldenRecallTests(unittest.TestCase):
             "https://docs.google.com/spreadsheets/d/sheet-id/export?format=csv&gid=123",
         )
 
-    def test_evaluate_uses_returned_video_and_chunk_sources(self) -> None:
+    def test_evaluate_uses_raw_retrieval_sources(self) -> None:
         cases = golden_recall.parse_golden_cases(
             "question,youtube_video_ids,relevant_chunk_ids\n"
             'Question,"[""video-1""]","[12,13]"\n'
         )
+        retrieved = [
+            {"chunk_id": 12, "video_url": "https://www.youtube.com/watch?v=video-1"},
+            {"chunk_id": 99, "video_url": "https://www.youtube.com/watch?v=other"},
+        ]
 
-        class Source:
-            def __init__(self, chunk_id: int, video_url: str) -> None:
-                self.chunk_id = chunk_id
-                self.video_url = video_url
-
-        class Response:
-            # ``sources`` intentionally differs: Phoenix evaluates this raw
-            # retrieval list, not citations selected for the final answer.
-            sources = []
-            retrieval = {
-                "retrieved_sources": [
-                    {"chunk_id": 12, "video_url": "https://www.youtube.com/watch?v=video-1"},
-                    {"chunk_id": 99, "video_url": "https://www.youtube.com/watch?v=other"},
-                ]
-            }
-
-        with patch.object(golden_recall, "run_rag", return_value=Response()):
+        with patch.object(
+            golden_recall, "orchestrate_request", return_value=("", retrieved, {})
+        ):
             result = golden_recall.evaluate(cases)
 
         self.assertEqual(result["video_recall"], 1.0)
@@ -45,36 +35,24 @@ class GoldenRecallTests(unittest.TestCase):
         self.assertEqual(result["video_recall_micro"], 1.0)
         self.assertEqual(result["case_count"], 1)
 
-    def test_evaluate_reports_expected_action_without_affecting_recall(self) -> None:
+    def test_evaluate_skips_questions_without_expected_sources(self) -> None:
         cases = golden_recall.parse_golden_cases(
             "question,youtube_video_ids,relevant_chunk_ids,expected_action\n"
+            'Question,"[""video-1""]",[],\n'
             "Question piège,[],[],abstain\n"
-            "Autre piège,[],[],abstain\n"
         )
-
-        class Response:
-            sources = []
-
-            def __init__(self, action: str) -> None:
-                self.retrieval = {"answer_action": action, "retrieved_sources": []}
 
         with patch.object(
             golden_recall,
-            "run_rag",
-            side_effect=[Response("abstain"), Response("answer")],
-        ):
+            "orchestrate_request",
+            return_value=("", [{"chunk_id": 1, "video_url": "https://youtu.be/video-1"}], {}),
+        ) as orchestrate:
             result = golden_recall.evaluate(cases)
 
-        self.assertEqual(result["action_accuracy"], 0.5)
-        self.assertEqual(len(result["action_mismatches"]), 1)
-        self.assertIsNone(result["video_recall"])
-
-    def test_invalid_expected_action_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            golden_recall.parse_golden_cases(
-                "question,youtube_video_ids,relevant_chunk_ids,expected_action\n"
-                "Question,[],[],refuse\n"
-            )
+        orchestrate.assert_called_once()
+        self.assertEqual(result["case_count"], 2)
+        self.assertEqual(result["measured_case_count"], 1)
+        self.assertEqual(result["video_recall"], 1.0)
 
     def test_main_fails_when_global_recall_threshold_is_missed(self) -> None:
         with (
@@ -102,19 +80,17 @@ class GoldenRecallTests(unittest.TestCase):
             'Q2,"[""c""]",[]\n'
         )
 
-        class Response:
-            def __init__(self, video_ids: list[str]) -> None:
-                self.retrieval = {
-                    "retrieved_sources": [
-                        {"video_url": f"https://www.youtube.com/watch?v={video_id}"}
-                        for video_id in video_ids
-                    ]
-                }
+        def retrieval(video_ids: list[str]):
+            sources = [
+                {"video_url": f"https://www.youtube.com/watch?v={video_id}"}
+                for video_id in video_ids
+            ]
+            return "", sources, {}
 
         with patch.object(
             golden_recall,
-            "run_rag",
-            side_effect=[Response(["a"]), Response(["c"])],
+            "orchestrate_request",
+            side_effect=[retrieval(["a"]), retrieval(["c"])],
         ):
             result = golden_recall.evaluate(cases)
 
@@ -128,11 +104,8 @@ class GoldenRecallTests(unittest.TestCase):
             'Q2,"[""b""]",[]\n'
         )
 
-        class Response:
-            retrieval = {"retrieved_sources": []}
-
         with (
-            patch.object(golden_recall, "run_rag", return_value=Response()),
+            patch.object(golden_recall, "orchestrate_request", return_value=("", [], {})),
             patch.object(golden_recall.time, "sleep") as sleep,
         ):
             golden_recall.evaluate(cases, request_delay_seconds=10.0)

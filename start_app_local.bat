@@ -18,12 +18,12 @@ set "API_PYTHON=.\.venv\Scripts\python.exe"
 set "STUDIO_CLI=.\.venv-studio-py313\Scripts\langgraph.exe"
 
 if not exist "%API_PYTHON%" (
-  echo Python du venv introuvable. Cree .venv avec requirements.txt.
+  echo Python du venv introuvable. Cree .venv avec : uv sync --python 3.10
   exit /b 1
 )
 
 if not exist "%STUDIO_CLI%" (
-  echo LangGraph CLI introuvable. Installe-le avec requirements-studio.txt dans .venv-studio-py313.
+  echo LangGraph CLI introuvable. Installe-le avec : set UV_PROJECT_ENVIRONMENT=.venv-studio-py313 ^&^& uv sync --python 3.13 --no-default-groups --group studio
   exit /b 1
 )
 

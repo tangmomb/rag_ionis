@@ -1,0 +1,122 @@
+[project]
+name = "rag-ionis"
+version = "0.1.0"
+description = "RAG sur les videos de cuisine IONIS : API, pipeline d'ingestion et worker GPU."
+requires-python = ">=3.10,<3.14"
+# Aucune dependance commune : chaque image installe uniquement le groupe de son role.
+dependencies = []
+
+[dependency-groups]
+# API FastAPI (Dockerfile.api).
+api = [
+    "arize-phoenix-otel==0.16.1",
+    "arize-phoenix-client==2.13.0",
+    "openinference-instrumentation-openai==0.1.52",
+    "openinference-instrumentation-mistralai==2.0.5",
+    "opentelemetry-exporter-otlp==1.39.1",
+    "cohere==5.20.0",
+    "openai>=2.45.0,<4",
+    "mistralai==2.9.0",
+    "langchain-openai>=1.0,<2",
+    "langchain-mistralai>=1.0,<2",
+    "google-genai>=1.0,<3",
+    "langgraph>=1.0,<2",
+    "fastapi==0.118.0",
+    "uvicorn[standard]==0.37.0",
+    "psycopg[binary]==3.3.4",
+    "python-dotenv==1.2.2",
+    "requests==2.34.2",
+]
+# Orchestrateur CPU du VPS : updates YouTube, S3, Scaleway et PostgreSQL.
+# Aucune bibliotheque CUDA, OCR ou serveur web n'est necessaire ici.
+vps = [
+    "imageio-ffmpeg==0.6.0",
+    "boto3==1.42.95",
+    "psycopg[binary]==3.3.4",
+    "python-dotenv==1.2.2",
+    "requests==2.34.2",
+]
+# Worker de traitement GPU Scaleway.
+gpu = [
+    "imageio-ffmpeg==0.6.0",
+    "boto3==1.42.95",
+    "openai>=2.45.0,<4",
+    "openai-whisper==20250625",
+    "whisperx==3.8.6",
+    "pandas==2.3.1",
+    "python-dotenv==1.2.2",
+    "requests==2.34.2",
+    "numpy==2.2.6",
+    "joblib==1.5.3",
+    "scikit-learn==1.7.2",
+    "Pillow==12.3.0",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "torchaudio==2.8.0",
+    "paddlepaddle-gpu==3.2.0",
+    "paddleocr==3.7.0",
+    "transformers==4.57.6",
+    "protobuf==6.33.6",
+]
+# Dependance volatile installee tard dans l'image Scaleway pour preserver
+# le cache des lourdes dependances GPU lors des mises a jour de yt-dlp.
+ytdlp = ["yt-dlp==2026.8.19"]
+# LangGraph Studio, dans son propre environnement Python 3.13 (.venv-studio-py313).
+studio = [
+    "langgraph-cli[inmem]",
+    "fastapi>=0.141.1",
+    "psycopg[binary]>=3.3.4",
+    # Required when LangGraph imports the project's graphs from interface/backend.
+    "google-genai>=1.0,<3",
+    "openai>=2.45.0,<4",
+    "mistralai==2.9.0",
+    "langchain-openai>=1.0,<2",
+    "python-dotenv==1.2.2",
+]
+# Environnement complet de developpement local.
+dev = [
+    { include-group = "api" },
+    { include-group = "vps" },
+    { include-group = "gpu" },
+    { include-group = "ytdlp" },
+    # Les tests de configuration lisent pyproject.toml et uv.lock.
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+# Le lock ne couvre que les postes Windows et les images Linux x86_64.
+environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+# Studio exige une version de FastAPI plus recente que celle de l'API.
+conflicts = [
+    [{ group = "studio" }, { group = "api" }],
+    [{ group = "studio" }, { group = "dev" }],
+]
+# Torch 2.8 et Paddle 3.2 declarent des versions NVIDIA incompatibles
+# (cuDNN, cuSPARSELt et NCCL). Les versions de Torch sont conservees :
+# le smoke test de l'image GPU execute bien Torch puis Paddle sur CUDA 12.6.
+override-dependencies = [
+    "nvidia-cudnn-cu12==9.10.2.21; sys_platform == 'linux'",
+    "nvidia-cusparselt-cu12==0.7.1; sys_platform == 'linux'",
+    "nvidia-nccl-cu12==2.27.3; sys_platform == 'linux'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "paddle-cu126"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }
+paddlepaddle-gpu = { index = "paddle-cu126" }

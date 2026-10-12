@@ -19,3 +19,15 @@ Ce projet transforme les vidéos de la chaîne YouTube IONIS-STM en une base int
 ### Pipeline de réponse
 
 [![Parcours d'une question dans le pipeline de réponse](utils/img_for_readme/pipeline_reponse.png)](https://ionis.tanguym.fr/pipeline_reponse/)
+
+## Installation locale
+
+Les dépendances sont gérées par [uv](https://docs.astral.sh/uv/) : `pyproject.toml` déclare un groupe par rôle (`api`, `vps`, `gpu`, `ytdlp`, `studio`) et `uv.lock` fige l'ensemble pour Windows et Linux.
+
+```bash
+uv sync --python 3.10
+UV_PROJECT_ENVIRONMENT=.venv-studio-py313 uv sync --python 3.13 --no-default-groups --group studio
+start_app_local.bat
+```
+
+Après une modification de `pyproject.toml`, `uv lock` met à jour le lock. L'image GPU installe encore ses couches depuis `requirements-gpu.txt` : un test vérifie que ses versions restent celles de `uv.lock`.

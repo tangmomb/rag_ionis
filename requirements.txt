@@ -1,6 +1,0 @@
-# Environnement complet de developpement local.
-# Les images de production utilisent directement le fichier de leur role.
--r requirements-api.txt
--r requirements-vps.txt
--r requirements-gpu.txt
--r requirements-ytdlp.txt

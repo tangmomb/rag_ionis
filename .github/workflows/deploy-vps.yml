@@ -9,8 +9,8 @@ on:
       - ".dockerignore"
       - "Dockerfile.api"
       - "Dockerfile.vps"
-      - "requirements-api.txt"
-      - "requirements-vps.txt"
+      - "pyproject.toml"
+      - "uv.lock"
       - "interface/**"
       - "pipeline/**"
       - "docker-compose.yml"
@@ -99,14 +99,18 @@ jobs:
                 .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh)
                   api=true; updater=true; recall_gate=true
                   ;;
-                Dockerfile.api|requirements-api.txt|interface/backend/*|interface/connaissances_*)
+                pyproject.toml|uv.lock)
+                  # One lock serves every image: rebuild both and re-check recall.
+                  api=true; updater=true; recall_gate=true
+                  ;;
+                Dockerfile.api|interface/backend/*|interface/connaissances_*)
                   api=true; recall_gate=true
                   ;;
                 interface/*)
                   # Static pages and assets: the image is rebuilt, retrieval is unchanged.
                   api=true
                   ;;
-                Dockerfile.vps|requirements-vps.txt)
+                Dockerfile.vps)
                   updater=true
                   ;;
                 pipeline/*)
@@ -158,15 +162,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
+          version: "0.13.0"
           python-version: "3.12"
 
       - name: Install lightweight test dependencies
-        run: python -m pip install --requirement requirements-vps.txt
+        run: uv sync --frozen --no-default-groups --group vps
 
       - name: Run deployment configuration tests
-        run: python -m unittest tests.test_docker_configuration.VpsConfigurationTests tests.test_command_builder
+        run: uv run --frozen --no-sync python -m unittest tests.test_docker_configuration.VpsConfigurationTests tests.test_command_builder tests.test_scaleway_configuration.ScalewayConfigurationTests.test_gpu_image_pins_match_uv_lock
 
       - name: Validate shell scripts
         shell: bash

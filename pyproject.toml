@@ -41,7 +41,6 @@ gpu = [
     "imageio-ffmpeg==0.6.0",
     "boto3==1.42.95",
     "openai>=2.45.0,<4",
-    "openai-whisper==20250625",
     "whisperx==3.8.6",
     "pandas==2.3.1",
     "python-dotenv==1.2.2",

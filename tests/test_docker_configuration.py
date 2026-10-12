@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -66,6 +68,19 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertNotIn("torch", requirements)
         self.assertNotIn("paddle", requirements)
         self.assertNotIn("fastapi", requirements)
+
+    def test_vps_updater_starts_without_ytdlp(self) -> None:
+        # The updater image has no yt-dlp: downloads happen on the Scaleway worker.
+        # A fresh interpreter keeps the import chain honest even where it is installed.
+        script = "import sys; sys.modules['yt_dlp'] = None; import pipeline.update_runs"
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_production_compose_uses_immutable_published_images(self) -> None:
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")

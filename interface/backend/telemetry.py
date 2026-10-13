@@ -243,6 +243,8 @@ def trace_operation(
     input_value: Any = None,
     attributes: dict[str, Any] | None = None,
     root: bool = False,
+    start_time_ns: int | None = None,
+    end_time_ns: int | None = None,
 ) -> Iterator[TraceOperation]:
     """Create an OpenInference span.
 
@@ -250,6 +252,9 @@ def trace_operation(
     executed in a worker thread and must never inherit a stale OpenTelemetry
     context from the server thread (which would append its spans to another
     user's trace).
+
+    ``start_time_ns``/``end_time_ns`` record an operation that already ran
+    elsewhere, such as a tool executed by the provider, with its own timings.
     """
     if not _ENABLED or _TRACER is None:
         yield TraceOperation()
@@ -273,6 +278,11 @@ def trace_operation(
             otel_context.Context(),
         )
 
+    if start_time_ns is not None:
+        span_kwargs["start_time"] = start_time_ns
+    if end_time_ns is not None:
+        span_kwargs["end_on_exit"] = False
+
     with _TRACER.start_as_current_span(name, **span_kwargs) as span:
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, resolved_kind.value)
         if input_value is not None:
@@ -284,7 +294,11 @@ def trace_operation(
         operation = TraceOperation(span)
         for attribute_name, attribute_value in (attributes or {}).items():
             operation.set_attribute(attribute_name, attribute_value)
-        yield operation
+        try:
+            yield operation
+        finally:
+            if end_time_ns is not None:
+                span.end(end_time=end_time_ns)
 
 
 def current_trace_id() -> str | None:

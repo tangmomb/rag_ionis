@@ -23,12 +23,17 @@ LLM_MAX_RETRIES_ENV = "RAG_LLM_MAX_RETRIES"
 OPENAI_SERVICE_TIER_ENV = "OPENAI_SERVICE_TIER"
 DEFAULT_OPENAI_SERVICE_TIER = "fast"
 LLM_COST_RATES_ENV = "RAG_LLM_COST_RATES_USD_PER_MILLION"
+WEB_SEARCH_COST_ENV = "RAG_WEB_SEARCH_COST_USD_PER_CALL"
+# Mistral web_search connector, billed per call on top of the tokens.
+DEFAULT_WEB_SEARCH_COST_USD_PER_CALL = 0.03
 # Prix standard USD / million de tokens. Les valeurs surchargeables par
 # environnement évitent de figer les tarifs quand un fournisseur les modifie.
 DEFAULT_LLM_COST_RATES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
     "mistral-small-latest": (0.15, 0.6),
     "mistral-medium-latest": (1.5, 7.5),
     "mistral-large-latest": (0.5, 1.5),
+    # List price; a launch promotion halved it in October 2026.
+    "mistral-large-4": (1.36, 4.18),
 }
 GEMINI_THINKING_LEVELS = {
     "gemini-3.5-flash-lite": "low",
@@ -99,11 +104,13 @@ class LLMProviderError(RuntimeError):
 class LLMCostTotals:
     prompt_usd: float = 0.0
     completion_usd: float = 0.0
+    # Connector tokens and per-call tool fees (Mistral web search).
+    tools_usd: float = 0.0
     priced_calls: int = 0
 
     @property
     def total_usd(self) -> float:
-        return self.prompt_usd + self.completion_usd
+        return self.prompt_usd + self.completion_usd + self.tools_usd
 
 
 _ACTIVE_LLM_COST_TOTALS: ContextVar[LLMCostTotals | None] = ContextVar(
@@ -397,17 +404,49 @@ def add_llm_usage_attributes(
         completion_tokens,
     )
     operation.set_attribute("llm.token_count.total", usage_value(usage, "total_tokens"))
+    # Mistral connectors (web search): the fetched pages are reported as
+    # connector_tokens, outside prompt_tokens, and each search is billed per call.
+    connector_tokens = usage_value(usage, "connector_tokens") or 0
+    web_search_calls = connector_call_count(usage, "web_search")
+    if connector_tokens:
+        operation.set_attribute("llm.token_count.connector", connector_tokens)
+    if web_search_calls:
+        operation.set_attribute("llm.web_search.calls", web_search_calls)
     costs = estimated_llm_cost_usd(model, prompt_tokens, completion_tokens)
     if costs is not None:
         prompt_cost, completion_cost = costs
+        connector_cost = (estimated_llm_cost_usd(model, connector_tokens, 0) or (0.0, 0.0))[0]
+        web_search_cost = web_search_calls * configured_web_search_cost_usd()
         operation.set_attribute("llm.cost.prompt", prompt_cost)
         operation.set_attribute("llm.cost.completion", completion_cost)
-        operation.set_attribute("llm.cost.total", prompt_cost + completion_cost)
+        if connector_tokens:
+            operation.set_attribute("llm.cost.connector", connector_cost)
+        if web_search_calls:
+            operation.set_attribute("llm.cost.web_search", web_search_cost)
+        operation.set_attribute(
+            "llm.cost.total",
+            prompt_cost + completion_cost + connector_cost + web_search_cost,
+        )
         totals = _ACTIVE_LLM_COST_TOTALS.get()
         if totals is not None:
             totals.prompt_usd += prompt_cost
             totals.completion_usd += completion_cost
+            totals.tools_usd += connector_cost + web_search_cost
             totals.priced_calls += 1
+
+
+def connector_call_count(usage: Any, connector: str) -> int:
+    connectors = usage.get("connectors") if isinstance(usage, dict) else getattr(usage, "connectors", None)
+    count = connectors.get(connector) if isinstance(connectors, dict) else None
+    return count if isinstance(count, int) else 0
+
+
+def configured_web_search_cost_usd() -> float:
+    raw_value = os.getenv(WEB_SEARCH_COST_ENV, "").strip()
+    try:
+        return float(raw_value) if raw_value else DEFAULT_WEB_SEARCH_COST_USD_PER_CALL
+    except ValueError:
+        return DEFAULT_WEB_SEARCH_COST_USD_PER_CALL
 
 
 def configured_llm_cost_rates() -> dict[str, tuple[float, float]]:
@@ -751,6 +790,7 @@ def call_mistral(
                 add_llm_usage_attributes(
                     operation,
                     fallback_response or last_stream_event,
+                    model=model,
                 )
                 return LLMResponse(
                     provider="mistral",

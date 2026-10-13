@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     feedback BOOLEAN,
     answer_action TEXT,
     contextual_question TEXT,
-    search_hint TEXT,
+    abstain_detail TEXT,
     expanded_answer JSONB
 );
 

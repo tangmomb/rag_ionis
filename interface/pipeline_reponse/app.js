@@ -21,7 +21,7 @@ const nodes = [
   { id: "format", label: "Restitution sans LLM", sub: "Document ou réponse déjà prête", x: 700, y: 710, w: 220 },
   { id: "persist", label: "Finalisation et mémoire", sub: "Réponse, sources et conversation", x: 580, y: 794, w: 240 },
   { id: "end", label: "Réponse", x: 580, y: 874, w: 130, h: 30, terminal: true },
-  { id: "agent", label: "Recherche élargie", sub: "Agent : vidéos, stats, web", x: 870, y: 865, w: 230 },
+  { id: "agent", label: "Recherche élargie (proposée)", sub: "Si abstention du pipeline principal, au clic de l’utilisateur", extra: "Agent : vidéos, stats, web", x: 875, y: 856, w: 300, h: 66 },
 ].map(n => ({ w: 208, h: 48, ...n }));
 const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
 const edges = [
@@ -338,7 +338,7 @@ const scenarios = {
     "explanation": "Aucune vidéo ne parle de la capitale de l’Australie. Plutôt que d’inventer, le RAG répond « À première vue, je n’ai pas la réponse dans les vidéos » et propose d’élargir la recherche. L’agent trouve alors la réponse sur le web.",
     "steps": [
       "La recherche hybride ne trouve aucun passage qui réponde à la question.",
-      "Le LLM s’abstient ; sa piste de recherche (« capitale officielle de l’Australie ») est conservée.",
+      "Le LLM s’abstient ; son constat (ce que les sources couvrent ou non) est conservé pour l’agent.",
       "La réponse affiche « À première vue, je n’ai pas la réponse dans les vidéos » et le bouton « Élargir la recherche ? ».",
       "Au clic, l’agent choisit ses outils. Il n’a rien cherché dans la base ici ; invité à tenter le web avant de renoncer, il y trouve « Canberra », avec ses sources."
     ],
@@ -360,7 +360,7 @@ const recordedLlmOutputs = {
   ocean: { reformulate: { follow_up: false, reformulated_question: "Qu'est-ce que l'océan rouge ?", topic: "océan rouge" }, plan: { route: "search", analytics: false, analytics_scope: null, analytics_metric: null, analytics_order: null, analytics_rank_start: null, analytics_rank_end: null, query_text: "Qu'est-ce que l'océan rouge ?", query_text_bm25: "océan rouge définition", title_hints: [], persons: [], companies: [], published_after: null, published_before: null } },
   fadila: { reformulate: { follow_up: false, reformulated_question: "Quelles questions ont été posées à Fadila ?", topic: "questions posées à Fadila" }, plan: { route: "search", analytics: false, query_text: "Quelles questions ont été posées à Fadila ?", query_text_bm25: "questions posées Fadila", title_hints: [], persons: ["Fadila"], companies: [], published_after: null, published_before: null } },
   laura: { reformulate: { follow_up: false, reformulated_question: "Qui est Laura Tyan ?", topic: "Laura Tyan" }, plan: { route: "search", analytics: false, query_text: "Qui est Laura Tyan ?", query_text_bm25: "Laura Tyan identité biographie", title_hints: [], persons: ["Laura Tyan"], companies: [], published_after: null, published_before: null } },
-  australie: { reformulate: { follow_up: false, reformulated_question: "Quelle est la capitale de l'Australie ?", topic: "capitale de l'Australie" }, plan: { route: "search", analytics: false, query_text: "Quelle est la capitale de l'Australie ?", query_text_bm25: "capitale Australie", title_hints: [], persons: [], companies: [], published_after: null, published_before: null }, agent: { search_hint: "Quelle est la capitale officielle de l'Australie ?", tool_calls: [], web_nudged: true, web_searched: true, answer: "D'après le web, la capitale officielle de l'Australie est **Canberra**.", web_sources: ["https://fr.wikipedia.org/wiki/Canberra", "https://fr.wikipedia.org/wiki/Australie", "https://www.universalis.fr/encyclopedie/canberra/"] } },
+  australie: { reformulate: { follow_up: false, reformulated_question: "Quelle est la capitale de l'Australie ?", topic: "capitale de l'Australie" }, plan: { route: "search", analytics: false, query_text: "Quelle est la capitale de l'Australie ?", query_text_bm25: "capitale Australie", title_hints: [], persons: [], companies: [], published_after: null, published_before: null }, agent: { tool_calls: [], web_nudged: true, web_searched: true, answer: "D'après le web, la capitale officielle de l'Australie est **Canberra**.", web_sources: ["https://fr.wikipedia.org/wiki/Canberra", "https://fr.wikipedia.org/wiki/Australie", "https://www.universalis.fr/encyclopedie/canberra/"] } },
 };
 const staticStepOutputs = {
   initialize: "La requête, la conversation et les modèles sont préparés.",
@@ -378,7 +378,7 @@ const staticStepOutputs = {
   format: "La réponse ou le document déjà prêt est mis en forme sans appel LLM.",
   persist: "La réponse, les sources et le contexte de conversation sont enregistrés.",
   end: "La réponse finale est renvoyée à l’utilisateur.",
-  agent: "Après une abstention, le bouton « Élargir la recherche ? » lance un agent autonome : recherche dans les vidéos, statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
+  agent: "Étape facultative, jamais automatique : après une abstention du pipeline principal, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
 };
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const edgeId = (from, to) => `${from}--${to}`;
@@ -391,14 +391,14 @@ function edgePath(from, to) {
   if (from === "retrieval") return `M 930 683 C 850 683, 530 660, 455 734`;
   if (from === "direct") return `M 580 ${sy} C 580 665, 700 655, 700 ${ey}`;
   if (from === "lookup" && to === "generate") return `M 905 ${sy} C 905 650, 430 650, 430 ${ey}`;
-  if (to === "agent") return `M 645 889 L 755 889`;
+  if (to === "agent") return `M 645 889 L 725 889`;
   return `M ${a.x} ${sy} C ${a.x} ${(sy+ey)/2}, ${b.x} ${(sy+ey)/2}, ${b.x} ${ey}`;
 }
 const svg = document.querySelector("#pipeline-graph");
 svg.setAttribute("viewBox", "0 0 1160 925");
 svg.innerHTML = `<title id="graph-title">Graphe complet du pipeline de réponse RAG</title><desc id="graph-description"></desc>
   <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#383838" stroke-width="1.3"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#ffffff" stroke-width="1.6"/></marker></defs>
-  <g class="edges">${edges.map(([from,to]) => `<path id="${edgeId(from,to)}" class="edge" d="${edgePath(from,to)}" marker-end="url(#arrow)"/>`).join("")}</g>
+  <g class="edges">${edges.map(([from,to]) => `<path id="${edgeId(from,to)}" class="edge${to === "agent" ? " optional" : ""}" d="${edgePath(from,to)}" marker-end="url(#arrow)"/>`).join("")}</g>
   <g class="nodes">${nodes.map(n => `<g id="node-${n.id}" class="node ${n.terminal ? "terminal" : ""}" transform="translate(${n.x-n.w/2},${n.y})"><rect width="${n.w}" height="${n.h}" rx="7"/><text x="${n.w/2}" y="${n.sub ? 20 : 20}">${escapeHtml(n.label)}</text>${n.sub ? `<text class="subtitle" x="${n.w/2}" y="36">${escapeHtml(n.sub)}</text>` : ""}${n.extra ? `<text class="subtitle" x="${n.w/2}" y="52">${escapeHtml(n.extra)}</text>` : ""}</g>`).join("")}</g>`;
 const select = document.querySelector("#scenario");
 select.innerHTML = Object.entries(scenarios).map(([id, s]) => `<option value="${id}">${escapeHtml(s.question)}</option>`).join("");

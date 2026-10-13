@@ -48,14 +48,9 @@ ANSWER_ACTION_INSTRUCTION = (
     "porte sur plusieurs entités, périodes ou éléments (comparaison, « et », énumération) "
     "et que les sources n'en couvrent qu'une partie, choisis abstain. De même, si les sources "
     "traitent d'un sujet voisin ou d'autres personnes que celles demandées (par exemple des "
-    "enseignants au lieu de tuteurs en entreprise), choisis abstain. Avec answer, retry_query vaut null. Avec abstain, retry_query contient "
-    "une question de recherche autonome, détaillée et plus précise qui pourrait permettre de "
-    "répondre. Un échec provient souvent d'entités (personne, entreprise, vidéo ou intitulé) "
-    "non résolues : explicite-les avec leurs noms complets et tous les indices utiles. Si les sources "
-    "ne couvrent qu'une partie de la question, retry_query cible les éléments manquants. N'hésite pas "
-    "à formuler une question longue, en y incluant le maximum d'informations fiables de la demande "
-    "initiale et du contexte ; la question ayant échoué était peut-être trop courte ou insuffisamment "
-    "détaillée. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
+    "enseignants au lieu de tuteurs en entreprise), choisis abstain. Avec abstain, `answer` "
+    "constate en une ou deux phrases ce que les éléments fournis couvrent et ce qui manque, "
+    "sans rien ajouter de tes connaissances générales. "
     "Le champ `answer` contient uniquement le message final à afficher et "
     "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )
@@ -76,12 +71,8 @@ ANSWER_RESPONSE_SCHEMA: dict[str, Any] = {
             # parse_answer_output below.
             "items": {"type": "integer"},
         },
-        # Keep the nullable form consistent with the planner schema.
-        "retry_query": {
-            "anyOf": [{"type": "string"}, {"type": "null"}],
-        },
     },
-    "required": ["answer", "action", "source_indexes", "retry_query"],
+    "required": ["answer", "action", "source_indexes"],
     "additionalProperties": False,
 }
 
@@ -155,14 +146,12 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
         if trace is not None:
             trace["action"] = fallback_action
             trace["source_indexes"] = []
-            trace["retry_query"] = None
         return raw_answer
 
     if not isinstance(payload, dict):
         if trace is not None:
             trace["action"] = fallback_action
             trace["source_indexes"] = []
-            trace["retry_query"] = None
         return raw_answer
 
     action = payload.get("action")
@@ -178,23 +167,6 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
             )
         ) if isinstance(raw_source_indexes, list) else []
         trace["source_indexes"] = source_indexes
-        raw_retry_query = payload.get("retry_query")
-        retry_query = (
-            raw_retry_query.strip()
-            if isinstance(raw_retry_query, str)
-            else ""
-        )
-        retry_query = (
-            retry_query
-            if action == "abstain"
-            and retry_query
-            and not re.match(
-                r"^(?:select|with|insert|update|delete|alter|drop|create|merge)\b",
-                retry_query,
-                flags=re.IGNORECASE,
-            )
-            else None
-        )
         if action == "abstain" and source_indexes:
             # Never upgrade an abstention: sources close to the topic are not
             # an answer. Drop the citations so no carousel is shown.
@@ -206,7 +178,6 @@ def parse_answer_output(raw_answer: str, trace: dict[str, Any] | None = None) ->
                 "source_indexes": source_indexes,
             }
         trace["action"] = action
-        trace["retry_query"] = retry_query
     answer = str(payload.get("answer") or "").strip()
     if not answer and action == "abstain":
         return ABSTAIN_FALLBACK_ANSWER

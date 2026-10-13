@@ -9,6 +9,7 @@ conversation memory or any write path.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Callable
 
 from mistralai.client import Mistral
@@ -18,6 +19,8 @@ from interface.backend.config import DEFAULT_ANALYTICS_SQL_MODEL, DEFAULT_RESEAR
 from interface.backend.generation import select_answer_sources
 from interface.backend.llm_providers import (
     LLMProviderError,
+    add_llm_message_attributes,
+    add_llm_usage_attributes,
     configured_request_timeout_seconds,
     provider_api_key,
 )
@@ -29,27 +32,39 @@ from interface.backend.utilities import get_llm_client
 
 # The model may issue several calls per round: the budget counts calls, the
 # round limit only guarantees the loop ends.
-MAX_TOOL_CALLS = 6
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_CALLS = 3
+MAX_TOOL_ROUNDS = 2
 MAX_TOOL_SOURCES = 5
 MAX_EXCERPT_CHARS = 900
 MAX_WEB_SOURCES = 5
+# The abstention is meant to be one or two sentences; a malformed answer
+# stored as-is must not flood the agent's input.
+MAX_ABSTAIN_DETAIL_CHARS = 600
 
 RESEARCH_AGENT_INSTRUCTIONS = (
     "Tu es l'agent de recherche élargie d'un assistant qui répond à partir des "
-    "vidéos YouTube de l'école IONIS-STM. Une première recherche n'a pas trouvé "
-    "la réponse. Interprète la question dans le contexte d'IONIS-STM.\n\n"
+    "vidéos YouTube de l'école IONIS-STM. La question a échoué en recherche "
+    "simple dans les vidéos ; le constat de cet échec t'est donné quand il "
+    "existe. À toi de reformuler et de décomposer la question pour tes propres "
+    "recherches. Le contexte d'IONIS-STM sert seulement à lever une ambiguïté : "
+    "réponds à la question telle qu'elle est posée, sans chercher ni suggérer "
+    "de lien avec l'école quand la question n'en demande pas.\n\n"
     "Outils :\n"
-    "- rechercher_videos : passages des transcriptions des vidéos. Reformule, "
+    "- recherche_via_embeddings : passages des transcriptions des vidéos. Reformule, "
     "utilise d'autres mots-clés, et décompose les questions à plusieurs "
     "entités (une recherche par personne, entreprise ou sujet comparé).\n"
     "- interroger_statistiques : vues, likes, commentaires, dates de "
     "publication et intervenants des vidéos. Seules ces données existent : "
     "partages, temps de visionnage ou abonnés sont indisponibles.\n"
     "- web_search : le web, hors de la base vidéo. Utilise-le seulement si "
-    "les vidéos ne suffisent pas.\n\n"
-    f"Budget : au plus {MAX_TOOL_CALLS} appels d'outils au total ; évite les "
-    "recherches quasi identiques.\n\n"
+    "les vidéos ne suffisent pas, et au plus une fois : une seule recherche web, "
+    "qui peut couvrir plusieurs aspects de la question. Ne relance pas de "
+    "recherche web pour vérifier ou compléter des informations déjà trouvées.\n\n"
+    "Une recherche_via_embeddings sur la question elle-même a déjà été lancée : "
+    "son appel et ses résultats figurent dans la conversation. Ne la refais pas "
+    "à l'identique.\n\n"
+    f"Budget : au plus {MAX_TOOL_CALLS} appels d'outils au total, recherche "
+    "initiale comprise ; évite les recherches quasi identiques.\n\n"
     "Réponse : en français, concise, en Markdown. Pour chaque information issue "
     "d'une vidéo, cite l'URL de la vidéo. Introduis toute information issue du "
     "web par « D'après le web » et ne la présente jamais comme provenant des "
@@ -65,7 +80,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "rechercher_videos",
+            "name": "recherche_via_embeddings",
             "description": "Recherche hybride (mots-clés + sémantique) dans les transcriptions des vidéos IONIS-STM.",
             "parameters": {
                 "type": "object",
@@ -146,22 +161,31 @@ def query_statistics(question: str) -> tuple[dict[str, Any], list[dict[str, Any]
 
 
 TOOL_HANDLERS: dict[str, Callable[[str], tuple[dict[str, Any], list[dict[str, Any]]]]] = {
-    "rechercher_videos": search_videos,
+    "recherche_via_embeddings": search_videos,
     "interroger_statistiques": query_statistics,
 }
-TOOL_ARGUMENT = {"rechercher_videos": "requete", "interroger_statistiques": "question"}
+TOOL_ARGUMENT = {"recherche_via_embeddings": "requete", "interroger_statistiques": "question"}
+INITIAL_TOOL = "recherche_via_embeddings"
+INITIAL_TOOL_CALL_ID = "initialsearch"
 
 
 def run_tool_call(call: Any) -> tuple[str, list[dict[str, Any]]]:
     name = str(getattr(call, "name", ""))
-    handler = TOOL_HANDLERS.get(name)
-    if handler is None:
+    if name not in TOOL_HANDLERS:
         return json.dumps({"erreur": f"Outil inconnu : {name}"}, ensure_ascii=False), []
     try:
         arguments = getattr(call, "arguments", "") or "{}"
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
         value = str(arguments.get(TOOL_ARGUMENT[name]) or "").strip()
+    except Exception as exc:
+        return json.dumps({"erreur": str(exc)}, ensure_ascii=False), []
+    return execute_tool(name, value)
+
+
+def execute_tool(name: str, value: str) -> tuple[str, list[dict[str, Any]]]:
+    handler = TOOL_HANDLERS[name]
+    try:
         if not value:
             raise ValueError("argument vide")
         with trace_operation(
@@ -208,6 +232,25 @@ WEB_CLAIM_MARKERS = ("d'après le web", "d’après le web")
 NO_RELIABLE_ANSWER = "Je n'ai rien trouvé de fiable dans les vidéos ni sur le web."
 
 
+def _has_web_marker(answer: str) -> bool:
+    return any(marker in answer.lower() for marker in WEB_CLAIM_MARKERS)
+
+
+def _consulted_web_pages(searches: list[list[dict[str, Any]]]) -> list[dict[str, str]]:
+    """Best-ranked pages first, alternating between searches, without duplicates."""
+    pages: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for rank in range(max((len(results) for results in searches), default=0)):
+        for results in searches:
+            if rank >= len(results):
+                continue
+            url = str(results[rank].get("url") or "").strip()
+            if url.startswith(("http://", "https://")) and url not in seen_urls:
+                seen_urls.add(url)
+                pages.append({"title": str(results[rank].get("title") or url), "url": url})
+    return pages[:MAX_WEB_SOURCES]
+
+
 def _ran_web_search(response: Any) -> bool:
     return any(
         getattr(o, "type", None) == "tool.execution" and getattr(o, "name", None) == "web_search"
@@ -250,10 +293,153 @@ def _function_calls(response: Any) -> list[Any]:
     return [o for o in (response.outputs or []) if getattr(o, "type", None) == "function.call"]
 
 
+def _conversation_input_messages(inputs: Any) -> list[dict[str, Any]]:
+    """Map Conversations API inputs to the role/content cards Phoenix renders."""
+    if isinstance(inputs, str):
+        return [{"role": "user", "content": inputs}]
+    messages = []
+    for entry in inputs:
+        if entry.get("type") == "function.result":
+            messages.append({"role": "tool", "content": str(entry.get("result", ""))})
+        elif entry.get("type") == "function.call":
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"name": entry.get("name"), "arguments": entry.get("arguments")}],
+                }
+            )
+        else:
+            messages.append({"role": str(entry.get("role", "user")), "content": str(entry.get("content", ""))})
+    return messages
+
+
+def _timestamp_ns(value: Any) -> int | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1_000_000_000)
+    return None
+
+
+def _web_search_results(execution: Any) -> list[dict[str, Any]]:
+    info = getattr(execution, "info", None) or {}
+    raw = info.get("result") if isinstance(info, dict) else getattr(info, "result", None)
+    try:
+        results = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(results, dict):
+        return []
+    entries = [entry for entry in results.values() if isinstance(entry, dict)]
+    return sorted(entries, key=lambda entry: entry.get("rank") if isinstance(entry.get("rank"), int) else 0)
+
+
+def trace_web_searches(response: Any) -> None:
+    """Expose each web search Mistral ran server side as a retriever span.
+
+    Its query and results otherwise only appear in the raw LLM span output.
+    """
+    for execution in response.outputs or []:
+        if getattr(execution, "type", None) != "tool.execution" or getattr(execution, "name", None) != "web_search":
+            continue
+        try:
+            query = json.loads(getattr(execution, "arguments", "") or "{}").get("query")
+        except (json.JSONDecodeError, AttributeError):
+            query = None
+        results = _web_search_results(execution)
+        with trace_operation(
+            "research_agent.web_search",
+            kind="RETRIEVER",
+            input_value={"query": query},
+            attributes={"web_search.result_count": len(results)},
+            start_time_ns=_timestamp_ns(getattr(execution, "created_at", None)),
+            end_time_ns=_timestamp_ns(getattr(execution, "completed_at", None)),
+        ) as span:
+            span.set_documents(
+                "retrieval.documents",
+                [
+                    {
+                        "chunk_id": entry.get("url"),
+                        "text": "\n".join(
+                            str(part)
+                            for part in [entry.get("title"), entry.get("description"), *(entry.get("snippets") or [])]
+                            if part
+                        ),
+                    }
+                    for entry in results
+                ],
+            )
+            span.set_output(
+                [
+                    {
+                        "title": entry.get("title"),
+                        "url": entry.get("url"),
+                        "description": entry.get("description"),
+                        "snippets": entry.get("snippets") or [],
+                    }
+                    for entry in results
+                ]
+            )
+
+
+def traced_conversation_call(call: Callable[..., Any], operation: str, **kwargs: Any) -> Any:
+    """Run one Conversations API call inside a Phoenix LLM span.
+
+    The agent talks to Mistral's Conversations API directly, so none of the
+    provider-level spans in llm_providers cover it.
+    """
+    model = DEFAULT_RESEARCH_AGENT_MODEL
+    input_messages = _conversation_input_messages(kwargs["inputs"])
+    if kwargs.get("instructions"):
+        input_messages.insert(0, {"role": "system", "content": kwargs["instructions"]})
+    with trace_operation(
+        model,
+        kind="LLM",
+        input_value=input_messages,
+        attributes={
+            "llm.provider": "mistral",
+            "llm.system": "mistral",
+            "llm.model_name": model,
+            "llm.invocation_parameters": {"model": model, "operation": operation},
+        },
+    ) as span:
+        add_llm_message_attributes(span, "llm.input_messages", input_messages)
+        for message_index, message in enumerate(input_messages):
+            for call_index, tool_call in enumerate(message.get("tool_calls", [])):
+                tool_prefix = (
+                    f"llm.input_messages.{message_index}.message.tool_calls.{call_index}.tool_call.function"
+                )
+                span.set_attribute(f"{tool_prefix}.name", str(tool_call["name"]))
+                span.set_attribute(f"{tool_prefix}.arguments", str(tool_call["arguments"]))
+        response = call(**kwargs)
+        text, _ = parse_final_message(list(response.outputs or []))
+        prefix = "llm.output_messages.0.message"
+        span.set_attribute(f"{prefix}.role", "assistant")
+        span.set_attribute(f"{prefix}.content", text)
+        for index, function_call in enumerate(_function_calls(response)):
+            tool_prefix = f"{prefix}.tool_calls.{index}.tool_call.function"
+            span.set_attribute(f"{tool_prefix}.name", str(function_call.name))
+            span.set_attribute(f"{tool_prefix}.arguments", str(function_call.arguments))
+        span.set_attribute("research_agent.web_searched", _ran_web_search(response))
+        trace_web_searches(response)
+        span.set_output(
+            response.model_dump(mode="json") if hasattr(response, "model_dump") else text
+        )
+        add_llm_usage_attributes(span, response, model=model)
+    return response
+
+
 def run_research_agent(
     question: str,
-    search_hint: str | None = None,
+    abstain_detail: str | None = None,
     client: Mistral | None = None,
+    *,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
 ) -> dict[str, Any]:
     if client is None:
         api_key = provider_api_key("mistral")
@@ -262,28 +448,70 @@ def run_research_agent(
         client = Mistral(api_key=api_key)
     timeout_ms = int(configured_request_timeout_seconds() * 1000)
     user_input = f"Question : {question}"
-    if search_hint and search_hint.strip() != question.strip():
-        user_input += f"\nPiste proposée par la première recherche : {search_hint}"
+    if abstain_detail and abstain_detail.strip():
+        user_input += (
+            "\nConstat de la recherche simple qui a échoué : "
+            f"{abstain_detail.strip()[:MAX_ABSTAIN_DETAIL_CHARS]}"
+        )
+    initial_query = question.strip()
 
     video_sources: list[dict[str, Any]] = []
     tool_calls: list[dict[str, str]] = []
+    # A separate request from the RAG answer: its own trace, attached to the
+    # conversation's Phoenix session and to the abstained message.
     with trace_operation(
         "research_agent",
         kind="AGENT",
-        input_value={"question": question, "search_hint": search_hint},
+        input_value={"question": question, "abstain_detail": abstain_detail},
+        attributes={"rag.message_id": message_id},
+        root=True,
     ) as span:
+        span.set_session_id(conversation_id)
+        # Left free, the model may go straight to the web and miss a speaker
+        # who is in the videos; Conversations cannot force one function, so
+        # one video search on the question runs before the agent starts.
+        initial_result, initial_sources = execute_tool(INITIAL_TOOL, initial_query)
+        video_sources.extend(initial_sources)
+        initial_arguments = json.dumps({TOOL_ARGUMENT[INITIAL_TOOL]: initial_query}, ensure_ascii=False)
+        tool_calls.append({"tool": INITIAL_TOOL, "arguments": initial_arguments})
+        # Passed as a function call/result pair, so the model and the
+        # conversation history see it as a tool call like its own ones.
+        start_inputs = [
+            {"type": "message.input", "role": "user", "content": user_input},
+            {
+                "type": "function.call",
+                "tool_call_id": INITIAL_TOOL_CALL_ID,
+                "name": INITIAL_TOOL,
+                "arguments": initial_arguments,
+            },
+            {"type": "function.result", "tool_call_id": INITIAL_TOOL_CALL_ID, "result": initial_result},
+        ]
         # store=True is required to append tool results; the conversation is
         # deleted at the end so nothing stays on Mistral's side.
-        response = client.beta.conversations.start(
+        response = traced_conversation_call(
+            client.beta.conversations.start,
+            "start",
             model=DEFAULT_RESEARCH_AGENT_MODEL,
             instructions=RESEARCH_AGENT_INSTRUCTIONS,
-            inputs=user_input,
+            inputs=start_inputs,
             tools=[*FUNCTION_TOOLS, {"type": "web_search"}],
             store=True,
             timeout_ms=timeout_ms,
         )
-        conversation_id = response.conversation_id
-        state = {"remaining_calls": MAX_TOOL_CALLS, "web_searched": _ran_web_search(response)}
+        mistral_conversation_id = response.conversation_id
+        state = {"remaining_calls": MAX_TOOL_CALLS - 1, "web_searched": False}
+        consulted_web_searches: list[list[dict[str, Any]]] = []
+
+        def record_web_searches(response: Any) -> None:
+            state["web_searched"] = state["web_searched"] or _ran_web_search(response)
+            consulted_web_searches.extend(
+                _web_search_results(execution)
+                for execution in response.outputs or []
+                if getattr(execution, "type", None) == "tool.execution"
+                and getattr(execution, "name", None) == "web_search"
+            )
+
+        record_web_searches(response)
 
         def run_tool_rounds(response: Any) -> Any:
             for round_index in range(MAX_TOOL_ROUNDS + 1):
@@ -305,12 +533,14 @@ def run_research_agent(
                     results.append(
                         {"type": "function.result", "tool_call_id": call.tool_call_id, "result": result}
                     )
-                response = client.beta.conversations.append(
-                    conversation_id=conversation_id,
+                response = traced_conversation_call(
+                    client.beta.conversations.append,
+                    "append",
+                    conversation_id=mistral_conversation_id,
                     inputs=results,
                     timeout_ms=timeout_ms,
                 )
-                state["web_searched"] = state["web_searched"] or _ran_web_search(response)
+                record_web_searches(response)
             return response
 
         web_nudged = False
@@ -321,29 +551,43 @@ def run_research_agent(
             # give up before trying it. One nudge, then its answer stands.
             if not state["web_searched"] and not _cites_any(draft, video_sources):
                 web_nudged = True
-                response = client.beta.conversations.append(
-                    conversation_id=conversation_id,
+                response = traced_conversation_call(
+                    client.beta.conversations.append,
+                    "append",
+                    conversation_id=mistral_conversation_id,
                     inputs=[{"type": "message.input", "role": "user", "content": WEB_LAST_RESORT_NUDGE}],
                     timeout_ms=timeout_ms,
                 )
-                state["web_searched"] = state["web_searched"] or _ran_web_search(response)
+                record_web_searches(response)
                 response = run_tool_rounds(response)
         finally:
             try:
-                client.beta.conversations.delete(conversation_id=conversation_id)
+                client.beta.conversations.delete(conversation_id=mistral_conversation_id)
             except Exception:
                 pass
 
         answer, web_sources = parse_final_message(list(response.outputs or []))
         web_searched = state["web_searched"]
         web_claim_removed = False
-        if not (web_searched and web_sources):
+        consulted_pages = _consulted_web_pages(consulted_web_searches)
+        web_sources_from_search = False
+        if web_searched and not web_sources and consulted_pages:
+            # Mistral sometimes answers from its web search without citing
+            # any page: show the pages it read so the answer stays checkable.
+            web_sources = consulted_pages
+            web_sources_from_search = True
+        elif not (web_searched and web_sources):
             answer, web_claim_removed = strip_unsourced_web_claims(answer)
             web_sources = []
-        if not answer:
-            answer = NO_RELIABLE_ANSWER
         unique_sources = list({s.get("video_url"): s for s in video_sources if s.get("video_url")}.values())
         answer, cited_videos = select_answer_sources(answer, unique_sources)
+        if web_sources_from_search and not cited_videos and not _has_web_marker(answer):
+            answer = f"D'après le web :\n\n{answer}"
+        unsourced_answer_removed = bool(answer) and not (cited_videos or web_sources)
+        if not answer or unsourced_answer_removed:
+            # Backed by neither a video nor a web page, the answer can only
+            # come from the model's general knowledge.
+            answer = NO_RELIABLE_ANSWER
         result = {
             "answer": answer,
             "sources": [
@@ -359,6 +603,8 @@ def run_research_agent(
             "web_searched": web_searched,
             "web_nudged": web_nudged,
             "web_claim_removed": web_claim_removed,
+            "web_sources_from_search": web_sources_from_search,
+            "unsourced_answer_removed": unsourced_answer_removed,
         }
         span.set_output(result)
     return result

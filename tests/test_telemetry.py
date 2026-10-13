@@ -44,6 +44,26 @@ class TraceOperationTests(unittest.TestCase):
         self.assertIsNotNone(tracer.context)
         self.assertFalse(trace.get_current_span(tracer.context).get_span_context().is_valid)
 
+    def test_span_can_carry_the_timings_of_a_provider_side_operation(self) -> None:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        with (
+            patch.object(telemetry, "_ENABLED", True),
+            patch.object(telemetry, "_TRACER", provider.get_tracer("test")),
+        ):
+            with telemetry.trace_operation(
+                "web_search", start_time_ns=1_000, end_time_ns=5_000
+            ):
+                pass
+
+        (span,) = exporter.get_finished_spans()
+        self.assertEqual((span.start_time, span.end_time), (1_000, 5_000))
+
     def test_set_output_text_uses_plain_text_mime_type(self) -> None:
         span = _RecordingSpan()
 

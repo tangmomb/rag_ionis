@@ -214,6 +214,41 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(attributes["llm.cost.completion"], 0.00003)
         self.assertEqual(attributes["llm.cost.total"], 0.000048)
 
+    def test_web_search_connector_tokens_and_calls_are_priced(self) -> None:
+        operation = MagicMock()
+        # Shape returned by the Conversations API after a web search.
+        usage = SimpleNamespace(
+            prompt_tokens=5644,
+            completion_tokens=227,
+            total_tokens=20857,
+            connector_tokens=14986,
+            connectors={"web_search": 3},
+        )
+
+        with (
+            patch.dict(os.environ, {llm_providers.WEB_SEARCH_COST_ENV: "0.03"}),
+            llm_providers.track_llm_costs() as totals,
+        ):
+            llm_providers.add_llm_usage_attributes(
+                operation,
+                SimpleNamespace(usage=usage),
+                model="mistral-large-latest",
+            )
+
+        attributes = {
+            item.args[0]: item.args[1]
+            for item in operation.set_attribute.call_args_list
+        }
+        self.assertEqual(attributes["llm.token_count.connector"], 14986)
+        self.assertEqual(attributes["llm.web_search.calls"], 3)
+        self.assertAlmostEqual(attributes["llm.cost.connector"], 0.007493)
+        self.assertAlmostEqual(attributes["llm.cost.web_search"], 0.09)
+        self.assertAlmostEqual(
+            attributes["llm.cost.total"], 0.002822 + 0.0003405 + 0.007493 + 0.09
+        )
+        self.assertAlmostEqual(totals.tools_usd, 0.097493)
+        self.assertAlmostEqual(totals.total_usd, attributes["llm.cost.total"])
+
     def test_usage_from_stream_event_reads_nested_mistral_data(self) -> None:
         usage = {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}
 
@@ -488,6 +523,37 @@ class LlmProviderTests(unittest.TestCase):
             )
 
         self.assertNotIn("base_url", mistral.call_args.kwargs)
+
+    def test_streamed_mistral_answer_is_priced(self) -> None:
+        def event(data: dict) -> SimpleNamespace:
+            # Same shape as the SDK: payload under .data, usage on the last event.
+            return SimpleNamespace(data=SimpleNamespace(**data), model_dump=lambda mode: {"data": data})
+
+        events = [
+            event({"choices": [{"delta": {"content": "Bonjour"}}]}),
+            event(
+                {
+                    "choices": [{"delta": {}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100},
+                }
+            ),
+        ]
+        client = Mock()
+        client.chat.stream.return_value = iter(events)
+        with (
+            patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "Mistral", return_value=client),
+            llm_providers.track_llm_costs() as totals,
+        ):
+            response = llm_providers.create_llm_response(
+                model="mistral-medium-latest",
+                input="Bonjour",
+                stream_callback=lambda _fragment: None,
+            )
+
+        self.assertEqual(response.output_text, "Bonjour")
+        self.assertEqual(totals.priced_calls, 1)
+        self.assertAlmostEqual(totals.total_usd, 1000 * 1.5 / 1e6 + 100 * 7.5 / 1e6)
 
     def test_mistral_rejects_missing_structured_result(self) -> None:
         raw = SimpleNamespace(model_dump=lambda mode: {"choices": [{"message": {"content": "texte non structure"}}]})

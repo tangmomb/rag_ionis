@@ -34,7 +34,7 @@ from interface.backend.generation import (
     generate_final_answer,
     select_answer_sources,
 )
-from interface.backend.orchestration import orchestrate_request
+from interface.backend.orchestration_graph import RAG_ORCHESTRATION_GRAPH
 from interface.backend.llm_providers import (
     LLM_MODEL_CATALOG,
     LLMProviderError,
@@ -58,7 +58,11 @@ ABSTAIN_ANSWER = "À première vue, je n'ai pas la réponse dans les vidéos."
 
 
 class RagResponseState(TypedDict, total=False):
-    """State passed between the existing response-pipeline steps."""
+    """State passed between the response-pipeline steps.
+
+    payload, answer, sources and retrieval are shared with the orchestration
+    subgraph, which reads and writes them directly.
+    """
 
     payload: dict[str, Any]
     answer: str
@@ -77,6 +81,8 @@ class MessageFeedbackRequest(BaseModel):
 
 @dataclass
 class RagResponseContext:
+    # LLM client of the orchestration subgraph's nodes.
+    client: Any = None
     answer_client: Any = None
     stream_callback: Callable[[str], None] | None = None
     stage_callback: Callable[[str, str], None] | None = None
@@ -107,31 +113,6 @@ def _stage_node(name: str, node: Callable[..., dict[str, Any]]):
 
 def _response_payload(state: RagResponseState) -> RagRequest:
     return RagRequest.model_validate(state["payload"])
-
-
-def _orchestrate_response(
-    state: RagResponseState,
-    runtime: Runtime[RagResponseContext],
-) -> dict[str, Any]:
-    payload = _response_payload(state)
-    with trace_operation(
-        "orchestration",
-        kind="AGENT",
-        input_value=payload.model_dump(),
-    ) as orchestration_span:
-        answer, sources, retrieval = orchestrate_request(payload)
-        orchestration_span.set_output(
-            {
-                "answer_provided": bool(answer),
-                "sources": sources,
-                "retrieval": retrieval,
-            }
-        )
-    return {
-        "answer": answer,
-        "sources": sources,
-        "retrieval": retrieval,
-    }
 
 
 def _generate_response(
@@ -341,7 +322,9 @@ def build_rag_response_graph():
         RagResponseState,
         context_schema=RagResponseContext,
     )
-    graph.add_node("orchestrate", _stage_node("orchestrate", _orchestrate_response))
+    # Added as a subgraph, not called from a node, so LangGraph Studio shows
+    # the whole pipeline in one graph. It reports its own "orchestrate" stage.
+    graph.add_node("orchestrate", RAG_ORCHESTRATION_GRAPH)
     graph.add_node("generate", _stage_node("generate", _generate_response))
     graph.add_node("accept_precomputed", _stage_node("accept_precomputed", _accept_precomputed_response))
     graph.add_node("finalize", _stage_node("finalize", _finalize_response))
@@ -418,6 +401,7 @@ def execute_rag(
         result = RAG_RESPONSE_GRAPH.invoke(
             {"payload": payload.model_dump()},
             context=RagResponseContext(
+                client=get_llm_client(),
                 stream_callback=stream_callback,
                 stage_callback=stage_callback,
                 response_ready_callback=response_ready_callback,

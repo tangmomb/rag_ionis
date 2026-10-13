@@ -18,6 +18,8 @@ from interface.backend.config import DEFAULT_ANALYTICS_SQL_MODEL, DEFAULT_RESEAR
 from interface.backend.generation import select_answer_sources
 from interface.backend.llm_providers import (
     LLMProviderError,
+    add_llm_message_attributes,
+    add_llm_usage_attributes,
     configured_request_timeout_seconds,
     provider_api_key,
 )
@@ -250,10 +252,65 @@ def _function_calls(response: Any) -> list[Any]:
     return [o for o in (response.outputs or []) if getattr(o, "type", None) == "function.call"]
 
 
+def _conversation_input_messages(inputs: Any) -> list[dict[str, str]]:
+    """Map Conversations API inputs to the role/content cards Phoenix renders."""
+    if isinstance(inputs, str):
+        return [{"role": "user", "content": inputs}]
+    messages = []
+    for entry in inputs:
+        if entry.get("type") == "function.result":
+            messages.append({"role": "tool", "content": str(entry.get("result", ""))})
+        else:
+            messages.append({"role": str(entry.get("role", "user")), "content": str(entry.get("content", ""))})
+    return messages
+
+
+def traced_conversation_call(call: Callable[..., Any], operation: str, **kwargs: Any) -> Any:
+    """Run one Conversations API call inside a Phoenix LLM span.
+
+    The agent talks to Mistral's Conversations API directly, so none of the
+    provider-level spans in llm_providers cover it.
+    """
+    model = DEFAULT_RESEARCH_AGENT_MODEL
+    input_messages = _conversation_input_messages(kwargs["inputs"])
+    if kwargs.get("instructions"):
+        input_messages.insert(0, {"role": "system", "content": kwargs["instructions"]})
+    with trace_operation(
+        model,
+        kind="LLM",
+        input_value=input_messages,
+        attributes={
+            "llm.provider": "mistral",
+            "llm.system": "mistral",
+            "llm.model_name": model,
+            "llm.invocation_parameters": {"model": model, "operation": operation},
+        },
+    ) as span:
+        add_llm_message_attributes(span, "llm.input_messages", input_messages)
+        response = call(**kwargs)
+        text, _ = parse_final_message(list(response.outputs or []))
+        prefix = "llm.output_messages.0.message"
+        span.set_attribute(f"{prefix}.role", "assistant")
+        span.set_attribute(f"{prefix}.content", text)
+        for index, function_call in enumerate(_function_calls(response)):
+            tool_prefix = f"{prefix}.tool_calls.{index}.tool_call.function"
+            span.set_attribute(f"{tool_prefix}.name", str(function_call.name))
+            span.set_attribute(f"{tool_prefix}.arguments", str(function_call.arguments))
+        span.set_attribute("research_agent.web_searched", _ran_web_search(response))
+        span.set_output(
+            response.model_dump(mode="json") if hasattr(response, "model_dump") else text
+        )
+        add_llm_usage_attributes(span, response, model=model)
+    return response
+
+
 def run_research_agent(
     question: str,
     search_hint: str | None = None,
     client: Mistral | None = None,
+    *,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
 ) -> dict[str, Any]:
     if client is None:
         api_key = provider_api_key("mistral")
@@ -267,14 +324,21 @@ def run_research_agent(
 
     video_sources: list[dict[str, Any]] = []
     tool_calls: list[dict[str, str]] = []
+    # A separate request from the RAG answer: its own trace, attached to the
+    # conversation's Phoenix session and to the abstained message.
     with trace_operation(
         "research_agent",
         kind="AGENT",
         input_value={"question": question, "search_hint": search_hint},
+        attributes={"rag.message_id": message_id},
+        root=True,
     ) as span:
+        span.set_session_id(conversation_id)
         # store=True is required to append tool results; the conversation is
         # deleted at the end so nothing stays on Mistral's side.
-        response = client.beta.conversations.start(
+        response = traced_conversation_call(
+            client.beta.conversations.start,
+            "start",
             model=DEFAULT_RESEARCH_AGENT_MODEL,
             instructions=RESEARCH_AGENT_INSTRUCTIONS,
             inputs=user_input,
@@ -282,7 +346,7 @@ def run_research_agent(
             store=True,
             timeout_ms=timeout_ms,
         )
-        conversation_id = response.conversation_id
+        mistral_conversation_id = response.conversation_id
         state = {"remaining_calls": MAX_TOOL_CALLS, "web_searched": _ran_web_search(response)}
 
         def run_tool_rounds(response: Any) -> Any:
@@ -305,8 +369,10 @@ def run_research_agent(
                     results.append(
                         {"type": "function.result", "tool_call_id": call.tool_call_id, "result": result}
                     )
-                response = client.beta.conversations.append(
-                    conversation_id=conversation_id,
+                response = traced_conversation_call(
+                    client.beta.conversations.append,
+                    "append",
+                    conversation_id=mistral_conversation_id,
                     inputs=results,
                     timeout_ms=timeout_ms,
                 )
@@ -321,8 +387,10 @@ def run_research_agent(
             # give up before trying it. One nudge, then its answer stands.
             if not state["web_searched"] and not _cites_any(draft, video_sources):
                 web_nudged = True
-                response = client.beta.conversations.append(
-                    conversation_id=conversation_id,
+                response = traced_conversation_call(
+                    client.beta.conversations.append,
+                    "append",
+                    conversation_id=mistral_conversation_id,
                     inputs=[{"type": "message.input", "role": "user", "content": WEB_LAST_RESORT_NUDGE}],
                     timeout_ms=timeout_ms,
                 )
@@ -330,7 +398,7 @@ def run_research_agent(
                 response = run_tool_rounds(response)
         finally:
             try:
-                client.beta.conversations.delete(conversation_id=conversation_id)
+                client.beta.conversations.delete(conversation_id=mistral_conversation_id)
             except Exception:
                 pass
 

@@ -333,7 +333,8 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_message, contextual_question, search_hint, answer_action, expanded_answer
+                SELECT user_message, contextual_question, search_hint, answer_action, expanded_answer,
+                       conversation_id
                 FROM chat.messages
                 WHERE id = %s AND answer_message IS NOT NULL
                 """,
@@ -348,6 +349,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
         "search_hint": row[2],
         "answer_action": row[3],
         "expanded_answer": row[4],
+        "conversation_id": row[5],
     }
 
 

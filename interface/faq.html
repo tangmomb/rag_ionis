@@ -105,9 +105,9 @@
             >
               <ol class="faq-steps">
                 <li>
-                  <strong>Récupération des informations.</strong> J’appelle
-                  l’API YouTube, qui me renvoie toutes les informations des
-                  vidéos. J’obtiens un JSON par vidéo avec notamment ses titre,
+                  <strong>Récupération des informations.</strong> L’API YouTube
+                  renvoie toutes les informations des vidéos : un JSON par
+                  vidéo avec notamment ses titre,
                   description, durée...
                 </li>
                 <li>
@@ -117,8 +117,9 @@
                 <li>
                   <strong>Traitement des vidéos.</strong>
                   <p>
-                    Je veux extraire la transcription et les speakers pour
-                    chaque vidéo, mais aussi répondre aux questions suivantes :
+                    L’objectif est d’extraire la transcription et les speakers
+                    de chaque vidéo, mais aussi de répondre aux questions
+                    suivantes :
                   </p>
                   <ul class="faq-detail-list">
                     <li>
@@ -209,7 +210,7 @@
                     Chaque vidéo suit donc un pipeline de préparation stricte
                     selon plusieurs paramètres détectés au fil du pipeline
                     (vidéo très longue, interview, motion design&nbsp;?).<br />
-                    À la toute fin, j’obtiens notamment un transcript enrichi
+                    À la toute fin, le pipeline produit notamment un transcript enrichi
                     (avec timecodes, speakers, questions posées) et un
                     transcript classique. C'est le transcript classique qui est
                     découpé en chunks, puis les chunks partent vers le modèle
@@ -255,10 +256,11 @@
               hidden
             >
               <p>
-                J’ai d’un côté les vidéos et leurs artefacts produits par le
-                pipeline de préparation, stockés chez Scaleway et de l'autre les
-                infos nécessaires à la recherche qui sont stockées dans
-                PostgreSQL avec pgvector pour les embeddings.
+                Les vidéos sont téléchargées puis elles passent dans le pipeline
+                de préparation, tout ceci est stocké chez Scaleway. La base
+                PostgreSQL (avec l'extension pgvector) tourne dans un conteneur
+                Docker sur le VPS ; ses données sont conservées dans un volume
+                Docker persistant, qui survit aux redéploiements.
               </p>
               <div class="faq-storage-examples">
                 <figure>
@@ -429,7 +431,7 @@
               <p>
                 La base PostgreSQL stocke les chunks et leurs embeddings, ainsi
                 que les métadonnées de leur vidéo source : URL, titre, date de
-                publication, intervenants détectés et leur rôle, statistiques,
+                publication, intervenants détectés et leurs rôles, statistiques,
                 miniature, type de vidéo et présence de sous-titres. Les chunks
                 conservent les liens avec leur vidéo ou leurs résumés parents
                 éventuels.
@@ -501,6 +503,16 @@
             >
               Comment est gérée la mémoire conversationnelle ?
             </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="echec-rag"
+              data-faq-answer="echec-rag"
+            >
+              Et si le RAG échoue à répondre ?
+            </button>
           </div>
           <div class="faq-answers">
             <div class="faq-answer" id="appels-llm" role="tabpanel" hidden>
@@ -516,8 +528,8 @@
                 modèles différents, selon les besoins.
               </p>
               <p>
-                Selon la route choisie et l’historique de la conversation, je
-                passe couramment de <strong>2 à 5 appels</strong> par question.
+                Selon la route choisie et l’historique de la conversation, le
+                pipeline passe couramment de <strong>2 à 5 appels</strong> par question.
                 Le <span class="llm-role llm-resume">résumé</span> intervient
                 lors d’un changement de sujet, plutôt qu’après un nombre fixe de
                 messages.
@@ -694,10 +706,10 @@
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>
                 <span>
-                  En cas d’abstention, aucun appel n’est ajouté
-                  automatiquement. Si l’utilisateur clique sur « Élargir la
-                  recherche ? », l’agent ajoute en général 2 à 4 appels LLM,
-                  selon les outils qu’il choisit.
+                  En cas d’abstention, aucun appel n’est ajouté automatiquement.
+                  Si l’utilisateur clique sur « Élargir la recherche ? »,
+                  l’agent ajoute en général 2 à 4 appels LLM, selon les outils
+                  qu’il choisit.
                 </span>
               </aside>
               <aside class="faq-exception" aria-label="À noter">
@@ -716,50 +728,14 @@
               hidden
             >
               <p>
-                Le pipeline reformule la question, puis choisit la meilleure
-                approche : connaissances annexes, recherche SQL ou recherche
-                hybride dans les vidéos. Il prépare ensuite une réponse à partir
-                des informations trouvées, ou demande une précision si
-                nécessaire.
-              </p>
-              <p>
-                Pour voir en détail,
+                Le pipeline de réponse passe par plusieurs étapes, que l'on
+                peut voir
                 <a
                   href="/pipeline_reponse/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  >cliquez ici</a
+                  >ici</a
                 >.
-              </p>
-              <p>
-                Lorsque les éléments trouvés ne suffisent pas, le pipeline
-                s'abstient au lieu d'inventer ou de répondre à une question
-                voisine : « À première vue, je n'ai pas la réponse dans les
-                vidéos », avec un bouton
-                <strong>« Élargir la recherche ? »</strong>.
-              </p>
-              <p>
-                Ce bouton lance un agent autonome. Il reçoit la question et le
-                constat de l'abstention (ce que les vidéos couvrent et ce qui
-                manque), puis reformule et décompose lui-même la question. Une
-                première recherche dans les vidéos est toujours faite avant
-                qu'il démarre ; il choisit ensuite lui-même ses outils :
-                d'autres recherches hybrides dans les vidéos, les statistiques
-                via un SQL validé en lecture seule, et le web en dernier
-                recours. Il peut décomposer une question, par exemple une
-                comparaison entre deux entreprises, en plusieurs recherches. Il
-                est limité à 3 appels d'outils, recherche initiale comprise, et
-                à une seule recherche web ; il ne peut pas renoncer sans l'avoir
-                tentée.
-              </p>
-              <p>
-                Sa réponse s'affiche à part, avec les vidéos citées et les
-                sources web : une information du web n'est jamais présentée
-                comme venant des vidéos. Si l'agent répond d'après le web sans
-                citer de page, les pages qu'il a consultées sont affichées comme
-                sources ; si aucune vidéo ni aucune page ne l'étaye, sa réponse
-                est remplacée par « Je n'ai rien trouvé de fiable dans les
-                vidéos ni sur le web ».
               </p>
               <figure class="faq-pipeline-preview">
                 <a
@@ -803,6 +779,53 @@
                   utilisées.
                 </figcaption>
               </figure>
+            </div>
+            <div class="faq-answer" id="echec-rag" role="tabpanel" hidden>
+              <p>
+                Lorsque les éléments trouvés ne suffisent pas, le pipeline
+                s'abstient au lieu d'inventer ou de répondre à une question
+                voisine : « À première vue, je n'ai pas la réponse dans les
+                vidéos », avec un bouton
+                <strong>« Élargir la recherche ? »</strong>.
+              </p>
+              <p>
+                Ce bouton lance un agent autonome. Il reçoit la question et le
+                constat de l'abstention (ce que les vidéos couvrent et ce qui
+                manque), puis reformule et décompose lui-même la question. Il
+                dispose de trois outils :
+              </p>
+              <ul class="faq-detail-list">
+                <li>
+                  <code>recherche_via_embeddings</code> : la même recherche
+                  hybride dans les vidéos que le pipeline classique.
+                </li>
+                <li>
+                  <code>interroger_statistiques</code> : le même Text-to-SQL
+                  que le pipeline classique, pour les statistiques des vidéos.
+                </li>
+                <li>
+                  <code>web_search</code> : la recherche web de Mistral, propre
+                  à l'agent, en dernier recours.
+                </li>
+              </ul>
+              <p>
+                Une première <code>recherche_via_embeddings</code> sur la
+                question est toujours faite avant qu'il démarre ; il choisit
+                ensuite lui-même les outils à appeler. Il peut décomposer une
+                question, par exemple une comparaison entre deux entreprises,
+                en plusieurs recherches. Il est limité à 3 appels d'outils,
+                recherche initiale comprise, et à une seule recherche web ; il
+                ne peut pas renoncer sans l'avoir tentée.
+              </p>
+              <p>
+                Sa réponse s'affiche à part, avec les vidéos citées et les
+                sources web : une information du web n'est jamais présentée
+                comme venant des vidéos. Si l'agent répond d'après le web sans
+                citer de page, les pages qu'il a consultées sont affichées comme
+                sources ; si aucune vidéo ni aucune page ne l'étaye, sa réponse
+                est remplacée par « Je n'ai rien trouvé de fiable dans les
+                vidéos ni sur le web ».
+              </p>
             </div>
             <div class="faq-answer" id="suivi-reponse" role="tabpanel" hidden>
               <p>
@@ -1431,7 +1454,7 @@
               </p>
               <p>
                 Il a donc fallu paramétrer le workflow pour qu’il exécute la
-                construction de l’image sur mon PC personnel, configuré comme
+                construction de l’image sur un PC personnel, configuré comme
                 runner auto-hébergé.
               </p>
             </div>
@@ -1450,7 +1473,7 @@
                 disponible.
               </p>
               <p>
-                J’utilise donc le L40S lorsqu’il faut lancer le pipeline. Cela
+                Le L40S est donc utilisé lorsqu’il faut lancer le pipeline. Cela
                 rend d’autant plus important de ne pas laisser les services
                 allumés en permanence, afin de maîtriser la facture.
               </p>
@@ -1490,7 +1513,7 @@
               </p>
               <p>
                 Scaleway proposant désormais aussi du stockage objet compatible
-                S3, j’ai choisi de migrer cette partie afin de simplifier
+                S3, cette partie y a été migrée afin de simplifier
                 l’infrastructure et de centraliser les services chez un même
                 fournisseur.
               </p>
@@ -1502,7 +1525,7 @@
               hidden
             >
               <p>
-                Au départ, je voulais aussi intégrer aux métadonnées les
+                Au départ, l’idée était aussi d’intégrer aux métadonnées les
                 mots-clés présents dans les vidéos. L’OCR effectuait un premier
                 travail, mais restait imparfait : certains mots du décor étaient
                 détectés, les mots-clés animés compliquaient encore
@@ -1513,7 +1536,7 @@
                 interprétation.
               </p>
               <p>
-                J’ai ensuite ajouté un appel LLM pour chaque mot-clé détecté
+                Un appel LLM a ensuite été ajouté pour chaque mot-clé détecté
                 afin que GPT‑4.1 confirme ou non sa pertinence. Le prompt
                 utilisé était : « Voici 2 screenshots d’un supposé mot-clé
                 ajouté au montage, détecté via OCR, confirmes-tu son ajout au
@@ -1522,8 +1545,8 @@
               <p>
                 Malgré l’envoi des requêtes en mode batch, le coût de
                 vérification de tous les mots-clés était trop élevé. L’idée a
-                donc été abandonnée. Ce n’est pas impossible, mais j’ai préféré
-                me concentrer sur les besoins essentiels.
+                donc été abandonnée. Ce n’est pas impossible, mais la priorité
+                est allée aux besoins essentiels.
               </p>
               <figure class="faq-keyword-examples">
                 <div class="faq-keyword-images">
@@ -1605,7 +1628,7 @@
             </div>
             <div class="faq-answer" id="latence-rag" role="tabpanel" hidden>
               <p>
-                Grâce à Phoenix, je sais précisément quelles étapes sont les
+                Grâce à Phoenix, on sait précisément quelles étapes sont les
                 plus coûteuses en temps lors de la préparation d’une réponse :
                 il s’agit principalement des appels aux API de LLM. L’enjeu est
                 donc de réduire leur nombre. Par exemple, le LLM qui détectait
@@ -1708,7 +1731,7 @@
                 le schéma JSON dans sa configuration.
               </p>
               <p>
-                J’ai donc créé une couche d’adaptation dédiée. Elle normalise
+                Une couche d’adaptation dédiée a donc été créée. Elle normalise
                 d’abord toutes les entrées dans un même format de messages
                 (<em>system</em>, <em>user</em>, <em>assistant</em>), puis
                 choisit le fournisseur à partir du nom du modèle et construit le

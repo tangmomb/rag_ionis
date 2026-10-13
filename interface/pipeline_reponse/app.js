@@ -21,7 +21,7 @@ const nodes = [
   { id: "format", label: "Restitution sans LLM", sub: "Document ou réponse déjà prête", x: 700, y: 710, w: 220 },
   { id: "persist", label: "Finalisation et mémoire", sub: "Réponse, sources et conversation", x: 580, y: 794, w: 240 },
   { id: "end", label: "Réponse", x: 580, y: 874, w: 130, h: 30, terminal: true },
-  { id: "agent", label: "Recherche élargie (proposée)", sub: "Si abstention, au clic de l’utilisateur", extra: "Agent : vidéos, stats, web", x: 875, y: 856, w: 240, h: 66 },
+  { id: "agent", label: "Recherche élargie (proposée)", sub: "Si abstention du pipeline principal, au clic de l’utilisateur", extra: "Agent : vidéos, stats, web", x: 875, y: 856, w: 300, h: 66 },
 ].map(n => ({ w: 208, h: 48, ...n }));
 const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
 const edges = [
@@ -378,7 +378,7 @@ const staticStepOutputs = {
   format: "La réponse ou le document déjà prêt est mis en forme sans appel LLM.",
   persist: "La réponse, les sources et le contexte de conversation sont enregistrés.",
   end: "La réponse finale est renvoyée à l’utilisateur.",
-  agent: "Étape facultative, jamais automatique : après une abstention, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
+  agent: "Étape facultative, jamais automatique : après une abstention du pipeline principal, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
 };
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const edgeId = (from, to) => `${from}--${to}`;
@@ -391,7 +391,7 @@ function edgePath(from, to) {
   if (from === "retrieval") return `M 930 683 C 850 683, 530 660, 455 734`;
   if (from === "direct") return `M 580 ${sy} C 580 665, 700 655, 700 ${ey}`;
   if (from === "lookup" && to === "generate") return `M 905 ${sy} C 905 650, 430 650, 430 ${ey}`;
-  if (to === "agent") return `M 645 889 L 755 889`;
+  if (to === "agent") return `M 645 889 L 725 889`;
   return `M ${a.x} ${sy} C ${a.x} ${(sy+ey)/2}, ${b.x} ${(sy+ey)/2}, ${b.x} ${ey}`;
 }
 const svg = document.querySelector("#pipeline-graph");

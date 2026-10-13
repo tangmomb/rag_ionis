@@ -92,11 +92,17 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         self.assertEqual(result["web_sources"], [{"title": "Article", "url": "https://example.test/article"}])
         start_kwargs = client.beta.conversations.start.call_args.kwargs
         self.assertIn({"type": "web_search"}, start_kwargs["tools"])
+        user_message, initial_call, initial_result = start_kwargs["inputs"]
         self.assertIn(
             "Constat de la recherche simple qui a échoué : Les sources parlent des tuteurs",
-            start_kwargs["inputs"],
+            user_message["content"],
         )
-        self.assertIn("Résultats de la recherche initiale", start_kwargs["inputs"])
+        self.assertEqual(
+            (initial_call["type"], initial_call["name"], json.loads(initial_call["arguments"])),
+            ("function.call", "recherche_via_embeddings", {"requete": "Que disent les tuteurs sur l'autonomie ?"}),
+        )
+        self.assertEqual(initial_result["type"], "function.result")
+        self.assertEqual(initial_result["tool_call_id"], initial_call["tool_call_id"])
         self.assertEqual(result["tool_calls"][0]["tool"], "recherche_via_embeddings")
         client.beta.conversations.delete.assert_called_once_with(conversation_id="conv-1")
 
@@ -148,18 +154,18 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         research_agent.run_research_agent("Qui est X ?", "Aucune source ne cite X.", client=client)
 
         self.initial_search.assert_called_once_with("Qui est X ?")
-        self.assertIn("Témoignage", client.beta.conversations.start.call_args.kwargs["inputs"])
+        self.assertIn("Témoignage", client.beta.conversations.start.call_args.kwargs["inputs"][2]["result"])
 
     def test_long_abstain_detail_is_truncated_and_missing_one_omitted(self) -> None:
         client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
         research_agent.run_research_agent("Qui est X ?", "x" * 5000, client=client)
-        inputs = client.beta.conversations.start.call_args.kwargs["inputs"]
+        inputs = client.beta.conversations.start.call_args.kwargs["inputs"][0]["content"]
         self.assertIn("x" * research_agent.MAX_ABSTAIN_DETAIL_CHARS, inputs)
         self.assertNotIn("x" * (research_agent.MAX_ABSTAIN_DETAIL_CHARS + 1), inputs)
 
         client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
         research_agent.run_research_agent("Qui est X ?", None, client=client)
-        self.assertNotIn("Constat", client.beta.conversations.start.call_args.kwargs["inputs"])
+        self.assertNotIn("Constat", client.beta.conversations.start.call_args.kwargs["inputs"][0]["content"])
 
     def test_conversation_is_deleted_even_when_a_call_fails(self) -> None:
         client = self._client(_response(_call("recherche_via_embeddings", {"requete": "x"})))
@@ -425,6 +431,12 @@ class ResearchAgentTracingTests(_NoInitialSearch):
         )
         start, append = llm_spans
         self.assertEqual(start.attributes["llm.input_messages.0.message.role"], "system")
+        self.assertEqual(start.attributes["llm.input_messages.2.message.role"], "assistant")
+        self.assertEqual(
+            start.attributes["llm.input_messages.2.message.tool_calls.0.tool_call.function.name"],
+            "recherche_via_embeddings",
+        )
+        self.assertEqual(start.attributes["llm.input_messages.3.message.role"], "tool")
         self.assertEqual(
             start.attributes["llm.output_messages.0.message.tool_calls.0.tool_call.function.name"],
             "recherche_via_embeddings",

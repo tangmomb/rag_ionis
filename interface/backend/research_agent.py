@@ -59,7 +59,8 @@ RESEARCH_AGENT_INSTRUCTIONS = (
     "- web_search : le web, hors de la base vidéo. Utilise-le seulement si "
     "les vidéos ne suffisent pas.\n\n"
     "Une recherche_via_embeddings sur la question elle-même a déjà été lancée : "
-    "ses résultats l'accompagnent. Ne la refais pas à l'identique.\n\n"
+    "son appel et ses résultats figurent dans la conversation. Ne la refais pas "
+    "à l'identique.\n\n"
     f"Budget : au plus {MAX_TOOL_CALLS} appels d'outils au total, recherche "
     "initiale comprise ; évite les recherches quasi identiques.\n\n"
     "Réponse : en français, concise, en Markdown. Pour chaque information issue "
@@ -163,6 +164,7 @@ TOOL_HANDLERS: dict[str, Callable[[str], tuple[dict[str, Any], list[dict[str, An
 }
 TOOL_ARGUMENT = {"recherche_via_embeddings": "requete", "interroger_statistiques": "question"}
 INITIAL_TOOL = "recherche_via_embeddings"
+INITIAL_TOOL_CALL_ID = "initialsearch"
 
 
 def run_tool_call(call: Any) -> tuple[str, list[dict[str, Any]]]:
@@ -270,7 +272,7 @@ def _function_calls(response: Any) -> list[Any]:
     return [o for o in (response.outputs or []) if getattr(o, "type", None) == "function.call"]
 
 
-def _conversation_input_messages(inputs: Any) -> list[dict[str, str]]:
+def _conversation_input_messages(inputs: Any) -> list[dict[str, Any]]:
     """Map Conversations API inputs to the role/content cards Phoenix renders."""
     if isinstance(inputs, str):
         return [{"role": "user", "content": inputs}]
@@ -278,6 +280,14 @@ def _conversation_input_messages(inputs: Any) -> list[dict[str, str]]:
     for entry in inputs:
         if entry.get("type") == "function.result":
             messages.append({"role": "tool", "content": str(entry.get("result", ""))})
+        elif entry.get("type") == "function.call":
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"name": entry.get("name"), "arguments": entry.get("arguments")}],
+                }
+            )
         else:
             messages.append({"role": str(entry.get("role", "user")), "content": str(entry.get("content", ""))})
     return messages
@@ -377,6 +387,13 @@ def traced_conversation_call(call: Callable[..., Any], operation: str, **kwargs:
         },
     ) as span:
         add_llm_message_attributes(span, "llm.input_messages", input_messages)
+        for message_index, message in enumerate(input_messages):
+            for call_index, tool_call in enumerate(message.get("tool_calls", [])):
+                tool_prefix = (
+                    f"llm.input_messages.{message_index}.message.tool_calls.{call_index}.tool_call.function"
+                )
+                span.set_attribute(f"{tool_prefix}.name", str(tool_call["name"]))
+                span.set_attribute(f"{tool_prefix}.arguments", str(tool_call["arguments"]))
         response = call(**kwargs)
         text, _ = parse_final_message(list(response.outputs or []))
         prefix = "llm.output_messages.0.message"
@@ -434,13 +451,20 @@ def run_research_agent(
         # one video search on the question runs before the agent starts.
         initial_result, initial_sources = execute_tool(INITIAL_TOOL, initial_query)
         video_sources.extend(initial_sources)
-        tool_calls.append(
-            {"tool": INITIAL_TOOL, "arguments": json.dumps({"requete": initial_query}, ensure_ascii=False)}
-        )
-        user_input += (
-            "\n\nRésultats de la recherche initiale dans les vidéos "
-            f"(requête : {initial_query}) :\n{initial_result}"
-        )
+        initial_arguments = json.dumps({TOOL_ARGUMENT[INITIAL_TOOL]: initial_query}, ensure_ascii=False)
+        tool_calls.append({"tool": INITIAL_TOOL, "arguments": initial_arguments})
+        # Passed as a function call/result pair, so the model and the
+        # conversation history see it as a tool call like its own ones.
+        start_inputs = [
+            {"type": "message.input", "role": "user", "content": user_input},
+            {
+                "type": "function.call",
+                "tool_call_id": INITIAL_TOOL_CALL_ID,
+                "name": INITIAL_TOOL,
+                "arguments": initial_arguments,
+            },
+            {"type": "function.result", "tool_call_id": INITIAL_TOOL_CALL_ID, "result": initial_result},
+        ]
         # store=True is required to append tool results; the conversation is
         # deleted at the end so nothing stays on Mistral's side.
         response = traced_conversation_call(
@@ -448,7 +472,7 @@ def run_research_agent(
             "start",
             model=DEFAULT_RESEARCH_AGENT_MODEL,
             instructions=RESEARCH_AGENT_INSTRUCTIONS,
-            inputs=user_input,
+            inputs=start_inputs,
             tools=[*FUNCTION_TOOLS, {"type": "web_search"}],
             store=True,
             timeout_ms=timeout_ms,

@@ -31,8 +31,8 @@ from interface.backend.utilities import get_llm_client
 
 # The model may issue several calls per round: the budget counts calls, the
 # round limit only guarantees the loop ends.
-MAX_TOOL_CALLS = 6
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_CALLS = 3
+MAX_TOOL_ROUNDS = 2
 MAX_TOOL_SOURCES = 5
 MAX_EXCERPT_CHARS = 900
 MAX_WEB_SOURCES = 5

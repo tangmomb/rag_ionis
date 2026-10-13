@@ -107,8 +107,12 @@ class ResearchAgentLoopTests(unittest.TestCase):
             research_agent.run_research_agent("Question ?", client=client)
 
         self.assertEqual(handler.call_count, research_agent.MAX_TOOL_CALLS)
-        second_round = client.beta.conversations.append.call_args_list[1].kwargs["inputs"]
-        limited = [r for r in second_round if "Limite de recherches atteinte" in r["result"]]
+        sent = [
+            result
+            for append in client.beta.conversations.append.call_args_list[:2]
+            for result in append.kwargs["inputs"]
+        ]
+        limited = [r for r in sent if "Limite de recherches atteinte" in r["result"]]
         self.assertEqual(len(limited), 8 - research_agent.MAX_TOOL_CALLS)
 
     def test_conversation_is_deleted_even_when_a_call_fails(self) -> None:

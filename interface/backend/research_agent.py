@@ -55,8 +55,10 @@ RESEARCH_AGENT_INSTRUCTIONS = (
     "partages, temps de visionnage ou abonnés sont indisponibles.\n"
     "- web_search : le web, hors de la base vidéo. Utilise-le seulement si "
     "les vidéos ne suffisent pas.\n\n"
-    f"Budget : au plus {MAX_TOOL_CALLS} appels d'outils au total ; évite les "
-    "recherches quasi identiques.\n\n"
+    "Une première recherche_via_embeddings sur la piste a déjà été lancée : "
+    "ses résultats accompagnent la question. Ne la refais pas à l'identique.\n\n"
+    f"Budget : au plus {MAX_TOOL_CALLS} appels d'outils au total, recherche "
+    "initiale comprise ; évite les recherches quasi identiques.\n\n"
     "Réponse : en français, concise, en Markdown. Pour chaque information issue "
     "d'une vidéo, cite l'URL de la vidéo. Introduis toute information issue du "
     "web par « D'après le web » et ne la présente jamais comme provenant des "
@@ -157,18 +159,26 @@ TOOL_HANDLERS: dict[str, Callable[[str], tuple[dict[str, Any], list[dict[str, An
     "interroger_statistiques": query_statistics,
 }
 TOOL_ARGUMENT = {"recherche_via_embeddings": "requete", "interroger_statistiques": "question"}
+INITIAL_TOOL = "recherche_via_embeddings"
 
 
 def run_tool_call(call: Any) -> tuple[str, list[dict[str, Any]]]:
     name = str(getattr(call, "name", ""))
-    handler = TOOL_HANDLERS.get(name)
-    if handler is None:
+    if name not in TOOL_HANDLERS:
         return json.dumps({"erreur": f"Outil inconnu : {name}"}, ensure_ascii=False), []
     try:
         arguments = getattr(call, "arguments", "") or "{}"
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
         value = str(arguments.get(TOOL_ARGUMENT[name]) or "").strip()
+    except Exception as exc:
+        return json.dumps({"erreur": str(exc)}, ensure_ascii=False), []
+    return execute_tool(name, value)
+
+
+def execute_tool(name: str, value: str) -> tuple[str, list[dict[str, Any]]]:
+    handler = TOOL_HANDLERS[name]
+    try:
         if not value:
             raise ValueError("argument vide")
         with trace_operation(
@@ -399,6 +409,7 @@ def run_research_agent(
     user_input = f"Question : {question}"
     if search_hint and search_hint.strip() != question.strip():
         user_input += f"\nPiste proposée par la première recherche : {search_hint}"
+    initial_query = (search_hint or question).strip()
 
     video_sources: list[dict[str, Any]] = []
     tool_calls: list[dict[str, str]] = []
@@ -412,6 +423,18 @@ def run_research_agent(
         root=True,
     ) as span:
         span.set_session_id(conversation_id)
+        # Left free, the model may go straight to the web and miss a speaker
+        # who is in the videos; Conversations cannot force one function, so
+        # one video search on the hint runs before the agent starts.
+        initial_result, initial_sources = execute_tool(INITIAL_TOOL, initial_query)
+        video_sources.extend(initial_sources)
+        tool_calls.append(
+            {"tool": INITIAL_TOOL, "arguments": json.dumps({"requete": initial_query}, ensure_ascii=False)}
+        )
+        user_input += (
+            "\n\nRésultats de la recherche initiale dans les vidéos "
+            f"(requête : {initial_query}) :\n{initial_result}"
+        )
         # store=True is required to append tool results; the conversation is
         # deleted at the end so nothing stays on Mistral's side.
         response = traced_conversation_call(
@@ -425,7 +448,7 @@ def run_research_agent(
             timeout_ms=timeout_ms,
         )
         mistral_conversation_id = response.conversation_id
-        state = {"remaining_calls": MAX_TOOL_CALLS, "web_searched": _ran_web_search(response)}
+        state = {"remaining_calls": MAX_TOOL_CALLS - 1, "web_searched": _ran_web_search(response)}
 
         def run_tool_rounds(response: Any) -> Any:
             for round_index in range(MAX_TOOL_ROUNDS + 1):

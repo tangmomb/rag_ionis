@@ -4,7 +4,7 @@ import json
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from fastapi import HTTPException
 
@@ -44,7 +44,17 @@ VIDEO = {
 }
 
 
-class ResearchAgentLoopTests(unittest.TestCase):
+class _NoInitialSearch(unittest.TestCase):
+    """Stub the video search the agent always runs before starting."""
+
+    def setUp(self) -> None:
+        self.initial_search = MagicMock(return_value=({"resultats": []}, []))
+        patcher = patch.dict(research_agent.TOOL_HANDLERS, {research_agent.INITIAL_TOOL: self.initial_search})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class ResearchAgentLoopTests(_NoInitialSearch):
     def _client(self, start, *appends) -> MagicMock:
         client = MagicMock()
         client.beta.conversations.start.return_value = start
@@ -69,7 +79,7 @@ class ResearchAgentLoopTests(unittest.TestCase):
                 "Que disent les tuteurs sur l'autonomie ?", "autonomie des alternants", client=client
             )
 
-        search.assert_called_once_with("autonomie Novares")
+        self.assertEqual(search.call_args_list, [call("autonomie des alternants"), call("autonomie Novares")])
         sent = client.beta.conversations.append.call_args.kwargs["inputs"]
         self.assertEqual(sent[0]["type"], "function.result")
         self.assertEqual(sent[0]["tool_call_id"], "call-1")
@@ -78,6 +88,8 @@ class ResearchAgentLoopTests(unittest.TestCase):
         start_kwargs = client.beta.conversations.start.call_args.kwargs
         self.assertIn({"type": "web_search"}, start_kwargs["tools"])
         self.assertIn("Piste proposée", start_kwargs["inputs"])
+        self.assertIn("Résultats de la recherche initiale", start_kwargs["inputs"])
+        self.assertEqual(result["tool_calls"][0]["tool"], "recherche_via_embeddings")
         client.beta.conversations.delete.assert_called_once_with(conversation_id="conv-1")
 
     def test_tool_rounds_are_capped(self) -> None:
@@ -88,7 +100,7 @@ class ResearchAgentLoopTests(unittest.TestCase):
         with patch.dict(research_agent.TOOL_HANDLERS, {"recherche_via_embeddings": handler}):
             result = research_agent.run_research_agent("Question ?", client=client)
 
-        self.assertEqual(handler.call_count, research_agent.MAX_TOOL_ROUNDS)
+        self.assertEqual(handler.call_count, 1 + research_agent.MAX_TOOL_ROUNDS)
         last_inputs = client.beta.conversations.append.call_args.kwargs["inputs"]
         self.assertIn("Limite de recherches atteinte", last_inputs[0]["result"])
         self.assertEqual(result["answer"], "Rien trouvé.")
@@ -113,7 +125,27 @@ class ResearchAgentLoopTests(unittest.TestCase):
             for result in append.kwargs["inputs"]
         ]
         limited = [r for r in sent if "Limite de recherches atteinte" in r["result"]]
-        self.assertEqual(len(limited), 8 - research_agent.MAX_TOOL_CALLS)
+        self.assertEqual(len(limited), 8 - (research_agent.MAX_TOOL_CALLS - 1))
+
+    def test_a_video_search_runs_before_the_agent_can_reach_the_web(self) -> None:
+        client = self._client(
+            _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("D'après le web, oui.")))
+        )
+        self.initial_search.return_value = ({"resultats": [{"video_title": "Témoignage"}]}, [VIDEO])
+        client.beta.conversations.start.side_effect = lambda **kwargs: (
+            self.assertEqual(self.initial_search.call_count, 1),
+            client.beta.conversations.start.return_value,
+        )[1]
+
+        research_agent.run_research_agent("Qui est X ?", "Rôle de X à IONIS-STM", client=client)
+
+        self.initial_search.assert_called_once_with("Rôle de X à IONIS-STM")
+        self.assertIn("Témoignage", client.beta.conversations.start.call_args.kwargs["inputs"])
+
+    def test_initial_search_uses_the_question_without_hint(self) -> None:
+        client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
+        research_agent.run_research_agent("Qui est X ?", client=client)
+        self.initial_search.assert_called_once_with("Qui est X ?")
 
     def test_conversation_is_deleted_even_when_a_call_fails(self) -> None:
         client = self._client(_response(_call("recherche_via_embeddings", {"requete": "x"})))
@@ -154,7 +186,7 @@ class ResearchAgentLoopTests(unittest.TestCase):
         self.assertEqual(sources, [])
 
 
-class WebProvenanceTests(unittest.TestCase):
+class WebProvenanceTests(_NoInitialSearch):
     def _run(self, *final_outputs) -> dict:
         client = MagicMock()
         client.beta.conversations.start.return_value = _response(*final_outputs)
@@ -191,7 +223,7 @@ class WebProvenanceTests(unittest.TestCase):
         self.assertEqual(len(result["web_sources"]), 1)
 
 
-class WebLastResortTests(unittest.TestCase):
+class WebLastResortTests(_NoInitialSearch):
     def test_agent_is_nudged_once_to_try_the_web_before_giving_up(self) -> None:
         client = MagicMock()
         client.beta.conversations.start.return_value = _response(_message(_text("Rien dans les vidéos.")))
@@ -314,7 +346,7 @@ class _RecordedSpan:
         self.documents = documents
 
 
-class ResearchAgentTracingTests(unittest.TestCase):
+class ResearchAgentTracingTests(_NoInitialSearch):
     def test_agent_trace_is_a_session_root_with_llm_spans(self) -> None:
         spans: list[_RecordedSpan] = []
 

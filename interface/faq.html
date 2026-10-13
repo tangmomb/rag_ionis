@@ -739,12 +739,14 @@
                 <strong>« Élargir la recherche ? »</strong>.
               </p>
               <p>
-                Ce bouton lance un agent autonome. Il choisit lui-même ses
-                outils : la recherche hybride dans les vidéos, les statistiques
-                via un SQL validé en lecture seule, et le web en dernier recours.
-                Il peut décomposer une question, par exemple une comparaison
-                entre deux entreprises, en plusieurs recherches. Il est limité à
-                3 appels d'outils et ne peut pas renoncer sans avoir tenté le
+                Ce bouton lance un agent autonome. Une première recherche dans
+                les vidéos est toujours faite avant qu'il démarre ; il choisit
+                ensuite lui-même ses outils : d'autres recherches hybrides dans
+                les vidéos, les statistiques via un SQL validé en lecture seule,
+                et le web en dernier recours. Il peut décomposer une question,
+                par exemple une comparaison entre deux entreprises, en plusieurs
+                recherches. Il est limité à 3 appels d'outils, recherche
+                initiale comprise, et ne peut pas renoncer sans avoir tenté le
                 web. Sa réponse s'affiche à part, avec les vidéos citées et les
                 sources web : une information du web n'est jamais présentée
                 comme venant des vidéos.

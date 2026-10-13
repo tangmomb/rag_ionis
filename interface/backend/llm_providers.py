@@ -32,6 +32,8 @@ DEFAULT_LLM_COST_RATES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
     "mistral-small-latest": (0.15, 0.6),
     "mistral-medium-latest": (1.5, 7.5),
     "mistral-large-latest": (0.5, 1.5),
+    # List price; a launch promotion halved it in October 2026.
+    "mistral-large-4": (1.36, 4.18),
 }
 GEMINI_THINKING_LEVELS = {
     "gemini-3.5-flash-lite": "low",

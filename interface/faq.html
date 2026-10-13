@@ -739,17 +739,27 @@
                 <strong>« Élargir la recherche ? »</strong>.
               </p>
               <p>
-                Ce bouton lance un agent autonome. Une première recherche dans
-                les vidéos est toujours faite avant qu'il démarre ; il choisit
-                ensuite lui-même ses outils : d'autres recherches hybrides dans
-                les vidéos, les statistiques via un SQL validé en lecture seule,
-                et le web en dernier recours. Il peut décomposer une question,
-                par exemple une comparaison entre deux entreprises, en plusieurs
-                recherches. Il est limité à 3 appels d'outils, recherche
-                initiale comprise, et ne peut pas renoncer sans avoir tenté le
-                web. Sa réponse s'affiche à part, avec les vidéos citées et les
+                Ce bouton lance un agent autonome. Il reçoit la question et le
+                constat de l'abstention (ce que les vidéos couvrent et ce qui
+                manque), puis reformule et décompose lui-même la question. Une
+                première recherche dans les vidéos est toujours faite avant
+                qu'il démarre ; il choisit ensuite lui-même ses outils :
+                d'autres recherches hybrides dans les vidéos, les statistiques
+                via un SQL validé en lecture seule, et le web en dernier
+                recours. Il peut décomposer une question, par exemple une
+                comparaison entre deux entreprises, en plusieurs recherches. Il
+                est limité à 3 appels d'outils, recherche initiale comprise, et
+                à une seule recherche web ; il ne peut pas renoncer sans l'avoir
+                tentée.
+              </p>
+              <p>
+                Sa réponse s'affiche à part, avec les vidéos citées et les
                 sources web : une information du web n'est jamais présentée
-                comme venant des vidéos.
+                comme venant des vidéos. Si l'agent répond d'après le web sans
+                citer de page, les pages qu'il a consultées sont affichées comme
+                sources ; si aucune vidéo ni aucune page ne l'étaye, sa réponse
+                est remplacée par « Je n'ai rien trouvé de fiable dans les
+                vidéos ni sur le web ».
               </p>
               <figure class="faq-pipeline-preview">
                 <a
@@ -781,13 +791,14 @@
               <figure class="faq-pipeline-example">
                 <button class="faq-lightbox-trigger" type="button">
                   <img
-                    src="/assets/llm_reponse_output.png"
+                    src="/assets/llm_reponse_output.png?v=2"
                     alt="Exemple de sortie JSON produite par le LLM de réponse"
                   />
                 </button>
                 <figcaption>
-                  Exemple de sortie JSON du LLM de réponse, incluant la clé
-                  prévue pour une nouvelle tentative.
+                  Exemple de sortie JSON du LLM de réponse : la réponse,
+                  l'action choisie (répondre ou s'abstenir) et les sources
+                  utilisées.
                 </figcaption>
               </figure>
             </div>
@@ -928,7 +939,7 @@
                 </div>
                 <div>
                   <dt>Vidéos — précision</dt>
-                  <dd>57,6&nbsp;%</dd>
+                  <dd>58,6&nbsp;%</dd>
                   <p>
                     Part des vidéos retournées qui sont pertinentes.<br />Plus
                     haut signifie moins de résultats hors sujet.
@@ -939,7 +950,7 @@
                 </div>
                 <div>
                   <dt>Vidéos via route SQL — recall / précision</dt>
-                  <dd>90,0&nbsp;% / 73,5&nbsp;%</dd>
+                  <dd>90,0&nbsp;% / 75,0&nbsp;%</dd>
                   <p>
                     Mesure les vidéos des requêtes traitées en SQL.<br />Recall
                     : couverture ; précision : pertinence des retours.
@@ -972,7 +983,7 @@
                 </div>
                 <div>
                   <dt>Route attendue</dt>
-                  <dd>92,0&nbsp;%</dd>
+                  <dd>93,3&nbsp;%</dd>
                   <p>
                     Part des questions envoyées vers la bonne route SQL ou
                     vectorielle.<br />Plus haut signifie un meilleur aiguillage
@@ -984,7 +995,7 @@
                 </div>
                 <div>
                   <dt>Coût moyen par question</dt>
-                  <dd>0,0027&nbsp;$</dd>
+                  <dd>0,0063&nbsp;$</dd>
                   <p>
                     Estimation du coût des appels LLM pour une question
                     complète.<br />Elle inclut reformulation, planification,
@@ -998,7 +1009,7 @@
                   <dt>
                     Latence «&nbsp;réponse prête&nbsp;» — P50 / P75 / P90 / P95
                   </dt>
-                  <dd>4,38&nbsp;s / 5,89&nbsp;s / 6,63&nbsp;s / 7,07&nbsp;s</dd>
+                  <dd>3,74&nbsp;s / 4,51&nbsp;s / 5,33&nbsp;s / 5,68&nbsp;s</dd>
                   <p>
                     Temps entre l’envoi de la question et la réponse
                     enregistrée, prête à être renvoyée.<br />Percentiles

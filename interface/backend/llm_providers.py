@@ -790,6 +790,7 @@ def call_mistral(
                 add_llm_usage_attributes(
                     operation,
                     fallback_response or last_stream_event,
+                    model=model,
                 )
                 return LLMResponse(
                     provider="mistral",

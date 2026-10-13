@@ -524,6 +524,37 @@ class LlmProviderTests(unittest.TestCase):
 
         self.assertNotIn("base_url", mistral.call_args.kwargs)
 
+    def test_streamed_mistral_answer_is_priced(self) -> None:
+        def event(data: dict) -> SimpleNamespace:
+            # Same shape as the SDK: payload under .data, usage on the last event.
+            return SimpleNamespace(data=SimpleNamespace(**data), model_dump=lambda mode: {"data": data})
+
+        events = [
+            event({"choices": [{"delta": {"content": "Bonjour"}}]}),
+            event(
+                {
+                    "choices": [{"delta": {}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100},
+                }
+            ),
+        ]
+        client = Mock()
+        client.chat.stream.return_value = iter(events)
+        with (
+            patch.dict(os.environ, {"MISTRAL_API_KEY": "secret"}, clear=False),
+            patch.object(llm_providers, "Mistral", return_value=client),
+            llm_providers.track_llm_costs() as totals,
+        ):
+            response = llm_providers.create_llm_response(
+                model="mistral-medium-latest",
+                input="Bonjour",
+                stream_callback=lambda _fragment: None,
+            )
+
+        self.assertEqual(response.output_text, "Bonjour")
+        self.assertEqual(totals.priced_calls, 1)
+        self.assertAlmostEqual(totals.total_usd, 1000 * 1.5 / 1e6 + 100 * 7.5 / 1e6)
+
     def test_mistral_rejects_missing_structured_result(self) -> None:
         raw = SimpleNamespace(model_dump=lambda mode: {"choices": [{"message": {"content": "texte non structure"}}]})
         client = Mock()

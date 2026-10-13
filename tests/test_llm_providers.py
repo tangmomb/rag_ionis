@@ -214,6 +214,41 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(attributes["llm.cost.completion"], 0.00003)
         self.assertEqual(attributes["llm.cost.total"], 0.000048)
 
+    def test_web_search_connector_tokens_and_calls_are_priced(self) -> None:
+        operation = MagicMock()
+        # Shape returned by the Conversations API after a web search.
+        usage = SimpleNamespace(
+            prompt_tokens=5644,
+            completion_tokens=227,
+            total_tokens=20857,
+            connector_tokens=14986,
+            connectors={"web_search": 3},
+        )
+
+        with (
+            patch.dict(os.environ, {llm_providers.WEB_SEARCH_COST_ENV: "0.03"}),
+            llm_providers.track_llm_costs() as totals,
+        ):
+            llm_providers.add_llm_usage_attributes(
+                operation,
+                SimpleNamespace(usage=usage),
+                model="mistral-large-latest",
+            )
+
+        attributes = {
+            item.args[0]: item.args[1]
+            for item in operation.set_attribute.call_args_list
+        }
+        self.assertEqual(attributes["llm.token_count.connector"], 14986)
+        self.assertEqual(attributes["llm.web_search.calls"], 3)
+        self.assertAlmostEqual(attributes["llm.cost.connector"], 0.007493)
+        self.assertAlmostEqual(attributes["llm.cost.web_search"], 0.09)
+        self.assertAlmostEqual(
+            attributes["llm.cost.total"], 0.002822 + 0.0003405 + 0.007493 + 0.09
+        )
+        self.assertAlmostEqual(totals.tools_usd, 0.097493)
+        self.assertAlmostEqual(totals.total_usd, attributes["llm.cost.total"])
+
     def test_usage_from_stream_event_reads_nested_mistral_data(self) -> None:
         usage = {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}
 

@@ -30,7 +30,7 @@ class InterfaceAppTests(unittest.TestCase):
             "answer": "Les sources ne parlent pas de la capitale de l'Australie.",
             "sources": [{"chunk_id": 1, "video_url": "https://example.test/v"}],
             "retrieval": {},
-            "answer_trace": {"action": "abstain", "retry_query": "Capitale officielle ?"},
+            "answer_trace": {"action": "abstain"},
         }
 
         result = api._finalize_response(state)
@@ -47,21 +47,21 @@ class InterfaceAppTests(unittest.TestCase):
 
         answer = generation.parse_answer_output(
             '{"answer": "Les sources ne traitent pas de ce point.", "action": "abstain", '
-            '"source_indexes": [1, 2], "retry_query": "Question plus précise"}',
+            '"source_indexes": [1, 2]}',
             trace,
         )
 
         self.assertEqual(answer, "Les sources ne traitent pas de ce point.")
         self.assertEqual(trace["action"], "abstain")
         self.assertEqual(trace["source_indexes"], [])
-        self.assertEqual(trace["retry_query"], "Question plus précise")
+        self.assertNotIn("retry_query", trace)
         self.assertEqual(trace["action_normalization"]["source_indexes"], [1, 2])
 
     def test_empty_abstain_answer_uses_fallback_message(self) -> None:
         trace: dict = {}
 
         answer = generation.parse_answer_output(
-            '{"answer": "", "action": "abstain", "source_indexes": [], "retry_query": null}',
+            '{"answer": "", "action": "abstain", "source_indexes": []}',
             trace,
         )
 

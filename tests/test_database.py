@@ -100,7 +100,7 @@ class DatabaseTests(unittest.TestCase):
                 "trace\x00",
                 answer_action="abstain",
                 contextual_question="Question\x00 reformulée",
-                search_hint="Piste\x00 de recherche",
+                abstain_detail="Constat\x00 d'abstention",
             )
 
         self.assertEqual(result, (3, 9))
@@ -113,7 +113,7 @@ class DatabaseTests(unittest.TestCase):
                 "trace",
                 "abstain",
                 "Question reformulée",
-                "Piste de recherche",
+                "Constat d'abstention",
             ),
         )
 
@@ -131,7 +131,7 @@ class DatabaseTests(unittest.TestCase):
         for column in (
             "answer_action",
             "contextual_question",
-            "search_hint",
+            "abstain_detail",
             "expanded_answer",
         ):
             self.assertIn(f"'{column}'", cleanup)

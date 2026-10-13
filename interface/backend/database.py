@@ -114,8 +114,8 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS feedback BOOLEAN"
                 )
                 # Expanded search: only abstained answers may start the research
-                # agent, which runs on the contextual question (plus the model's
-                # search hint) and is cached once done.
+                # agent, which runs on the contextual question (plus what the
+                # abstention found missing) and is cached once done.
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS answer_action TEXT"
                 )
@@ -123,7 +123,7 @@ def ensure_chat_schema() -> None:
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS contextual_question TEXT"
                 )
                 cursor.execute(
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS search_hint TEXT"
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS abstain_detail TEXT"
                 )
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS expanded_answer JSONB"
@@ -184,7 +184,7 @@ def ensure_chat_schema() -> None:
                                   'feedback',
                                   'answer_action',
                                   'contextual_question',
-                                  'search_hint',
+                                  'abstain_detail',
                                   'expanded_answer'
                               )
                         LOOP
@@ -283,7 +283,7 @@ def store_chat_message(
     trace_id: str | None,
     answer_action: str | None = None,
     contextual_question: str | None = None,
-    search_hint: str | None = None,
+    abstain_detail: str | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
     user_message = user_message.replace("\x00", "")
@@ -291,8 +291,8 @@ def store_chat_message(
     trace_id = trace_id.replace("\x00", "") if trace_id is not None else None
     if contextual_question is not None:
         contextual_question = contextual_question.replace("\x00", "")
-    if search_hint is not None:
-        search_hint = search_hint.replace("\x00", "")
+    if abstain_detail is not None:
+        abstain_detail = abstain_detail.replace("\x00", "")
 
     with connect_database() as connection:
         resolved_conversation_id = ensure_conversation(connection, conversation_id)
@@ -306,7 +306,7 @@ def store_chat_message(
                     trace_id,
                     answer_action,
                     contextual_question,
-                    search_hint
+                    abstain_detail
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -318,7 +318,7 @@ def store_chat_message(
                     trace_id,
                     answer_action,
                     contextual_question,
-                    search_hint,
+                    abstain_detail,
                 ),
             )
             message_id = int(cursor.fetchone()[0])
@@ -333,7 +333,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_message, contextual_question, search_hint, answer_action, expanded_answer,
+                SELECT user_message, contextual_question, abstain_detail, answer_action, expanded_answer,
                        conversation_id
                 FROM chat.messages
                 WHERE id = %s AND answer_message IS NOT NULL
@@ -346,7 +346,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
     return {
         "user_message": row[0],
         "contextual_question": row[1],
-        "search_hint": row[2],
+        "abstain_detail": row[2],
         "answer_action": row[3],
         "expanded_answer": row[4],
         "conversation_id": row[5],

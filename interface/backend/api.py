@@ -285,7 +285,7 @@ def _persist_response(
             trace_id=trace_id,
             answer_action=state["answer_action"],
             contextual_question=retrieval.get("contextual_question"),
-            search_hint=state.get("answer_trace", {}).get("retry_query"),
+            abstain_detail=retrieval.get("abstain_detail"),
         )
         response_ready_callback = _runtime_context(runtime).response_ready_callback
         if response_ready_callback is not None:
@@ -573,7 +573,7 @@ def expand_search_message(message_id: int) -> dict[str, Any]:
     try:
         expanded_answer = run_research_agent(
             question,
-            message["search_hint"],
+            message["abstain_detail"],
             conversation_id=message["conversation_id"],
             message_id=message_id,
         )

@@ -76,10 +76,15 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         search = MagicMock(return_value=({"resultats": []}, [VIDEO]))
         with patch.dict(research_agent.TOOL_HANDLERS, {"recherche_via_embeddings": search}):
             result = research_agent.run_research_agent(
-                "Que disent les tuteurs sur l'autonomie ?", "autonomie des alternants", client=client
+                "Que disent les tuteurs sur l'autonomie ?",
+                "Les sources parlent des tuteurs mais pas de l'autonomie.",
+                client=client,
             )
 
-        self.assertEqual(search.call_args_list, [call("autonomie des alternants"), call("autonomie Novares")])
+        self.assertEqual(
+            search.call_args_list,
+            [call("Que disent les tuteurs sur l'autonomie ?"), call("autonomie Novares")],
+        )
         sent = client.beta.conversations.append.call_args.kwargs["inputs"]
         self.assertEqual(sent[0]["type"], "function.result")
         self.assertEqual(sent[0]["tool_call_id"], "call-1")
@@ -87,7 +92,10 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         self.assertEqual(result["web_sources"], [{"title": "Article", "url": "https://example.test/article"}])
         start_kwargs = client.beta.conversations.start.call_args.kwargs
         self.assertIn({"type": "web_search"}, start_kwargs["tools"])
-        self.assertIn("Piste proposée", start_kwargs["inputs"])
+        self.assertIn(
+            "Constat de la recherche simple qui a échoué : Les sources parlent des tuteurs",
+            start_kwargs["inputs"],
+        )
         self.assertIn("Résultats de la recherche initiale", start_kwargs["inputs"])
         self.assertEqual(result["tool_calls"][0]["tool"], "recherche_via_embeddings")
         client.beta.conversations.delete.assert_called_once_with(conversation_id="conv-1")
@@ -137,15 +145,21 @@ class ResearchAgentLoopTests(_NoInitialSearch):
             client.beta.conversations.start.return_value,
         )[1]
 
-        research_agent.run_research_agent("Qui est X ?", "Rôle de X à IONIS-STM", client=client)
+        research_agent.run_research_agent("Qui est X ?", "Aucune source ne cite X.", client=client)
 
-        self.initial_search.assert_called_once_with("Rôle de X à IONIS-STM")
+        self.initial_search.assert_called_once_with("Qui est X ?")
         self.assertIn("Témoignage", client.beta.conversations.start.call_args.kwargs["inputs"])
 
-    def test_initial_search_uses_the_question_without_hint(self) -> None:
+    def test_long_abstain_detail_is_truncated_and_missing_one_omitted(self) -> None:
         client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
-        research_agent.run_research_agent("Qui est X ?", client=client)
-        self.initial_search.assert_called_once_with("Qui est X ?")
+        research_agent.run_research_agent("Qui est X ?", "x" * 5000, client=client)
+        inputs = client.beta.conversations.start.call_args.kwargs["inputs"]
+        self.assertIn("x" * research_agent.MAX_ABSTAIN_DETAIL_CHARS, inputs)
+        self.assertNotIn("x" * (research_agent.MAX_ABSTAIN_DETAIL_CHARS + 1), inputs)
+
+        client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
+        research_agent.run_research_agent("Qui est X ?", None, client=client)
+        self.assertNotIn("Constat", client.beta.conversations.start.call_args.kwargs["inputs"])
 
     def test_conversation_is_deleted_even_when_a_call_fails(self) -> None:
         client = self._client(_response(_call("recherche_via_embeddings", {"requete": "x"})))
@@ -273,7 +287,7 @@ class ExpandSearchEndpointTests(unittest.TestCase):
         message = {
             "user_message": "Et lui ?",
             "contextual_question": "Que pense Stanislas Blanchard du télétravail ?",
-            "search_hint": "Avis de Stanislas Blanchard sur le télétravail",
+            "abstain_detail": "Les sources parlent du télétravail mais pas de Stanislas Blanchard.",
             "answer_action": "abstain",
             "expanded_answer": None,
             "conversation_id": 42,
@@ -307,7 +321,7 @@ class ExpandSearchEndpointTests(unittest.TestCase):
         self.assertEqual(result, {"message_id": 7, **cached})
         agent.assert_not_called()
 
-    def test_abstained_message_runs_agent_with_hint_and_caches(self) -> None:
+    def test_abstained_message_runs_agent_with_abstain_detail_and_caches(self) -> None:
         expanded = {"answer": "Réponse.", "sources": [], "web_sources": [], "tool_calls": []}
         with (
             patch.object(api, "fetch_expanded_search_message", return_value=self._message()),
@@ -317,7 +331,7 @@ class ExpandSearchEndpointTests(unittest.TestCase):
             result = api.expand_search_message(7)
         agent.assert_called_once_with(
             "Que pense Stanislas Blanchard du télétravail ?",
-            "Avis de Stanislas Blanchard sur le télétravail",
+            "Les sources parlent du télétravail mais pas de Stanislas Blanchard.",
             conversation_id=42,
             message_id=7,
         )

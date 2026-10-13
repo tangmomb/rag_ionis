@@ -37,15 +37,18 @@ MAX_TOOL_ROUNDS = 2
 MAX_TOOL_SOURCES = 5
 MAX_EXCERPT_CHARS = 900
 MAX_WEB_SOURCES = 5
+# The abstention is meant to be one or two sentences; a malformed answer
+# stored as-is must not flood the agent's input.
+MAX_ABSTAIN_DETAIL_CHARS = 600
 
 RESEARCH_AGENT_INSTRUCTIONS = (
     "Tu es l'agent de recherche élargie d'un assistant qui répond à partir des "
-    "vidéos YouTube de l'école IONIS-STM. Une première recherche n'a pas trouvé "
-    "la réponse. Le contexte d'IONIS-STM sert seulement à lever une ambiguïté : "
+    "vidéos YouTube de l'école IONIS-STM. La question a échoué en recherche "
+    "simple dans les vidéos ; le constat de cet échec t'est donné quand il "
+    "existe. À toi de reformuler et de décomposer la question pour tes propres "
+    "recherches. Le contexte d'IONIS-STM sert seulement à lever une ambiguïté : "
     "réponds à la question telle qu'elle est posée, sans chercher ni suggérer "
-    "de lien avec l'école quand la question n'en demande pas. La piste proposée "
-    "par la première recherche est une reformulation, pas une source : ne "
-    "reprends aucun fait qu'elle contient sans l'avoir trouvé avec un outil.\n\n"
+    "de lien avec l'école quand la question n'en demande pas.\n\n"
     "Outils :\n"
     "- recherche_via_embeddings : passages des transcriptions des vidéos. Reformule, "
     "utilise d'autres mots-clés, et décompose les questions à plusieurs "
@@ -55,8 +58,8 @@ RESEARCH_AGENT_INSTRUCTIONS = (
     "partages, temps de visionnage ou abonnés sont indisponibles.\n"
     "- web_search : le web, hors de la base vidéo. Utilise-le seulement si "
     "les vidéos ne suffisent pas.\n\n"
-    "Une première recherche_via_embeddings sur la piste a déjà été lancée : "
-    "ses résultats accompagnent la question. Ne la refais pas à l'identique.\n\n"
+    "Une recherche_via_embeddings sur la question elle-même a déjà été lancée : "
+    "ses résultats l'accompagnent. Ne la refais pas à l'identique.\n\n"
     f"Budget : au plus {MAX_TOOL_CALLS} appels d'outils au total, recherche "
     "initiale comprise ; évite les recherches quasi identiques.\n\n"
     "Réponse : en français, concise, en Markdown. Pour chaque information issue "
@@ -394,7 +397,7 @@ def traced_conversation_call(call: Callable[..., Any], operation: str, **kwargs:
 
 def run_research_agent(
     question: str,
-    search_hint: str | None = None,
+    abstain_detail: str | None = None,
     client: Mistral | None = None,
     *,
     conversation_id: int | None = None,
@@ -407,9 +410,12 @@ def run_research_agent(
         client = Mistral(api_key=api_key)
     timeout_ms = int(configured_request_timeout_seconds() * 1000)
     user_input = f"Question : {question}"
-    if search_hint and search_hint.strip() != question.strip():
-        user_input += f"\nPiste proposée par la première recherche : {search_hint}"
-    initial_query = (search_hint or question).strip()
+    if abstain_detail and abstain_detail.strip():
+        user_input += (
+            "\nConstat de la recherche simple qui a échoué : "
+            f"{abstain_detail.strip()[:MAX_ABSTAIN_DETAIL_CHARS]}"
+        )
+    initial_query = question.strip()
 
     video_sources: list[dict[str, Any]] = []
     tool_calls: list[dict[str, str]] = []
@@ -418,14 +424,14 @@ def run_research_agent(
     with trace_operation(
         "research_agent",
         kind="AGENT",
-        input_value={"question": question, "search_hint": search_hint},
+        input_value={"question": question, "abstain_detail": abstain_detail},
         attributes={"rag.message_id": message_id},
         root=True,
     ) as span:
         span.set_session_id(conversation_id)
         # Left free, the model may go straight to the web and miss a speaker
         # who is in the videos; Conversations cannot force one function, so
-        # one video search on the hint runs before the agent starts.
+        # one video search on the question runs before the agent starts.
         initial_result, initial_sources = execute_tool(INITIAL_TOOL, initial_query)
         video_sources.extend(initial_sources)
         tool_calls.append(

@@ -9,6 +9,7 @@ conversation memory or any write path.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Callable
 
 from mistralai.client import Mistral
@@ -265,6 +266,78 @@ def _conversation_input_messages(inputs: Any) -> list[dict[str, str]]:
     return messages
 
 
+def _timestamp_ns(value: Any) -> int | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1_000_000_000)
+    return None
+
+
+def _web_search_results(execution: Any) -> list[dict[str, Any]]:
+    info = getattr(execution, "info", None) or {}
+    raw = info.get("result") if isinstance(info, dict) else getattr(info, "result", None)
+    try:
+        results = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(results, dict):
+        return []
+    entries = [entry for entry in results.values() if isinstance(entry, dict)]
+    return sorted(entries, key=lambda entry: entry.get("rank") if isinstance(entry.get("rank"), int) else 0)
+
+
+def trace_web_searches(response: Any) -> None:
+    """Expose each web search Mistral ran server side as a retriever span.
+
+    Its query and results otherwise only appear in the raw LLM span output.
+    """
+    for execution in response.outputs or []:
+        if getattr(execution, "type", None) != "tool.execution" or getattr(execution, "name", None) != "web_search":
+            continue
+        try:
+            query = json.loads(getattr(execution, "arguments", "") or "{}").get("query")
+        except (json.JSONDecodeError, AttributeError):
+            query = None
+        results = _web_search_results(execution)
+        with trace_operation(
+            "research_agent.web_search",
+            kind="RETRIEVER",
+            input_value={"query": query},
+            attributes={"web_search.result_count": len(results)},
+            start_time_ns=_timestamp_ns(getattr(execution, "created_at", None)),
+            end_time_ns=_timestamp_ns(getattr(execution, "completed_at", None)),
+        ) as span:
+            span.set_documents(
+                "retrieval.documents",
+                [
+                    {
+                        "chunk_id": entry.get("url"),
+                        "text": "\n".join(
+                            str(part)
+                            for part in [entry.get("title"), entry.get("description"), *(entry.get("snippets") or [])]
+                            if part
+                        ),
+                    }
+                    for entry in results
+                ],
+            )
+            span.set_output(
+                [
+                    {
+                        "title": entry.get("title"),
+                        "url": entry.get("url"),
+                        "description": entry.get("description"),
+                        "snippets": entry.get("snippets") or [],
+                    }
+                    for entry in results
+                ]
+            )
+
+
 def traced_conversation_call(call: Callable[..., Any], operation: str, **kwargs: Any) -> Any:
     """Run one Conversations API call inside a Phoenix LLM span.
 
@@ -297,6 +370,7 @@ def traced_conversation_call(call: Callable[..., Any], operation: str, **kwargs:
             span.set_attribute(f"{tool_prefix}.name", str(function_call.name))
             span.set_attribute(f"{tool_prefix}.arguments", str(function_call.arguments))
         span.set_attribute("research_agent.web_searched", _ran_web_search(response))
+        trace_web_searches(response)
         span.set_output(
             response.model_dump(mode="json") if hasattr(response, "model_dump") else text
         )

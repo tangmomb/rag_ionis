@@ -310,14 +310,19 @@ class _RecordedSpan:
     def set_output(self, value) -> None:
         self.output = value
 
+    def set_documents(self, attribute_name, documents) -> None:
+        self.documents = documents
+
 
 class ResearchAgentTracingTests(unittest.TestCase):
     def test_agent_trace_is_a_session_root_with_llm_spans(self) -> None:
         spans: list[_RecordedSpan] = []
 
         @contextmanager
-        def fake_trace_operation(name, *, kind="CHAIN", input_value=None, attributes=None, root=False):
+        def fake_trace_operation(name, *, kind="CHAIN", input_value=None, attributes=None, root=False, **times):
             span = _RecordedSpan(name, kind, attributes, root)
+            span.input_value = input_value
+            span.times = times
             spans.append(span)
             yield span
 
@@ -328,7 +333,27 @@ class ResearchAgentTracingTests(unittest.TestCase):
         client.beta.conversations.append.return_value = SimpleNamespace(
             conversation_id="conv-1",
             outputs=[
-                SimpleNamespace(type="tool.execution", name="web_search"),
+                SimpleNamespace(
+                    type="tool.execution",
+                    name="web_search",
+                    arguments=json.dumps({"query": "Federer IONIS-STM"}),
+                    created_at="2026-10-13T10:08:52Z",
+                    completed_at="2026-10-13T10:08:54.500000Z",
+                    info={
+                        "result": json.dumps(
+                            {
+                                "x2": {"url": "https://b.test", "title": "B", "rank": 1},
+                                "x1": {
+                                    "url": "https://a.test",
+                                    "title": "A",
+                                    "description": "Joueur suisse.",
+                                    "snippets": ["Né à Bâle."],
+                                    "rank": 0,
+                                },
+                            }
+                        )
+                    },
+                ),
                 _message(_text("Réponse.")),
             ],
             usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=200, total_tokens=1200),
@@ -364,6 +389,15 @@ class ResearchAgentTracingTests(unittest.TestCase):
         self.assertEqual(append.attributes["llm.token_count.total"], 1200)
         self.assertIn("llm.cost.total", append.attributes)
         self.assertIn("research_agent.recherche_via_embeddings", [span.name for span in spans])
+
+        web = next(span for span in spans if span.name == "research_agent.web_search")
+        self.assertEqual(web.kind, "RETRIEVER")
+        self.assertEqual(web.input_value, {"query": "Federer IONIS-STM"})
+        self.assertEqual([doc["chunk_id"] for doc in web.documents], ["https://a.test", "https://b.test"])
+        self.assertIn("Né à Bâle.", web.documents[0]["text"])
+        self.assertEqual(web.output[1]["title"], "B")
+        self.assertEqual(web.times["start_time_ns"], 1_791_886_132_000_000_000)
+        self.assertEqual(web.times["end_time_ns"], 1_791_886_134_500_000_000)
 
 
 if __name__ == "__main__":

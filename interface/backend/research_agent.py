@@ -42,7 +42,7 @@ RESEARCH_AGENT_INSTRUCTIONS = (
     "vidéos YouTube de l'école IONIS-STM. Une première recherche n'a pas trouvé "
     "la réponse. Interprète la question dans le contexte d'IONIS-STM.\n\n"
     "Outils :\n"
-    "- rechercher_videos : passages des transcriptions des vidéos. Reformule, "
+    "- recherche_via_embeddings : passages des transcriptions des vidéos. Reformule, "
     "utilise d'autres mots-clés, et décompose les questions à plusieurs "
     "entités (une recherche par personne, entreprise ou sujet comparé).\n"
     "- interroger_statistiques : vues, likes, commentaires, dates de "
@@ -67,7 +67,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "rechercher_videos",
+            "name": "recherche_via_embeddings",
             "description": "Recherche hybride (mots-clés + sémantique) dans les transcriptions des vidéos IONIS-STM.",
             "parameters": {
                 "type": "object",
@@ -148,10 +148,10 @@ def query_statistics(question: str) -> tuple[dict[str, Any], list[dict[str, Any]
 
 
 TOOL_HANDLERS: dict[str, Callable[[str], tuple[dict[str, Any], list[dict[str, Any]]]]] = {
-    "rechercher_videos": search_videos,
+    "recherche_via_embeddings": search_videos,
     "interroger_statistiques": query_statistics,
 }
-TOOL_ARGUMENT = {"rechercher_videos": "requete", "interroger_statistiques": "question"}
+TOOL_ARGUMENT = {"recherche_via_embeddings": "requete", "interroger_statistiques": "question"}
 
 
 def run_tool_call(call: Any) -> tuple[str, list[dict[str, Any]]]:

@@ -53,7 +53,7 @@ class ResearchAgentLoopTests(unittest.TestCase):
 
     def test_tool_results_are_sent_back_and_cited_videos_kept(self) -> None:
         client = self._client(
-            _response(_call("rechercher_videos", {"requete": "autonomie Novares"})),
+            _response(_call("recherche_via_embeddings", {"requete": "autonomie Novares"})),
             _response(
                 SimpleNamespace(type="tool.execution", name="web_search"),
                 _message(
@@ -64,7 +64,7 @@ class ResearchAgentLoopTests(unittest.TestCase):
             ),
         )
         search = MagicMock(return_value=({"resultats": []}, [VIDEO]))
-        with patch.dict(research_agent.TOOL_HANDLERS, {"rechercher_videos": search}):
+        with patch.dict(research_agent.TOOL_HANDLERS, {"recherche_via_embeddings": search}):
             result = research_agent.run_research_agent(
                 "Que disent les tuteurs sur l'autonomie ?", "autonomie des alternants", client=client
             )
@@ -81,11 +81,11 @@ class ResearchAgentLoopTests(unittest.TestCase):
         client.beta.conversations.delete.assert_called_once_with(conversation_id="conv-1")
 
     def test_tool_rounds_are_capped(self) -> None:
-        looping = _response(_call("rechercher_videos", {"requete": "encore"}))
+        looping = _response(_call("recherche_via_embeddings", {"requete": "encore"}))
         appends = [looping] * research_agent.MAX_TOOL_ROUNDS + [_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Rien trouvé.")))]
         client = self._client(looping, *appends)
         handler = MagicMock(return_value=({"resultats": []}, []))
-        with patch.dict(research_agent.TOOL_HANDLERS, {"rechercher_videos": handler}):
+        with patch.dict(research_agent.TOOL_HANDLERS, {"recherche_via_embeddings": handler}):
             result = research_agent.run_research_agent("Question ?", client=client)
 
         self.assertEqual(handler.call_count, research_agent.MAX_TOOL_ROUNDS)
@@ -96,14 +96,14 @@ class ResearchAgentLoopTests(unittest.TestCase):
     def test_total_tool_calls_are_capped_across_parallel_calls(self) -> None:
         def parallel(prefix: str) -> SimpleNamespace:
             return _response(
-                *[_call("rechercher_videos", {"requete": f"{prefix}{i}"}, f"{prefix}{i}") for i in range(4)]
+                *[_call("recherche_via_embeddings", {"requete": f"{prefix}{i}"}, f"{prefix}{i}") for i in range(4)]
             )
 
         client = self._client(
             parallel("a"), parallel("b"), _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Conclusion.")))
         )
         handler = MagicMock(return_value=({"resultats": []}, []))
-        with patch.dict(research_agent.TOOL_HANDLERS, {"rechercher_videos": handler}):
+        with patch.dict(research_agent.TOOL_HANDLERS, {"recherche_via_embeddings": handler}):
             research_agent.run_research_agent("Question ?", client=client)
 
         self.assertEqual(handler.call_count, research_agent.MAX_TOOL_CALLS)
@@ -112,11 +112,11 @@ class ResearchAgentLoopTests(unittest.TestCase):
         self.assertEqual(len(limited), 8 - research_agent.MAX_TOOL_CALLS)
 
     def test_conversation_is_deleted_even_when_a_call_fails(self) -> None:
-        client = self._client(_response(_call("rechercher_videos", {"requete": "x"})))
+        client = self._client(_response(_call("recherche_via_embeddings", {"requete": "x"})))
         client.beta.conversations.append.side_effect = RuntimeError("réseau")
         with patch.dict(
             research_agent.TOOL_HANDLERS,
-            {"rechercher_videos": MagicMock(return_value=({"resultats": []}, []))},
+            {"recherche_via_embeddings": MagicMock(return_value=({"resultats": []}, []))},
         ):
             with self.assertRaises(RuntimeError):
                 research_agent.run_research_agent("Question ?", client=client)
@@ -208,14 +208,14 @@ class WebLastResortTests(unittest.TestCase):
     def test_no_nudge_when_videos_answer_the_question(self) -> None:
         client = MagicMock()
         client.beta.conversations.start.return_value = _response(
-            _call("rechercher_videos", {"requete": "autonomie"})
+            _call("recherche_via_embeddings", {"requete": "autonomie"})
         )
         client.beta.conversations.append.return_value = _response(
             _message(_text(f"Le tuteur valorise l'autonomie ({VIDEO['video_url']})."))
         )
         with patch.dict(
             research_agent.TOOL_HANDLERS,
-            {"rechercher_videos": MagicMock(return_value=({"resultats": []}, [VIDEO]))},
+            {"recherche_via_embeddings": MagicMock(return_value=({"resultats": []}, [VIDEO]))},
         ):
             result = research_agent.run_research_agent("Autonomie ?", client=client)
 
@@ -319,7 +319,7 @@ class ResearchAgentTracingTests(unittest.TestCase):
 
         client = MagicMock()
         client.beta.conversations.start.return_value = _response(
-            _call("rechercher_videos", {"requete": "autonomie"})
+            _call("recherche_via_embeddings", {"requete": "autonomie"})
         )
         client.beta.conversations.append.return_value = SimpleNamespace(
             conversation_id="conv-1",
@@ -332,7 +332,7 @@ class ResearchAgentTracingTests(unittest.TestCase):
         search = MagicMock(return_value=({"resultats": []}, []))
         with (
             patch.object(research_agent, "trace_operation", fake_trace_operation),
-            patch.dict(research_agent.TOOL_HANDLERS, {"rechercher_videos": search}),
+            patch.dict(research_agent.TOOL_HANDLERS, {"recherche_via_embeddings": search}),
         ):
             research_agent.run_research_agent(
                 "Question ?", client=client, conversation_id=42, message_id=7
@@ -352,14 +352,14 @@ class ResearchAgentTracingTests(unittest.TestCase):
         self.assertEqual(start.attributes["llm.input_messages.0.message.role"], "system")
         self.assertEqual(
             start.attributes["llm.output_messages.0.message.tool_calls.0.tool_call.function.name"],
-            "rechercher_videos",
+            "recherche_via_embeddings",
         )
         self.assertEqual(append.attributes["llm.input_messages.0.message.role"], "tool")
         self.assertEqual(append.attributes["llm.output_messages.0.message.content"], "Réponse.")
         self.assertTrue(append.attributes["research_agent.web_searched"])
         self.assertEqual(append.attributes["llm.token_count.total"], 1200)
         self.assertIn("llm.cost.total", append.attributes)
-        self.assertIn("research_agent.rechercher_videos", [span.name for span in spans])
+        self.assertIn("research_agent.recherche_via_embeddings", [span.name for span in spans])
 
 
 if __name__ == "__main__":

@@ -230,6 +230,25 @@ WEB_CLAIM_MARKERS = ("d'après le web", "d’après le web")
 NO_RELIABLE_ANSWER = "Je n'ai rien trouvé de fiable dans les vidéos ni sur le web."
 
 
+def _has_web_marker(answer: str) -> bool:
+    return any(marker in answer.lower() for marker in WEB_CLAIM_MARKERS)
+
+
+def _consulted_web_pages(searches: list[list[dict[str, Any]]]) -> list[dict[str, str]]:
+    """Best-ranked pages first, alternating between searches, without duplicates."""
+    pages: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for rank in range(max((len(results) for results in searches), default=0)):
+        for results in searches:
+            if rank >= len(results):
+                continue
+            url = str(results[rank].get("url") or "").strip()
+            if url.startswith(("http://", "https://")) and url not in seen_urls:
+                seen_urls.add(url)
+                pages.append({"title": str(results[rank].get("title") or url), "url": url})
+    return pages[:MAX_WEB_SOURCES]
+
+
 def _ran_web_search(response: Any) -> bool:
     return any(
         getattr(o, "type", None) == "tool.execution" and getattr(o, "name", None) == "web_search"
@@ -478,7 +497,19 @@ def run_research_agent(
             timeout_ms=timeout_ms,
         )
         mistral_conversation_id = response.conversation_id
-        state = {"remaining_calls": MAX_TOOL_CALLS - 1, "web_searched": _ran_web_search(response)}
+        state = {"remaining_calls": MAX_TOOL_CALLS - 1, "web_searched": False}
+        consulted_web_searches: list[list[dict[str, Any]]] = []
+
+        def record_web_searches(response: Any) -> None:
+            state["web_searched"] = state["web_searched"] or _ran_web_search(response)
+            consulted_web_searches.extend(
+                _web_search_results(execution)
+                for execution in response.outputs or []
+                if getattr(execution, "type", None) == "tool.execution"
+                and getattr(execution, "name", None) == "web_search"
+            )
+
+        record_web_searches(response)
 
         def run_tool_rounds(response: Any) -> Any:
             for round_index in range(MAX_TOOL_ROUNDS + 1):
@@ -507,7 +538,7 @@ def run_research_agent(
                     inputs=results,
                     timeout_ms=timeout_ms,
                 )
-                state["web_searched"] = state["web_searched"] or _ran_web_search(response)
+                record_web_searches(response)
             return response
 
         web_nudged = False
@@ -525,7 +556,7 @@ def run_research_agent(
                     inputs=[{"type": "message.input", "role": "user", "content": WEB_LAST_RESORT_NUDGE}],
                     timeout_ms=timeout_ms,
                 )
-                state["web_searched"] = state["web_searched"] or _ran_web_search(response)
+                record_web_searches(response)
                 response = run_tool_rounds(response)
         finally:
             try:
@@ -536,13 +567,25 @@ def run_research_agent(
         answer, web_sources = parse_final_message(list(response.outputs or []))
         web_searched = state["web_searched"]
         web_claim_removed = False
-        if not (web_searched and web_sources):
+        consulted_pages = _consulted_web_pages(consulted_web_searches)
+        web_sources_from_search = False
+        if web_searched and not web_sources and consulted_pages:
+            # Mistral sometimes answers from its web search without citing
+            # any page: show the pages it read so the answer stays checkable.
+            web_sources = consulted_pages
+            web_sources_from_search = True
+        elif not (web_searched and web_sources):
             answer, web_claim_removed = strip_unsourced_web_claims(answer)
             web_sources = []
-        if not answer:
-            answer = NO_RELIABLE_ANSWER
         unique_sources = list({s.get("video_url"): s for s in video_sources if s.get("video_url")}.values())
         answer, cited_videos = select_answer_sources(answer, unique_sources)
+        if web_sources_from_search and not cited_videos and not _has_web_marker(answer):
+            answer = f"D'après le web :\n\n{answer}"
+        unsourced_answer_removed = bool(answer) and not (cited_videos or web_sources)
+        if not answer or unsourced_answer_removed:
+            # Backed by neither a video nor a web page, the answer can only
+            # come from the model's general knowledge.
+            answer = NO_RELIABLE_ANSWER
         result = {
             "answer": answer,
             "sources": [
@@ -558,6 +601,8 @@ def run_research_agent(
             "web_searched": web_searched,
             "web_nudged": web_nudged,
             "web_claim_removed": web_claim_removed,
+            "web_sources_from_search": web_sources_from_search,
+            "unsourced_answer_removed": unsourced_answer_removed,
         }
         span.set_output(result)
     return result

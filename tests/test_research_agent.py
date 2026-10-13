@@ -117,7 +117,7 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         self.assertEqual(handler.call_count, 1 + research_agent.MAX_TOOL_ROUNDS)
         last_inputs = client.beta.conversations.append.call_args.kwargs["inputs"]
         self.assertIn("Limite de recherches atteinte", last_inputs[0]["result"])
-        self.assertEqual(result["answer"], "Rien trouvé.")
+        self.assertEqual(result["answer"], research_agent.NO_RELIABLE_ANSWER)
 
     def test_total_tool_calls_are_capped_across_parallel_calls(self) -> None:
         def parallel(prefix: str) -> SimpleNamespace:
@@ -218,9 +218,69 @@ class WebProvenanceTests(_NoInitialSearch):
         client.beta.conversations.start.return_value = _response(final)
         client.beta.conversations.append.return_value = _response(final)
         result = research_agent.run_research_agent("Capitale de l'Australie ?", client=client)
-        self.assertEqual(result["answer"], "Rien dans les vidéos.")
+        # The label is dropped, and what is left is backed by no source.
+        self.assertEqual(result["answer"], research_agent.NO_RELIABLE_ANSWER)
         self.assertTrue(result["web_claim_removed"])
         self.assertFalse(result["web_searched"])
+
+    def _web_search(self, *pages) -> SimpleNamespace:
+        return SimpleNamespace(
+            type="tool.execution",
+            name="web_search",
+            arguments=json.dumps({"query": "Stan Wawrinka"}),
+            info={
+                "result": json.dumps(
+                    {f"k{rank}": {"url": url, "title": title, "rank": rank} for rank, (title, url) in enumerate(pages)}
+                )
+            },
+        )
+
+    def test_uncited_answer_after_web_search_shows_the_pages_read(self) -> None:
+        result = self._run(
+            self._web_search(("Wikipédia", "https://fr.wikipedia.org/wiki/Stan_Wawrinka"), ("ATP", "https://atp.test/wawrinka")),
+            _message(_text("**Stan Wawrinka** est un joueur de tennis suisse.")),
+        )
+        self.assertEqual(
+            result["web_sources"],
+            [
+                {"title": "Wikipédia", "url": "https://fr.wikipedia.org/wiki/Stan_Wawrinka"},
+                {"title": "ATP", "url": "https://atp.test/wawrinka"},
+            ],
+        )
+        self.assertTrue(result["web_sources_from_search"])
+        self.assertTrue(result["answer"].startswith("D'après le web :\n\n**Stan Wawrinka**"))
+        self.assertFalse(result["unsourced_answer_removed"])
+
+    def test_pages_read_keep_an_existing_web_label(self) -> None:
+        result = self._run(
+            self._web_search(("Wikipédia", "https://fr.wikipedia.org/wiki/Stan_Wawrinka")),
+            _message(_text("D'après le web, Stan Wawrinka est suisse.")),
+        )
+        self.assertEqual(result["answer"], "D'après le web, Stan Wawrinka est suisse.")
+        self.assertTrue(result["web_sources_from_search"])
+
+    def test_general_knowledge_answer_without_any_source_is_replaced(self) -> None:
+        final = _message(_text("Stan Wawrinka est un joueur de tennis suisse né en 1985."))
+        client = MagicMock()
+        client.beta.conversations.start.return_value = _response(final)
+        client.beta.conversations.append.return_value = _response(final)
+        result = research_agent.run_research_agent("Qui est Stan Wawrinka ?", client=client)
+        self.assertEqual(result["answer"], research_agent.NO_RELIABLE_ANSWER)
+        self.assertTrue(result["unsourced_answer_removed"])
+        self.assertFalse(result["web_searched"])
+
+    def test_consulted_pages_alternate_between_searches_without_duplicates(self) -> None:
+        pages = research_agent._consulted_web_pages(
+            [
+                [{"url": "https://a.test/1", "title": "A1"}, {"url": "https://a.test/2", "title": "A2"}],
+                [{"url": "https://a.test/1", "title": "A1"}, {"url": "https://b.test/2", "title": "B2"}],
+                [{"url": "https://c.test/1", "title": "C1"}],
+            ]
+        )
+        self.assertEqual(
+            [page["url"] for page in pages],
+            ["https://a.test/1", "https://c.test/1", "https://a.test/2", "https://b.test/2"],
+        )
 
     def test_web_claim_with_list_and_no_source_falls_back(self) -> None:
         result = self._run(

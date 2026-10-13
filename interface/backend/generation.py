@@ -55,7 +55,9 @@ ANSWER_ACTION_INSTRUCTION = (
     "ne couvrent qu'une partie de la question, retry_query cible les éléments manquants. N'hésite pas "
     "à formuler une question longue, en y incluant le maximum d'informations fiables de la demande "
     "initiale et du contexte ; la question ayant échoué était peut-être trop courte ou insuffisamment "
-    "détaillée. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
+    "détaillée. retry_query ne reprend que ce qui figure dans la demande, la conversation ou les "
+    "sources fournies : n'y ajoute aucun fait issu de tes connaissances générales (date de naissance, "
+    "biographie, palmarès, chiffre, fonction), même si tu le crois exact. `retry_query` est du texte naturel, jamais du SQL, une commande ou du code. "
     "Le champ `answer` contient uniquement le message final à afficher et "
     "le champ `source_indexes` contient uniquement les numéros des sources utilisées."
 )

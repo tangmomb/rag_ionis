@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import re
-from typing import Any, Literal, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
@@ -834,34 +835,66 @@ def vector_search(state: RagOrchestrationState) -> dict[str, Any]:
     return {"answer": "", "sources": sources, "retrieval": retrieval}
 
 
+ORCHESTRATE_STAGE = "orchestrate"
+TERMINAL_ROUTES = (
+    "person_clarification",
+    "annex_direct",
+    "direct",
+    "sql_search",
+    "vector_search",
+)
+
+
+def _reporting_stage(node: Callable[..., dict[str, Any]], *, first: bool = False, last: bool = False):
+    """Report the "orchestrate" stage to the caller's stage callback, if any.
+
+    As a subgraph of the response graph, this graph receives that graph's
+    runtime context; invoked alone (golden recall gate), it has no callback.
+    """
+    takes_runtime = "runtime" in inspect.signature(node).parameters
+
+    def wrapped(state: RagOrchestrationState, runtime: Runtime[RagOrchestrationContext]) -> dict[str, Any]:
+        callback = getattr(runtime.context, "stage_callback", None)
+        if first and callback is not None:
+            callback(ORCHESTRATE_STAGE, "started")
+        try:
+            result = node(state, runtime) if takes_runtime else node(state)
+        except Exception:
+            if callback is not None:
+                callback(ORCHESTRATE_STAGE, "failed")
+            raise
+        if last and callback is not None:
+            callback(ORCHESTRATE_STAGE, "completed")
+        return result
+
+    return wrapped
+
+
 def build_graph():
     graph = StateGraph(
         RagOrchestrationState,
         context_schema=RagOrchestrationContext,
     )
-    graph.add_node("initialize", initialize)
-    graph.add_node("reformulate", reformulate)
-    graph.add_node("plan", plan)
-    graph.add_node("annex_direct", annex_direct)
-    graph.add_node("resolve_entities", resolve_entities)
-    graph.add_node("build_execution_plan", build_execution_plan)
-    graph.add_node("person_clarification", person_clarification)
-    graph.add_node("direct", direct)
-    graph.add_node("sql_search", sql_search)
-    graph.add_node("vector_search", vector_search)
+    graph.add_node("initialize", _reporting_stage(initialize, first=True))
+    graph.add_node("reformulate", _reporting_stage(reformulate))
+    graph.add_node("plan", _reporting_stage(plan))
+    graph.add_node("resolve_entities", _reporting_stage(resolve_entities))
+    graph.add_node("build_execution_plan", _reporting_stage(build_execution_plan))
+    for name, node in (
+        ("person_clarification", person_clarification),
+        ("annex_direct", annex_direct),
+        ("direct", direct),
+        ("sql_search", sql_search),
+        ("vector_search", vector_search),
+    ):
+        graph.add_node(name, _reporting_stage(node, last=True))
     graph.add_edge(START, "initialize")
     graph.add_edge("initialize", "reformulate")
     graph.add_edge("reformulate", "plan")
     graph.add_conditional_edges("plan", select_after_plan)
     graph.add_edge("resolve_entities", "build_execution_plan")
     graph.add_conditional_edges("build_execution_plan", select_route)
-    for route in (
-        "person_clarification",
-        "annex_direct",
-        "direct",
-        "sql_search",
-        "vector_search",
-    ):
+    for route in TERMINAL_ROUTES:
         graph.add_edge(route, END)
     return graph.compile()
 

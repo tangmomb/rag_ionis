@@ -21,8 +21,12 @@ a:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outlin
 .legend span { display: flex; align-items: center; gap: 6px; }
 i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #555; }
 i.on { background: var(--accent); box-shadow: 0 0 8px rgba(255, 255, 255, .38); }
-.graph-viewport { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 12px; }
-svg { display: block; width: 100%; max-height: calc(100dvh - 222px); min-height: 480px; }
+.graph-viewport { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; padding: 0 12px; }
+svg { display: block; width: 100%; height: calc(100dvh - 222px); min-height: 480px; cursor: grab; touch-action: none; user-select: none; }
+svg.panning { cursor: grabbing; }
+.graph-zoom { position: absolute; right: 24px; bottom: 12px; display: grid; gap: 6px; }
+.graph-zoom button { width: 30px; height: 30px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--muted-strong); background: var(--surface); font: 15px/1 system-ui, sans-serif; cursor: pointer; }
+.graph-zoom button:hover, .graph-zoom button:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
 .graph-note { text-align: center; font-size: 11px; color: var(--muted); margin: 8px 16px 16px; }
 .edge { fill: none; stroke: #383838; stroke-width: 1.3; }
 .edge.active { stroke: var(--accent); stroke-width: 2.3; filter: drop-shadow(0 0 3px rgba(255, 255, 255, .16)); }
@@ -35,6 +39,15 @@ svg { display: block; width: 100%; max-height: calc(100dvh - 222px); min-height:
 .node.active text { fill: var(--text); }
 .node.active .subtitle { fill: var(--muted-strong); }
 .node.terminal rect { rx: 18px; }
+/* The LLM answer generation is the step this page is about: brand red. */
+.node.highlight rect { fill: rgba(255, 90, 90, .04); stroke: rgba(255, 110, 110, .45); stroke-width: 1.2; }
+.node.highlight text { fill: #d99a9a; }
+.node.highlight .subtitle { fill: #a07a7a; }
+.node.highlight.active rect { fill: rgba(255, 90, 90, .08); stroke: rgba(255, 130, 130, .75); stroke-width: 1.6; filter: drop-shadow(0 0 5px rgba(255, 90, 90, .18)); }
+.node.highlight.active text { fill: #f2c4c4; }
+.node.highlight.active .subtitle { fill: #c9a2a2; }
+.node.highlight .badge rect, .node.highlight.active .badge rect, .node.highlight:hover .badge rect { fill: rgba(255, 110, 110, .12); stroke: rgba(255, 140, 140, .45); stroke-width: 1; filter: none; }
+.node.highlight .badge text, .node.highlight.active .badge text { font-size: 9px; font-weight: 500; fill: #ecbcbc; }
 aside { padding: 26px 22px; border-left: 1px solid var(--line); background: #050505; }
 .eyebrow { font-size: 10px; letter-spacing: .12em; color: #ff8b8b; text-transform: uppercase; }
 aside h2 { font-size: 20px; font-weight: 550; line-height: 1.3; margin: 12px 0; }
@@ -58,4 +71,4 @@ li:last-child { border-color: transparent; padding-bottom: 0; }
 .step-tooltip dl { margin: 0; }
 .step-tooltip dt { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; margin-top: 12px; }
 .step-tooltip dd { margin: 5px 0 0; color: var(--muted-strong); white-space: pre-line; overflow-wrap: anywhere; }
-@media (max-width: 850px) { header { padding: 20px; flex-wrap: wrap; } .question-picker { width: 100%; } .workspace { grid-template-columns: minmax(0, 1fr); } aside { border-left: 0; border-top: 1px solid var(--line); } svg { max-height: none; min-height: 0; } .graph-heading { flex-wrap: wrap; padding-left: 220px; } .graph-viewport { padding: 0; } }
+@media (max-width: 850px) { header { padding: 20px; flex-wrap: wrap; } .question-picker { width: 100%; } .workspace { grid-template-columns: minmax(0, 1fr); } aside { border-left: 0; border-top: 1px solid var(--line); } svg { height: 70dvh; min-height: 360px; } .graph-heading { flex-wrap: wrap; padding-left: 220px; } .graph-viewport { padding: 0; } }

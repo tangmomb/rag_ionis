@@ -21,7 +21,7 @@ const nodes = [
   { id: "format", label: "Restitution sans LLM", sub: "Document ou réponse déjà prête", x: 700, y: 710, w: 220 },
   { id: "persist", label: "Finalisation et mémoire", sub: "Réponse, sources et conversation", x: 580, y: 794, w: 240 },
   { id: "end", label: "Réponse", x: 580, y: 874, w: 130, h: 30, terminal: true },
-  { id: "agent", label: "Recherche élargie", sub: "Agent : vidéos, stats, web", x: 870, y: 865, w: 230 },
+  { id: "agent", label: "Recherche élargie (proposée)", sub: "Si abstention, au clic de l’utilisateur", extra: "Agent : vidéos, stats, web", x: 875, y: 856, w: 240, h: 66 },
 ].map(n => ({ w: 208, h: 48, ...n }));
 const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
 const edges = [
@@ -378,7 +378,7 @@ const staticStepOutputs = {
   format: "La réponse ou le document déjà prêt est mis en forme sans appel LLM.",
   persist: "La réponse, les sources et le contexte de conversation sont enregistrés.",
   end: "La réponse finale est renvoyée à l’utilisateur.",
-  agent: "Après une abstention, le bouton « Élargir la recherche ? » lance un agent autonome : recherche dans les vidéos, statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
+  agent: "Étape facultative, jamais automatique : après une abstention, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
 };
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const edgeId = (from, to) => `${from}--${to}`;
@@ -398,7 +398,7 @@ const svg = document.querySelector("#pipeline-graph");
 svg.setAttribute("viewBox", "0 0 1160 925");
 svg.innerHTML = `<title id="graph-title">Graphe complet du pipeline de réponse RAG</title><desc id="graph-description"></desc>
   <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#383838" stroke-width="1.3"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="#ffffff" stroke-width="1.6"/></marker></defs>
-  <g class="edges">${edges.map(([from,to]) => `<path id="${edgeId(from,to)}" class="edge" d="${edgePath(from,to)}" marker-end="url(#arrow)"/>`).join("")}</g>
+  <g class="edges">${edges.map(([from,to]) => `<path id="${edgeId(from,to)}" class="edge${to === "agent" ? " optional" : ""}" d="${edgePath(from,to)}" marker-end="url(#arrow)"/>`).join("")}</g>
   <g class="nodes">${nodes.map(n => `<g id="node-${n.id}" class="node ${n.terminal ? "terminal" : ""}" transform="translate(${n.x-n.w/2},${n.y})"><rect width="${n.w}" height="${n.h}" rx="7"/><text x="${n.w/2}" y="${n.sub ? 20 : 20}">${escapeHtml(n.label)}</text>${n.sub ? `<text class="subtitle" x="${n.w/2}" y="36">${escapeHtml(n.sub)}</text>` : ""}${n.extra ? `<text class="subtitle" x="${n.w/2}" y="52">${escapeHtml(n.extra)}</text>` : ""}</g>`).join("")}</g>`;
 const select = document.querySelector("#scenario");
 select.innerHTML = Object.entries(scenarios).map(([id, s]) => `<option value="${id}">${escapeHtml(s.question)}</option>`).join("");

@@ -110,12 +110,10 @@ const nodes = [
   {
     id: "generate",
     label: "Génération par LLM",
-    sub: "Réponse ou clarification demandée",
-    badge: "Réponse à l’utilisateur",
+    sub: "Réponse ou clarification demandée · aperçu streamé en direct",
     x: 350,
     y: 710,
     w: 210,
-    highlight: true,
   },
   {
     id: "format",
@@ -127,11 +125,13 @@ const nodes = [
   },
   {
     id: "persist",
-    label: "Mise à jour de la mémoire de conversation",
-    sub: "Sources et sujets",
+    label: "Envoi de la réponse, puis mise à jour de la mémoire",
+    sub: "Réponse finale enregistrée · sources et sujets",
+    badge: "Réponse à l’utilisateur",
     x: 580,
     y: 824,
     w: 300,
+    highlight: true,
   },
   { id: "end", label: "Fin", x: 580, y: 916, w: 130, h: 30, terminal: true },
   {
@@ -169,9 +169,12 @@ const edges = [
   ["generate", "persist"],
   ["format", "persist"],
   ["persist", "end"],
-  // api.py: after an abstention, "Élargir la recherche ?" starts the agent.
-  ["end", "agent"],
+  // api.py: "Élargir la recherche ?" is shown as soon as persist sends the
+  // abstained answer, so the agent may run while the memory is still updating.
+  ["persist", "agent"],
 ];
+// Steps reached from an earlier step than the one before them in a path.
+const attachedFrom = { agent: "persist" };
 // Questions reprises de la page d’accueil, dans le même ordre.
 // Routes vérifiées sur les traces Phoenix référencées dans chaque scénario.
 const scenarios = {
@@ -749,7 +752,7 @@ const staticStepOutputs = {
     "La réponse est finalisée (sources du carrousel, abstention éventuelle), enregistrée puis envoyée à l’utilisateur. La mémoire de conversation est mise à jour ensuite, sans retarder l’affichage : le sujet de l’échange et les vidéos citées, avec un résumé de l’ancien sujet quand la conversation change de sujet.",
   end: "Fin du traitement de la question.",
   agent:
-    "Étape facultative, jamais automatique : après une abstention du pipeline principal, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
+    "Étape facultative, jamais automatique : après une abstention du pipeline principal, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Après une recherche vectorielle, il part de zéro (sans relancer la même recherche) ; pour les autres routes, une première recherche dans les vidéos sur la question reformulée lui est fournie au départ. Sa réponse s’affiche à part, avec ses sources. Le bouton apparaît dès l’envoi de la réponse : l’agent peut donc tourner pendant la mise à jour de la mémoire, et sa réponse n’y est pas ajoutée.",
 };
 const escapeHtml = (value) =>
   String(value).replace(
@@ -839,12 +842,13 @@ nodes.forEach((n) => {
   }
   n.h = Math.max(n.h, y + 13);
 });
-// The proposed expanded search sits on the right of "Fin", centred on it.
+// The proposed expanded search sits on the right of the step that sends the
+// answer, centred on it.
 {
-  const end = byId.end;
+  const persist = byId.persist;
   const agent = byId.agent;
-  agent.x = end.x + end.w / 2 + 90 + agent.w / 2;
-  agent.y = end.y + end.h / 2 - agent.h / 2;
+  agent.x = persist.x + persist.w / 2 + 90 + agent.w / 2;
+  agent.y = persist.y + persist.h / 2 - agent.h / 2;
 }
 function nodeTextMarkup(n) {
   if (n.terminal) {
@@ -958,7 +962,9 @@ function render() {
   const s = scenarios[select.value];
   const activeNodes = new Set(s.path);
   const activeEdges = new Set(
-    s.path.slice(1).map((id, index) => edgeId(s.path[index], id)),
+    s.path
+      .slice(1)
+      .map((id, index) => edgeId(attachedFrom[id] ?? s.path[index], id)),
   );
   nodes.forEach((n) =>
     document

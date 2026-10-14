@@ -48,7 +48,7 @@ from interface.backend.telemetry import (
     trace_operation,
 )
 from interface.backend.utilities import get_llm_client, normalize_model_name
-from interface.backend.research_agent import retrieved_passages, run_research_agent
+from interface.backend.research_agent import run_research_agent
 
 
 router = APIRouter()
@@ -267,11 +267,7 @@ def _persist_response(
             answer_action=state["answer_action"],
             contextual_question=retrieval.get("contextual_question"),
             abstain_detail=retrieval.get("abstain_detail"),
-            retrieved_passages=(
-                retrieved_passages(state["sources"])
-                if state["answer_action"] == "abstain" and retrieval.get("route") == "vector_search"
-                else None
-            ),
+            route=retrieval.get("route"),
         )
         response_ready_callback = _runtime_context(runtime).response_ready_callback
         if response_ready_callback is not None:
@@ -565,7 +561,7 @@ def expand_search_message(message_id: int) -> dict[str, Any]:
             message["abstain_detail"],
             conversation_id=message["conversation_id"],
             message_id=message_id,
-            retrieved_passages=message.get("retrieved_passages"),
+            route=message["route"],
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail="La recherche élargie a échoué.") from exc

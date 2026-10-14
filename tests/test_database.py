@@ -101,6 +101,7 @@ class DatabaseTests(unittest.TestCase):
                 answer_action="abstain",
                 contextual_question="Question\x00 reformulée",
                 abstain_detail="Constat\x00 d'abstention",
+                route="vector_search",
             )
 
         self.assertEqual(result, (3, 9))
@@ -114,7 +115,7 @@ class DatabaseTests(unittest.TestCase):
                 "abstain",
                 "Question reformulée",
                 "Constat d'abstention",
-                None,
+                "vector_search",
             ),
         )
 
@@ -134,7 +135,7 @@ class DatabaseTests(unittest.TestCase):
             "contextual_question",
             "abstain_detail",
             "expanded_answer",
-            "retrieved_passages",
+            "route",
         ):
             self.assertIn(f"'{column}'", cleanup)
 

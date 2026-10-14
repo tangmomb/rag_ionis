@@ -156,32 +156,38 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         self.initial_search.assert_called_once_with("Qui est X ?")
         self.assertIn("Témoignage", client.beta.conversations.start.call_args.kwargs["inputs"][2]["result"])
 
-    def test_vector_route_passages_replace_the_initial_search(self) -> None:
+    def test_vector_route_abstention_starts_without_a_video_search(self) -> None:
         client = self._client(
-            _response(_call("recherche_via_embeddings", {"requete": "autonomie"})),
-            _response(_message(_text(f"Le tuteur valorise l'autonomie ({VIDEO['video_url']})."))),
+            _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("D'après le web, oui.")))
         )
-        passages = research_agent.retrieved_passages([{**VIDEO, "chunk_id": 12}] * 7)
 
         result = research_agent.run_research_agent(
-            "Qui est X ?", "Aucune source ne cite X.", client=client, retrieved_passages=passages
+            "Qui est X ?", "Aucune source ne cite X.", client=client, route="vector_search"
         )
 
-        # Only the agent's own call searches: the stored passages stand for the first one.
-        self.initial_search.assert_called_once_with("autonomie")
-        start_inputs = client.beta.conversations.start.call_args.kwargs["inputs"]
-        self.assertEqual(json.loads(start_inputs[1]["arguments"]), {"requete": "Qui est X ?"})
-        initial_results = json.loads(start_inputs[2]["result"])["resultats"]
-        self.assertEqual(len(initial_results), research_agent.MAX_TOOL_SOURCES)
-        self.assertEqual(
-            initial_results[0],
-            {"video_title": VIDEO["video_title"], "video_url": VIDEO["video_url"], "extrait": VIDEO["text"]},
-        )
-        self.assertEqual([s["video_url"] for s in result["sources"]], [VIDEO["video_url"]])
-        self.assertEqual(result["sources"][0]["thumbnail_medium_url"], VIDEO["thumbnail_medium_url"])
-        self.assertEqual(result["tool_calls"][0]["tool"], research_agent.INITIAL_TOOL)
+        self.initial_search.assert_not_called()
+        start_kwargs = client.beta.conversations.start.call_args.kwargs
+        (user_message,) = start_kwargs["inputs"]
+        self.assertEqual(user_message["type"], "message.input")
+        self.assertIn("Constat de la recherche simple qui a échoué : Aucune source", user_message["content"])
+        self.assertEqual(start_kwargs["instructions"], research_agent.VECTOR_ROUTE_INSTRUCTIONS)
+        self.assertNotIn("a déjà été lancée", start_kwargs["instructions"])
+        self.assertEqual(result["tool_calls"], [])
 
-    def test_stored_passages_still_count_in_the_tool_budget(self) -> None:
+    def test_other_routes_and_unknown_route_keep_the_initial_search(self) -> None:
+        for route in ("sql_search", "annex_direct", "direct", "person_clarification", None):
+            with self.subTest(route=route):
+                self.initial_search.reset_mock()
+                client = self._client(
+                    _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok.")))
+                )
+                research_agent.run_research_agent("Qui est X ?", client=client, route=route)
+                self.initial_search.assert_called_once_with("Qui est X ?")
+                start_kwargs = client.beta.conversations.start.call_args.kwargs
+                self.assertEqual(len(start_kwargs["inputs"]), 3)
+                self.assertEqual(start_kwargs["instructions"], research_agent.RESEARCH_AGENT_INSTRUCTIONS)
+
+    def test_vector_route_agent_keeps_the_full_tool_budget(self) -> None:
         def parallel(prefix: str) -> SimpleNamespace:
             return _response(
                 *[_call("recherche_via_embeddings", {"requete": f"{prefix}{i}"}, f"{prefix}{i}") for i in range(4)]
@@ -191,28 +197,12 @@ class ResearchAgentLoopTests(_NoInitialSearch):
             parallel("a"),
             _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Conclusion."))),
         )
-        research_agent.run_research_agent(
-            "Question ?", client=client, retrieved_passages=research_agent.retrieved_passages([VIDEO])
-        )
+        research_agent.run_research_agent("Question ?", client=client, route="vector_search")
 
-        self.assertEqual(self.initial_search.call_count, research_agent.MAX_TOOL_CALLS - 1)
-
-    def test_retrieved_passages_keep_only_what_the_agent_needs(self) -> None:
-        passages = research_agent.retrieved_passages(
-            [{**VIDEO, "chunk_id": 3, "text": "a" * 2000, "score": 0.9}]
-        )
-        self.assertEqual(
-            passages,
-            [
-                {
-                    "chunk_id": 3,
-                    "video_title": VIDEO["video_title"],
-                    "video_url": VIDEO["video_url"],
-                    "thumbnail_medium_url": VIDEO["thumbnail_medium_url"],
-                    "text": "a" * research_agent.MAX_EXCERPT_CHARS,
-                }
-            ],
-        )
+        self.assertEqual(self.initial_search.call_count, research_agent.MAX_TOOL_CALLS)
+        sent = client.beta.conversations.append.call_args_list[0].kwargs["inputs"]
+        limited = [r for r in sent if "Limite de recherches atteinte" in r["result"]]
+        self.assertEqual(len(limited), 4 - research_agent.MAX_TOOL_CALLS)
 
     def test_long_abstain_detail_is_truncated_and_missing_one_omitted(self) -> None:
         client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
@@ -415,6 +405,7 @@ class ExpandSearchEndpointTests(unittest.TestCase):
             "answer_action": "abstain",
             "expanded_answer": None,
             "conversation_id": 42,
+            "route": None,
         }
         message.update(overrides)
         return message
@@ -458,32 +449,29 @@ class ExpandSearchEndpointTests(unittest.TestCase):
             "Les sources parlent du télétravail mais pas de Stanislas Blanchard.",
             conversation_id=42,
             message_id=7,
-            retrieved_passages=None,
+            route=None,
         )
         store.assert_called_once_with(7, expanded)
         self.assertEqual(result["answer"], "Réponse.")
 
-    def test_stored_passages_are_handed_to_the_agent(self) -> None:
-        passages = research_agent.retrieved_passages([VIDEO])
+    def test_stored_route_is_handed_to_the_agent(self) -> None:
         with (
-            patch.object(
-                api, "fetch_expanded_search_message", return_value=self._message(retrieved_passages=passages)
-            ),
+            patch.object(api, "fetch_expanded_search_message", return_value=self._message(route="vector_search")),
             patch.object(api, "run_research_agent", return_value={"answer": "Réponse."}) as agent,
             patch.object(api, "store_expanded_answer"),
         ):
             api.expand_search_message(7)
-        self.assertEqual(agent.call_args.kwargs["retrieved_passages"], passages)
+        self.assertEqual(agent.call_args.kwargs["route"], "vector_search")
 
 
-class PersistRetrievedPassagesTests(unittest.TestCase):
-    def _persist(self, route: str, answer_action: str) -> dict:
+class PersistRouteTests(unittest.TestCase):
+    def test_the_answer_route_is_stored_with_the_message(self) -> None:
         state = {
             "payload": {"question": "Qui est X ?"},
             "answer": "Réponse",
-            "answer_action": answer_action,
-            "retrieval": {"route": route, "contextual_question": "Qui est X ?"},
-            "sources": [{**VIDEO, "chunk_id": 5}],
+            "answer_action": "abstain",
+            "retrieval": {"route": "vector_search", "contextual_question": "Qui est X ?"},
+            "sources": [VIDEO],
             "carousel_sources": [],
         }
         with (
@@ -492,15 +480,7 @@ class PersistRetrievedPassagesTests(unittest.TestCase):
             patch.object(api, "get_llm_client"),
         ):
             api._persist_response(state, SimpleNamespace(context=api.RagResponseContext(answer_client=object())))
-        return store.call_args.kwargs
-
-    def test_vector_route_abstention_stores_the_passages_it_saw(self) -> None:
-        stored = self._persist("vector_search", "abstain")
-        self.assertEqual(stored["retrieved_passages"], research_agent.retrieved_passages([{**VIDEO, "chunk_id": 5}]))
-
-    def test_other_routes_and_answers_store_no_passages(self) -> None:
-        self.assertIsNone(self._persist("sql_search", "abstain")["retrieved_passages"])
-        self.assertIsNone(self._persist("vector_search", "answer")["retrieved_passages"])
+        self.assertEqual(store.call_args.kwargs["route"], "vector_search")
 
 
 class _RecordedSpan:

@@ -128,11 +128,10 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS expanded_answer JSONB"
                 )
-                # Passages the answer model saw before abstaining on the vector
-                # route: the research agent starts from them instead of
-                # repeating the same search.
+                # Route of the answer: after a vector-route abstention the
+                # research agent skips its initial video search.
                 cursor.execute(
-                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS retrieved_passages JSONB"
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS route TEXT"
                 )
                 cursor.execute(
                     """
@@ -192,7 +191,7 @@ def ensure_chat_schema() -> None:
                                   'contextual_question',
                                   'abstain_detail',
                                   'expanded_answer',
-                                  'retrieved_passages'
+                                  'route'
                               )
                         LOOP
                             EXECUTE format(
@@ -291,7 +290,7 @@ def store_chat_message(
     answer_action: str | None = None,
     contextual_question: str | None = None,
     abstain_detail: str | None = None,
-    retrieved_passages: list[dict[str, Any]] | None = None,
+    route: str | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
     user_message = user_message.replace("\x00", "")
@@ -315,7 +314,7 @@ def store_chat_message(
                     answer_action,
                     contextual_question,
                     abstain_detail,
-                    retrieved_passages
+                    route
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -328,7 +327,7 @@ def store_chat_message(
                     answer_action,
                     contextual_question,
                     abstain_detail,
-                    Jsonb(retrieved_passages) if retrieved_passages is not None else None,
+                    route,
                 ),
             )
             message_id = int(cursor.fetchone()[0])
@@ -344,7 +343,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
             cursor.execute(
                 """
                 SELECT user_message, contextual_question, abstain_detail, answer_action, expanded_answer,
-                       conversation_id, retrieved_passages
+                       conversation_id, route
                 FROM chat.messages
                 WHERE id = %s AND answer_message IS NOT NULL
                 """,
@@ -360,7 +359,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
         "answer_action": row[3],
         "expanded_answer": row[4],
         "conversation_id": row[5],
-        "retrieved_passages": row[6],
+        "route": row[6],
     }
 
 

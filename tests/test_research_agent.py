@@ -156,6 +156,54 @@ class ResearchAgentLoopTests(_NoInitialSearch):
         self.initial_search.assert_called_once_with("Qui est X ?")
         self.assertIn("Témoignage", client.beta.conversations.start.call_args.kwargs["inputs"][2]["result"])
 
+    def test_vector_route_abstention_starts_without_a_video_search(self) -> None:
+        client = self._client(
+            _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("D'après le web, oui.")))
+        )
+
+        result = research_agent.run_research_agent(
+            "Qui est X ?", "Aucune source ne cite X.", client=client, route="vector_search"
+        )
+
+        self.initial_search.assert_not_called()
+        start_kwargs = client.beta.conversations.start.call_args.kwargs
+        (user_message,) = start_kwargs["inputs"]
+        self.assertEqual(user_message["type"], "message.input")
+        self.assertIn("Constat de la recherche simple qui a échoué : Aucune source", user_message["content"])
+        self.assertEqual(start_kwargs["instructions"], research_agent.VECTOR_ROUTE_INSTRUCTIONS)
+        self.assertNotIn("a déjà été lancée", start_kwargs["instructions"])
+        self.assertEqual(result["tool_calls"], [])
+
+    def test_other_routes_and_unknown_route_keep_the_initial_search(self) -> None:
+        for route in ("sql_search", "annex_direct", "direct", "person_clarification", None):
+            with self.subTest(route=route):
+                self.initial_search.reset_mock()
+                client = self._client(
+                    _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok.")))
+                )
+                research_agent.run_research_agent("Qui est X ?", client=client, route=route)
+                self.initial_search.assert_called_once_with("Qui est X ?")
+                start_kwargs = client.beta.conversations.start.call_args.kwargs
+                self.assertEqual(len(start_kwargs["inputs"]), 3)
+                self.assertEqual(start_kwargs["instructions"], research_agent.RESEARCH_AGENT_INSTRUCTIONS)
+
+    def test_vector_route_agent_keeps_the_full_tool_budget(self) -> None:
+        def parallel(prefix: str) -> SimpleNamespace:
+            return _response(
+                *[_call("recherche_via_embeddings", {"requete": f"{prefix}{i}"}, f"{prefix}{i}") for i in range(4)]
+            )
+
+        client = self._client(
+            parallel("a"),
+            _response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Conclusion."))),
+        )
+        research_agent.run_research_agent("Question ?", client=client, route="vector_search")
+
+        self.assertEqual(self.initial_search.call_count, research_agent.MAX_TOOL_CALLS)
+        sent = client.beta.conversations.append.call_args_list[0].kwargs["inputs"]
+        limited = [r for r in sent if "Limite de recherches atteinte" in r["result"]]
+        self.assertEqual(len(limited), 4 - research_agent.MAX_TOOL_CALLS)
+
     def test_long_abstain_detail_is_truncated_and_missing_one_omitted(self) -> None:
         client = self._client(_response(SimpleNamespace(type="tool.execution", name="web_search"), _message(_text("Ok."))))
         research_agent.run_research_agent("Qui est X ?", "x" * 5000, client=client)
@@ -357,6 +405,7 @@ class ExpandSearchEndpointTests(unittest.TestCase):
             "answer_action": "abstain",
             "expanded_answer": None,
             "conversation_id": 42,
+            "route": None,
         }
         message.update(overrides)
         return message
@@ -400,9 +449,38 @@ class ExpandSearchEndpointTests(unittest.TestCase):
             "Les sources parlent du télétravail mais pas de Stanislas Blanchard.",
             conversation_id=42,
             message_id=7,
+            route=None,
         )
         store.assert_called_once_with(7, expanded)
         self.assertEqual(result["answer"], "Réponse.")
+
+    def test_stored_route_is_handed_to_the_agent(self) -> None:
+        with (
+            patch.object(api, "fetch_expanded_search_message", return_value=self._message(route="vector_search")),
+            patch.object(api, "run_research_agent", return_value={"answer": "Réponse."}) as agent,
+            patch.object(api, "store_expanded_answer"),
+        ):
+            api.expand_search_message(7)
+        self.assertEqual(agent.call_args.kwargs["route"], "vector_search")
+
+
+class PersistRouteTests(unittest.TestCase):
+    def test_the_answer_route_is_stored_with_the_message(self) -> None:
+        state = {
+            "payload": {"question": "Qui est X ?"},
+            "answer": "Réponse",
+            "answer_action": "abstain",
+            "retrieval": {"route": "vector_search", "contextual_question": "Qui est X ?"},
+            "sources": [VIDEO],
+            "carousel_sources": [],
+        }
+        with (
+            patch.object(api, "store_chat_message", return_value=(1, 2)) as store,
+            patch.object(api, "remember_conversation_json_turn", return_value={}),
+            patch.object(api, "get_llm_client"),
+        ):
+            api._persist_response(state, SimpleNamespace(context=api.RagResponseContext(answer_client=object())))
+        self.assertEqual(store.call_args.kwargs["route"], "vector_search")
 
 
 class _RecordedSpan:

@@ -267,6 +267,7 @@ def _persist_response(
             answer_action=state["answer_action"],
             contextual_question=retrieval.get("contextual_question"),
             abstain_detail=retrieval.get("abstain_detail"),
+            route=retrieval.get("route"),
         )
         response_ready_callback = _runtime_context(runtime).response_ready_callback
         if response_ready_callback is not None:
@@ -560,6 +561,7 @@ def expand_search_message(message_id: int) -> dict[str, Any]:
             message["abstain_detail"],
             conversation_id=message["conversation_id"],
             message_id=message_id,
+            route=message["route"],
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail="La recherche élargie a échoué.") from exc

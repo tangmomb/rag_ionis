@@ -128,6 +128,11 @@ def ensure_chat_schema() -> None:
                 cursor.execute(
                     "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS expanded_answer JSONB"
                 )
+                # Route of the answer: after a vector-route abstention the
+                # research agent skips its initial video search.
+                cursor.execute(
+                    "ALTER TABLE chat.messages ADD COLUMN IF NOT EXISTS route TEXT"
+                )
                 cursor.execute(
                     """
                     DO $$
@@ -185,7 +190,8 @@ def ensure_chat_schema() -> None:
                                   'answer_action',
                                   'contextual_question',
                                   'abstain_detail',
-                                  'expanded_answer'
+                                  'expanded_answer',
+                                  'route'
                               )
                         LOOP
                             EXECUTE format(
@@ -284,6 +290,7 @@ def store_chat_message(
     answer_action: str | None = None,
     contextual_question: str | None = None,
     abstain_detail: str | None = None,
+    route: str | None = None,
 ) -> tuple[int, int]:
     ensure_chat_schema()
     user_message = user_message.replace("\x00", "")
@@ -306,9 +313,10 @@ def store_chat_message(
                     trace_id,
                     answer_action,
                     contextual_question,
-                    abstain_detail
+                    abstain_detail,
+                    route
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -319,6 +327,7 @@ def store_chat_message(
                     answer_action,
                     contextual_question,
                     abstain_detail,
+                    route,
                 ),
             )
             message_id = int(cursor.fetchone()[0])
@@ -334,7 +343,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
             cursor.execute(
                 """
                 SELECT user_message, contextual_question, abstain_detail, answer_action, expanded_answer,
-                       conversation_id
+                       conversation_id, route
                 FROM chat.messages
                 WHERE id = %s AND answer_message IS NOT NULL
                 """,
@@ -350,6 +359,7 @@ def fetch_expanded_search_message(message_id: int) -> dict[str, Any] | None:
         "answer_action": row[3],
         "expanded_answer": row[4],
         "conversation_id": row[5],
+        "route": row[6],
     }
 
 

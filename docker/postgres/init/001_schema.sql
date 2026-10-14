@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS chat.messages (
     answer_action TEXT,
     contextual_question TEXT,
     abstain_detail TEXT,
-    expanded_answer JSONB
+    expanded_answer JSONB,
+    route TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);

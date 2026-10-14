@@ -809,12 +809,9 @@
                 </li>
               </ul>
               <p>
-                Avant qu'il démarre, il reçoit toujours un premier résultat de
-                <code>recherche_via_embeddings</code> sur la question : si le
-                pipeline classique avait pris la route vectorielle, ce sont les
-                passages qu'il avait récupérés avant de s'abstenir, sans
-                relancer la même recherche ; sinon, une recherche est faite. Il
-                choisit ensuite lui-même les outils à appeler. Il peut décomposer une
+                Une première <code>recherche_via_embeddings</code> sur la
+                question est toujours faite avant qu'il démarre ; il choisit
+                ensuite lui-même les outils à appeler. Il peut décomposer une
                 question, par exemple une comparaison entre deux entreprises,
                 en plusieurs recherches. Il est limité à 3 appels d'outils,
                 recherche initiale comprise, et à une seule recherche web ; il

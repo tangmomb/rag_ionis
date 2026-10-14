@@ -125,6 +125,20 @@ def _tool_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def retrieved_passages(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What to keep of an abstained answer's sources to seed the research agent."""
+    return [
+        {
+            "chunk_id": source.get("chunk_id"),
+            "video_title": source.get("video_title"),
+            "video_url": source.get("video_url"),
+            "thumbnail_medium_url": source.get("thumbnail_medium_url"),
+            "text": str(source.get("text") or "")[:MAX_EXCERPT_CHARS],
+        }
+        for source in sources[:MAX_TOOL_SOURCES]
+    ]
+
+
 def search_videos(query: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     plan = ExecutionPlan(
         route="vector_search",
@@ -440,6 +454,7 @@ def run_research_agent(
     *,
     conversation_id: int | None = None,
     message_id: int | None = None,
+    retrieved_passages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if client is None:
         api_key = provider_api_key("mistral")
@@ -462,7 +477,11 @@ def run_research_agent(
     with trace_operation(
         "research_agent",
         kind="AGENT",
-        input_value={"question": question, "abstain_detail": abstain_detail},
+        input_value={
+            "question": question,
+            "abstain_detail": abstain_detail,
+            "retrieved_passages": retrieved_passages,
+        },
         attributes={"rag.message_id": message_id},
         root=True,
     ) as span:
@@ -470,7 +489,15 @@ def run_research_agent(
         # Left free, the model may go straight to the web and miss a speaker
         # who is in the videos; Conversations cannot force one function, so
         # one video search on the question runs before the agent starts.
-        initial_result, initial_sources = execute_tool(INITIAL_TOOL, initial_query)
+        # When the simple search already ran on the vector route, the agent
+        # gets the passages it abstained on instead of the same search again.
+        if retrieved_passages:
+            initial_sources = retrieved_passages[:MAX_TOOL_SOURCES]
+            initial_result = json.dumps(
+                {"resultats": _tool_sources(initial_sources)}, ensure_ascii=False, default=str
+            )
+        else:
+            initial_result, initial_sources = execute_tool(INITIAL_TOOL, initial_query)
         video_sources.extend(initial_sources)
         initial_arguments = json.dumps({TOOL_ARGUMENT[INITIAL_TOOL]: initial_query}, ensure_ascii=False)
         tool_calls.append({"tool": INITIAL_TOOL, "arguments": initial_arguments})

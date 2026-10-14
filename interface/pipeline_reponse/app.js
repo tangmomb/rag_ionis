@@ -139,7 +139,7 @@ const nodes = [
     label: "Recherche élargie (proposée)",
     sub: "Si abstention du pipeline principal, propose à l’utilisateur d'élargir la recherche via l'agent",
     extra:
-      "L'agent peut à son tour chercher dans les vidéos, les statistiques SQL, et le web en dernier recours",
+      "L'agent part des passages déjà récupérés (route vectorielle) ou d'une recherche dans les vidéos, puis peut chercher dans les vidéos, les statistiques SQL, et le web en dernier recours",
     x: 915,
     y: 880,
     w: 380,
@@ -749,7 +749,7 @@ const staticStepOutputs = {
     "La réponse est finalisée (sources du carrousel, abstention éventuelle), enregistrée puis envoyée à l’utilisateur. La mémoire de conversation est mise à jour ensuite, sans retarder l’affichage : le sujet de l’échange et les vidéos citées, avec un résumé de l’ancien sujet quand la conversation change de sujet.",
   end: "Fin du traitement de la question.",
   agent:
-    "Étape facultative, jamais automatique : après une abstention du pipeline principal, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il cherche alors dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
+    "Étape facultative, jamais automatique : après une abstention du pipeline principal, la réponse propose le bouton « Élargir la recherche ? », et l’agent ne démarre que si l’utilisateur clique. Il reçoit d’abord les passages que la route vectorielle avait récupérés avant de s’abstenir, ou, sur les autres routes, le résultat d’une recherche dans les vidéos. Il cherche ensuite dans les vidéos, les statistiques en SQL validé, et le web en dernier recours. Sa réponse s’affiche à part, avec ses sources.",
 };
 const escapeHtml = (value) =>
   String(value).replace(

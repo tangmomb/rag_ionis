@@ -114,6 +114,7 @@ class DatabaseTests(unittest.TestCase):
                 "abstain",
                 "Question reformulée",
                 "Constat d'abstention",
+                None,
             ),
         )
 
@@ -133,6 +134,7 @@ class DatabaseTests(unittest.TestCase):
             "contextual_question",
             "abstain_detail",
             "expanded_answer",
+            "retrieved_passages",
         ):
             self.assertIn(f"'{column}'", cleanup)
 

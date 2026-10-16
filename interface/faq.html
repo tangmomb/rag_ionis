@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FAQ · RAG YouTube IONIS-STM</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=37" />
+    <link rel="stylesheet" href="/styles.css?v=48" />
   </head>
   <body>
     <main class="faq-page">
@@ -1226,18 +1226,20 @@
                 s’exécute dans un conteneur Docker éphémère sur le VPS, lancé
                 par la tâche cron puis supprimé une fois terminée. Ce conteneur
                 léger ne contient que le code de mise à jour ; il interroge
-                l’API YouTube, la base PostgreSQL et, pour les nouvelles
-                vidéos, pilote la VM GPU.
+                l’API YouTube, la base PostgreSQL et, pour les nouvelles vidéos,
+                pilote la VM GPU.
               </p>
-              <pre class="faq-code"><code>docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+              <pre
+                class="faq-code"
+              ><code>docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   --env-file .env.production \
   --profile jobs run --rm updater python -m pipeline.update_videos</code></pre>
               <p>
                 Une vidéo n'est rendue disponible au RAG qu'une fois ce parcours
                 terminé. En cas d'échec, elle reste absente de la table des
                 vidéos et sera donc automatiquement retentée à la prochaine
-                exécution. Chaque exécution crée dans le stockage objet
-                Scaleway un dossier daté, par exemple
+                exécution. Chaque exécution crée dans le stockage objet Scaleway
+                un dossier daté, par exemple
                 <code>youtube/20260912_1411_update_videos/</code>, qui conserve
                 la liste des vidéos détectées (<code>new_videos.json</code>) et
                 le journal des traitements réalisés
@@ -1251,8 +1253,8 @@
                   démarrage de la VM GPU chez Scaleway afin de les traiter avec
                   le pipeline de préparation, qui a besoin d'un GPU : WhisperX
                   pour la transcription, pyannote pour identifier qui parle,
-                  DINOv2 et CLIP pour classer les images, PaddleOCR pour lire
-                  le texte à l'écran.
+                  DINOv2 et CLIP pour classer les images, PaddleOCR pour lire le
+                  texte à l'écran.
                 </span>
               </aside>
               <figure class="faq-pipeline-example">
@@ -1281,11 +1283,12 @@
                 conteneur Docker éphémère sur le VPS, lancé par une tâche cron
                 puis supprimé une fois terminée. Chaque exécution écrit un
                 <strong>snapshot daté</strong> dans la table
-                <code>stats</code> :
-                l'historique est ainsi conservé, même lorsqu'une métrique n'a
-                pas changé depuis le snapshot précédent.
+                <code>stats</code> : l'historique est ainsi conservé, même
+                lorsqu'une métrique n'a pas changé depuis le snapshot précédent.
               </p>
-              <pre class="faq-code"><code>docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+              <pre
+                class="faq-code"
+              ><code>docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   --env-file .env.production \
   --profile jobs run --rm updater python -m pipeline.update_stats</code></pre>
               <p>
@@ -1298,8 +1301,8 @@
               <p>
                 Chaque exécution crée elle aussi un dossier daté dans le
                 stockage objet Scaleway, par exemple
-                <code>youtube/20260912_1411_update_stats/</code>, avec son
-                bilan (<code>update_stats_log.json</code>) : snapshots écrits,
+                <code>youtube/20260912_1411_update_stats/</code>, avec son bilan
+                (<code>update_stats_log.json</code>) : snapshots écrits,
                 commentaires ajoutés, modifiés ou supprimés, et erreurs
                 éventuelles.
               </p>
@@ -1357,8 +1360,8 @@
                 tournent en permanence : l’API, qui sert aussi l’interface ;
                 PostgreSQL équipé de pgvector, dont les données sont stockées
                 dans un volume Docker ; Caddy, le reverse proxy qui reçoit le
-                trafic et gère le HTTPS ; et Phoenix, qui collecte les traces
-                du pipeline.
+                trafic et gère le HTTPS ; et Phoenix, qui collecte les traces du
+                pipeline.
               </p>
               <p>
                 D’autres conteneurs n’apparaissent que ponctuellement : celui
@@ -1387,33 +1390,240 @@
               hidden
             >
               <p>
-                GitHub Actions vérifie le projet, recrée l’image Docker
-                concernée et la publie dans le Container Registry de Scaleway,
-                avec un tag correspondant au commit.
+                Le RAG tourne dans des conteneurs Docker sur un VPS. Une VM
+                avec GPU, éteinte le reste du temps, est disponible lorsqu’il
+                faut préparer de nouvelles vidéos pour le corpus. Les mises à
+                jour sont déployées automatiquement par GitHub Actions à chaque
+                push sur <code>master</code> : selon les fichiers modifiés,
+                l’image Docker concernée est recréée puis déployée sur la
+                machine qui l’utilise.
               </p>
-              <p>
-                <strong>En cas de modification du RAG</strong> — interface, API
-                ou dépendances associées — GitHub Actions recrée l’image du VPS.
-                Le VPS récupère cette nouvelle image depuis le registre et
-                redéploie le service concerné.
-              </p>
-              <p>
-                <strong
-                  >En cas de modification du pipeline de préparation</strong
-                >
-                — code de traitement vidéo, modèle ou dépendances GPU — GitHub
-                Actions recrée l’image de la VM GPU sur un runner auto-hébergé.
-                La VM Scaleway reste arrêtée hors traitement : la nouvelle image
-                y est installée lors de son prochain démarrage, ce qui évite de
-                la maintenir allumée et d’engendrer des frais importants.
-              </p>
-              <p>
-                Avant tout déploiement d’une modification du RAG, la nouvelle
-                image est lancée sur une API de staging, avec une copie du
-                corpus. Un contrôle de recall sur le golden dataset y vérifie
-                que la recherche ne s’est pas dégradée ; en cas d’échec, la
-                production n’est pas mise à jour.
-              </p>
+              <p class="faq-case-hint">Cliquer pour plus de détails par image</p>
+              <details class="faq-case">
+                <summary>
+                  <h4 id="maj-rag-title">
+                    En cas de modification du RAG
+                  </h4>
+                  <p>
+                    Recréation de l’image :
+                    <code class="faq-tool">rag-ionis-api</code>
+                  </p>
+                  <p class="faq-case-target">
+                    Affecte : <span>VPS</span>
+                  </p>
+                </summary>
+                <h5>Comment ?</h5>
+                <ol class="faq-flow">
+                  <li>
+                    <p>
+                      Un runner GitHub vierge copie le repo au commit poussé, se
+                      connecte au registre Scaleway, puis lance
+                      <code>docker buildx build</code> sur
+                      <code>Dockerfile.api</code>.
+                    </p>
+                    <p>
+                      Il télécharge d’abord le manifeste de
+                      <code>rag-ionis-api:buildcache</code> : un index qui relie
+                      chaque clé de cache (l’empreinte d’une étape du
+                      Dockerfile) au sha256 de la couche qu’elle a produite.
+                    </p>
+                    <p>
+                      Il calcule ensuite la clé de chaque étape du Dockerfile et
+                      la compare au manifeste de <code>:buildcache</code>. Si
+                      elle y
+                      figure, l’étape n’est pas réexécutée ; sinon, elle est
+                      reconstruite.
+                    </p>
+                    <p>
+                      Une étape reconstruite a besoin des couches qui la
+                      précèdent. Le commit modifiant en général le code, copié
+                      en dernier, le runner finit par télécharger presque toutes
+                      les couches : le cache évite surtout de recalculer,
+                      notamment l’installation des dépendances. Retélécharger
+                      une couche est bien plus rapide que la reconstruire.
+                    </p>
+                    <p>
+                      Il publie enfin l’image dans le registre Scaleway avec le
+                      tag du commit et <code>latest</code>, puis envoie une nouvelle version de
+                      <code>:buildcache</code> pour le build suivant.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      GitHub Actions se connecte au VPS en SSH, y copie les
+                      fichiers de configuration qui restent hors de l’image
+                      (Docker Compose, Caddyfile, scripts de déploiement et
+                      d’initialisation de la base), puis
+                      lui fait télécharger
+                      <code>rag-ionis-api:&lt;sha du commit&gt;</code> depuis le
+                      registre Scaleway.
+                    </p>
+                    <p>
+                      Le VPS lit le manifeste de ce tag et ne télécharge que les
+                      couches qu’il n’a pas encore, identifiées par leur sha256.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      GitHub Actions détecte si le commit modifie des fichiers
+                      qui affectent la recherche du RAG (backend, connaissances,
+                      dépendances, configuration de production). Si oui, le
+                      recall doit être testé à nouveau avant de mettre à jour le
+                      système.
+                    </p>
+                    <p>
+                      La nouvelle image est d’abord lancée dans un conteneur de
+                      test (staging), avec sa propre base qui reçoit une copie
+                      du corpus, pour ne pas interférer avec le système en
+                      place. Le golden dataset y est rejoué : si le recall
+                      atteint 0,85, la mise à jour continue ; sinon, elle
+                      s’arrête et la production n’est pas touchée.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      Le VPS exécute le script de déploiement : il inscrit le
+                      tag du commit dans sa configuration de production, puis
+                      remplace uniquement le conteneur de l’API par un nouveau,
+                      lancé avec la nouvelle image. La base et les autres
+                      services continuent de tourner.
+                    </p>
+                    <p>
+                      Le remplacement entraîne une coupure de quelques
+                      secondes : entre l’arrêt de l’ancien conteneur et le
+                      démarrage du nouveau, l’API ne répond plus.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      Le script vérifie ensuite, pendant 3&nbsp;minutes au
+                      maximum, que la nouvelle API répond sur son adresse de
+                      santé (<code>/health</code>). Si c’est le cas, Caddy est
+                      rechargé et le déploiement se termine.
+                    </p>
+                    <p>
+                      Sinon, l’ancien tag est remis dans la configuration et
+                      l’ancienne version est relancée : l’API ne reste pas en
+                      panne si la nouvelle image ne démarre pas.
+                    </p>
+                  </li>
+                </ol>
+              </details>
+              <details class="faq-case">
+                <summary>
+                  <h4 id="maj-pipeline-title">
+                    En cas de modification du pipeline de préparation
+                  </h4>
+                  <p>
+                    Recréation de l’image :
+                    <code class="faq-tool">rag-ionis-scaleway</code>
+                  </p>
+                  <p class="faq-case-target">
+                    Affecte : <span>VM avec GPU</span>
+                  </p>
+                </summary>
+                <h5>Comment ?</h5>
+                <ol class="faq-flow">
+                  <li>
+                    <p>
+                      GitHub Actions détecte une modification du pipeline (code,
+                      Dockerfile, dépendances GPU ou modèle) et lance d’abord des
+                      contrôles sur un runner GitHub.
+                    </p>
+                    <p>
+                      L’image GPU étant trop lourde pour un runner gratuit, elle
+                      est construite ensuite sur un runner auto-hébergé, le PC
+                      local, qui garde les couches des builds précédents.
+                    </p>
+                    <p>
+                      Le PC télécharge quand même le manifeste de
+                      <code>rag-ionis-scaleway:buildcache</code>, mais compare
+                      chaque clé de cache d’abord à son cache local, plus
+                      complet : celui du registre ne garde que les couches de
+                      l’image finale, alors que le PC conserve aussi les étapes
+                      intermédiaires et les paquets déjà téléchargés. Le cache
+                      du registre ne sert donc qu’en secours, si le cache local
+                      a été vidé.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      Une fois l’image construite, le PC l’envoie directement
+                      dans le registre Scaleway (<code>docker push</code>, via
+                      l’API HTTPS du registre). Pour chaque couche, il demande
+                      au registre s’il possède déjà son sha256 : seules les
+                      couches absentes sont envoyées. L’image est publiée avec
+                      le tag du commit et <code>latest</code>, puis
+                      <code>:buildcache</code> est mis à jour.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      L’image n’est pas envoyée à la VM, qui reste éteinte hors
+                      traitement. À chaque démarrage, un service de la VM fait
+                      automatiquement un <code>docker pull</code> de
+                      <code>rag-ionis-scaleway:latest</code>, en ne téléchargeant
+                      que les couches qui lui manquent, puis lance le conteneur
+                      worker sur le GPU.
+                    </p>
+                  </li>
+                </ol>
+              </details>
+              <details class="faq-case">
+                <summary>
+                  <h4 id="maj-updater-title">
+                    En cas de modification du pipeline de préparation
+                  </h4>
+                  <p>
+                    Recréation de l’image :
+                    <code class="faq-tool">rag-ionis-updater</code>
+                  </p>
+                  <p class="faq-case-target">
+                    Affecte : <span>VPS</span>
+                  </p>
+                </summary>
+                <h5>Comment ?</h5>
+                <ol class="faq-flow">
+                  <li>
+                    <p>
+                      GitHub Actions détecte une modification du pipeline, de
+                      <code>Dockerfile.vps</code> ou des dépendances. Cette
+                      image légère, sans GPU, est construite sur un runner
+                      GitHub vierge, comme l’image de l’API, avec le cache du
+                      registre (<code>rag-ionis-updater:buildcache</code>).
+                    </p>
+                    <p>
+                      Elle est publiée dans le registre Scaleway avec le tag du
+                      commit et <code>latest</code>. Aucun test de recall n’est
+                      lancé : ce conteneur ne sert pas à la recherche.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      GitHub Actions se connecte au VPS en SSH, y copie les
+                      fichiers de configuration qui restent hors de l’image
+                      (Docker Compose, qui décrit le conteneur updater,
+                      Caddyfile et scripts), puis lui fait télécharger
+                      <code>rag-ionis-updater:&lt;sha du commit&gt;</code>, en
+                      ne récupérant que les couches qui lui manquent.
+                    </p>
+                    <p>
+                      Le VPS inscrit ce tag dans sa configuration de
+                      production, sans lancer le conteneur : l’image est
+                      seulement préparée.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      La nouvelle version est utilisée au prochain passage de
+                      la tâche cron : le VPS lance un conteneur éphémère avec
+                      cette image, qui ajoute les nouvelles vidéos ou met à jour
+                      les statistiques, pilote la VM GPU si besoin, puis est
+                      supprimé.
+                    </p>
+                  </li>
+                </ol>
+              </details>
               <figure class="faq-diagram">
                 <div class="faq-diagram-scroll">
                   <svg
@@ -1467,104 +1677,360 @@
                     </g>
 
                     <text class="d-note" x="195" y="690">SSH</text>
-                    <text class="d-note" x="545" y="690">pull au démarrage</text>
+                    <text class="d-note" x="545" y="690">
+                      pull au démarrage
+                    </text>
 
-                    <rect class="d-box" x="260" y="16" width="200" height="40" rx="8" />
-                    <text class="d-title" x="360" y="41">git push sur master</text>
+                    <rect
+                      class="d-box"
+                      x="260"
+                      y="16"
+                      width="200"
+                      height="40"
+                      rx="8"
+                    />
+                    <text class="d-title" x="360" y="41">
+                      git push sur master
+                    </text>
 
-                    <rect class="d-box" x="170" y="82" width="380" height="46" rx="8" />
+                    <rect
+                      class="d-box"
+                      x="170"
+                      y="82"
+                      width="380"
+                      height="46"
+                      rx="8"
+                    />
                     <text class="d-title" x="360" y="101">GitHub Actions</text>
-                    <text class="d-sub" x="360" y="118">deux workflows, lancés selon les fichiers modifiés</text>
+                    <text class="d-sub" x="360" y="118">
+                      deux workflows, lancés selon les fichiers modifiés
+                    </text>
 
-                    <rect class="d-box" x="30" y="166" width="310" height="276" rx="8" />
-                    <text class="d-title" x="185" y="188">Workflow « Deploy VPS »</text>
-                    <text class="d-sub" x="185" y="205">se lance si modification sur :</text>
-                    <text class="d-group" x="44" y="224">API + contrôle de recall :</text>
-                    <text class="d-list" x="44" y="239">interface/backend/, interface/connaissances_*,</text>
-                    <text class="d-list" x="44" y="254">Dockerfile.api, docker-compose.prod.yml,</text>
-                    <text class="d-list" x="44" y="269">workflow deploy-vps.yml</text>
-                    <text class="d-group" x="44" y="289">API sans contrôle de recall :</text>
-                    <text class="d-list" x="44" y="304">autres fichiers de interface/ (pages statiques)</text>
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="166"
+                      width="310"
+                      height="276"
+                      rx="8"
+                    />
+                    <text class="d-title" x="185" y="188">
+                      Workflow « Deploy VPS »
+                    </text>
+                    <text class="d-sub" x="185" y="205">
+                      se lance si modification sur :
+                    </text>
+                    <text class="d-group" x="44" y="224">
+                      API + contrôle de recall :
+                    </text>
+                    <text class="d-list" x="44" y="239">
+                      interface/backend/, interface/connaissances_*,
+                    </text>
+                    <text class="d-list" x="44" y="254">
+                      Dockerfile.api, docker-compose.prod.yml,
+                    </text>
+                    <text class="d-list" x="44" y="269">
+                      workflow deploy-vps.yml
+                    </text>
+                    <text class="d-group" x="44" y="289">
+                      API sans contrôle de recall :
+                    </text>
+                    <text class="d-list" x="44" y="304">
+                      autres fichiers de interface/ (pages statiques)
+                    </text>
                     <text class="d-group" x="44" y="324">Updater :</text>
-                    <text class="d-list" x="44" y="339">pipeline/, Dockerfile.vps</text>
-                    <text class="d-group" x="44" y="359">API + updater + contrôle de recall :</text>
-                    <text class="d-list" x="44" y="374">pyproject.toml, uv.lock, .dockerignore</text>
-                    <text class="d-group" x="44" y="394">Config seule, sans build :</text>
-                    <text class="d-list" x="44" y="409">Caddyfile, docker-compose.yml,</text>
-                    <text class="d-list" x="44" y="424">docker/postgres/init/, deploy/deploy-vps.sh</text>
+                    <text class="d-list" x="44" y="339">
+                      pipeline/, Dockerfile.vps
+                    </text>
+                    <text class="d-group" x="44" y="359">
+                      API + updater + contrôle de recall :
+                    </text>
+                    <text class="d-list" x="44" y="374">
+                      pyproject.toml, uv.lock, .dockerignore
+                    </text>
+                    <text class="d-group" x="44" y="394">
+                      Config seule, sans build :
+                    </text>
+                    <text class="d-list" x="44" y="409">
+                      Caddyfile, docker-compose.yml,
+                    </text>
+                    <text class="d-list" x="44" y="424">
+                      docker/postgres/init/, deploy/deploy-vps.sh
+                    </text>
 
-                    <rect class="d-box" x="380" y="166" width="310" height="276" rx="8" />
-                    <text class="d-title" x="535" y="188">Workflow « Deploy Scaleway GPU »</text>
-                    <text class="d-sub" x="535" y="205">se lance si modification sur :</text>
-                    <text class="d-list" x="394" y="224">pipeline/, Dockerfile.scaleway, .dockerignore,</text>
-                    <text class="d-list" x="394" y="239">requirements-gpu.txt,</text>
-                    <text class="d-list" x="394" y="254">requirements-paddle-bootstrap.txt,</text>
-                    <text class="d-list" x="394" y="269">requirements-ytdlp.txt,</text>
-                    <text class="d-list" x="394" y="284">models/frame_filter_….joblib,</text>
-                    <text class="d-list" x="394" y="299">workflow deploy-scaleway.yml</text>
+                    <rect
+                      class="d-box"
+                      x="380"
+                      y="166"
+                      width="310"
+                      height="276"
+                      rx="8"
+                    />
+                    <text class="d-title" x="535" y="188">
+                      Workflow « Deploy Scaleway GPU »
+                    </text>
+                    <text class="d-sub" x="535" y="205">
+                      se lance si modification sur :
+                    </text>
+                    <text class="d-list" x="394" y="224">
+                      pipeline/, Dockerfile.scaleway, .dockerignore,
+                    </text>
+                    <text class="d-list" x="394" y="239">
+                      requirements-gpu.txt,
+                    </text>
+                    <text class="d-list" x="394" y="254">
+                      requirements-paddle-bootstrap.txt,
+                    </text>
+                    <text class="d-list" x="394" y="269">
+                      requirements-ytdlp.txt,
+                    </text>
+                    <text class="d-list" x="394" y="284">
+                      models/frame_filter_….joblib,
+                    </text>
+                    <text class="d-list" x="394" y="299">
+                      workflow deploy-scaleway.yml
+                    </text>
                     <text class="d-group" x="394" y="319">À noter :</text>
-                    <text class="d-list" x="394" y="334">pipeline/ reconstruit aussi l’updater,</text>
-                    <text class="d-list" x="394" y="349">dans le workflow de gauche</text>
+                    <text class="d-list" x="394" y="334">
+                      pipeline/ reconstruit aussi l’updater,
+                    </text>
+                    <text class="d-list" x="394" y="349">
+                      dans le workflow de gauche
+                    </text>
 
-                    <rect class="d-box" x="30" y="462" width="310" height="52" rx="8" />
-                    <text class="d-title" x="185" y="483">Vérification de la config</text>
-                    <text class="d-sub" x="185" y="501">tests de config, scripts shell, compose, actionlint</text>
-                    <rect class="d-box" x="380" y="462" width="310" height="52" rx="8" />
-                    <text class="d-title" x="535" y="483">Vérification de la config</text>
-                    <text class="d-sub" x="535" y="501">tests de config Scaleway, scripts shell</text>
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="462"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="185" y="483">
+                      Vérification de la config
+                    </text>
+                    <text class="d-sub" x="185" y="501">
+                      tests de config, scripts shell, compose, actionlint
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="380"
+                      y="462"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="535" y="483">
+                      Vérification de la config
+                    </text>
+                    <text class="d-sub" x="535" y="501">
+                      tests de config Scaleway, scripts shell
+                    </text>
 
-                    <rect class="d-box" x="30" y="534" width="310" height="66" rx="8" />
-                    <text class="d-title" x="185" y="555">Build sur un runner GitHub</text>
-                    <text class="d-sub" x="185" y="573">Dockerfile.api → rag-ionis-api</text>
-                    <text class="d-sub" x="185" y="589">Dockerfile.vps → rag-ionis-updater</text>
-                    <rect class="d-box" x="380" y="534" width="310" height="66" rx="8" />
-                    <text class="d-title" x="535" y="555">Build sur le PC avec GPU</text>
-                    <text class="d-sub" x="535" y="573">runner auto-hébergé</text>
-                    <text class="d-sub" x="535" y="589">Dockerfile.scaleway → rag-ionis-scaleway</text>
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="534"
+                      width="310"
+                      height="66"
+                      rx="8"
+                    />
+                    <text class="d-title" x="185" y="555">
+                      Build sur un runner GitHub
+                    </text>
+                    <text class="d-sub" x="185" y="573">
+                      Dockerfile.api → rag-ionis-api
+                    </text>
+                    <text class="d-sub" x="185" y="589">
+                      Dockerfile.vps → rag-ionis-updater
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="380"
+                      y="534"
+                      width="310"
+                      height="66"
+                      rx="8"
+                    />
+                    <text class="d-title" x="535" y="555">
+                      Build sur le PC avec GPU
+                    </text>
+                    <text class="d-sub" x="535" y="573">
+                      runner auto-hébergé
+                    </text>
+                    <text class="d-sub" x="535" y="589">
+                      Dockerfile.scaleway → rag-ionis-scaleway
+                    </text>
 
-                    <rect class="d-box d-box-strong" x="30" y="620" width="660" height="52" rx="8" />
-                    <text class="d-title" x="360" y="641">Container Registry Scaleway</text>
-                    <text class="d-sub" x="360" y="659">image taguée avec l’identifiant du commit et latest</text>
+                    <rect
+                      class="d-box d-box-strong"
+                      x="30"
+                      y="620"
+                      width="660"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="360" y="641">
+                      Container Registry Scaleway
+                    </text>
+                    <text class="d-sub" x="360" y="659">
+                      image taguée avec l’identifiant du commit et latest
+                    </text>
 
-                    <rect class="d-box" x="30" y="700" width="310" height="52" rx="8" />
-                    <text class="d-title" x="185" y="721">Copie de la config sur le VPS</text>
-                    <text class="d-sub" x="185" y="739">Caddyfile, compose, scripts, init Postgres</text>
-                    <rect class="d-box" x="380" y="700" width="310" height="52" rx="8" />
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="700"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="185" y="721">
+                      Copie de la config + pull sur le VPS
+                    </text>
+                    <text class="d-sub" x="185" y="739">
+                      Caddyfile, compose, scripts, init Postgres
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="380"
+                      y="700"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
                     <text class="d-title" x="535" y="721">VM GPU Scaleway</text>
-                    <text class="d-sub" x="535" y="739">arrêtée hors traitement</text>
+                    <text class="d-sub" x="535" y="739">
+                      arrêtée hors traitement
+                    </text>
 
-                    <rect class="d-box d-box-accent" x="30" y="772" width="310" height="52" rx="8" />
-                    <text class="d-title" x="185" y="793">Contrôle de recall sur le staging</text>
-                    <text class="d-sub" x="185" y="811">si le retrieval peut changer : ≥ 0,85 ?</text>
-                    <rect class="d-box" x="380" y="772" width="310" height="52" rx="8" />
-                    <text class="d-title" x="535" y="793">Pull de la nouvelle image</text>
-                    <text class="d-sub" x="535" y="811">au prochain démarrage de la VM</text>
+                    <rect
+                      class="d-box d-box-accent"
+                      x="30"
+                      y="772"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="185" y="793">
+                      Contrôle de recall sur le staging
+                    </text>
+                    <text class="d-sub" x="185" y="811">
+                      si le retrieval peut changer : ≥ 0,85 ?
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="380"
+                      y="772"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="535" y="793">
+                      Pull de la nouvelle image
+                    </text>
+                    <text class="d-sub" x="535" y="811">
+                      au prochain démarrage de la VM
+                    </text>
 
-                    <rect class="d-box" x="30" y="854" width="152" height="52" rx="8" />
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="854"
+                      width="152"
+                      height="52"
+                      rx="8"
+                    />
                     <text class="d-title" x="106" y="875">Recall OK</text>
-                    <text class="d-sub" x="106" y="893">ou contrôle non requis</text>
-                    <rect class="d-box" x="188" y="854" width="152" height="52" rx="8" />
-                    <text class="d-title" x="264" y="875">Recall &lt; 0,85</text>
-                    <text class="d-sub" x="264" y="893">arrêt, prod inchangée</text>
-                    <rect class="d-box" x="380" y="854" width="310" height="52" rx="8" />
-                    <text class="d-title" x="535" y="875">Utilisée par le prochain job</text>
-                    <text class="d-sub" x="535" y="893">de préparation des vidéos</text>
+                    <text class="d-sub" x="106" y="893">
+                      ou contrôle non requis
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="188"
+                      y="854"
+                      width="152"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="264" y="875">
+                      Recall &lt; 0,85
+                    </text>
+                    <text class="d-sub" x="264" y="893">
+                      arrêt, prod inchangée
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="380"
+                      y="854"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="535" y="875">
+                      Utilisée par le prochain job
+                    </text>
+                    <text class="d-sub" x="535" y="893">
+                      de préparation des vidéos
+                    </text>
 
-                    <rect class="d-box" x="30" y="926" width="310" height="66" rx="8" />
-                    <text class="d-title" x="185" y="947">Pull et redémarrage sur le VPS</text>
-                    <text class="d-sub" x="185" y="965">API : healthcheck, 3 min max</text>
-                    <text class="d-sub" x="185" y="981">updater : prêt pour le prochain cron</text>
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="926"
+                      width="310"
+                      height="66"
+                      rx="8"
+                    />
+                    <text class="d-title" x="185" y="947">
+                      Redémarrage sur le VPS
+                    </text>
+                    <text class="d-sub" x="185" y="965">
+                      API : healthcheck, 3 min max
+                    </text>
+                    <text class="d-sub" x="185" y="981">
+                      updater : prêt pour le prochain cron
+                    </text>
 
-                    <rect class="d-box" x="30" y="1020" width="152" height="52" rx="8" />
+                    <rect
+                      class="d-box"
+                      x="30"
+                      y="1020"
+                      width="152"
+                      height="52"
+                      rx="8"
+                    />
                     <text class="d-title" x="106" y="1041">API saine</text>
-                    <text class="d-sub" x="106" y="1059">Caddy rechargé, prod à jour</text>
-                    <rect class="d-box" x="188" y="1020" width="152" height="52" rx="8" />
+                    <text class="d-sub" x="106" y="1059">
+                      Caddy rechargé, prod à jour
+                    </text>
+                    <rect
+                      class="d-box"
+                      x="188"
+                      y="1020"
+                      width="152"
+                      height="52"
+                      rx="8"
+                    />
                     <text class="d-title" x="264" y="1041">API en échec</text>
-                    <text class="d-sub" x="264" y="1059">retour au tag précédent</text>
+                    <text class="d-sub" x="264" y="1059">
+                      retour au tag précédent
+                    </text>
 
-                    <rect class="d-box d-box-dashed" x="380" y="1020" width="310" height="52" rx="8" />
-                    <text class="d-title" x="535" y="1041">Docker Hub, hors CI</text>
-                    <text class="d-sub" x="535" y="1059">postgres, caddy, phoenix : tirées par le VPS</text>
+                    <rect
+                      class="d-box d-box-dashed"
+                      x="380"
+                      y="1020"
+                      width="310"
+                      height="52"
+                      rx="8"
+                    />
+                    <text class="d-title" x="535" y="1041">
+                      Docker Hub, hors CI
+                    </text>
+                    <text class="d-sub" x="535" y="1059">
+                      postgres, caddy, phoenix : tirées par le VPS
+                    </text>
                   </svg>
                 </div>
                 <figcaption>

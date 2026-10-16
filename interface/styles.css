@@ -542,6 +542,141 @@ button {
   margin: 0;
 }
 
+.faq-case {
+  margin: 16px 0;
+  padding: 16px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: #151515;
+}
+
+.faq-case h4 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.faq-case-hint {
+  margin: 14px 0 -8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.faq-case summary {
+  position: relative;
+  padding-right: 28px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.faq-case summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq-case summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  margin-top: -6px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.faq-case[open] summary::after {
+  margin-top: -2px;
+  transform: rotate(-135deg);
+}
+
+.faq-case summary:hover h4 {
+  color: #ffffff;
+}
+
+.faq-case summary:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+.faq-case summary p {
+  margin: 0;
+  color: var(--muted-strong);
+}
+
+.faq-case summary .faq-case-target {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.faq-case-target span {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: #222222;
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.faq-case h5 {
+  margin: 14px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: #ff8b8b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.faq-flow {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.faq-flow li {
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: #0e0e0e;
+}
+
+.faq-flow li p {
+  margin: 0;
+}
+
+.faq-flow li p + p {
+  margin-top: 8px;
+}
+
+.faq-flow li + li {
+  position: relative;
+  margin-top: 26px;
+}
+
+.faq-flow li + li::before {
+  content: "↓";
+  position: absolute;
+  top: -24px;
+  left: 0;
+  right: 0;
+  color: #ff5a5a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: center;
+}
+
 .faq-detail-list {
   display: grid;
   gap: 5px;

@@ -37,7 +37,7 @@ class ScalewayCommandBuilderTests(unittest.TestCase):
         self.assertIn(r'C:\Users\rgb\.ssh\rag_ionis_scaleway_admin', source)
         self.assertIn('value: "51.159.135.156"', source)
         self.assertIn('value: "root"', source)
-        self.assertNotIn('ubuntu@179.237.98.117', worker_info)
+        self.assertNotIn('ubuntu@95.111.224.166', worker_info)
         self.assertIn('sudo systemctl cat rag-ionis-scaleway-worker', source)
         self.assertIn('/etc/rag-ionis/scaleway-worker.env', source)
         self.assertIn('sudo cat /etc/rag-ionis/scaleway-worker.env', source)

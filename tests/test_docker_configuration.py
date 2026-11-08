@@ -41,10 +41,16 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertNotIn('"80:80"', production_compose)
 
     def test_production_services_have_memory_limits(self) -> None:
-        # The VPS is shared with other projects: every long-running service is capped.
+        # The VPS is shared with the agent_mots_cles project: every service, the updater
+        # job included, is capped, with no extra swap and a lower OOM priority.
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
 
-        self.assertEqual(production_compose.count("mem_limit:"), 5)
+        self.assertEqual(production_compose.count("    mem_limit:"), 6)
+        self.assertEqual(production_compose.count("    memswap_limit:"), 6)
+        self.assertEqual(production_compose.count("    oom_score_adj:"), 6)
+        # Production API and PostgreSQL win over the agent project under memory pressure.
+        self.assertEqual(production_compose.count("    mem_reservation:"), 2)
+        self.assertEqual(production_compose.count("    oom_score_adj: -500"), 2)
 
     def test_production_api_runs_without_reload_as_non_root(self) -> None:
         dockerfile = API_DOCKERFILE_PATH.read_text(encoding="utf-8")

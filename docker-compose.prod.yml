@@ -1,4 +1,12 @@
 # Surcharges de production. A utiliser avec docker-compose.yml.
+# Le VPS (7,8 Gio, 4 vCPU) heberge aussi le projet agent_mots_cles (systemd, hors Docker).
+# Plafonds RAM stricts (memswap_limit = mem_limit : pas de swap en plus) : prod 2,25 Gio,
+# staging 1,5 Gio, updater 1 Gio, soit 4,75 Gio au pire.
+# Priorite au RAG de prod : l'API et PostgreSQL de prod ont une reserve (mem_reservation,
+# memory.low) que le noyau recupere en dernier, et oom_score_adj -500 pour etre tues en
+# dernier. Phoenix, le staging et l'updater cedent avant le projet agent (oom_score_adj > 0).
+# La reserve n'agit que si system.slice (parent des conteneurs) a elle aussi un MemoryLow,
+# a regler une fois sur l'hote : sudo systemctl set-property system.slice MemoryLow=1152M
 services:
   postgres:
     environment:
@@ -11,6 +19,9 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     mem_limit: 512m
+    memswap_limit: 512m
+    mem_reservation: 384m
+    oom_score_adj: -500
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -45,6 +56,9 @@ services:
     ports:
       - "127.0.0.1:8006:8006"
     mem_limit: 1g
+    memswap_limit: 1g
+    mem_reservation: 768m
+    oom_score_adj: -500
     cpus: 2
     depends_on:
       postgres:
@@ -76,6 +90,8 @@ services:
       - staging_postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     mem_limit: 512m
+    memswap_limit: 512m
+    oom_score_adj: 500
     healthcheck:
       # TCP, not the socket: during first-time init the temporary server listens only on the socket,
       # so a socket check could report healthy before the real server is up.
@@ -106,6 +122,8 @@ services:
     ports:
       - "127.0.0.1:8007:8006"
     mem_limit: 1g
+    memswap_limit: 1g
+    oom_score_adj: 500
     cpus: 1
     depends_on:
       staging-postgres:
@@ -139,6 +157,10 @@ services:
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID is required}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY is required}
+    mem_limit: 1g
+    memswap_limit: 1g
+    oom_score_adj: 500
+    cpus: 1
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,6 +173,9 @@ services:
     volumes:
       - phoenix_data:/mnt/data
     mem_limit: 768m
+    memswap_limit: 768m
+    oom_score_adj: 200
+    cpus: 1
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=5)"]
       interval: 10s

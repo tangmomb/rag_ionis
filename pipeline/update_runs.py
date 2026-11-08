@@ -464,17 +464,16 @@ def download_and_run_pipeline(
     snapshot_date: date,
     comments_payload: dict | None = None,
 ) -> dict:
-    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "scaleway").strip().lower()
-    if backend == "scaleway":
+    from pipeline.support.remote_backend import REMOTE_BACKENDS, configured_backend
+
+    backend = configured_backend()
+    if backend in REMOTE_BACKENDS:
         return run_pipeline_on_scaleway(
             video,
             archive_dir,
             snapshot_date,
             comments_payload=comments_payload,
-        )
-    if backend != "local":
-        raise RuntimeError(
-            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'scaleway'."
+            backend=backend,
         )
 
     from pipeline.ingest.download_videos import download_video
@@ -552,10 +551,10 @@ def run_pipeline_on_scaleway(
     snapshot_date: date,
     *,
     comments_payload: dict | None = None,
+    backend: str = "scaleway",
 ) -> dict:
+    from pipeline.support.remote_backend import remote_job_client
     from pipeline.support.scaleway_jobs import (
-        ScalewayClient,
-        ScalewayConfig,
         ScalewayJobError,
         download_s3_prefix,
         s3_client,
@@ -612,7 +611,7 @@ def run_pipeline_on_scaleway(
 
     region = os.getenv("S3_REGION", "").strip()
     object_store = s3_client(region)
-    client = ScalewayClient(ScalewayConfig.from_env())
+    client = remote_job_client(backend)
     job_id, output = client.run(job_input, object_store=object_store, bucket=bucket)
     if str(output.get("video_id") or "") != youtube_video_id:
         raise ScalewayJobError(
@@ -651,7 +650,7 @@ def run_pipeline_on_scaleway(
 
         delete_prefix(object_store, bucket, control_prefix)
     return {
-        "backend": "scaleway",
+        "backend": backend,
         "job_id": job_id,
         "s3_uri": f"s3://{bucket}/{prefix}",
     }

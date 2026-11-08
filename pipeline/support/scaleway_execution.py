@@ -12,9 +12,12 @@ from pathlib import Path
 from pipeline.catalog import TASKS
 from pipeline.options import PipelineOptions
 from pipeline.publish.upload_outputs_to_s3 import delete_prefix
+from pipeline.support.remote_backend import (
+    REMOTE_BACKENDS,
+    configured_backend,
+    remote_job_client,
+)
 from pipeline.support.scaleway_jobs import (
-    ScalewayClient,
-    ScalewayConfig,
     ScalewayJobError,
     download_s3_prefix,
     s3_client,
@@ -39,12 +42,7 @@ class RemoteCommand:
 def execution_backend() -> str:
     if os.getenv("SCALEWAY_WORKER", "").strip().lower() in {"1", "true", "yes"}:
         return "local"
-    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "scaleway").strip().lower()
-    if backend not in {"local", "scaleway"}:
-        raise RuntimeError(
-            "PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'scaleway'."
-        )
-    return backend
+    return configured_backend()
 
 
 def should_delegate_to_scaleway(
@@ -54,7 +52,7 @@ def should_delegate_to_scaleway(
     dry_run: bool = False,
     probe_only: bool = False,
 ) -> bool:
-    if execution_backend() != "scaleway" or dry_run:
+    if execution_backend() not in REMOTE_BACKENDS or dry_run:
         return False
     if command == "run":
         return True
@@ -155,8 +153,9 @@ def run_video_on_scaleway(
         },
     }
 
+    backend = execution_backend()
     try:
-        client = ScalewayClient(ScalewayConfig.from_env())
+        client = remote_job_client(backend)
         job_id, output = client.run(
             job_input,
             object_store=object_store,
@@ -185,7 +184,7 @@ def run_video_on_scaleway(
             flush=True,
         )
         return {
-            "backend": "scaleway",
+            "backend": backend,
             "job_id": job_id,
             "video": str(video_path),
             "s3_uri": f"s3://{bucket}/{result_prefix}",
@@ -208,7 +207,7 @@ def run_videos_on_scaleway(
     if not videos:
         return []
     configured_workers = positive_int_env("SCALEWAY_MAX_CONCURRENT_JOBS", 1)
-    if configured_workers != 1:
+    if execution_backend() == "scaleway" and configured_workers != 1:
         raise RuntimeError(
             "SCALEWAY_MAX_CONCURRENT_JOBS doit valoir 1 avec la VM GPU dediee."
         )

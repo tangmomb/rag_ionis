@@ -145,8 +145,10 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('shellLabel: "Commande Linux VPS"', update_videos)
         self.assertIn('docker-compose.prod.yml', source)
         self.assertIn('scp -i', source)
-        self.assertIn('ubuntu@179.237.98.117:rag_ionis/.env.production', source)
-        self.assertNotIn('ubuntu@179.237.98.117:/srv/rag_ionis/.env.production', source)
+        self.assertIn('ubuntu@95.111.224.166:rag_ionis/.env.production', source)
+        self.assertNotIn('ubuntu@95.111.224.166:/srv/rag_ionis/.env.production', source)
+        # rag_ionis left the Infomaniak VPS for Contabo on 2026-11-08.
+        self.assertNotIn('179.237.98.117', source)
         self.assertIn('.env.production', source)
 
         self.assertIn('docker exec -it rag_ionis_postgres psql -U rag_ionis -d rag_ionis', source)

@@ -1356,12 +1356,14 @@
           <div class="faq-answers">
             <div class="faq-answer" id="deploiement-rag" role="tabpanel" hidden>
               <p>
-                Le RAG est déployé avec Docker sur un VPS, où quatre conteneurs
-                tournent en permanence : l’API, qui sert aussi l’interface ;
-                PostgreSQL équipé de pgvector, dont les données sont stockées
-                dans un volume Docker ; Caddy, le reverse proxy qui reçoit le
-                trafic et gère le HTTPS ; et Phoenix, qui collecte les traces du
-                pipeline.
+                Le RAG est déployé avec Docker sur un VPS Contabo, partagé avec d’autres
+                projets. Trois conteneurs y tournent en permanence : l’API, qui sert
+                aussi l’interface ; PostgreSQL équipé de pgvector, dont les données
+                sont stockées dans un volume Docker ; et Phoenix, qui collecte les
+                traces du pipeline. Ils n’écoutent que sur le VPS lui-même : c’est le
+                Caddy du serveur, commun à tous ses sites, qui reçoit le trafic, gère
+                le HTTPS et le transmet à l’API. La base et les traces sont
+                sauvegardées chaque nuit sur le stockage objet Scaleway.
               </p>
               <p>
                 D’autres conteneurs n’apparaissent que ponctuellement : celui
@@ -1372,15 +1374,6 @@
               <figure class="faq-integration-logo">
                 <img src="/assets/docker.svg" alt="Logo Docker" />
                 <figcaption>Docker</figcaption>
-              </figure>
-              <figure class="faq-pipeline-example">
-                <button class="faq-lightbox-trigger" type="button">
-                  <img
-                    src="/assets/vps_infomaniak.png"
-                    alt="VPS Infomaniak hébergeant le RAG"
-                  />
-                </button>
-                <figcaption>VPS Infomaniak qui héberge le RAG.</figcaption>
               </figure>
             </div>
             <div
@@ -1452,7 +1445,7 @@
                     <p>
                       GitHub Actions se connecte au VPS en SSH, y copie les
                       fichiers de configuration qui restent hors de l’image
-                      (Docker Compose, Caddyfile, scripts de déploiement et
+                      (Docker Compose, scripts de déploiement et
                       d’initialisation de la base), puis
                       lui fait télécharger
                       <code>rag-ionis-api:&lt;sha du commit&gt;</code> depuis le
@@ -1498,8 +1491,9 @@
                     <p>
                       Le script vérifie ensuite, pendant 3&nbsp;minutes au
                       maximum, que la nouvelle API répond sur son adresse de
-                      santé (<code>/health</code>). Si c’est le cas, Caddy est
-                      rechargé et le déploiement se termine.
+                      santé (<code>/health</code>). Si c’est le cas, le
+                      déploiement se termine : le Caddy du VPS transmet
+                      déjà le trafic à l’API, il n’a rien à recharger.
                     </p>
                     <p>
                       Sinon, l’ancien tag est remis dans la configuration et
@@ -1602,8 +1596,8 @@
                     <p>
                       GitHub Actions se connecte au VPS en SSH, y copie les
                       fichiers de configuration qui restent hors de l’image
-                      (Docker Compose, qui décrit le conteneur updater,
-                      Caddyfile et scripts), puis lui fait télécharger
+                      (Docker Compose, qui décrit le conteneur updater, et
+                      scripts), puis lui fait télécharger
                       <code>rag-ionis-updater:&lt;sha du commit&gt;</code>, en
                       ne récupérant que les couches qui lui manquent.
                     </p>
@@ -1752,7 +1746,7 @@
                       Config seule, sans build :
                     </text>
                     <text class="d-list" x="44" y="409">
-                      Caddyfile, docker-compose.yml,
+                      docker-compose.yml,
                     </text>
                     <text class="d-list" x="44" y="424">
                       docker/postgres/init/, deploy/deploy-vps.sh
@@ -1889,7 +1883,7 @@
                       Copie de la config + pull sur le VPS
                     </text>
                     <text class="d-sub" x="185" y="739">
-                      Caddyfile, compose, scripts, init Postgres
+                      compose, scripts, init Postgres
                     </text>
                     <rect
                       class="d-box"
@@ -2002,7 +1996,7 @@
                     />
                     <text class="d-title" x="106" y="1041">API saine</text>
                     <text class="d-sub" x="106" y="1059">
-                      Caddy rechargé, prod à jour
+                      prod à jour
                     </text>
                     <rect
                       class="d-box"
@@ -2029,7 +2023,7 @@
                       Docker Hub, hors CI
                     </text>
                     <text class="d-sub" x="535" y="1059">
-                      postgres, caddy, phoenix : tirées par le VPS
+                      postgres, phoenix : tirées par le VPS
                     </text>
                   </svg>
                 </div>

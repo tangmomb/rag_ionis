@@ -1,0 +1,45 @@
+name: Deploy Modal GPU function
+
+# Modal builds the GPU image itself: no registry and no self-hosted runner.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "pipeline/**"
+      - "deploy/modal_app.py"
+      - "requirements-gpu.txt"
+      - "models/frame_filter_2026-07-02_21-30-31.joblib"
+      - ".github/workflows/deploy-modal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modal-gpu-release
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production-modal
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run GPU offload tests
+        run: |
+          pip install --quiet modal==1.6.3 imageio-ffmpeg==0.6.0 python-dotenv==1.2.2 requests==2.34.2 boto3==1.42.95 yt-dlp==2026.8.19
+          python -m unittest tests.test_gpu_offload
+
+      - name: Deploy to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          test -n "${MODAL_TOKEN_ID}" || { echo 'Missing secret MODAL_TOKEN_ID' >&2; exit 1; }
+          test -n "${MODAL_TOKEN_SECRET}" || { echo 'Missing secret MODAL_TOKEN_SECRET' >&2; exit 1; }
+          modal deploy deploy/modal_app.py

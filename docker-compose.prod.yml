@@ -138,8 +138,14 @@ services:
     environment:
       RAG_IONIS_ENV: production
       RAG_IONIS_ENV_FILE_OPTIONAL: "1"
-      PIPELINE_EXECUTION_BACKEND: scaleway
+      # "modal" : pipeline sur le VPS, taches GPU sur Modal ; "scaleway" : job sur la VM GPU.
+      PIPELINE_EXECUTION_BACKEND: ${PIPELINE_EXECUTION_BACKEND:-scaleway}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MODAL_TOKEN_ID: ${MODAL_TOKEN_ID:-}
+      MODAL_TOKEN_SECRET: ${MODAL_TOKEN_SECRET:-}
+      # Tunnel SSH du VPS vers un serveur que YouTube ne bloque pas.
+      YT_PROXY: ${YT_PROXY:-}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:?YOUTUBE_API_KEY is required}
       SCW_SECRET_KEY: ${SCW_SECRET_KEY:?SCW_SECRET_KEY is required}
       SCW_DEFAULT_PROJECT_ID: ${SCW_DEFAULT_PROJECT_ID:?SCW_DEFAULT_PROJECT_ID is required}
@@ -157,6 +163,9 @@ services:
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID is required}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY is required}
+    # Le tunnel YouTube ecoute sur l'hote (YT_PROXY=socks5://host.docker.internal:1080).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     mem_limit: 1g
     memswap_limit: 1g
     oom_score_adj: 500

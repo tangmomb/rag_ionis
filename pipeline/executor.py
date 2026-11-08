@@ -3,6 +3,7 @@ from __future__ import annotations
 from .catalog import TASKS, TaskSpec
 from .context import PipelineContext
 from .contracts import TaskResult, TaskStatus
+from .gpu_offload import run_handler
 from .manifest import write_manifest
 
 
@@ -160,7 +161,7 @@ def execute_tasks(
         try:
             context._task_force = True
             try:
-                raw_result = spec.handler(context)
+                raw_result = run_handler(spec, context)
             finally:
                 context._task_force = False
             result = _validate_handler_result(

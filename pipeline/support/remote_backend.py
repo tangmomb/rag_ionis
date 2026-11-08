@@ -1,13 +1,19 @@
-"""Choix du client qui execute les jobs GPU distants."""
+"""Choix du backend d'execution du pipeline.
+
+- ``local`` : tout tourne sur la machine courante.
+- ``modal`` : le pipeline tourne sur la machine courante et ses taches GPU
+  partent sur Modal (voir pipeline/gpu_offload.py).
+- ``scaleway`` : le job entier part sur la VM GPU Scaleway.
+"""
 
 from __future__ import annotations
 
 import os
 
 
-REMOTE_BACKENDS = frozenset({"scaleway", "modal"})
-EXECUTION_BACKENDS = REMOTE_BACKENDS | {"local"}
-BACKEND_ERROR = "PIPELINE_EXECUTION_BACKEND doit valoir 'local', 'scaleway' ou 'modal'."
+REMOTE_BACKENDS = frozenset({"scaleway"})
+EXECUTION_BACKENDS = REMOTE_BACKENDS | {"local", "modal"}
+BACKEND_ERROR = "PIPELINE_EXECUTION_BACKEND doit valoir 'local', 'modal' ou 'scaleway'."
 
 
 def configured_backend() -> str:
@@ -19,10 +25,6 @@ def configured_backend() -> str:
 
 def remote_job_client(backend: str):
     """Return a client whose ``run(job_input, object_store=, bucket=)`` runs one job."""
-    if backend == "modal":
-        from pipeline.support.modal_jobs import ModalClient, ModalConfig
-
-        return ModalClient(ModalConfig.from_env())
     if backend == "scaleway":
         from pipeline.support.scaleway_jobs import ScalewayClient, ScalewayConfig
 

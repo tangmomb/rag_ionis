@@ -520,7 +520,8 @@ def download_and_run_pipeline(
         check=True,
     )
     sync_processed_video(youtube_video_id, archive_dir, snapshot_date)
-    return {"backend": "local"}
+    # With "modal", the GPU tasks of the subprocesses above ran on Modal.
+    return {"backend": backend}
 
 
 def sync_processed_video(
@@ -1017,7 +1018,10 @@ def run_videos_only() -> dict:
                         started_at.date(),
                         comments_payload=comments_payload,
                     )
-                    if result.get("backend") == "local" and object_store is not None:
+                    if (
+                        result.get("backend") in {"local", "modal"}
+                        and object_store is not None
+                    ):
                         upload_s3_directory(
                             object_store,
                             bucket,

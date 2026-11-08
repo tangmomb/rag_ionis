@@ -1,76 +1,84 @@
-# Worker GPU sur Modal (prototype)
+# Taches GPU sur Modal
 
-`PIPELINE_EXECUTION_BACKEND=modal` remplace la VM GPU Scaleway par une fonction
-Modal. Le VPS envoie le même `job_input` et récupère les artefacts sur le même
-S3 ; seuls le démarrage, l'attente et l'arrêt changent.
+Avec `PIPELINE_EXECUTION_BACKEND=modal`, le VPS fait tourner tout le pipeline,
+et seules les trois taches GPU partent sur Modal :
 
-| Scaleway | Modal |
-| --- | --- |
-| `ScalewayClient` allume la VM, attend `started`, l'éteint | `Function.spawn(job_input)` puis `FunctionCall.get()` |
-| `job.json` / `status.json` dans S3, worker `--poll` | appel direct, la sortie de `process_job` revient au VPS |
-| unité systemd, `docker pull`, connexion au registre | Modal tire l'image une fois et la met en cache |
-| `/var/lib/rag-ionis/models` sur le disque de la VM | volume Modal `rag-ionis-models` |
-| L4 parfois indisponible dans une zone | Modal choisit un L4 libre |
+| Tache | Ce que le VPS envoie | Ce que Modal renvoie |
+| --- | --- | --- |
+| `frames.classify` | `outputs/images` (les frames) | `outputs/images` rangees par classe + manifest |
+| `ocr.extract_raw` | `outputs/images` classees | `outputs/ocr/raw` |
+| `transcript.whisper` | l'audio MP3 16 kHz mono, extrait sur le VPS | `outputs/transcripts_whisper` |
 
-Le code exécuté est celui de l'image GPU publiée (`Dockerfile.scaleway`) :
-Modal la réutilise telle quelle, il n'y a pas de seconde image à maintenir.
+La video elle-meme ne quitte jamais le VPS. Les videos longues (plus de
+10 min) sautent les frames : seul l'audio part, environ 14 Mo pour 30 min.
+
+`pipeline/gpu_offload.py` remplace le handler de ces taches dans l'executeur :
+il emballe les entrees, appelle la fonction Modal `rag-ionis-gpu/run_gpu_task`,
+puis remet les sorties dans le dossier video. Le reste (yt-dlp, OpenAI, S3,
+PostgreSQL) se passe sur le VPS.
+
+## Aucun secret chez Modal
+
+La fonction ne recoit que des fichiers :
+- **image** : Modal la construit depuis `deploy/modal_app.py`, avec les versions
+  de `requirements-gpu.txt`. Pas de registre prive, pas de runner GPU.
+- **modeles** : WhisperX et Paddle se telechargent librement dans le volume
+  `rag-ionis-models`. Le modele pyannote, en acces restreint, y est televerse
+  une fois depuis un poste qui l'a deja (voir plus bas).
+- **appel** : le VPS s'authentifie avec `MODAL_TOKEN_ID` et `MODAL_TOKEN_SECRET`.
 
 ## Mise en place
 
-1. Installer le client et s'authentifier sur le poste qui déploie :
+1. Televerser le modele pyannote (une fois, depuis le poste de dev) :
 
    ```bash
-   pip install modal
-   modal token new
-   ```
-
-2. Créer les deux secrets. Le premier donne accès au registre Scaleway, le
-   second reprend les variables de `/etc/rag-ionis/scaleway-worker.env`
-   (S3, OpenAI, YouTube, Hugging Face) :
-
-   ```bash
-   modal secret create rag-ionis-registry REGISTRY_USERNAME=nologin REGISTRY_PASSWORD=<SCW_SECRET_KEY>
+   modal volume create rag-ionis-models
    ```
 
    ```bash
-   modal secret create rag-ionis-worker --from-dotenv deploy/scaleway-worker.env
+   modal volume put rag-ionis-models models/huggingface/models--pyannote--speaker-diarization-community-1/snapshots/3533c8cf8e369892e6b79ff1bf80f7b0286a54ee /pyannote-community-1
    ```
 
-3. Vérifier le GPU (Torch, Paddle et WhisperX sur le L4), puis déployer :
+2. Deployer et verifier le GPU :
 
    ```bash
-   SCALEWAY_CONTAINER_IMAGE=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION modal run deploy/modal_app.py
+   modal deploy deploy/modal_app.py
    ```
 
    ```bash
-   SCALEWAY_CONTAINER_IMAGE=rg.fr-par.scw.cloud/NAMESPACE/rag-ionis-scaleway:VERSION modal deploy deploy/modal_app.py
+   modal run deploy/modal_app.py
    ```
 
-4. Côté client (poste local ou VPS) : `pip install modal`, puis
-   `PIPELINE_EXECUTION_BACKEND=modal` avec `MODAL_TOKEN_ID` et
-   `MODAL_TOKEN_SECRET`. Exemple sur une vidéo déjà archivée :
+   Ensuite, le workflow `deploy-modal.yml` redeploie a chaque push sur master
+   qui touche `pipeline/` ou `deploy/modal_app.py`. Il lui faut les secrets
+   GitHub `MODAL_TOKEN_ID` et `MODAL_TOKEN_SECRET` (environnement
+   `production-modal`).
 
-   ```bash
-   PIPELINE_EXECUTION_BACKEND=modal python -m pipeline run <video_id> --root downloads/youtube/<archive>
+3. VPS : YouTube bloque son IP, yt-dlp passe donc par le tunnel SSH `yt-tunnel`
+   deja utilise par agent_mots_cles. L'updater tourne dans Docker : le tunnel
+   doit aussi ecouter sur la passerelle Docker, par exemple
+   `ssh -N -D 172.17.0.1:1080 ...` en plus de `127.0.0.1:1080`. Puis, dans
+   `.env.production` :
+
+   ```
+   PIPELINE_EXECUTION_BACKEND=modal
+   MODAL_TOKEN_ID=...
+   MODAL_TOKEN_SECRET=...
+   YT_PROXY=socks5://host.docker.internal:1080
    ```
 
-## Options de déploiement
+## Mesurer
 
-- `MODAL_MAX_CONTAINERS` (défaut `1`) : nombre de vidéos traitées en parallèle.
-  Le client envoie encore les vidéos une par une ; le paralléliser est l'étape
-  suivante si le prototype est retenu.
-- `MODAL_REGION` : par exemple `eu`. Le choix de région dépend de l'offre Modal
-  et peut majorer le prix.
+`utils/modal_benchmark/run_benchmark.py` traite des videos archivees depuis
+zero, avec les taches GPU sur Modal ou sur le GPU local, sans toucher a S3 ni a
+PostgreSQL, et note la duree de chaque tache GPU :
 
-## Avant de remplacer Scaleway
+```bash
+python utils/modal_benchmark/run_benchmark.py --backend modal L0ipiwb9jS8 U-1vz4l4908 OPq7xoBFAYM
+```
 
-- **Hébergement.** Les vidéos et les clés passent par Modal (société
-  américaine), alors que la FAQ du site annonce un hébergement Scaleway.
-- **yt-dlp.** La daily sync télécharge YouTube depuis le worker : vérifier que
-  les IP de Modal ne sont pas bloquées.
-- **Image.** Modal installe son client dans l'image. Le premier `modal run`
-  confirme que ses dépendances ne cassent pas Torch ou Paddle.
-- **VPS.** `modal` n'est pas encore dans le groupe `vps` de `pyproject.toml` :
-  l'ajouter puis lancer `uv lock` avant de basculer la production.
-- **Coût.** Modal facture les secondes de GPU utilisées. Comparer avec le prix
-  horaire du L4 Scaleway, démarrage de la VM et stockage compris.
+## Ce qui reste de Scaleway
+
+Le backend `scaleway` (job complet sur la VM) reste disponible tant que la
+production n'est pas passee a `modal`. Une fois Modal valide, on pourra retirer
+la VM, son worker, son image, son runner et `utils/scaleway_disponibility`.

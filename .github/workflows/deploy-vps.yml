@@ -322,6 +322,11 @@ jobs:
           cd "$1"
           compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production)
           export STAGING_API_IMAGE_TAG="$2"
+          # Staging only serves this gate: stop it afterwards (pass, failure or cancel)
+          # so it does not hold RAM shared with the other projects on the VPS.
+          stop_staging() { "${compose[@]}" --profile staging stop staging-api staging-postgres || true; }
+          trap stop_staging EXIT
+          trap 'exit 130' HUP INT TERM
           "${compose[@]}" --profile staging pull staging-api
           # --wait: a freshly created staging database runs its init scripts before accepting connections.
           "${compose[@]}" --profile staging up -d --wait staging-postgres

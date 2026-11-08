@@ -37,6 +37,8 @@ vps = [
     "requests==2.34.2",
     "openai>=2.45.0,<4",
     "numpy==2.2.6",
+    # detect_interview reads the DINO embeddings cached by frames.classify.
+    "joblib==1.5.3",
     "Pillow==12.3.0",
     "modal==1.6.3",
 ]

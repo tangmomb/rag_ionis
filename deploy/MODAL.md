@@ -54,18 +54,7 @@ La fonction ne recoit que des fichiers :
    GitHub `MODAL_TOKEN_ID` et `MODAL_TOKEN_SECRET` (environnement
    `production-modal`).
 
-3. VPS : YouTube bloque son IP, yt-dlp passe donc par le tunnel SSH `yt-tunnel`
-   deja utilise par agent_mots_cles. L'updater tourne dans Docker : le tunnel
-   doit aussi ecouter sur la passerelle Docker, par exemple
-   `ssh -N -D 172.17.0.1:1080 ...` en plus de `127.0.0.1:1080`. Puis, dans
-   `.env.production` :
-
-   ```
-   PIPELINE_EXECUTION_BACKEND=modal
-   MODAL_TOKEN_ID=...
-   MODAL_TOKEN_SECRET=...
-   YT_PROXY=socks5://host.docker.internal:1080
-   ```
+3. VPS : voir la procedure de bascule ci-dessous.
 
 ## Mesurer
 
@@ -76,6 +65,60 @@ PostgreSQL, et note la duree de chaque tache GPU :
 ```bash
 python utils/modal_benchmark/run_benchmark.py --backend modal L0ipiwb9jS8 U-1vz4l4908 OPq7xoBFAYM
 ```
+
+## Bascule de la production
+
+Valide le 8 novembre 2026 : l'image de l'updater construite depuis cette
+branche, lancee avec les limites de la prod (1 Go, 1 CPU), a telecharge une
+video avec yt-dlp, fait tourner tout le pipeline avec les taches GPU sur Modal,
+puis cree les embeddings. Pic de RAM : 532 Mo.
+
+1. **Token Modal dedie** : sur modal.com/settings/tokens, creer un jeton pour
+   la production (distinct de celui du poste de dev).
+2. **Secrets GitHub** pour le workflow `deploy-modal.yml` :
+
+   ```bash
+   gh api -X PUT repos/tangmomb/rag_ionis/environments/production-modal
+   ```
+
+   ```bash
+   gh secret set MODAL_TOKEN_ID --env production-modal
+   ```
+
+   ```bash
+   gh secret set MODAL_TOKEN_SECRET --env production-modal
+   ```
+
+3. **Relais du tunnel YouTube** sur le VPS (root), voir
+   `deploy/rag-ionis-yt-proxy.service` : installer `socat`, le service, puis
+   lancer la verification indiquee en tete du fichier (attendu : `200`). Si
+   `ufw` est actif, autoriser les reseaux Docker :
+
+   ```bash
+   ufw allow in from 172.16.0.0/12 to 172.17.0.1 port 1080 proto tcp
+   ```
+
+4. **Merge de la branche sur master** : le workflow VPS publie la nouvelle
+   image de l'updater, et `deploy-modal.yml` redeploie la fonction GPU.
+   Le backend reste `scaleway` tant que `.env.production` ne change pas.
+5. **Bascule** : dans `~/rag_ionis/.env.production` sur le VPS :
+
+   ```
+   PIPELINE_EXECUTION_BACKEND=modal
+   MODAL_TOKEN_ID=...
+   MODAL_TOKEN_SECRET=...
+   YT_PROXY=socks5://host.docker.internal:1080
+   ```
+
+   puis lancer une daily sync a la main et suivre les lignes `[modal]` :
+
+   ```bash
+   cd ~/rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm updater
+   ```
+
+**Retour arriere** : remettre `PIPELINE_EXECUTION_BACKEND=scaleway` dans
+`.env.production`. La VM Scaleway et son worker sont intacts tant que le code
+Scaleway n'est pas retire.
 
 ## Ce qui reste de Scaleway
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  printf 'Usage: IMAGE_REGISTRY=... %s <api|updater|scaleway> [commit-tag]\n' "$0" >&2
+  printf 'Usage: IMAGE_REGISTRY=... %s <api|updater> [commit-tag]\n' "$0" >&2
   exit 2
 fi
 
@@ -25,12 +25,8 @@ case "${component}" in
     dockerfile="Dockerfile.vps"
     image_name="rag-ionis-updater"
     ;;
-  scaleway)
-    dockerfile="Dockerfile.scaleway"
-    image_name="rag-ionis-scaleway"
-    ;;
   *)
-    printf 'Unknown component: %s (expected api, updater or scaleway)\n' "${component}" >&2
+    printf 'Unknown component: %s (expected api or updater)\n' "${component}" >&2
     exit 2
     ;;
 esac

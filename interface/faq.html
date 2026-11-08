@@ -1225,9 +1225,9 @@
                 passe dans le pipeline de préparation. Chaque mise à jour
                 s’exécute dans un conteneur Docker éphémère sur le VPS, lancé
                 par la tâche cron puis supprimé une fois terminée. Ce conteneur
-                léger ne contient que le code de mise à jour ; il interroge
-                l’API YouTube, la base PostgreSQL et, pour les nouvelles vidéos,
-                pilote la VM GPU.
+                léger contient le code de mise à jour et du pipeline ; il
+                interroge l’API YouTube et la base PostgreSQL, puis télécharge
+                et prépare les nouvelles vidéos.
               </p>
               <pre
                 class="faq-code"
@@ -1249,26 +1249,15 @@
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>
                 <span>
-                  Si de nouvelles vidéos sont détectées, le VPS demande le
-                  démarrage de la VM GPU chez Scaleway afin de les traiter avec
-                  le pipeline de préparation, qui a besoin d'un GPU : WhisperX
-                  pour la transcription, pyannote pour identifier qui parle,
-                  DINOv2 et CLIP pour classer les images, PaddleOCR pour lire le
-                  texte à l'écran.
+                  Le pipeline de préparation tourne sur le VPS, mais quatre de
+                  ses modèles ont besoin d'un GPU : WhisperX pour la
+                  transcription, pyannote pour identifier qui parle, DINOv2 et
+                  CLIP pour classer les images, PaddleOCR pour lire le texte à
+                  l'écran. Ces trois tâches partent sur un GPU loué à la seconde
+                  chez Modal, avec leurs seuls fichiers d'entrée : les images de
+                  la vidéo, ou sa bande son pour la transcription.
                 </span>
               </aside>
-              <figure class="faq-pipeline-example">
-                <button class="faq-lightbox-trigger" type="button">
-                  <img
-                    src="/assets/vm_scaleway.png"
-                    alt="Machine virtuelle GPU Scaleway utilisée pour traiter les vidéos"
-                  />
-                </button>
-                <figcaption>
-                  La VM GPU Scaleway attend un job avant d’être allumée pour
-                  traiter les nouvelles vidéos.
-                </figcaption>
-              </figure>
             </div>
             <div
               class="faq-answer"
@@ -1506,59 +1495,45 @@
               <details class="faq-case">
                 <summary>
                   <h4 id="maj-pipeline-title">
-                    En cas de modification du pipeline de préparation
+                    En cas de modification des tâches GPU
                   </h4>
                   <p>
-                    Recréation de l’image :
-                    <code class="faq-tool">rag-ionis-scaleway</code>
+                    Redéploiement de la fonction :
+                    <code class="faq-tool">rag-ionis-gpu</code>
                   </p>
                   <p class="faq-case-target">
-                    Affecte : <span>VM avec GPU</span>
+                    Affecte : <span>GPU Modal</span>
                   </p>
                 </summary>
                 <h5>Comment ?</h5>
                 <ol class="faq-flow">
                   <li>
                     <p>
-                      GitHub Actions détecte une modification du pipeline (code,
-                      Dockerfile, dépendances GPU ou modèle) et lance d’abord des
-                      contrôles sur un runner GitHub.
-                    </p>
-                    <p>
-                      L’image GPU étant trop lourde pour un runner gratuit, elle
-                      est construite ensuite sur un runner auto-hébergé, le PC
-                      local, qui garde les couches des builds précédents.
-                    </p>
-                    <p>
-                      Le PC télécharge quand même le manifeste de
-                      <code>rag-ionis-scaleway:buildcache</code>, mais compare
-                      chaque clé de cache d’abord à son cache local, plus
-                      complet : celui du registre ne garde que les couches de
-                      l’image finale, alors que le PC conserve aussi les étapes
-                      intermédiaires et les paquets déjà téléchargés. Le cache
-                      du registre ne sert donc qu’en secours, si le cache local
-                      a été vidé.
+                      GitHub Actions détecte une modification du pipeline, de
+                      <code>deploy/modal_app.py</code>, des dépendances GPU ou
+                      du modèle de classification, puis lance sur un runner
+                      GitHub les tests du déport des tâches GPU.
                     </p>
                   </li>
                   <li>
                     <p>
-                      Une fois l’image construite, le PC l’envoie directement
-                      dans le registre Scaleway (<code>docker push</code>, via
-                      l’API HTTPS du registre). Pour chaque couche, il demande
-                      au registre s’il possède déjà son sha256 : seules les
-                      couches absentes sont envoyées. L’image est publiée avec
-                      le tag du commit et <code>latest</code>, puis
-                      <code>:buildcache</code> est mis à jour.
+                      Le runner lance <code>modal deploy</code>. Modal
+                      construit l’image GPU lui-même, à partir des versions
+                      épinglées dans le dépôt : aucune image de 15&nbsp;Go à
+                      construire sur un PC ni à pousser dans un registre.
+                    </p>
+                    <p>
+                      Chaque couche de l’image est gardée en cache chez Modal.
+                      Le code du pipeline étant ajouté en dernier, une
+                      modification du code ne remplace que cette couche : le
+                      déploiement prend quelques secondes.
                     </p>
                   </li>
                   <li>
                     <p>
-                      L’image n’est pas envoyée à la VM, qui reste éteinte hors
-                      traitement. À chaque démarrage, un service de la VM fait
-                      automatiquement un <code>docker pull</code> de
-                      <code>rag-ionis-scaleway:latest</code>, en ne téléchargeant
-                      que les couches qui lui manquent, puis lance le conteneur
-                      worker sur le GPU.
+                      Les appels suivants utilisent la nouvelle version. Un
+                      appel déjà en cours se termine sur l’ancienne : aucune
+                      tâche n’est coupée.
                     </p>
                   </li>
                 </ol>
@@ -1612,8 +1587,8 @@
                       La nouvelle version est utilisée au prochain passage de
                       la tâche cron : le VPS lance un conteneur éphémère avec
                       cette image, qui ajoute les nouvelles vidéos ou met à jour
-                      les statistiques, pilote la VM GPU si besoin, puis est
-                      supprimé.
+                      les statistiques, envoie les tâches GPU à Modal si
+                      besoin, puis est supprimé.
                     </p>
                   </li>
                 </ol>
@@ -1627,7 +1602,7 @@
                   >
                     <title id="ci-diagram-title">
                       Chaîne de mise à jour : du git push au redéploiement sur
-                      le VPS ou sur la VM GPU
+                      le VPS ou sur Modal
                     </title>
                     <defs>
                       <marker
@@ -1652,9 +1627,8 @@
                       <path d="M185 514  V532" />
                       <path d="M535 514  V532" />
                       <path d="M185 600  V618" />
-                      <path d="M535 600  V618" />
+                      <path d="M535 600  V698" />
                       <path d="M185 672  V698" />
-                      <path d="M535 672  V698" />
                       <path d="M185 752  V770" />
                       <path d="M535 752  V770" />
                       <path d="M106 836  V852" />
@@ -1671,8 +1645,8 @@
                     </g>
 
                     <text class="d-note" x="195" y="690">SSH</text>
-                    <text class="d-note" x="545" y="690">
-                      pull au démarrage
+                    <text class="d-note" x="545" y="650">
+                      modal deploy
                     </text>
 
                     <rect
@@ -1761,34 +1735,28 @@
                       rx="8"
                     />
                     <text class="d-title" x="535" y="188">
-                      Workflow « Deploy Scaleway GPU »
+                      Workflow « Deploy Modal GPU »
                     </text>
                     <text class="d-sub" x="535" y="205">
                       se lance si modification sur :
                     </text>
                     <text class="d-list" x="394" y="224">
-                      pipeline/, Dockerfile.scaleway, .dockerignore,
+                      pipeline/, deploy/modal_app.py,
                     </text>
                     <text class="d-list" x="394" y="239">
                       requirements-gpu.txt,
                     </text>
                     <text class="d-list" x="394" y="254">
-                      requirements-paddle-bootstrap.txt,
-                    </text>
-                    <text class="d-list" x="394" y="269">
-                      requirements-ytdlp.txt,
-                    </text>
-                    <text class="d-list" x="394" y="284">
                       models/frame_filter_….joblib,
                     </text>
-                    <text class="d-list" x="394" y="299">
-                      workflow deploy-scaleway.yml
+                    <text class="d-list" x="394" y="269">
+                      workflow deploy-modal.yml
                     </text>
-                    <text class="d-group" x="394" y="319">À noter :</text>
-                    <text class="d-list" x="394" y="334">
+                    <text class="d-group" x="394" y="289">À noter :</text>
+                    <text class="d-list" x="394" y="304">
                       pipeline/ reconstruit aussi l’updater,
                     </text>
-                    <text class="d-list" x="394" y="349">
+                    <text class="d-list" x="394" y="319">
                       dans le workflow de gauche
                     </text>
 
@@ -1818,7 +1786,7 @@
                       Vérification de la config
                     </text>
                     <text class="d-sub" x="535" y="501">
-                      tests de config Scaleway, scripts shell
+                      tests du déport des tâches GPU
                     </text>
 
                     <rect
@@ -1847,28 +1815,28 @@
                       rx="8"
                     />
                     <text class="d-title" x="535" y="555">
-                      Build sur le PC avec GPU
+                      Build par Modal
                     </text>
                     <text class="d-sub" x="535" y="573">
-                      runner auto-hébergé
+                      image construite et mise en cache chez Modal
                     </text>
                     <text class="d-sub" x="535" y="589">
-                      Dockerfile.scaleway → rag-ionis-scaleway
+                      ni runner GPU, ni registre
                     </text>
 
                     <rect
                       class="d-box d-box-strong"
                       x="30"
                       y="620"
-                      width="660"
+                      width="310"
                       height="52"
                       rx="8"
                     />
-                    <text class="d-title" x="360" y="641">
+                    <text class="d-title" x="185" y="641">
                       Container Registry Scaleway
                     </text>
-                    <text class="d-sub" x="360" y="659">
-                      image taguée avec l’identifiant du commit et latest
+                    <text class="d-sub" x="185" y="659">
+                      tags : identifiant du commit et latest
                     </text>
 
                     <rect
@@ -1893,9 +1861,9 @@
                       height="52"
                       rx="8"
                     />
-                    <text class="d-title" x="535" y="721">VM GPU Scaleway</text>
+                    <text class="d-title" x="535" y="721">Fonction rag-ionis-gpu</text>
                     <text class="d-sub" x="535" y="739">
-                      arrêtée hors traitement
+                      GPU Modal, facturé à la seconde
                     </text>
 
                     <rect
@@ -1921,10 +1889,10 @@
                       rx="8"
                     />
                     <text class="d-title" x="535" y="793">
-                      Pull de la nouvelle image
+                      Nouvelle version active
                     </text>
                     <text class="d-sub" x="535" y="811">
-                      au prochain démarrage de la VM
+                      un appel en cours finit sur l’ancienne
                     </text>
 
                     <rect
@@ -1962,10 +1930,10 @@
                       rx="8"
                     />
                     <text class="d-title" x="535" y="875">
-                      Utilisée par le prochain job
+                      Utilisée par la prochaine tâche GPU
                     </text>
                     <text class="d-sub" x="535" y="893">
-                      de préparation des vidéos
+                      envoyée par l’updater du VPS
                     </text>
 
                     <rect
@@ -2028,8 +1996,9 @@
                   </svg>
                 </div>
                 <figcaption>
-                  Seules les images maison passent par le registre Scaleway ;
-                  les images officielles viennent directement de Docker Hub.
+                  Seules les images maison du VPS passent par le registre
+                  Scaleway ; l’image GPU est construite chez Modal et les
+                  images officielles viennent directement de Docker Hub.
                 </figcaption>
               </figure>
               <figure class="faq-integration-logo">
@@ -2219,6 +2188,11 @@
                 construction de l’image sur un PC personnel, configuré comme
                 runner auto-hébergé.
               </p>
+              <p>
+                Depuis novembre 2026, les tâches GPU tournent sur Modal, qui
+                construit et met en cache l’image lui-même : le PC n’a plus
+                besoin d’être allumé pour livrer une nouvelle version.
+              </p>
             </div>
             <div
               class="faq-answer"
@@ -2235,11 +2209,14 @@
                 disponible à la création d’une instance.
               </p>
               <p>
-                Le pipeline a donc d’abord tourné sur des L40S. Il utilise
-                désormais une VM L4 dédiée, créée une fois puis conservée : elle
-                est simplement démarrée pour chaque traitement et arrêtée
-                ensuite, ce qui ne dépend plus de la disponibilité des GPU au
-                moment du lancement.
+                Le pipeline a donc d’abord tourné sur des L40S, puis sur une VM
+                L4 dédiée, créée une fois puis conservée : elle était démarrée
+                pour chaque traitement et arrêtée ensuite.
+              </p>
+              <p>
+                Depuis novembre 2026, les tâches GPU tournent sur Modal, qui
+                accepte un L4 ou un A10 selon ce qui est libre : il n’y a plus
+                de machine à réserver ni de disponibilité à surveiller.
               </p>
               <figure class="faq-pipeline-example">
                 <button class="faq-lightbox-trigger" type="button">
@@ -2255,15 +2232,21 @@
             </div>
             <div class="faq-answer" id="cout-scaleway" role="tabpanel" hidden>
               <p>
-                En plus de son coût lorsqu’elle est allumée, la VM Scaleway a
-                besoin d’une adresse IP et d’un Block Storage associé, ce qui
-                fait encore grimper la facture.
+                En plus de son coût lorsqu’elle était allumée, la VM Scaleway
+                avait besoin d’une adresse IP et d’un Block Storage associé, ce
+                qui faisait encore grimper la facture.
               </p>
               <p>
-                Le choix a donc été fait de ne jamais laisser la VM allumée :
-                elle est démarrée uniquement pour traiter un job, puis arrêtée
-                automatiquement dès qu’il est terminé. Seuls son volume et son
-                adresse IP restent facturés hors traitement.
+                Le choix avait donc été fait de ne jamais laisser la VM
+                allumée : elle était démarrée uniquement pour traiter un job,
+                puis arrêtée dès qu’il était terminé. Son volume et son adresse
+                IP restaient pourtant facturés hors traitement.
+              </p>
+              <p>
+                Avec environ quatre nouvelles vidéos par mois, la VM a été
+                remplacée par Modal en novembre 2026 : seules les secondes de
+                GPU réellement utilisées sont facturées, sans IP ni volume à
+                payer entre deux traitements.
               </p>
             </div>
             <div

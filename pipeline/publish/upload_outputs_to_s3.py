@@ -192,7 +192,7 @@ def parse_args():
     parser.add_argument(
         "--region",
         default=DEFAULT_S3_REGION,
-        help="Region Scaleway. Defaut: aucune",
+        help="Region S3. Defaut: aucune",
     )
     parser.add_argument(
         "--prefix",

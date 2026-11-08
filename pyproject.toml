@@ -42,7 +42,7 @@ vps = [
     "Pillow==12.3.0",
     "modal==1.6.3",
 ]
-# Worker de traitement GPU Scaleway.
+# Taches GPU du pipeline : image Modal (deploy/modal_app.py) et poste de dev.
 gpu = [
     "imageio-ffmpeg==0.6.0",
     "boto3==1.42.95",
@@ -63,8 +63,7 @@ gpu = [
     "transformers==4.57.6",
     "protobuf==6.33.6",
 ]
-# Dependance volatile installee tard dans l'image Scaleway pour preserver
-# le cache des lourdes dependances GPU lors des mises a jour de yt-dlp.
+# Telechargement YouTube, installe dans l'image de l'updater du VPS.
 ytdlp = ["yt-dlp==2026.8.19"]
 # LangGraph Studio, dans son propre environnement Python 3.13 (.venv-studio-py313).
 studio = [

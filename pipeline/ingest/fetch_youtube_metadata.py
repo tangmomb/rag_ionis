@@ -243,8 +243,8 @@ def ffmpeg_exe():
 
 
 def download_video_360p(youtube_video_id):
-    # yt-dlp n'est pas installe sur le VPS : l'updater importe ce module
-    # pour les metadonnees seulement, le telechargement se fait sur Scaleway.
+    # yt-dlp n'est importe que pour telecharger : les updates de statistiques
+    # importent ce module pour ses metadonnees seulement.
     import yt_dlp
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)

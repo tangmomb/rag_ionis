@@ -32,8 +32,8 @@ MAX_CONTAINERS = int(os.environ.get("MODAL_MAX_CONTAINERS", "1"))
 FRAME_MODEL = "models/frame_filter_2026-07-02_21-30-31.joblib"
 CODE_DIR = "/root"
 
-# Same pins as Dockerfile.scaleway. Torch 2.8 and Paddle 3.2 declare
-# incompatible NVIDIA versions: Torch's are kept, as on the Scaleway image.
+# Torch 2.8 and Paddle 3.2 declare incompatible NVIDIA versions: Torch's are
+# kept (tests/test_gpu_image.py checks every pin against uv.lock).
 NVIDIA_PACKAGES = (
     "nvidia-cudnn-cu12==9.10.2.21",
     "nvidia-cublas-cu12==12.6.4.1",
@@ -77,7 +77,6 @@ def core_requirements() -> list[str]:
 
 image = (
     modal.Image.from_registry(
-        # Modal's image builder no longer offers 3.10, the Scaleway image's version.
         "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04", add_python="3.12"
     )
     .apt_install("ffmpeg")

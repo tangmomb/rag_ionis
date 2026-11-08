@@ -30,4 +30,4 @@ UV_PROJECT_ENVIRONMENT=.venv-studio-py313 uv sync --python 3.13 --no-default-gro
 start_app_local.bat
 ```
 
-Après une modification de `pyproject.toml`, `uv lock` met à jour le lock. L'image GPU installe encore ses couches depuis `requirements-gpu.txt` : un test vérifie que ses versions restent celles de `uv.lock`.
+Après une modification de `pyproject.toml`, `uv lock` met à jour le lock. L'image GPU de Modal (`deploy/modal_app.py`) installe ses couches depuis `requirements-gpu.txt` et ses propres versions épinglées : `tests/test_gpu_image.py` vérifie qu'elles restent celles de `uv.lock`.

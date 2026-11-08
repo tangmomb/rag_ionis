@@ -13,7 +13,7 @@ fi
 
 commit_tag="${1:-$(git -C "${repo_root}" rev-parse --short=7 HEAD)}"
 
-for component in api updater scaleway; do
+for component in api updater; do
   IMAGE_REGISTRY="${IMAGE_REGISTRY}" \
     bash "${script_dir}/publish-image.sh" "${component}" "${commit_tag}"
 done

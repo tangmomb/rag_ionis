@@ -54,7 +54,7 @@ La fonction ne recoit que des fichiers :
    GitHub `MODAL_TOKEN_ID` et `MODAL_TOKEN_SECRET` (environnement
    `production-modal`).
 
-3. VPS : voir la procedure de bascule ci-dessous.
+3. VPS : voir la section Production ci-dessous.
 
 ## Mesurer
 
@@ -66,63 +66,24 @@ PostgreSQL, et note la duree de chaque tache GPU :
 python utils/modal_benchmark/run_benchmark.py --backend modal L0ipiwb9jS8 U-1vz4l4908 OPq7xoBFAYM
 ```
 
-## Bascule de la production
+## Production
 
-Valide le 8 novembre 2026 : l'image de l'updater construite depuis cette
-branche, lancee avec les limites de la prod (1 Go, 1 CPU), a telecharge une
-video avec yt-dlp, fait tourner tout le pipeline avec les taches GPU sur Modal,
-puis cree les embeddings. Pic de RAM : 532 Mo.
+En service depuis le 8 novembre 2026, a la place de l'ancienne VM GPU
+Scaleway. Sur le VPS, `~/rag_ionis/.env.production` contient
+`PIPELINE_EXECUTION_BACKEND=modal`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` et
+`YT_PROXY=socks5://host.docker.internal:1080`.
 
-1. **Token Modal dedie** : sur modal.com/settings/tokens, creer un jeton pour
-   la production (distinct de celui du poste de dev).
-2. **Secrets GitHub** pour le workflow `deploy-modal.yml` :
+YouTube bloque l'IP du VPS : yt-dlp passe par le tunnel SSH `yt-tunnel` de
+l'hote (projet agent_mots_cles). Le service compose `yt-proxy` le republie sur
+la passerelle Docker 172.17.0.1, et une regle `ufw` laisse le reseau de
+l'updater le joindre :
 
-   ```bash
-   gh api -X PUT repos/tangmomb/rag_ionis/environments/production-modal
-   ```
+```bash
+sudo ufw allow in from 172.18.0.0/16 to 172.17.0.1 port 1080 proto tcp
+```
 
-   ```bash
-   gh secret set MODAL_TOKEN_ID --env production-modal
-   ```
+Lancer une daily sync a la main et suivre les lignes `[modal]` :
 
-   ```bash
-   gh secret set MODAL_TOKEN_SECRET --env production-modal
-   ```
-
-3. **Relais du tunnel YouTube** : rien a installer. Le service compose
-   `yt-proxy` (socat) demarre avec l'updater et republie le tunnel `yt-tunnel`
-   de l'hote sur la passerelle Docker 172.17.0.1, jamais sur l'IP publique.
-   Si `ufw` bloque les conteneurs vers l'hote, la daily sync echouera au
-   telechargement ; il faudra alors autoriser les reseaux Docker :
-
-   ```bash
-   ufw allow in from 172.16.0.0/12 to 172.17.0.1 port 1080 proto tcp
-   ```
-
-4. **Merge de la branche sur master** : le workflow VPS publie la nouvelle
-   image de l'updater, et `deploy-modal.yml` redeploie la fonction GPU.
-   Le backend reste `scaleway` tant que `.env.production` ne change pas.
-5. **Bascule** : dans `~/rag_ionis/.env.production` sur le VPS :
-
-   ```
-   PIPELINE_EXECUTION_BACKEND=modal
-   MODAL_TOKEN_ID=...
-   MODAL_TOKEN_SECRET=...
-   YT_PROXY=socks5://host.docker.internal:1080
-   ```
-
-   puis lancer une daily sync a la main et suivre les lignes `[modal]` :
-
-   ```bash
-   cd ~/rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm updater
-   ```
-
-**Retour arriere** : remettre `PIPELINE_EXECUTION_BACKEND=scaleway` dans
-`.env.production`. La VM Scaleway et son worker sont intacts tant que le code
-Scaleway n'est pas retire.
-
-## Ce qui reste de Scaleway
-
-Le backend `scaleway` (job complet sur la VM) reste disponible tant que la
-production n'est pas passee a `modal`. Une fois Modal valide, on pourra retirer
-la VM, son worker, son image, son runner et `utils/scaleway_disponibility`.
+```bash
+cd ~/rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm updater
+```

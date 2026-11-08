@@ -92,8 +92,9 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertNotIn("fastapi", requirements)
 
     def test_vps_updater_starts_without_ytdlp(self) -> None:
-        # The updater image has no yt-dlp: downloads happen on the Scaleway worker.
-        # A fresh interpreter keeps the import chain honest even where it is installed.
+        # yt-dlp is only imported to download a video: the rest of the updater
+        # must start without it. A fresh interpreter keeps the import chain
+        # honest even where it is installed.
         script = "import sys; sys.modules['yt_dlp'] = None; import pipeline.update_runs"
         result = subprocess.run(
             [sys.executable, "-c", script],

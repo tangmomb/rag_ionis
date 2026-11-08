@@ -77,7 +77,9 @@ services:
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     mem_limit: 512m
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      # TCP, not the socket: during first-time init the temporary server listens only on the socket,
+      # so a socket check could report healthy before the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 20

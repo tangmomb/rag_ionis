@@ -10,6 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -40,8 +41,11 @@ services:
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-rag-ionis}
       GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
       GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.85}
-    expose:
-      - "8006"
+    # Seul le Caddy de l'hote (systemd, partage avec les autres sites du VPS) y accede.
+    ports:
+      - "127.0.0.1:8006:8006"
+    mem_limit: 1g
+    cpus: 2
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,6 +75,7 @@ services:
     volumes:
       - staging_postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -95,6 +100,11 @@ services:
       PHOENIX_ENABLED: "false"
       GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
       GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.85}
+    # Le Caddy de l'hote sert /staging/* ici.
+    ports:
+      - "127.0.0.1:8007:8006"
+    mem_limit: 1g
+    cpus: 1
     depends_on:
       staging-postgres:
         condition: service_healthy
@@ -135,30 +145,10 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  caddy:
-    image: caddy:2.11.4-alpine
-    restart: unless-stopped
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      api:
-        condition: service_healthy
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   phoenix:
     volumes:
       - phoenix_data:/mnt/data
+    mem_limit: 768m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=5)"]
       interval: 10s
@@ -175,9 +165,5 @@ volumes:
     name: rag_ionis_postgres_data
   phoenix_data:
     name: rag_ionis_phoenix_data
-  caddy_data:
-    name: rag_ionis_caddy_data
-  caddy_config:
-    name: rag_ionis_caddy_config
   staging_postgres_data:
     name: rag_ionis_staging_postgres_data

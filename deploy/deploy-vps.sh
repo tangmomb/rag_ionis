@@ -135,9 +135,7 @@ while (( SECONDS < deadline )); do
     health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}")"
     case "${health_status}" in
       healthy)
-        "${compose[@]}" up -d --no-deps caddy
-        "${compose[@]}" exec -T caddy caddy reload \
-          --config /etc/caddy/Caddyfile --adapter caddyfile
+        # The host Caddy (systemd) proxies to 127.0.0.1:8006: nothing to reload.
         printf 'API %s is healthy.\n' "${image_tag}"
         exit 0
         ;;

@@ -15,7 +15,6 @@ on:
       - "pipeline/**"
       - "docker-compose.yml"
       - "docker-compose.prod.yml"
-      - "Caddyfile"
       - "docker/postgres/init/**"
       - "deploy/deploy-vps.sh"
       - "deploy/sync-vps-config.sh"
@@ -123,7 +122,7 @@ jobs:
                   vps_config=true
                   recall_gate=true
                   ;;
-                docker-compose.yml|Caddyfile|docker/postgres/init/*|deploy/deploy-vps.sh)
+                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh)
                   vps_config=true
                   ;;
                 .github/workflows/deploy-vps.yml)
@@ -297,7 +296,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$1/deploy" "$1/docker/postgres"
           REMOTE
-          scp Caddyfile docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
+          scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
           scp deploy/deploy-vps.sh deploy/sync-vps-config.sh "${remote}:${deploy_path}/deploy/"
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'

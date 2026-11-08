@@ -12,7 +12,7 @@ class ProjectEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / ".env.production").write_text(
-                "PIPELINE_EXECUTION_BACKEND=scaleway\n",
+                "PIPELINE_EXECUTION_BACKEND=modal\n",
                 encoding="utf-8",
             )
             with patch.dict(
@@ -25,7 +25,7 @@ class ProjectEnvironmentTests(unittest.TestCase):
                 self.assertEqual(selected, root / ".env.production")
                 self.assertEqual(
                     os.environ["PIPELINE_EXECUTION_BACKEND"],
-                    "scaleway",
+                    "modal",
                 )
 
     def test_local_environment_falls_back_to_legacy_env(self) -> None:

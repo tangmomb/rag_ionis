@@ -84,50 +84,6 @@ const runBatchField = {
   full: true,
 };
 
-const scalewayImageFields = [
-  {
-    id: "scalewayRepository",
-    label: "Dépôt Container Registry",
-    type: "text",
-    value: "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway",
-    required: true,
-    full: true,
-    help: "Namespace Scaleway par défaut : rag-ionis.",
-  },
-  {
-    id: "scalewayCommitTag",
-    label: "Tag du commit",
-    type: "text",
-    placeholder: "Vide = git rev-parse --short=7 HEAD (ex. dd062e7)",
-    full: true,
-  },
-];
-
-const scalewayWorkerConnectionFields = [
-  {
-    id: "scalewayWorkerHost",
-    label: "Hôte SSH de la VM",
-    type: "text",
-    value: "51.159.135.156",
-    required: true,
-    full: true,
-  },
-  {
-    id: "scalewayWorkerUser",
-    label: "Utilisateur SSH",
-    type: "text",
-    value: "root",
-    required: true,
-  },
-  {
-    id: "scalewayWorkerIdentityFile",
-    label: "Clé privée SSH",
-    type: "text",
-    value: String.raw`C:\Users\rgb\.ssh\rag_ionis_scaleway_admin`,
-    full: true,
-  },
-];
-
 const VPS_SSH = String.raw`ssh -i "C:\Users\rgb\.ssh\agent_mots_cles_vps" ubuntu@95.111.224.166`;
 
 const actions = [
@@ -174,7 +130,7 @@ const actions = [
     category: "YouTube",
     title: "Update nouvelles vidéos YouTube",
     short: "Comparer YouTube à PostgreSQL et traiter les absentes",
-    description: "Interroge l’API YouTube, compare directement les IDs avec la table videos de PostgreSQL et traite uniquement les vidéos absentes. Chaque update est archivé dans S3 : new_videos.json liste les absentes, puis chaque vidéo est envoyée au pipeline GPU Scaleway, enrichie avec ses embeddings et synchronisée en SQL. Une vidéo en échec reste absente de SQL et sera retentée au prochain lancement.",
+    description: "Interroge l’API YouTube, compare directement les IDs avec la table videos de PostgreSQL et traite uniquement les vidéos absentes. Chaque update est archivé dans S3 : new_videos.json liste les absentes, puis chaque vidéo est téléchargée sur le VPS et traitée par le pipeline, ses tâches GPU sur Modal, puis enrichie avec ses embeddings et synchronisée en SQL. Une vidéo en échec reste absente de SQL et sera retentée au prochain lancement.",
     icon: "↻",
     accent: "#d9eee8",
     fixedArgs: ["-m", "pipeline.update_videos"],
@@ -281,7 +237,7 @@ const actions = [
           { id: "videoDir", label: "Dossier à uploader", flag: "--video-dir", type: "text", placeholder: "Défaut : dernier dossier", full: true },
           { id: "downloadDir", label: "Dossier parent", flag: "--download-dir", type: "text", value: "downloads/youtube", defaultValue: "downloads/youtube" },
           { id: "bucket", label: "Bucket S3", flag: "--bucket", type: "text", placeholder: "Défaut : S3_BUCKET_NAME" },
-          { id: "region", label: "Région Scaleway", flag: "--region", type: "text", placeholder: "Défaut : S3_REGION" },
+          { id: "region", label: "Région S3", flag: "--region", type: "text", placeholder: "Défaut : S3_REGION" },
           { id: "prefix", label: "Préfixe S3", flag: "--prefix", type: "text", placeholder: "youtube/…", exclusive: "prefixMode" },
           { id: "noPrefix", label: "Uploader à la racine", flag: "--no-prefix", type: "boolean", help: "Incompatible avec un préfixe explicite.", exclusive: "prefixMode" },
           { id: "videoIds", label: "Limiter à des IDs vidéo", flag: "--video-id", type: "textarea", placeholder: "Un ID par ligne", help: "L’option --video-id sera répétée.", repeatable: true, full: true },
@@ -688,88 +644,9 @@ const actions = [
     sections: [],
     warning: "Cette commande transmet les secrets de .env.production au VPS et remplace le fichier distant. À utiliser uniquement si nécessaire.",
   },
-  {
-    id: "scaleway-build-image",
-    category: "Scaleway",
-    title: "Construire l’image Scaleway",
-    short: "Créer les tags commit et latest sans pousser",
-    description: "Construit localement l’image GPU linux/amd64 avec le tag court du commit et latest, sans l’envoyer au registre.",
-    icon: "◆",
-    accent: "#d9f36d",
-    commandBuilder: buildScalewayLocalBuildCommand,
-    sections: [{ title: "Image", fields: scalewayImageFields }],
-  },
-  {
-    id: "scaleway-publish-image",
-    category: "Scaleway",
-    title: "Publier l’image Scaleway",
-    short: "Construire et publier avec le cache distant",
-    description: "Construit avec Buildx, réutilise le cache du registre puis publie le tag immuable du commit et latest en une opération.",
-    icon: "↑",
-    accent: "#dce8f5",
-    commandBuilder: buildScalewayPublishCommand,
-    sections: [{ title: "Image", fields: scalewayImageFields }],
-    warning: "Vérifie le namespace, le login Docker et le commit avant de pousser. Le tag latest sera déplacé vers cette image.",
-  },
-  {
-    id: "scaleway-inspect-image",
-    category: "Scaleway",
-    title: "Inspecter une image Scaleway",
-    short: "Afficher le digest et les métadonnées du registre",
-    description: "Interroge le Container Registry Scaleway avec docker buildx imagetools inspect.",
-    icon: "⌕",
-    accent: "#e7e1f4",
-    commandBuilder: buildScalewayInspectCommand,
-    sections: [
-      {
-        title: "Image distante",
-        fields: [
-          { ...scalewayImageFields[0] },
-          { id: "scalewayInspectTag", label: "Tag à inspecter", type: "text", value: "latest", defaultValue: "latest", required: true },
-        ],
-      },
-    ],
-  },
-  {
-    id: "scaleway-pull-latest",
-    category: "Scaleway",
-    title: "Récupérer latest localement",
-    short: "Tester le pull de l’image publiée",
-    description: "Télécharge le tag latest depuis le Container Registry pour vérifier l’accès et la publication.",
-    icon: "↓",
-    accent: "#dff0e5",
-    commandBuilder: () => ({
-      command: `docker pull ${quotePowerShell(`${scalewayRepository()}:latest`)}`,
-      summary: "Pull local de latest",
-    }),
-    sections: [{ title: "Image", fields: [scalewayImageFields[0]] }],
-  },
-  {
-    id: "scaleway-connect",
-    category: "Scaleway",
-    title: "Se connecter à la VM Scaleway",
-    short: "Ouvrir une session SSH sur la VM GPU",
-    description: "Ouvre une connexion SSH interactive vers la VM Scaleway avec l’utilisateur et la clé indiqués.",
-    icon: "⌁",
-    accent: "#d9eee8",
-    commandBuilder: buildScalewayConnectCommand,
-    sections: [{ title: "Connexion à la VM", fields: scalewayWorkerConnectionFields }],
-  },
-  {
-    id: "scaleway-worker-info",
-    category: "Scaleway",
-    title: "Vérifier la configuration worker",
-    short: "Lire le service et l’environnement actifs sur la VM",
-    description: "Se connecte à la VM Scaleway indiquée ci-dessous pour afficher l’unité systemd active et le fichier d’environnement réellement utilisé.",
-    icon: "☷",
-    accent: "#f4d8d1",
-    commandBuilder: buildScalewayWorkerInfoCommand,
-    sections: [{ title: "Connexion à la VM", fields: scalewayWorkerConnectionFields }],
-    warning: "La VM Scaleway doit être démarrée et accessible en SSH. Cette commande affiche les clés S3 et API en clair.",
-  },
 ];
 
-const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance", "VPS", "Scaleway"];
+const categories = ["Toutes", "Pipeline", "YouTube", "Publication", "Services", "Maintenance", "VPS"];
 const launchers = {
   venv: String.raw`.\.venv\Scripts\python.exe`,
   python: "python",
@@ -1094,82 +971,6 @@ function buildVpsDatabaseCommand() {
   return {
     command: `${setup.join("\n")}\n${syncArgs.join(" ")}`,
     summary: mode === "dry-run" ? "Simulation sur la base du VPS" : "Synchronisation réelle de la base du VPS",
-  };
-}
-
-function scalewayRepository() {
-  return formValue(
-    "scalewayRepository",
-    "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway",
-  ) || "rg.fr-par.scw.cloud/rag-ionis/rag-ionis-scaleway";
-}
-
-function scalewayCommitTag() {
-  return formValue("scalewayCommitTag");
-}
-
-function buildScalewayPublishCommand() {
-  const repository = scalewayRepository();
-  const commitTag = scalewayCommitTag();
-  const tagExpression = commitTag
-    ? powerShellString(commitTag)
-    : "(git rev-parse --short=7 HEAD).Trim()";
-  const command = [
-    `$repository = ${powerShellString(repository)}`,
-    `$commitTag = ${tagExpression}`,
-    '$env:SCALEWAY_IMAGE_REPOSITORY = $repository',
-    'bash deploy/publish-scaleway-image.sh $commitTag',
-  ].join("\n");
-  return {
-    command,
-    summary: "Build et publication avec cache distant",
-  };
-}
-
-function buildScalewayLocalBuildCommand() {
-  const repository = scalewayRepository();
-  const commitTag = scalewayCommitTag();
-  const tagExpression = commitTag
-    ? powerShellString(commitTag)
-    : "(git rev-parse --short=7 HEAD).Trim()";
-  return {
-    command: [
-      `$repository = ${powerShellString(repository)}`,
-      `$commitTag = ${tagExpression}`,
-      'docker build --platform linux/amd64 -f Dockerfile.scaleway -t "${repository}:$commitTag" -t "${repository}:latest" .',
-    ].join("\n"),
-    summary: "Build local sans publication",
-  };
-}
-
-function buildScalewayInspectCommand() {
-  const repository = scalewayRepository();
-  const tag = formValue("scalewayInspectTag", "latest") || "latest";
-  return {
-    command: `docker buildx imagetools inspect ${quotePowerShell(`${repository}:${tag}`)}`,
-    summary: `Inspection du registre : ${tag}`,
-  };
-}
-
-function buildScalewayWorkerInfoCommand() {
-  const host = formValue("scalewayWorkerHost", "51.159.135.156") || "51.159.135.156";
-  const user = formValue("scalewayWorkerUser", "root") || "root";
-  const identityFile = formValue("scalewayWorkerIdentityFile");
-  const identityOption = identityFile ? ` -i ${quotePowerShell(identityFile)}` : "";
-  return {
-    command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)} "sudo systemctl cat rag-ionis-scaleway-worker; printf '\\n--- Environnement worker ---\\n'; sudo cat /etc/rag-ionis/scaleway-worker.env"`,
-    summary: "Vérification distante du worker",
-  };
-}
-
-function buildScalewayConnectCommand() {
-  const host = formValue("scalewayWorkerHost", "51.159.135.156") || "51.159.135.156";
-  const user = formValue("scalewayWorkerUser", "root") || "root";
-  const identityFile = formValue("scalewayWorkerIdentityFile");
-  const identityOption = identityFile ? ` -i ${quotePowerShell(identityFile)}` : "";
-  return {
-    command: `ssh${identityOption} ${quotePowerShell(`${user}@${host}`)}`,
-    summary: "Connexion SSH à la VM Scaleway",
   };
 }
 

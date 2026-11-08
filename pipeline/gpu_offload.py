@@ -32,10 +32,21 @@ class GpuOffloadError(RuntimeError):
     """Raised when a GPU task cannot run on Modal."""
 
 
+EXECUTION_BACKENDS = ("local", "modal")
+
+
+def execution_backend() -> str:
+    """``local``: everything here; ``modal``: GPU tasks on Modal, the rest here."""
+    backend = os.getenv("PIPELINE_EXECUTION_BACKEND", "local").strip().lower() or "local"
+    if backend not in EXECUTION_BACKENDS:
+        raise RuntimeError("PIPELINE_EXECUTION_BACKEND doit valoir 'local' ou 'modal'.")
+    return backend
+
+
 def gpu_offload_enabled() -> bool:
     if os.getenv("PIPELINE_GPU_WORKER", "").strip().lower() in {"1", "true", "yes"}:
         return False
-    return os.getenv("PIPELINE_EXECUTION_BACKEND", "").strip().lower() == "modal"
+    return execution_backend() == "modal"
 
 
 # --------------------------------------------------------------------------

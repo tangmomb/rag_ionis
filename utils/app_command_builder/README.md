@@ -14,7 +14,6 @@ Il génère des commandes PowerShell à exécuter depuis la racine du projet pou
 - la consultation en lecture seule de PostgreSQL du VPS : ouverture de `psql`,
   liste des tables de `data` et nombre de lignes par table ;
 - la restauration contrôlée d’un dump local dans PostgreSQL sur le VPS ;
-- la construction, la publication et l’inspection des images worker Scaleway ;
 - les tests et quelques opérations de maintenance.
 
 La rubrique Maintenance inclut également une sauvegarde PostgreSQL : elle crée

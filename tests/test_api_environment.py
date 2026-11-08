@@ -15,7 +15,7 @@ class ApiEnvironmentTests(unittest.TestCase):
                 {
                     "RAG_IONIS_ENV": "production",
                     "RAG_IONIS_ENV_FILE_OPTIONAL": "1",
-                    "PIPELINE_EXECUTION_BACKEND": "scaleway",
+                    "PIPELINE_EXECUTION_BACKEND": "modal",
                 },
                 clear=True,
             ):
@@ -33,7 +33,7 @@ class ApiEnvironmentTests(unittest.TestCase):
                 {
                     "RAG_IONIS_ENV": "staging",
                     "RAG_IONIS_ENV_FILE_OPTIONAL": "1",
-                    "PIPELINE_EXECUTION_BACKEND": "scaleway",
+                    "PIPELINE_EXECUTION_BACKEND": "modal",
                 },
                 clear=True,
             ):

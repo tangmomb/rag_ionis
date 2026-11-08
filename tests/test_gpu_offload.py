@@ -11,7 +11,6 @@ from unittest.mock import Mock, patch
 
 from pipeline import catalog, gpu_offload
 from pipeline.contracts import TaskResult, TaskStatus
-from pipeline.support import remote_backend, scaleway_execution
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -272,17 +271,17 @@ class BackendSelectionTests(unittest.TestCase):
                 gpu_offload.run_handler(FakeSpec("x", handler), "ctx")
         self.assertEqual(handler.call_count, 2)
 
-    def test_modal_backend_runs_the_pipeline_locally(self) -> None:
-        with patch.dict(
-            "os.environ", {"PIPELINE_EXECUTION_BACKEND": "modal", "SCALEWAY_WORKER": ""}
-        ):
-            self.assertEqual(remote_backend.configured_backend(), "modal")
-            self.assertFalse(scaleway_execution.should_delegate_to_scaleway("run"))
+    def test_backend_defaults_to_local_and_accepts_modal(self) -> None:
+        with patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": ""}):
+            self.assertEqual(gpu_offload.execution_backend(), "local")
+        with patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "Modal"}):
+            self.assertEqual(gpu_offload.execution_backend(), "modal")
 
-    def test_unknown_backend_is_rejected(self) -> None:
-        with patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": "runpod"}):
-            with self.assertRaisesRegex(RuntimeError, "'modal'"):
-                remote_backend.configured_backend()
+    def test_removed_or_unknown_backends_are_rejected(self) -> None:
+        for backend in ("scaleway", "runpod"):
+            with patch.dict("os.environ", {"PIPELINE_EXECUTION_BACKEND": backend}):
+                with self.assertRaisesRegex(RuntimeError, "'modal'"):
+                    gpu_offload.execution_backend()
 
     def test_every_gpu_task_has_its_files_defined(self) -> None:
         context = FakeContext(Path("archive/abc/abc.mp4"))

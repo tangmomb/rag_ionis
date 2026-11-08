@@ -27,7 +27,7 @@ from pipeline.publish.sync_database import (
 from pipeline.support.json_io import read_json, write_json
 from pipeline.support.environment import load_project_env
 from pipeline.support.paths import youtube_api_infos_path, youtube_comments_path
-from pipeline.support.scaleway_jobs import s3_client, upload_s3_directory
+from pipeline.support.s3 import s3_client, upload_s3_directory
 
 
 LOCK_NAME = "rag_ionis.update_runs"
@@ -462,20 +462,11 @@ def download_and_run_pipeline(
     archive_dir: Path,
     download_dir: Path,
     snapshot_date: date,
-    comments_payload: dict | None = None,
 ) -> dict:
-    from pipeline.support.remote_backend import REMOTE_BACKENDS, configured_backend
+    from pipeline.gpu_offload import execution_backend
 
-    backend = configured_backend()
-    if backend in REMOTE_BACKENDS:
-        return run_pipeline_on_scaleway(
-            video,
-            archive_dir,
-            snapshot_date,
-            comments_payload=comments_payload,
-            backend=backend,
-        )
-
+    # The pipeline runs here; with "modal" its GPU tasks run on Modal.
+    backend = execution_backend()
     from pipeline.ingest.download_videos import download_video
 
     youtube_video_id = video["id"]
@@ -520,7 +511,6 @@ def download_and_run_pipeline(
         check=True,
     )
     sync_processed_video(youtube_video_id, archive_dir, snapshot_date)
-    # With "modal", the GPU tasks of the subprocesses above ran on Modal.
     return {"backend": backend}
 
 
@@ -544,117 +534,6 @@ def sync_processed_video(
         cwd=PROJECT_ROOT,
         check=True,
     )
-
-
-def run_pipeline_on_scaleway(
-    video: dict,
-    archive_dir: Path,
-    snapshot_date: date,
-    *,
-    comments_payload: dict | None = None,
-    backend: str = "scaleway",
-) -> dict:
-    from pipeline.support.remote_backend import remote_job_client
-    from pipeline.support.scaleway_jobs import (
-        ScalewayJobError,
-        download_s3_prefix,
-        s3_client,
-    )
-
-    youtube_video_id = str(video["id"])
-    video_dir = archive_dir / youtube_video_id
-    bucket = os.getenv("S3_BUCKET_NAME", "").strip()
-    if not bucket:
-        raise RuntimeError("S3_BUCKET_NAME est requis pour la daily sync Scaleway.")
-    control_root = os.getenv(
-        "SCALEWAY_S3_JOB_PREFIX", "scaleway/jobs"
-    ).strip().strip("/")
-    if not control_root:
-        raise RuntimeError("SCALEWAY_S3_JOB_PREFIX ne peut pas etre vide.")
-    control_prefix = f"{control_root}/{uuid.uuid4().hex}"
-    job_id = control_prefix.rsplit("/", 1)[-1]
-    job_input = {
-        "schema_version": 2,
-        "operation": "pipeline_command",
-        "command": "run",
-        "include_embeddings": True,
-        "video_id": youtube_video_id,
-        "archive_name": archive_dir.name,
-        "snapshot_date": snapshot_date.isoformat(),
-        "options": {
-            "force": False,
-            "openai_mode": os.getenv("DAILY_SYNC_OPENAI_MODE", "normal"),
-            "correction_mode": os.getenv("DAILY_SYNC_CORRECTION_MODE", "balanced"),
-            "frame_interval_seconds": float(
-                os.getenv("DAILY_SYNC_FRAME_INTERVAL_SECONDS", "0.5")
-            ),
-            "details_per_section": int(
-                os.getenv("DAILY_SYNC_DETAILS_PER_SECTION", "6")
-            ),
-        },
-        "source": {
-            "type": "youtube",
-            "video": video,
-        },
-        "result": {
-            "bucket": bucket,
-            "prefix": f"youtube/{archive_dir.name}/{youtube_video_id}",
-        },
-        "control": {
-            "bucket": bucket,
-            "job_id": job_id,
-            "job_key": f"{control_prefix}/job.json",
-            "status_key": f"{control_prefix}/status.json",
-        },
-    }
-    if comments_payload is not None:
-        job_input["source"]["comments"] = comments_payload
-
-    region = os.getenv("S3_REGION", "").strip()
-    object_store = s3_client(region)
-    client = remote_job_client(backend)
-    job_id, output = client.run(job_input, object_store=object_store, bucket=bucket)
-    if str(output.get("video_id") or "") != youtube_video_id:
-        raise ScalewayJobError(
-            f"Le job Scaleway {job_id} a renvoye un autre identifiant video."
-        )
-    bucket = str(output.get("bucket") or "").strip()
-    prefix = str(output.get("prefix") or "").strip().strip("/")
-    expected_prefix = f"youtube/{archive_dir.name}/{youtube_video_id}"
-    configured_bucket = os.getenv("S3_BUCKET_NAME", "").strip()
-    if (
-        not bucket
-        or (configured_bucket and bucket != configured_bucket)
-        or prefix != expected_prefix
-    ):
-        raise ScalewayJobError(
-            f"Le job Scaleway {job_id} a renvoye une destination S3 invalide."
-        )
-
-    downloaded = download_s3_prefix(
-        object_store,
-        bucket,
-        prefix,
-        video_dir,
-    )
-    print(
-        f"[scaleway] {downloaded} artefact(s) rapatrie(s) depuis "
-        f"s3://{bucket}/{prefix}/",
-        flush=True,
-    )
-    sync_processed_video(youtube_video_id, archive_dir, snapshot_date)
-    keep_job_artifacts = os.getenv(
-        "SCALEWAY_KEEP_JOB_ARTIFACTS", "0"
-    ).strip().lower() in {"1", "true", "yes"}
-    if not keep_job_artifacts:
-        from pipeline.publish.upload_outputs_to_s3 import delete_prefix
-
-        delete_prefix(object_store, bucket, control_prefix)
-    return {
-        "backend": backend,
-        "job_id": job_id,
-        "s3_uri": f"s3://{bucket}/{prefix}",
-    }
 
 
 def write_new_videos_manifest(
@@ -1016,12 +895,8 @@ def run_videos_only() -> dict:
                         archive_dir,
                         download_dir,
                         started_at.date(),
-                        comments_payload=comments_payload,
                     )
-                    if (
-                        result.get("backend") in {"local", "modal"}
-                        and object_store is not None
-                    ):
+                    if object_store is not None:
                         upload_s3_directory(
                             object_store,
                             bucket,

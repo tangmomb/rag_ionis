@@ -323,7 +323,8 @@ jobs:
           compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production)
           export STAGING_API_IMAGE_TAG="$2"
           "${compose[@]}" --profile staging pull staging-api
-          "${compose[@]}" --profile staging up -d staging-postgres
+          # --wait: a freshly created staging database runs its init scripts before accepting connections.
+          "${compose[@]}" --profile staging up -d --wait staging-postgres
           # The corpus is copied into the isolated staging database; chat data
           # is not copied and production is never written by this gate.
           "${compose[@]}" --profile staging exec -T staging-postgres sh -c \

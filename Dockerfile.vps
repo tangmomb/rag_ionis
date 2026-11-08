@@ -28,9 +28,11 @@ RUN node --version \
 COPY --from=uv /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-default-groups --group vps
+    uv sync --frozen --no-install-project --no-default-groups --group vps --group ytdlp
 
 COPY --chown=app:app pipeline ./pipeline
+# The pipeline writes its ffmpeg copy and local caches below downloads/.
+RUN install -d -o app -g app /app/downloads
 
 USER app
 

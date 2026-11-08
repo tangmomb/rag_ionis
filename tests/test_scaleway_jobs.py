@@ -296,7 +296,7 @@ class ScalewayExecutionTests(unittest.TestCase):
                 ),
                 patch.object(scaleway_execution, "s3_client", return_value=object_store),
                 patch.object(scaleway_execution, "upload_s3_directory", return_value=1),
-                patch.object(scaleway_execution, "ScalewayClient", return_value=remote_client),
+                patch.object(scaleway_execution, "remote_job_client", return_value=remote_client),
                 patch.object(
                     scaleway_execution, "download_s3_prefix", side_effect=download_result
                 ),

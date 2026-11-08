@@ -260,6 +260,11 @@ def download_video(
     }
     if cookies_from_browser:
         options["cookiesfrombrowser"] = (cookies_from_browser, None, None, None)
+    # YouTube blocks the VPS IP: its traffic goes through an SSH tunnel to
+    # another server, e.g. YT_PROXY=socks5://host.docker.internal:1080.
+    proxy = os.getenv("YT_PROXY", "").strip()
+    if proxy:
+        options["proxy"] = proxy
 
     print(f"[download] {youtube_video_id} - {title}")
     with yt_dlp.YoutubeDL(options) as downloader:

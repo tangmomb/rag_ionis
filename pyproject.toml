@@ -27,14 +27,20 @@ api = [
     "python-dotenv==1.2.2",
     "requests==2.34.2",
 ]
-# Orchestrateur CPU du VPS : updates YouTube, S3, Scaleway et PostgreSQL.
-# Aucune bibliotheque CUDA, OCR ou serveur web n'est necessaire ici.
+# Orchestrateur CPU du VPS : updates YouTube, S3, PostgreSQL et etapes CPU du
+# pipeline. Les taches GPU partent sur Modal : ni CUDA, ni OCR, ni serveur web ici.
 vps = [
     "imageio-ffmpeg==0.6.0",
     "boto3==1.42.95",
     "psycopg[binary]==3.3.4",
     "python-dotenv==1.2.2",
     "requests==2.34.2",
+    "openai>=2.45.0,<4",
+    "numpy==2.2.6",
+    # detect_interview reads the DINO embeddings cached by frames.classify.
+    "joblib==1.5.3",
+    "Pillow==12.3.0",
+    "modal==1.6.3",
 ]
 # Worker de traitement GPU Scaleway.
 gpu = [

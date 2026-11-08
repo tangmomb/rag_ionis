@@ -45,12 +45,20 @@ class VpsConfigurationTests(unittest.TestCase):
         # job included, is capped, with no extra swap and a lower OOM priority.
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
 
-        self.assertEqual(production_compose.count("    mem_limit:"), 6)
-        self.assertEqual(production_compose.count("    memswap_limit:"), 6)
-        self.assertEqual(production_compose.count("    oom_score_adj:"), 6)
+        self.assertEqual(production_compose.count("    mem_limit:"), 7)
+        self.assertEqual(production_compose.count("    memswap_limit:"), 7)
+        self.assertEqual(production_compose.count("    oom_score_adj:"), 7)
         # Production API and PostgreSQL win over the agent project under memory pressure.
         self.assertEqual(production_compose.count("    mem_reservation:"), 2)
         self.assertEqual(production_compose.count("    oom_score_adj: -500"), 2)
+
+    def test_youtube_proxy_relay_never_listens_publicly(self) -> None:
+        production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
+        relay = production_compose.split("\n  yt-proxy:\n", 1)[1].split("\n\n", 1)[0]
+
+        self.assertIn("bind=172.17.0.1", relay)
+        self.assertIn("TCP:127.0.0.1:1080", relay)
+        self.assertIn("alpine/socat:1.8.0.1@sha256:", relay)
 
     def test_production_api_runs_without_reload_as_non_root(self) -> None:
         dockerfile = API_DOCKERFILE_PATH.read_text(encoding="utf-8")

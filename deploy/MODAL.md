@@ -89,10 +89,11 @@ puis cree les embeddings. Pic de RAM : 532 Mo.
    gh secret set MODAL_TOKEN_SECRET --env production-modal
    ```
 
-3. **Relais du tunnel YouTube** sur le VPS (root), voir
-   `deploy/rag-ionis-yt-proxy.service` : installer `socat`, le service, puis
-   lancer la verification indiquee en tete du fichier (attendu : `200`). Si
-   `ufw` est actif, autoriser les reseaux Docker :
+3. **Relais du tunnel YouTube** : rien a installer. Le service compose
+   `yt-proxy` (socat) demarre avec l'updater et republie le tunnel `yt-tunnel`
+   de l'hote sur la passerelle Docker 172.17.0.1, jamais sur l'IP publique.
+   Si `ufw` bloque les conteneurs vers l'hote, la daily sync echouera au
+   telechargement ; il faudra alors autoriser les reseaux Docker :
 
    ```bash
    ufw allow in from 172.16.0.0/12 to 172.17.0.1 port 1080 proto tcp

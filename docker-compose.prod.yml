@@ -163,7 +163,7 @@ services:
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID is required}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY is required}
-    # Le tunnel YouTube ecoute sur l'hote (YT_PROXY=socks5://host.docker.internal:1080).
+    # yt-dlp passe par yt-proxy (YT_PROXY=socks5://host.docker.internal:1080).
     extra_hosts:
       - "host.docker.internal:host-gateway"
     mem_limit: 1g
@@ -173,10 +173,31 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      yt-proxy:
+        condition: service_started
     logging:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # YouTube bloque l'IP du VPS. Le service yt-tunnel de l'hote (projet
+  # agent_mots_cles) ouvre un proxy SOCKS sur 127.0.0.1:1080, que les conteneurs
+  # ne voient pas : ce relais le republie sur la passerelle Docker 172.17.0.1
+  # (host.docker.internal), jamais sur l'IP publique. Demarre avec l'updater.
+  yt-proxy:
+    profiles: ["jobs"]
+    image: alpine/socat:1.8.0.1@sha256:87d88ff79bf42ca723fb360e9585c40e2923a2f4df9b9d148b127568ef6b99e7
+    network_mode: host
+    command: ["TCP-LISTEN:1080,bind=172.17.0.1,reuseaddr,fork", "TCP:127.0.0.1:1080"]
+    restart: unless-stopped
+    mem_limit: 32m
+    memswap_limit: 32m
+    oom_score_adj: 500
+    cpus: 0.25
+    logging:
+      options:
+        max-size: "1m"
+        max-file: "2"
 
   phoenix:
     volumes:

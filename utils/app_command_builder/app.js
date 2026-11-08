@@ -84,7 +84,7 @@ const runBatchField = {
   full: true,
 };
 
-const VPS_SSH = String.raw`ssh -i "C:\Users\rgb\.ssh\agent_mots_cles_vps" ubuntu@95.111.224.166`;
+const VPS_SSH = String.raw`ssh -i "C:\Users\rgb\.ssh\admin_contabo_infomaniak" ubuntu@95.111.224.166`;
 
 const actions = [
   {
@@ -504,7 +504,7 @@ const actions = [
     description: "Ouvre un tunnel SSH vers Phoenix du VPS sur le port local 6007, sans entrer en conflit avec Phoenix local. Laisse le terminal ouvert, puis ouvre http://127.0.0.1:6007/projects dans ton navigateur.",
     icon: "◉",
     accent: "#f4d8d1",
-    shellCommand: String.raw`ssh -i "C:\Users\rgb\.ssh\agent_mots_cles_vps" -L 6007:127.0.0.1:6006 ubuntu@95.111.224.166`,
+    shellCommand: String.raw`ssh -i "C:\Users\rgb\.ssh\admin_contabo_infomaniak" -L 6007:127.0.0.1:6006 ubuntu@95.111.224.166`,
     shellLabel: "Tunnel SSH · Phoenix",
     terminal: { label: "Phoenix · VPS", prompt: "ubuntu@vps:~$" },
     sections: [],
@@ -640,7 +640,7 @@ const actions = [
     description: "Envoie le fichier .env.production local vers rag_ionis/.env.production dans le dossier personnel du VPS via SCP.",
     icon: "↑",
     accent: "#f4d8d1",
-    shellCommand: String.raw`scp -i "C:\Users\rgb\.ssh\agent_mots_cles_vps" ".env.production" ubuntu@95.111.224.166:rag_ionis/.env.production`,
+    shellCommand: String.raw`scp -i "C:\Users\rgb\.ssh\admin_contabo_infomaniak" ".env.production" ubuntu@95.111.224.166:rag_ionis/.env.production`,
     sections: [],
     warning: "Cette commande transmet les secrets de .env.production au VPS et remplace le fichier distant. À utiliser uniquement si nécessaire.",
   },
@@ -928,7 +928,7 @@ function buildVpsPostgresRestoreCommand() {
   const step = formValue("vpsRestoreStep", "upload") || "upload";
   const commands = {
     upload: {
-      command: String.raw`scp -i "C:\Users\rgb\.ssh\agent_mots_cles_vps" "${dumpPath}" ubuntu@95.111.224.166:~`,
+      command: String.raw`scp -i "C:\Users\rgb\.ssh\admin_contabo_infomaniak" "${dumpPath}" ubuntu@95.111.224.166:~`,
       summary: "À exécuter dans PowerShell, à la racine du projet",
     },
     copy: {

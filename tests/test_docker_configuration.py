@@ -35,8 +35,16 @@ class VpsConfigurationTests(unittest.TestCase):
 
         self.assertIn('"127.0.0.1:${POSTGRES_PORT:-5432}:5432"', common_compose)
         self.assertIn('"127.0.0.1:${PHOENIX_PORT:-6006}:6006"', common_compose)
-        self.assertIn('expose:\n      - "8006"', production_compose)
+        self.assertIn('"127.0.0.1:8006:8006"', production_compose)
+        self.assertIn('"127.0.0.1:8007:8006"', production_compose)
         self.assertNotIn('"8006:8006"', production_compose)
+        self.assertNotIn('"80:80"', production_compose)
+
+    def test_production_services_have_memory_limits(self) -> None:
+        # The VPS is shared with other projects: every long-running service is capped.
+        production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(production_compose.count("mem_limit:"), 5)
 
     def test_production_api_runs_without_reload_as_non_root(self) -> None:
         dockerfile = API_DOCKERFILE_PATH.read_text(encoding="utf-8")
@@ -95,7 +103,7 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("docker pull", vps_deploy)
         self.assertIn("rolling back", vps_deploy)
         self.assertIn("State.Health", vps_deploy)
-        self.assertIn("caddy reload", vps_deploy)
+        self.assertNotIn("caddy", vps_deploy)
 
     def test_vps_workflow_uses_registry_cache(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")

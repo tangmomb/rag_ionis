@@ -8,15 +8,13 @@ fi
 
 deployment_dir="$1"
 
-# The deployment workflow only accepts a simple directory name. Resolve it here
-# before removing legacy files so cleanup can never escape the VPS deployment
-# directory.
-[[ "${deployment_dir}" =~ ^[A-Za-z0-9_-]+$ ]] || {
+# Only a direct child of /srv is accepted, so the legacy cleanup below can never
+# escape the VPS deployment directory.
+[[ "${deployment_dir}" =~ ^/srv/[A-Za-z0-9_-]+$ ]] || {
   printf 'Invalid deployment directory: %s\n' "${deployment_dir}" >&2
   exit 2
 }
 
-deployment_dir="${HOME}/${deployment_dir}"
 [[ -d "${deployment_dir}" ]] || {
   printf 'Deployment directory does not exist: %s\n' "${deployment_dir}" >&2
   exit 1

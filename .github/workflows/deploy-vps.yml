@@ -260,11 +260,9 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
         run: |
           set -euo pipefail
-          deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
-          [[ "${deploy_path}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'VPS_DEPLOY_PATH must be a simple directory name' >&2; exit 2; }
+          deploy_path=/srv/rag_ionis
           test -n "${VPS_HOST}" || { echo 'Missing VPS_HOST' >&2; exit 1; }
           test -n "${VPS_USER}" || { echo 'Missing VPS_USER' >&2; exit 1; }
           remote="${VPS_USER}@${VPS_HOST}"
@@ -277,7 +275,7 @@ jobs:
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
           set -euo pipefail
-          bash "$HOME/$1/deploy/sync-vps-config.sh" "$1"
+          bash "$1/deploy/sync-vps-config.sh" "$1"
           REMOTE
 
       - name: Refresh staging corpus and verify candidate API recall
@@ -286,11 +284,10 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
-          deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
+          deploy_path=/srv/rag_ionis
           remote="${VPS_USER}@${VPS_HOST}"
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=60 \
             "${remote}" bash -s -- "${deploy_path}" "${IMAGE_TAG}" <<'REMOTE'
@@ -333,13 +330,12 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
           DEPLOY_API: ${{ needs.changes.outputs.api }}
           DEPLOY_UPDATER: ${{ needs.changes.outputs.updater }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
-          deploy_path="${VPS_DEPLOY_PATH:-rag_ionis}"
+          deploy_path=/srv/rag_ionis
           remote="${VPS_USER}@${VPS_HOST}"
           # Prepare the updater first so a first all-images deployment populates
           # both required Compose tags before the API healthcheck is evaluated.

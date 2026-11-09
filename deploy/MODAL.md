@@ -69,7 +69,7 @@ python utils/modal_benchmark/run_benchmark.py --backend modal L0ipiwb9jS8 U-1vz4
 ## Production
 
 En service depuis le 8 novembre 2026, a la place de l'ancienne VM GPU
-Scaleway. Sur le VPS, `~/rag_ionis/.env.production` contient
+Scaleway. Sur le VPS, `/srv/rag_ionis/.env.production` contient
 `PIPELINE_EXECUTION_BACKEND=modal`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` et
 `YT_PROXY=socks5://host.docker.internal:1080`.
 
@@ -85,5 +85,5 @@ sudo ufw allow in from 172.18.0.0/16 to 172.17.0.1 port 1080 proto tcp
 Lancer une daily sync a la main et suivre les lignes `[modal]` :
 
 ```bash
-cd ~/rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm updater
+cd /srv/rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production --profile jobs run --rm updater
 ```

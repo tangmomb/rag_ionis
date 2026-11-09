@@ -118,7 +118,7 @@ class CommandBuilderTests(unittest.TestCase):
         pull_code = source.split('id: "vps-pull-code"', 1)[1].split(
             'id: "vps-rebuild-stack"', 1
         )[0]
-        self.assertIn('shellCommand: "cd rag_ionis/ && git pull --ff-only"', pull_code)
+        self.assertIn('shellCommand: "cd /srv/rag_ionis && git pull --ff-only"', pull_code)
         self.assertIn('shellLabel: "Commande Linux VPS"', pull_code)
         self.assertIn('terminal: { label: "Linux · VPS", prompt: "ubuntu@vps:~$" }', pull_code)
         self.assertNotIn('vpsRemoteCommand', pull_code)
@@ -126,7 +126,7 @@ class CommandBuilderTests(unittest.TestCase):
             'id: "vps-send-production-env"', 1
         )[0]
         self.assertIn(
-            'shellCommand: "cd rag_ionis/ && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --no-build"',
+            'shellCommand: "cd /srv/rag_ionis && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --no-build"',
             rebuild_stack,
         )
         self.assertIn('shellLabel: "Commande Linux VPS"', rebuild_stack)
@@ -145,8 +145,9 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn('shellLabel: "Commande Linux VPS"', update_videos)
         self.assertIn('docker-compose.prod.yml', source)
         self.assertIn('scp -i', source)
-        self.assertIn('ubuntu@95.111.224.166:rag_ionis/.env.production', source)
-        self.assertNotIn('ubuntu@95.111.224.166:/srv/rag_ionis/.env.production', source)
+        # The deployment lives in /srv/rag_ionis since 2026-11-09, not in the home directory.
+        self.assertIn('ubuntu@95.111.224.166:/srv/rag_ionis/.env.production', source)
+        self.assertNotIn('ubuntu@95.111.224.166:rag_ionis/.env.production', source)
         # rag_ionis left the Infomaniak VPS for Contabo on 2026-11-08.
         self.assertNotIn('179.237.98.117', source)
         self.assertIn('.env.production', source)

@@ -73,6 +73,25 @@ class GoldenRecallTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
 
+    def _main_with_recall(self, video_recall: float, argv: list[str]) -> int:
+        with (
+            patch.object(golden_recall, "load_golden_cases", return_value=[]),
+            patch.object(
+                golden_recall,
+                "evaluate",
+                return_value={"failed_cases": [], "video_recall": video_recall, "chunk_recall": 1.0},
+            ),
+        ):
+            return golden_recall.main(argv)
+
+    def test_main_fails_when_recall_drops_below_the_deployed_baseline(self) -> None:
+        argv = ["--min-recall", "0.80", "--baseline-recall", "0.92", "--max-drop", "0.05"]
+        self.assertEqual(self._main_with_recall(0.86, argv), 1)
+        self.assertEqual(self._main_with_recall(0.88, argv), 0)
+
+    def test_main_without_baseline_only_checks_the_floor(self) -> None:
+        self.assertEqual(self._main_with_recall(0.81, ["--min-recall", "0.80"]), 0)
+
     def test_evaluate_averages_recall_per_question_like_phoenix(self) -> None:
         cases = golden_recall.parse_golden_cases(
             "question,youtube_video_ids,relevant_chunk_ids\n"

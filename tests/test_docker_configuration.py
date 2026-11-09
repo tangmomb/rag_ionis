@@ -150,6 +150,20 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("< /dev/null", vps_workflow)
         self.assertIn("python -m interface.backend.golden_recall", vps_workflow)
         self.assertIn("GOLDEN_DATASET_MIN_RECALL", production_compose)
+        self.assertIn('--baseline-recall "${baseline}"', vps_workflow)
+        self.assertIn('mv ".golden-recall-candidate-$3" .golden-recall-baseline', vps_workflow)
+
+    def test_recall_gate_skips_infra_only_changes(self) -> None:
+        vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        for pattern in (
+            "                docker-compose.prod.yml)",
+            "                .github/workflows/deploy-vps.yml)",
+            "                .github/workflows/release-images.yml|",
+        ):
+            start = vps_workflow.index(pattern)
+            branch = vps_workflow[start:vps_workflow.index(";;", start)]
+            self.assertNotIn("recall_gate=true", branch, pattern)
 
     def test_recall_gate_skips_front_end_only_changes(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")

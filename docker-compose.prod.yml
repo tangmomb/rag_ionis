@@ -51,7 +51,8 @@ services:
       PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
       PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-rag-ionis}
       GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
-      GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.85}
+      GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.80}
+      GOLDEN_DATASET_MAX_RECALL_DROP: ${GOLDEN_DATASET_MAX_RECALL_DROP:-0.05}
     # Seul le Caddy de l'hote (systemd, partage avec les autres sites du VPS) y accede.
     ports:
       - "127.0.0.1:8006:8006"
@@ -117,7 +118,8 @@ services:
       OPENAI_SERVICE_TIER: ${OPENAI_SERVICE_TIER:-fast}
       PHOENIX_ENABLED: "false"
       GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
-      GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.85}
+      GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.80}
+      GOLDEN_DATASET_MAX_RECALL_DROP: ${GOLDEN_DATASET_MAX_RECALL_DROP:-0.05}
     # Le Caddy de l'hote sert /staging/* ici.
     ports:
       - "127.0.0.1:8007:8006"

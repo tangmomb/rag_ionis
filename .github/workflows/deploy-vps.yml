@@ -96,7 +96,8 @@ jobs:
                   api=true; updater=true; recall_gate=true
                   ;;
                 .github/workflows/release-images.yml|deploy/publish-image.sh|deploy/publish-images.sh)
-                  api=true; updater=true; recall_gate=true
+                  # Build tooling only: the image content, hence retrieval, is unchanged.
+                  api=true; updater=true
                   ;;
                 pyproject.toml|uv.lock)
                   # One lock serves every image: rebuild both and re-check recall.
@@ -116,20 +117,19 @@ jobs:
                   updater=true
                   ;;
                 docker-compose.prod.yml)
-                  # Production/staging API wiring changed: rebuild and verify
-                  # the API candidate before it can be promoted.
+                  # Wiring changed: redeploy the API so the new Compose
+                  # configuration applies. Retrieval code is unchanged, so the
+                  # paid recall gate is skipped.
                   api=true
                   vps_config=true
-                  recall_gate=true
                   ;;
                 docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh)
                   vps_config=true
                   ;;
                 .github/workflows/deploy-vps.yml)
-                  # Workflow changes must exercise the staging gate as well.
-                  api=true
+                  # Deployment plumbing only; run the gate by hand with
+                  # workflow_dispatch when the gate step itself changes.
                   vps_config=true
-                  recall_gate=true
                   ;;
               esac
             done <<<"${changed_files}"
@@ -321,8 +321,20 @@ jobs:
           "${compose[@]}" --profile staging up -d --no-deps staging-api
           "${compose[@]}" --profile staging exec -T staging-api \
             python -c 'import os; from interface.backend.golden_recall import load_golden_cases; print("Golden Dataset loaded: %s cases." % len(load_golden_cases(os.environ["GOLDEN_DATASET_URL"])))' < /dev/null
+          # Compare with the recall of the API currently deployed rather than a
+          # fixed threshold alone; the score is promoted once the API deploys.
+          baseline="$(cat .golden-recall-baseline 2>/dev/null || true)"
+          baseline_args=()
+          if [[ "${baseline}" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
+            printf 'Baseline recall of the deployed API: %s\n' "${baseline}"
+            baseline_args=(--baseline-recall "${baseline}")
+          fi
           "${compose[@]}" --profile staging exec -T staging-api \
-            python -m interface.backend.golden_recall < /dev/null
+            python -m interface.backend.golden_recall "${baseline_args[@]}" < /dev/null | tee .golden-recall-result.json
+          # Keyed by image tag so only this candidate's score can be promoted.
+          rm -f .golden-recall-candidate-*
+          python3 -c 'import json, sys; lines = [l for l in open(sys.argv[1]) if l.startswith("{")]; print(json.loads(lines[-1])["video_recall"] or "")' \
+            .golden-recall-result.json > ".golden-recall-candidate-$2"
           REMOTE
 
       - name: Deploy affected VPS services
@@ -351,6 +363,11 @@ jobs:
           set -euo pipefail
           cd "$1"
           bash deploy/deploy-vps.sh "$2" "$3"
+          # The gated candidate is now live: its recall becomes the baseline.
+          if [[ -s ".golden-recall-candidate-$3" ]]; then
+            mv ".golden-recall-candidate-$3" .golden-recall-baseline
+          fi
+          rm -f .golden-recall-candidate-*
           REMOTE
           fi
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'

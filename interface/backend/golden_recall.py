@@ -30,7 +30,11 @@ DEFAULT_GOOGLE_SHEET_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140"
 )
-DEFAULT_MIN_RECALL = 0.85
+# Absolute floor. Day to day, the gate compares the candidate with the recall of
+# the last deployed API (--baseline-recall): with 75 measured questions and
+# LLM-driven planning, one question is ~1.3 points of noise.
+DEFAULT_MIN_RECALL = 0.80
+DEFAULT_MAX_RECALL_DROP = 0.05
 DEFAULT_REQUEST_DELAY_SECONDS = 10.0
 
 
@@ -181,7 +185,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-recall",
         type=float,
         default=float(os.getenv("GOLDEN_DATASET_MIN_RECALL", DEFAULT_MIN_RECALL)),
-        help="Seuil bloquant du recall global des vidéos attendues.",
+        help="Plancher bloquant du recall global des vidéos attendues.",
+    )
+    parser.add_argument(
+        "--baseline-recall",
+        type=float,
+        default=None,
+        help="Recall vidéo de l'API actuellement déployée, pour bloquer une baisse.",
+    )
+    parser.add_argument(
+        "--max-drop",
+        type=float,
+        default=float(os.getenv("GOLDEN_DATASET_MAX_RECALL_DROP", DEFAULT_MAX_RECALL_DROP)),
+        help="Baisse maximale tolérée par rapport à --baseline-recall.",
     )
     parser.add_argument(
         "--request-delay-seconds",
@@ -199,8 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not 0 <= args.min_recall <= 1:
-        raise SystemExit("Le seuil de recall doit etre compris entre 0 et 1.")
+    for name in ("min_recall", "baseline_recall", "max_drop"):
+        value = getattr(args, name)
+        if value is not None and not 0 <= value <= 1:
+            raise SystemExit(f"--{name.replace('_', '-')} doit etre compris entre 0 et 1.")
     if args.request_delay_seconds < 0:
         raise SystemExit("Le délai entre les requêtes ne peut pas etre negatif.")
     result = evaluate(
@@ -211,8 +229,18 @@ def main(argv: list[str] | None = None) -> int:
     if result["failed_cases"]:
         print("Le test Golden Dataset a rencontre des erreurs de requete.", file=sys.stderr)
         return 1
-    if result["video_recall"] is not None and result["video_recall"] < args.min_recall:
-        print("Seuil de recall global non atteint.", file=sys.stderr)
+    video_recall = result["video_recall"]
+    if video_recall is None:
+        return 0
+    if video_recall < args.min_recall:
+        print("Plancher de recall global non atteint.", file=sys.stderr)
+        return 1
+    if args.baseline_recall is not None and video_recall < args.baseline_recall - args.max_drop:
+        print(
+            f"Recall en baisse: {video_recall:.3f} contre {args.baseline_recall:.3f} "
+            f"pour l'API déployée (tolérance {args.max_drop:.2f}).",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

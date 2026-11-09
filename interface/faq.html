@@ -1372,9 +1372,10 @@
               hidden
             >
               <p>
-                Le RAG tourne dans des conteneurs Docker sur un VPS. Une VM
-                avec GPU, éteinte le reste du temps, est disponible lorsqu’il
-                faut préparer de nouvelles vidéos pour le corpus. Les mises à
+                Le RAG tourne dans des conteneurs Docker sur un VPS, dans
+                <code>/srv/rag_ionis</code>. Les tâches qui demandent un GPU
+                pour préparer de nouvelles vidéos sont déportées sur Modal,
+                facturé à la seconde. Les mises à
                 jour sont déployées automatiquement par GitHub Actions à chaque
                 push sur <code>master</code> : selon les fichiers modifiés,
                 l’image Docker concernée est recréée puis déployée sur la
@@ -1449,17 +1450,30 @@
                     <p>
                       GitHub Actions détecte si le commit modifie des fichiers
                       qui affectent la recherche du RAG (backend, connaissances,
-                      dépendances, configuration de production). Si oui, le
+                      dépendances, <code>Dockerfile.api</code>). Si oui, le
                       recall doit être testé à nouveau avant de mettre à jour le
-                      système.
+                      système. Une modification d’infrastructure seule
+                      (Docker Compose, workflow) ne peut pas changer la
+                      recherche : le test, qui coûte environ 300&nbsp;appels
+                      LLM et 13&nbsp;minutes, est alors sauté.
                     </p>
                     <p>
                       La nouvelle image est d’abord lancée dans un conteneur de
                       test (staging), avec sa propre base qui reçoit une copie
                       du corpus, pour ne pas interférer avec le système en
-                      place. Le golden dataset y est rejoué : si le recall
-                      atteint 0,85, la mise à jour continue ; sinon, elle
-                      s’arrête et la production n’est pas touchée.
+                      place. Le golden dataset y est rejoué et le recall obtenu
+                      est comparé à celui de la version en production : s’il
+                      ne baisse pas de plus de 0,05 (et reste au-dessus de
+                      0,80), la mise à jour continue ; sinon, elle s’arrête et
+                      la production n’est pas touchée.
+                    </p>
+                    <p>
+                      Comparer à la version en place plutôt qu’à un seuil fixe
+                      tient compte du bruit : avec 75&nbsp;questions et un
+                      planificateur piloté par un LLM, une seule question qui
+                      change fait varier le recall d’environ 1,3&nbsp;point.
+                      Une fois la nouvelle API déployée, son recall devient la
+                      référence du déploiement suivant.
                     </p>
                   </li>
                   <li>
@@ -1695,16 +1709,16 @@
                       interface/backend/, interface/connaissances_*,
                     </text>
                     <text class="d-list" x="44" y="254">
-                      Dockerfile.api, docker-compose.prod.yml,
+                      Dockerfile.api
                     </text>
-                    <text class="d-list" x="44" y="269">
-                      workflow deploy-vps.yml
-                    </text>
-                    <text class="d-group" x="44" y="289">
+                    <text class="d-group" x="44" y="274">
                       API sans contrôle de recall :
                     </text>
+                    <text class="d-list" x="44" y="289">
+                      autres fichiers de interface/ (pages statiques),
+                    </text>
                     <text class="d-list" x="44" y="304">
-                      autres fichiers de interface/ (pages statiques)
+                      docker-compose.prod.yml
                     </text>
                     <text class="d-group" x="44" y="324">Updater :</text>
                     <text class="d-list" x="44" y="339">
@@ -1720,7 +1734,7 @@
                       Config seule, sans build :
                     </text>
                     <text class="d-list" x="44" y="409">
-                      docker-compose.yml,
+                      docker-compose.yml, ce workflow,
                     </text>
                     <text class="d-list" x="44" y="424">
                       docker/postgres/init/, deploy/deploy-vps.sh
@@ -1878,7 +1892,7 @@
                       Contrôle de recall sur le staging
                     </text>
                     <text class="d-sub" x="185" y="811">
-                      si le retrieval peut changer : ≥ 0,85 ?
+                      si le retrieval peut changer : baisse ≤ 0,05 ?
                     </text>
                     <rect
                       class="d-box"
@@ -1916,7 +1930,7 @@
                       rx="8"
                     />
                     <text class="d-title" x="264" y="875">
-                      Recall &lt; 0,85
+                      Recall en baisse
                     </text>
                     <text class="d-sub" x="264" y="893">
                       arrêt, prod inchangée

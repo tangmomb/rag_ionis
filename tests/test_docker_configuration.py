@@ -18,6 +18,9 @@ API_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.api"
 VPS_DOCKERFILE_PATH = ROOT_DIR / "Dockerfile.vps"
 PYPROJECT_PATH = ROOT_DIR / "pyproject.toml"
 VPS_DEPLOY_SCRIPT_PATH = ROOT_DIR / "deploy" / "deploy-vps.sh"
+SCHEDULED_UPDATE_SCRIPT_PATH = ROOT_DIR / "deploy" / "run-scheduled-update.sh"
+SYSTEMD_INSTALL_SCRIPT_PATH = ROOT_DIR / "deploy" / "install-systemd-timers.sh"
+SYSTEMD_DIR = ROOT_DIR / "deploy" / "systemd"
 VPS_WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "deploy-vps.yml"
 ANALYTICS_SQL_PATH = ROOT_DIR / "docker" / "postgres" / "init" / "002_analytics_readonly.sql"
 
@@ -129,6 +132,31 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("actionlint@sha256:", vps_workflow)
         self.assertIn("docker/build-push-action@v7", vps_workflow)
         self.assertIn("cache-from: type=registry", vps_workflow)
+
+    def test_scheduled_updates_use_ephemeral_locked_containers(self) -> None:
+        update_script = SCHEDULED_UPDATE_SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("flock 9", update_script)
+        self.assertIn("--profile jobs run --rm updater", update_script)
+        self.assertIn("pipeline.update_stats", update_script)
+        self.assertIn("pipeline.update_videos", update_script)
+        self.assertIn("3 * 24 * 60 * 60", update_script)
+
+    def test_systemd_timers_are_persistent_and_installed_by_deployment(self) -> None:
+        stats_timer = (SYSTEMD_DIR / "rag-ionis-stats.timer").read_text(encoding="utf-8")
+        videos_timer = (SYSTEMD_DIR / "rag-ionis-videos.timer").read_text(encoding="utf-8")
+        service = (SYSTEMD_DIR / "rag-ionis-update@.service").read_text(encoding="utf-8")
+        installer = SYSTEMD_INSTALL_SCRIPT_PATH.read_text(encoding="utf-8")
+        workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("Persistent=true", stats_timer)
+        self.assertIn("Unit=rag-ionis-update@stats.service", stats_timer)
+        self.assertIn("OnCalendar=Sun", videos_timer)
+        self.assertIn("Persistent=true", videos_timer)
+        self.assertIn("Unit=rag-ionis-update@videos.service", videos_timer)
+        self.assertIn("run-scheduled-update.sh %i", service)
+        self.assertIn("systemctl enable --now", installer)
+        self.assertIn("install-systemd-timers.sh", workflow)
 
     def test_vps_workflow_tests_candidate_before_deployment(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")

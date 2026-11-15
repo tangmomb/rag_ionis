@@ -18,6 +18,9 @@ on:
       - "docker/postgres/init/**"
       - "deploy/deploy-vps.sh"
       - "deploy/sync-vps-config.sh"
+      - "deploy/install-systemd-timers.sh"
+      - "deploy/run-scheduled-update.sh"
+      - "deploy/systemd/**"
       - "deploy/publish-image.sh"
       - "deploy/publish-images.sh"
       - "tests/test_command_builder.py"
@@ -123,7 +126,7 @@ jobs:
                   api=true
                   vps_config=true
                   ;;
-                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh)
+                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/systemd/*)
                   vps_config=true
                   ;;
                 .github/workflows/deploy-vps.yml)
@@ -179,7 +182,9 @@ jobs:
             deploy/publish-image.sh \
             deploy/publish-images.sh \
             deploy/deploy-vps.sh \
-            deploy/sync-vps-config.sh
+            deploy/sync-vps-config.sh \
+            deploy/install-systemd-timers.sh \
+            deploy/run-scheduled-update.sh
 
       - name: Validate production Compose rendering
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production.example config --quiet
@@ -268,14 +273,18 @@ jobs:
           remote="${VPS_USER}@${VPS_HOST}"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
           set -euo pipefail
-          mkdir -p "$1/deploy" "$1/docker/postgres"
+          mkdir -p "$1/deploy/systemd" "$1/docker/postgres"
           REMOTE
           scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
-          scp deploy/deploy-vps.sh deploy/sync-vps-config.sh "${remote}:${deploy_path}/deploy/"
+          scp deploy/deploy-vps.sh deploy/sync-vps-config.sh \
+            deploy/install-systemd-timers.sh deploy/run-scheduled-update.sh \
+            "${remote}:${deploy_path}/deploy/"
+          scp deploy/systemd/* "${remote}:${deploy_path}/deploy/systemd/"
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
           set -euo pipefail
           bash "$1/deploy/sync-vps-config.sh" "$1"
+          sudo -n bash "$1/deploy/install-systemd-timers.sh" "$1"
           REMOTE
 
       - name: Refresh staging corpus and verify candidate API recall

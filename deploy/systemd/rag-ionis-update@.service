@@ -1,0 +1,16 @@
+[Unit]
+Description=RAG IONIS scheduled %i update
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/rag_ionis/.env.production
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/rag_ionis
+ExecStart=/usr/bin/bash /srv/rag_ionis/deploy/run-scheduled-update.sh %i
+TimeoutStartSec=infinity
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

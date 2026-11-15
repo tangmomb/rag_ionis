@@ -1218,13 +1218,13 @@
             <div class="faq-answer" id="ajout-videos" role="tabpanel" hidden>
               <p>
                 Un appel à l’API YouTube est effectué une fois par semaine via
-                une tâche cron. La dernière liste de vidéos récupérée est
+                un timer systemd. La dernière liste de vidéos récupérée est
                 ensuite comparée à celles déjà présentes dans PostgreSQL. Les
                 vidéos déjà publiées sont ignorées. Pour chaque vidéo absente,
                 ses informations sont récupérées via l’API YouTube, puis elle
                 passe dans le pipeline de préparation. Chaque mise à jour
                 s’exécute dans un conteneur Docker éphémère sur le VPS, lancé
-                par la tâche cron puis supprimé une fois terminée. Ce conteneur
+                par le timer puis supprimé une fois terminé. Ce conteneur
                 léger contient le code de mise à jour et du pipeline ; il
                 interroge l’API YouTube et la base PostgreSQL, puis télécharge
                 et prépare les nouvelles vidéos.
@@ -1269,7 +1269,7 @@
                 Une fois tous les trois jours, la mise à jour des statistiques
                 interroge l'API YouTube pour chaque vidéo déjà enregistrée dans
                 PostgreSQL. Comme celle des vidéos, elle s'exécute dans un
-                conteneur Docker éphémère sur le VPS, lancé par une tâche cron
+                conteneur Docker éphémère sur le VPS, lancé par un timer systemd
                 puis supprimé une fois terminée. Chaque exécution écrit un
                 <strong>snapshot daté</strong> dans la table
                 <code>stats</code> : l'historique est ainsi conservé, même
@@ -1598,8 +1598,8 @@
                   </li>
                   <li>
                     <p>
-                      La nouvelle version est utilisée au prochain passage de
-                      la tâche cron : le VPS lance un conteneur éphémère avec
+                      La nouvelle version est utilisée au prochain passage du
+                      timer systemd : le VPS lance un conteneur éphémère avec
                       cette image, qui ajoute les nouvelles vidéos ou met à jour
                       les statistiques, envoie les tâches GPU à Modal si
                       besoin, puis est supprimé.

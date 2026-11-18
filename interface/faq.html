@@ -27,6 +27,7 @@
               >Mise à jour du contenu</a
             >
             <a class="suggested-question" href="#deploiement">Déploiement</a>
+            <a class="suggested-question" href="#maintenance">Maintenance</a>
             <a class="suggested-question" href="#problemes-rencontres"
               >Problèmes rencontrés</a
             >
@@ -2023,6 +2024,281 @@
                 />
                 <figcaption>GitHub · GitHub Actions</figcaption>
               </figure>
+            </div>
+          </div>
+        </section>
+
+        <section
+          class="faq-section"
+          id="maintenance"
+          aria-labelledby="maintenance-title"
+        >
+          <h2 id="maintenance-title">Maintenance</h2>
+          <div
+            class="faq-question-list"
+            role="tablist"
+            aria-label="Questions sur la maintenance"
+          >
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="maintenance-disponibilite"
+              data-faq-answer="maintenance-disponibilite"
+            >
+              Comment la disponibilité est-elle surveillée ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="maintenance-qualite"
+              data-faq-answer="maintenance-qualite"
+            >
+              Comment la qualité des réponses est-elle suivie en production ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="maintenance-protection"
+              data-faq-answer="maintenance-protection"
+            >
+              Comment le RAG est-il protégé contre les abus ?
+            </button>
+            <button
+              class="suggested-question"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="maintenance-incidents"
+              data-faq-answer="maintenance-incidents"
+            >
+              Que se passe-t-il en cas d’incident ?
+            </button>
+          </div>
+          <div class="faq-answers">
+            <div
+              class="faq-answer"
+              id="maintenance-disponibilite"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Le site et l’API sont testés toutes les 5 minutes
+                <strong>depuis l’extérieur du serveur</strong>, par GitHub
+                Actions avec Upptime : une panne du VPS lui-même est donc
+                détectée. Chaque panne ouvre une issue publique et envoie une
+                alerte ; la disponibilité et les temps de réponse sont publiés
+                sur une
+                <a
+                  href="https://tangmomb.github.io/status/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >page de statut publique</a
+                >.
+              </p>
+              <p>
+                Sur le VPS, Beszel suit le processeur, la mémoire, le disque et
+                chaque conteneur Docker. Il alerte quand le serveur ne répond
+                plus, quand une ressource reste saturée plusieurs minutes, et
+                quand le <strong>temps CPU volé</strong> augmente : sur un VPS
+                mutualisé, c’est le signe qu’un voisin monopolise la machine
+                physique, ce qui ralentit le RAG sans que sa propre charge
+                change.
+              </p>
+              <p>
+                Toutes les alertes arrivent sur Telegram : celles d’Upptime et
+                de Beszel, mais aussi l’échec d’une sauvegarde nocturne ou d’une
+                mise à jour du contenu. Dans ce cas, systemd lance un petit
+                script qui envoie le nom de la tâche et la fin de son journal ;
+                le token du bot reste sur le serveur, hors du dépôt.
+              </p>
+              <pre
+                class="faq-code"
+              ><code>[Unit]
+Description=RAG IONIS scheduled %i update
+# Un échec envoie une alerte Telegram
+OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
+            </div>
+            <div
+              class="faq-answer"
+              id="maintenance-qualite"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Un RAG peut rester disponible tout en se dégradant : un
+                fournisseur modifie son modèle, le corpus évolue, une réponse
+                invente un détail. La qualité est donc mesurée chaque jour, même
+                sans trafic.
+              </p>
+              <ol class="faq-flow">
+                <li>
+                  <p>
+                    <strong>Canari.</strong> Chaque matin, 10 questions du
+                    golden dataset passent par tout le pipeline, génération
+                    comprise ; la sélection tourne pour couvrir les 75 questions
+                    en une semaine. Leurs traces vont dans un projet Phoenix
+                    séparé et leurs conversations sont supprimées : ni les
+                    métriques ni l’historique de prod ne sont faussés.
+                  </p>
+                </li>
+                <li>
+                  <p>
+                    <strong>LLM juge.</strong> mistral-large, un modèle
+                    différent de celui qui répond, relit le message exact reçu
+                    par le modèle de réponse (question et sources) et note
+                    chaque réponse du canari et de la veille : fidélité aux
+                    sources et pertinence. Les notes et leur explication sont
+                    attachées à la trace dans Phoenix.
+                  </p>
+                </li>
+                <li>
+                  <p>
+                    <strong>Rapport.</strong> Volume, erreurs, latence p50 et
+                    p95, coût estimé face au budget, votes des utilisateurs et
+                    notes du juge partent sur Telegram, en rouge si un seuil est
+                    franchi. Le message arrive chaque matin : son absence est
+                    elle-même une alerte.
+                  </p>
+                </li>
+              </ol>
+              <p>
+                Le recall du golden dataset, déjà vérifié avant chaque
+                déploiement qui touche la recherche, est aussi remesuré
+                <strong>sur la prod</strong> le 1er et le 15 du mois, pour
+                repérer une dérive sans déploiement.
+              </p>
+              <aside class="faq-exception" aria-label="À noter">
+                <strong>À noter</strong>
+                <span>
+                  Les premiers essais du juge ont noté « non fidèles » des
+                  réponses pourtant exactes : les demandes de description ou de
+                  transcription renvoient un texte tiré de la base, sans appel
+                  au modèle de réponse, et le juge ne voyait donc aucune source.
+                  Il reçoit désormais les sources renvoyées avec la réponse.
+                </span>
+              </aside>
+            </div>
+            <div
+              class="faq-answer"
+              id="maintenance-protection"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Chaque question déclenche des appels payants (Mistral, Cohere).
+                Sans limite, un script pourrait vider le budget en quelques
+                minutes. Les routes qui appellent un LLM sont donc protégées
+                par trois compteurs, partagés entre les processus de l’API dans
+                PostgreSQL :
+              </p>
+              <ul>
+                <li>10 questions par minute et par visiteur, contre les rafales ;</li>
+                <li>50 questions par jour et par visiteur, contre l’usage abusif ;</li>
+                <li>
+                  un budget global de 2&nbsp;$ par jour, converti en environ
+                  300 questions à partir du coût moyen mesuré (0,0063&nbsp;$
+                  par question).
+                </li>
+              </ul>
+              <p>
+                Au-delà, l’API répond par un message clair et indique quand
+                réessayer. Les adresses IP ne sont stockées que hachées et les
+                compteurs sont purgés après deux jours. Si la base ne répond
+                pas, la protection laisse passer les questions plutôt que de
+                rendre le site indisponible.
+              </p>
+            </div>
+            <div
+              class="faq-answer"
+              id="maintenance-incidents"
+              role="tabpanel"
+              hidden
+            >
+              <p>
+                Chaque appel à l’API écrit une ligne de log JSON avec un
+                identifiant de requête, renvoyé au navigateur dans l’en-tête
+                <code>X-Request-ID</code> : une erreur signalée par un
+                utilisateur se retrouve directement dans les logs.
+              </p>
+              <p>
+                Une sauvegarde n’est prouvée que restaurée. Le 8 de chaque mois,
+                la dernière sauvegarde est donc restaurée dans une base
+                PostgreSQL jetable, son contenu comparé à la prod et la base
+                Phoenix vérifiée. La reprise complète prend 12 secondes.
+              </p>
+              <p>
+                Les objectifs de service sont chiffrés, chacun avec sa mesure
+                et son alerte :
+              </p>
+              <div
+                class="faq-benchmark-table"
+                role="region"
+                aria-label="Objectifs de service du RAG"
+                tabindex="0"
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Objectif</th>
+                      <th scope="col">Cible</th>
+                      <th scope="col">Mesuré par</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Disponibilité</td>
+                      <td>≥ 99&nbsp;% sur 30 jours</td>
+                      <td>Upptime</td>
+                    </tr>
+                    <tr>
+                      <td>Latence de la réponse</td>
+                      <td>p95 &lt; 10&nbsp;s</td>
+                      <td>Traces Phoenix</td>
+                    </tr>
+                    <tr>
+                      <td>Recall vidéo</td>
+                      <td>≥ 80&nbsp;%, baisse ≤ 5 points</td>
+                      <td>Golden dataset</td>
+                    </tr>
+                    <tr>
+                      <td>Fidélité des réponses</td>
+                      <td>≥ 80&nbsp;%</td>
+                      <td>LLM juge sur le canari</td>
+                    </tr>
+                    <tr>
+                      <td>Coût LLM</td>
+                      <td>≤ 2&nbsp;$ par jour</td>
+                      <td>Plafond de l’API</td>
+                    </tr>
+                    <tr>
+                      <td>Perte de données (RPO)</td>
+                      <td>≤ 24&nbsp;h</td>
+                      <td>Sauvegarde nocturne</td>
+                    </tr>
+                    <tr>
+                      <td>Restauration (RTO)</td>
+                      <td>&lt; 5&nbsp;min</td>
+                      <td>Test mensuel</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>
+                Pour chaque alerte, le
+                <a
+                  href="https://github.com/tangmomb/rag_ionis/blob/master/docs/exploitation.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >runbook</a
+                >
+                décrit ce qu’elle signifie, quoi vérifier et comment corriger.
+              </p>
             </div>
           </div>
         </section>

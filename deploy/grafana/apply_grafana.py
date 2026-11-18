@@ -420,7 +420,10 @@ def apply(grafana: Grafana, bot_token: str, chat_id: str) -> None:
     loki_uid, infinity_uid = pick_datasources(grafana.call("GET", "/api/datasources"))
     print(f"Loki : {loki_uid}")
 
-    if grafana.call("GET", f"/api/folders/{FOLDER_UID}", ok_missing=True) is None:
+    # La liste plutôt que GET /api/folders/<uid> : avec des droits par dossier,
+    # un dossier absent répond 403 et non 404.
+    folders = grafana.call("GET", "/api/folders") or []
+    if not any(folder.get("uid") == FOLDER_UID for folder in folders):
         grafana.call("POST", "/api/folders", {"uid": FOLDER_UID, "title": FOLDER_TITLE})
     print(f"Dossier : {FOLDER_TITLE}")
 

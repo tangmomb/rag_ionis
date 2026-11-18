@@ -2177,8 +2177,15 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                     différent de celui qui répond, relit le message exact reçu
                     par le modèle de réponse (question et sources) et note
                     chaque réponse du canari et de la veille : fidélité aux
-                    sources et pertinence. Les notes et leur explication sont
-                    attachées à la trace dans Phoenix.
+                    sources et pertinence. Pour chaque critère, il ne donne pas
+                    de note sur 100 mais choisit l’un de trois niveaux, chacun
+                    défini dans son prompt : fidèle, partiellement fidèle ou
+                    non fidèle (de même pour la pertinence), convertis en 1, 0,5
+                    et 0. Un LLM note mal sur une échelle fine ; trois niveaux
+                    définis sont bien plus stables d’une fois à l’autre. Les
+                    notes et leur explication sont attachées à la trace dans
+                    Phoenix, et la courbe de fidélité montre la moyenne des 10
+                    questions du canari.
                   </p>
                 </li>
                 <li>
@@ -2204,7 +2211,8 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 restauration, est enregistré dans une table
                 <code>monitoring.reports</code> de PostgreSQL, avec son statut,
                 ses chiffres et le message envoyé. Cet historique est
-                sauvegardé chaque nuit avec le reste de la base : on peut
+                sauvegardé chaque nuit avec le reste de la base, sur le
+                stockage objet Scaleway, hors du VPS : on peut
                 suivre l’évolution du recall et de la fidélité dans le temps.
               </p>
               <figure class="faq-quality-charts" data-quality-history>
@@ -2213,7 +2221,8 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                   <p class="quality-chart-legend">
                     <span class="quality-key quality-key-gate"></span>avant un
                     déploiement
-                    <span class="quality-key quality-key-prod"></span>en prod
+                    <span class="quality-key quality-key-prod"></span>mesure en prod
+                    (1er et 15 du mois)
                     <span class="quality-key quality-key-threshold"></span>seuil
                   </p>
                   <div class="quality-chart-plot">
@@ -3337,7 +3346,7 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
               value: point.video_recall,
               hollow: point.kind === "recall_gate",
               details: [
-                point.kind === "recall_gate" ? "Avant un déploiement" : "Mesure en prod",
+                point.kind === "recall_gate" ? "Avant un déploiement" : "Mesure en prod (1er et 15 du mois)",
                 ...(point.commit ? [`commit ${point.commit}`] : []),
               ],
             }));

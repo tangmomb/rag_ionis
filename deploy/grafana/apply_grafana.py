@@ -268,7 +268,7 @@ LINKS_MARKDOWN = f"""\
 - [Page de statut (Upptime)](https://tangmomb.github.io/status/) — disponibilité vue de l'extérieur
 - [Beszel](https://monitor.tanguym.fr) — CPU, RAM, disque du VPS
 - [Healthchecks](https://healthchecks.io/projects/) — tâches planifiées (sauvegarde, rapports, restauration)
-- Phoenix — `ssh -L 6006:127.0.0.1:6006 contabo` puis <http://localhost:6006>
+- [Phoenix](http://contabo:6006) — réseau privé Tailscale (secours : `ssh -L 6006:127.0.0.1:6006 contabo`)
 - Retrouver une requête : `{{app="rag-ionis", service="api"}} | request_id=~"<référence>.*"`
 """
 

@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from interface import rate_limit
+from interface.backend.request_context import current_request_id
 from interface.monitoring.history import router as monitoring_history_router
 from interface.request_logging import configure_json_logging, should_log
 from interface.backend.api import execute_rag, router
@@ -41,6 +42,8 @@ request_logger = configure_json_logging()
 async def protect_and_log(request: Request, call_next):
     """Rate-limit paid routes and write one JSON log line per API call."""
     request_id = request.headers.get("x-request-id", "")[:64] or uuid4().hex
+    # Read by run_rag to tie this call to its Phoenix trace.
+    current_request_id.set(request_id)
     started_at = perf_counter()
     path = request.url.path
     client_ip = request.client.host if request.client else None

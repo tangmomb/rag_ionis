@@ -48,15 +48,20 @@ install -d -m 0755 /var/lib/rag-ionis-updater /var/lib/rag-ionis-monitoring
 
 # Alertes Telegram en cas d'échec. Le token reste dans /etc/rag-ionis/telegram.env,
 # créé à la main sur le VPS ; sans ce fichier, l'alerte est seulement journalisée.
-for script in rag-ionis-telegram.sh rag-ionis-notify-failure.sh; do
+# Pings healthchecks.io : la clé reste dans /etc/rag-ionis/healthchecks.env, créé à
+# la main ; sans ce fichier, les pings sont seulement journalisés.
+for script in rag-ionis-telegram.sh rag-ionis-notify-failure.sh rag-ionis-healthcheck.sh; do
   install -m 0755 "${unit_source_dir}/${script}" "/usr/local/bin/${script}"
 done
 install -d -m 0700 /etc/rag-ionis
-# La sauvegarde nocturne est installée hors de ce dépôt : on lui ajoute seulement l'alerte.
+# La sauvegarde nocturne est installée hors de ce dépôt : on lui ajoute seulement
+# l'alerte et les pings healthchecks (service oneshot, comme les autres tâches).
 if [[ -f /etc/systemd/system/rag-ionis-backup.service ]]; then
   install -d -m 0755 /etc/systemd/system/rag-ionis-backup.service.d
   printf '[Unit]\nOnFailure=rag-ionis-notify-failure@%%n.service\n' \
     > /etc/systemd/system/rag-ionis-backup.service.d/notify-failure.conf
+  printf '[Service]\nExecStartPre=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n start\nExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n success\n' \
+    > /etc/systemd/system/rag-ionis-backup.service.d/healthcheck.conf
 fi
 
 # A persistent timer otherwise considers its first, already elapsed calendar

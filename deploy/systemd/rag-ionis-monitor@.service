@@ -10,7 +10,11 @@ OnFailure=rag-ionis-notify-failure@%n.service
 [Service]
 Type=oneshot
 WorkingDirectory=/srv/rag_ionis
+# Pings healthchecks.io : une tâche qui ne tourne plus déclenche une alerte.
+# L'échec est signalé par rag-ionis-notify-failure.sh.
+ExecStartPre=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n start
 ExecStart=/usr/bin/bash /srv/rag_ionis/deploy/run-monitoring.sh %i
+ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success
 # Le recall interroge 75 questions espacées de 10 s.
 TimeoutStartSec=2h
 Nice=10

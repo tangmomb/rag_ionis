@@ -2030,12 +2030,31 @@
                 script qui envoie le nom de la tâche et la fin de son journal ;
                 le token du bot reste sur le serveur, hors du dépôt.
               </p>
+              <p>
+                Une tâche qui ne se lance plus du tout n’échoue pas : elle
+                reste silencieuse. C’est le cas d’un timer désactivé, d’un
+                serveur éteint à l’heure prévue ou d’un bot Telegram cassé. Chaque tâche planifiée signale
+                donc son début et sa fin à
+                <a
+                  href="https://healthchecks.io"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >healthchecks.io</a
+                >, qui connaît son horaire. Si le signal de fin n’arrive pas
+                dans le délai prévu, c’est healthchecks qui alerte, par son propre
+                canal, indépendamment du serveur.
+              </p>
               <pre
                 class="faq-code"
               ><code>[Unit]
 Description=RAG IONIS scheduled %i update
 # Un échec envoie une alerte Telegram
-OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
+OnFailure=rag-ionis-notify-failure@%n.service
+
+[Service]
+# Début et fin signalés à healthchecks : une tâche absente déclenche une alerte
+ExecStartPre=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n start
+ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success</code></pre>
             </article>
             <article class="faq-answer" id="maintenance-qualite" aria-labelledby="maintenance-qualite-question">
               <h3 class="faq-article-title" id="maintenance-qualite-question" tabindex="-1">Comment la qualité des réponses est-elle suivie en production ?</h3>
@@ -2087,8 +2106,8 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                     trafic de la veille (volume, erreurs, latence p50 et p95,
                     coût estimé face au budget, votes des utilisateurs, notes du
                     juge) et le résultat du canari du matin. Il part sur
-                    Telegram, en rouge si un seuil est franchi. Le message
-                    arrive chaque matin : son absence est elle-même une alerte.
+                    Telegram, en rouge si un seuil est franchi. S’il n’est pas
+                    arrivé à 7 h 15, healthchecks envoie une alerte.
                   </p>
                 </li>
               </ol>
@@ -2220,7 +2239,8 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                   <p>
                     <strong>Contrôle et rotation.</strong> Un fichier vide ou
                     presque fait échouer la sauvegarde, ce qui déclenche une
-                    alerte Telegram. Les sauvegardes de plus de 30 jours sont
+                    alerte Telegram ; une sauvegarde qui ne se lance pas est
+                    signalée par healthchecks. Les sauvegardes de plus de 30 jours sont
                     supprimées.
                   </p>
                 </li>
@@ -2269,6 +2289,41 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                 le détail de chaque étape du pipeline, et inversement.
               </p>
               <p>
+                Ces logs ne servent pas qu’à enquêter : Grafana les interroge
+                toutes les 5 minutes et alerte sur Telegram dès qu’un problème
+                apparaît, sans attendre le rapport du lendemain matin :
+              </p>
+              <ul>
+                <li>au moins 3 réponses en erreur serveur (5xx) en 15 minutes ;</li>
+                <li>au moins 2 questions en échec en 30 minutes ;</li>
+                <li>
+                  une latence p95 de la réponse au-dessus de 10&nbsp;s sur 3
+                  heures ;
+                </li>
+                <li>
+                  plus de 20 questions refusées par les limites en une heure,
+                  signe d’un robot ou d’un budget épuisé ;
+                </li>
+                <li>
+                  aucun log reçu depuis 26 heures, signe que l’agent qui les
+                  envoie est arrêté.
+                </li>
+              </ul>
+              <p>
+                Ces seuils servent à détecter une panne réelle, pas un ralentissement
+                isolé. Quand une alerte arrive, un tableau de bord Grafana réunit
+                au même endroit le trafic, les erreurs, la latence, les courbes de
+                recall et de fidélité et les dernières erreurs des logs : on voit
+                en quelques secondes si le problème est grave, avant d’ouvrir la
+                trace Phoenix concernée. Les règles d’alerte et le tableau de bord
+                sont créés par un script du dépôt, et non à la main dans
+                l’interface : ils se recréent à l’identique.
+              </p>
+              <p>
+                Au quotidien, il n’y a donc rien à surveiller soi-même : tant
+                qu’aucun message n’arrive sur Telegram, tout fonctionne.
+              </p>
+              <p>
                 Par ailleurs, les objectifs de service sont chiffrés, chacun avec sa mesure
                 et son alerte :
               </p>
@@ -2295,7 +2350,7 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                     <tr>
                       <td>Latence de la réponse</td>
                       <td>p95 &lt; 10&nbsp;s</td>
-                      <td>Traces Phoenix</td>
+                      <td>Traces Phoenix, logs Grafana</td>
                     </tr>
                     <tr>
                       <td>Recall vidéo</td>

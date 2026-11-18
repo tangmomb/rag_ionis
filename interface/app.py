@@ -6,11 +6,17 @@ import re
 from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI
+from time import perf_counter
+from uuid import uuid4
+
+from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from interface import rate_limit
+from interface.request_logging import configure_json_logging, should_log
 from interface.backend.api import execute_rag, router
 from interface.backend.config import INTERFACE_DIR
 from interface.backend.database import ensure_chat_schema
@@ -27,6 +33,56 @@ _STARTED_AT: datetime | None = None
 _TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 app = FastAPI(title="RAG IONIS API")
+request_logger = configure_json_logging()
+
+
+@app.middleware("http")
+async def protect_and_log(request: Request, call_next):
+    """Rate-limit paid routes and write one JSON log line per API call."""
+    request_id = request.headers.get("x-request-id", "")[:64] or uuid4().hex
+    started_at = perf_counter()
+    path = request.url.path
+    client_ip = request.client.host if request.client else None
+    rejection = None
+    if (
+        request.method == "POST"
+        and rate_limit.PAID_PATH_PATTERN.match(path)
+        and rate_limit.enabled()
+    ):
+        rejection = await run_in_threadpool(rate_limit.check_request, client_ip)
+    if rejection is not None:
+        response = JSONResponse(
+            {"detail": rejection.detail},
+            status_code=rejection.status_code,
+            headers={"Retry-After": str(rejection.retry_after_seconds)},
+        )
+    else:
+        try:
+            response = await call_next(request)
+        except Exception:
+            request_logger.exception(
+                "http_request_failed",
+                extra={"method": request.method, "path": path, "request_id": request_id},
+            )
+            raise
+    response.headers["X-Request-ID"] = request_id
+    if should_log(path):
+        request_logger.info(
+            "http_request",
+            extra={
+                "method": request.method,
+                "path": path,
+                "status": response.status_code,
+                # Streaming answers: time until the response starts, not until it ends.
+                "duration_ms": round((perf_counter() - started_at) * 1_000),
+                "client": rate_limit.hashed_client(client_ip)[:12],
+                "request_id": request_id,
+                "rate_limited": rejection is not None,
+            },
+        )
+    return response
+
+
 public_origins = [
     origin.strip().rstrip("/")
     for origin in os.getenv("PUBLIC_ORIGINS", "").split(",")

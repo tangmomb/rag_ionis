@@ -473,7 +473,13 @@
             body: JSON.stringify(payload),
           });
           if (!response.ok) {
-            throw new Error(await response.text() || "Erreur backend inconnue");
+            // Limits and errors come back as {"detail": "..."}: show the sentence, not the JSON.
+            const body = await response.text();
+            let detail = body;
+            try {
+              detail = JSON.parse(body).detail || body;
+            } catch (_error) {}
+            throw new Error(detail || "Erreur backend inconnue");
           }
           if (!response.body) throw new Error("Le navigateur ne supporte pas le streaming.");
 

@@ -2,13 +2,14 @@
 # Tâches de surveillance de la qualité, lancées par rag-ionis-monitor@.service :
 #   quality : canari, LLM juge et rapport de la veille (chaque matin)
 #   recall  : recall du golden dataset sur la prod (le 1er et le 15 du mois)
+#   restore : restauration de la dernière sauvegarde dans une base jetable (le 8 du mois)
 # Chaque tâche tourne dans un conteneur ponctuel de l'image de l'API et envoie son
 # résultat sur Telegram. Un crash (aucun résultat) fait échouer le service, ce qui
 # déclenche l'alerte OnFailure.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  printf 'Usage: %s <quality|recall>\n' "$0" >&2
+  printf 'Usage: %s <quality|recall|restore>\n' "$0" >&2
   exit 2
 fi
 
@@ -108,8 +109,104 @@ if not ok:
 print("\n".join(lines))
 ' "${status}" "${baseline}" | /usr/bin/bash "${telegram}"
     ;;
+  restore)
+    # Restaure la dernière sauvegarde S3 dans un PostgreSQL jetable, compare son
+    # contenu à la prod et vérifie la base Phoenix : une sauvegarde n'est prouvée
+    # que restaurée. Mesure aussi la durée de reprise (RTO).
+    set -a
+    # shellcheck disable=SC1090
+    . "${env_file}"
+    set +a
+    export RCLONE_CONFIG=/dev/null RCLONE_CONFIG_SCW_TYPE=s3 RCLONE_CONFIG_SCW_PROVIDER=Scaleway \
+      RCLONE_CONFIG_SCW_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID}" \
+      RCLONE_CONFIG_SCW_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY}" \
+      RCLONE_CONFIG_SCW_REGION="${S3_REGION}" RCLONE_CONFIG_SCW_ENDPOINT="${S3_ENDPOINT_URL}" \
+      RCLONE_CONFIG_SCW_NO_CHECK_BUCKET=true
+    prefix="scw:${S3_BUCKET_NAME}/backups/rag_ionis"
+    latest="$(rclone lsf --dirs-only "${prefix}" | sort | tail -1)"
+    latest="${latest%/}"
+    [[ -n "${latest}" ]] || { printf 'No backup found under %s\n' "${prefix}" >&2; exit 1; }
+
+    container="rag-ionis-restore-test"
+    workdir="$(mktemp -d)"
+    cleanup() { docker rm -f "${container}" >/dev/null 2>&1 || true; rm -rf "${workdir}"; }
+    trap cleanup EXIT
+    restore_test_started=$SECONDS
+    docker rm -f "${container}" >/dev/null 2>&1 || true
+    # Même image que la prod, mémoire plafonnée : le VPS est partagé.
+    docker run -d --name "${container}" --memory 512m --memory-swap 512m \
+      -e POSTGRES_PASSWORD=restore-test -e POSTGRES_DB=restore \
+      pgvector/pgvector:0.8.2-pg16 >/dev/null
+    for _ in $(seq 60); do
+      docker exec "${container}" pg_isready -h 127.0.0.1 -U postgres -d restore >/dev/null 2>&1 && break
+      sleep 1
+    done
+    rclone copyto "${prefix}/${latest}/postgres.dump" "${workdir}/postgres.dump"
+    rclone copyto "${prefix}/${latest}/phoenix.db" "${workdir}/phoenix.db"
+    restore_started=$SECONDS
+    # Sans propriétaires ni droits : les rôles de la prod n'existent pas ici.
+    set +e
+    docker exec -i "${container}" pg_restore --no-owner --no-privileges --exit-on-error \
+      -U postgres -d restore <"${workdir}/postgres.dump"
+    restore_status=$?
+    set -e
+    restore_seconds=$((SECONDS - restore_started))
+
+    count_sql="SELECT (SELECT count(*) FROM data.videos) || ' ' || (SELECT count(*) FROM data.chunks) || ' ' || (SELECT count(*) FROM data.transcripts) || ' ' || (SELECT count(*) FROM chat.messages)"
+    restored_counts="$(docker exec "${container}" psql -At -U postgres -d restore -c "${count_sql}" 2>/dev/null || true)"
+    prod_counts="$("${compose[@]}" exec -T postgres sh -c 'psql -At -U "$POSTGRES_USER" "$POSTGRES_DB" -c "$1"' sh "${count_sql}" </dev/null)"
+    phoenix_check="$(python3 - "${workdir}/phoenix.db" <<'PY'
+import sqlite3, sys
+try:
+    connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+    integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    spans = connection.execute("SELECT count(*) FROM spans").fetchone()[0]
+    print(f"{integrity} {spans}")
+except Exception as exc:
+    print(f"error {type(exc).__name__}")
+PY
+)"
+    total_seconds=$((SECONDS - restore_test_started))
+
+    python3 - "${latest}" "${restore_status}" "${restored_counts}" "${prod_counts}" \
+      "${phoenix_check}" "${restore_seconds}" "${total_seconds}" <<'PY' | /usr/bin/bash "${telegram}"
+import sys
+from datetime import datetime, timezone
+
+stamp, status, restored, prod, phoenix, restore_s, total_s = sys.argv[1:8]
+names = ("vidéos", "chunks", "transcriptions", "messages")
+restored_values = [int(v) for v in restored.split()] if len(restored.split()) == 4 else []
+prod_values = [int(v) for v in prod.split()]
+phoenix_ok = phoenix.split()[0] == "ok"
+problems = []
+if status != "0":
+    problems.append(f"pg_restore a échoué (code {status})")
+if not restored_values:
+    problems.append("tables introuvables après restauration")
+else:
+    # The backup is from the night: allow content added since, not missing content.
+    for name, saved, live in zip(names[:3], restored_values, prod_values):
+        if saved == 0 or saved < 0.9 * live:
+            problems.append(f"{name} : {saved} restaurés pour {live} en prod")
+if not phoenix_ok:
+    problems.append(f"base Phoenix invalide ({phoenix})")
+age_h = (datetime.now(timezone.utc) - datetime.strptime(stamp, "%Y-%m-%dT%H%MZ").replace(tzinfo=timezone.utc)).total_seconds() / 3600
+if age_h > 36:
+    problems.append(f"dernière sauvegarde vieille de {age_h:.0f} h")
+lines = [
+    ("🔴" if problems else "🟢") + " Test de restauration RAG IONIS",
+    f"Sauvegarde {stamp} (il y a {age_h:.0f} h)",
+]
+if restored_values:
+    lines.append(", ".join(f"{v} {n}" for n, v in zip(names, restored_values)))
+lines.append(f"Phoenix : {phoenix.split()[1] if phoenix_ok else '—'} spans, intégrité {phoenix.split()[0]}")
+lines.append(f"Restauration Postgres : {restore_s} s · reprise complète : {total_s} s")
+lines += problems
+print("\n".join(lines))
+PY
+    ;;
   *)
-    printf 'Unknown monitoring task: %s (expected quality or recall)\n' "${task}" >&2
+    printf 'Unknown monitoring task: %s (expected quality, recall or restore)\n' "${task}" >&2
     exit 2
     ;;
 esac

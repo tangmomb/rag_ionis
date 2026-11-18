@@ -26,12 +26,14 @@ units=(
   rag-ionis-videos.timer
   rag-ionis-quality.timer
   rag-ionis-recall.timer
+  rag-ionis-restore.timer
 )
 timers=(
   rag-ionis-stats.timer
   rag-ionis-videos.timer
   rag-ionis-quality.timer
   rag-ionis-recall.timer
+  rag-ionis-restore.timer
 )
 
 for unit in "${units[@]}"; do

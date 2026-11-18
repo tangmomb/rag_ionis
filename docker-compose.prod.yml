@@ -53,6 +53,14 @@ services:
       GOLDEN_DATASET_URL: ${GOLDEN_DATASET_URL:-https://docs.google.com/spreadsheets/d/1JtLiCc_nJ7mhCmA_AOgGuRQ0Eu4OFvT07KFsCWhu2DM/edit?gid=1961057140}
       GOLDEN_DATASET_MIN_RECALL: ${GOLDEN_DATASET_MIN_RECALL:-0.80}
       GOLDEN_DATASET_MAX_RECALL_DROP: ${GOLDEN_DATASET_MAX_RECALL_DROP:-0.05}
+      # Limites des routes payantes (interface/rate_limit.py, docs/exploitation.md).
+      RAG_RATE_LIMIT_PER_MINUTE: ${RAG_RATE_LIMIT_PER_MINUTE:-10}
+      RAG_RATE_LIMIT_PER_DAY: ${RAG_RATE_LIMIT_PER_DAY:-50}
+      RAG_DAILY_BUDGET_USD: ${RAG_DAILY_BUDGET_USD:-2}
+      RAG_COST_PER_QUESTION_USD: ${RAG_COST_PER_QUESTION_USD:-0.0065}
+      RAG_RATE_LIMIT_SALT: ${RAG_RATE_LIMIT_SALT:-rag-ionis}
+      QUALITY_DAILY_BUDGET_USD: ${QUALITY_DAILY_BUDGET_USD:-1}
+      QUALITY_MIN_FAITHFULNESS: ${QUALITY_MIN_FAITHFULNESS:-0.8}
     # Seul le Caddy de l'hote (systemd, partage avec les autres sites du VPS) y accede.
     ports:
       - "127.0.0.1:8006:8006"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore the latest RAG IONIS backup into a throwaway database monthly
+
+[Timer]
+# Après la sauvegarde nocturne de 03:30.
+OnCalendar=*-*-08 05:00:00 Europe/Paris
+Persistent=true
+AccuracySec=1min
+Unit=rag-ionis-monitor@restore.service
+
+[Install]
+WantedBy=timers.target

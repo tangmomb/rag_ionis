@@ -194,7 +194,12 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("PHOENIX_PROJECT_NAME=rag-ionis-canary", runner)
         self.assertIn("PHOENIX_ENABLED=false", runner)
         self.assertIn("run --rm --no-deps", runner)
-        for timer in ("rag-ionis-quality.timer", "rag-ionis-recall.timer"):
+        restore_timer = (SYSTEMD_DIR / "rag-ionis-restore.timer").read_text(encoding="utf-8")
+        self.assertIn("Unit=rag-ionis-monitor@restore.service", restore_timer)
+        # The restore test never touches the production database.
+        self.assertIn("rag-ionis-restore-test", runner)
+        self.assertIn("pg_restore --no-owner --no-privileges", runner)
+        for timer in ("rag-ionis-quality.timer", "rag-ionis-recall.timer", "rag-ionis-restore.timer"):
             self.assertIn(timer, installer)
         self.assertIn("rag-ionis-monitor@.service", installer)
         self.assertGreaterEqual(workflow.count("deploy/run-monitoring.sh"), 4)

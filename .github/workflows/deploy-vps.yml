@@ -20,6 +20,7 @@ on:
       - "deploy/sync-vps-config.sh"
       - "deploy/install-systemd-timers.sh"
       - "deploy/run-scheduled-update.sh"
+      - "deploy/run-monitoring.sh"
       - "deploy/systemd/**"
       - "deploy/publish-image.sh"
       - "deploy/publish-images.sh"
@@ -126,7 +127,7 @@ jobs:
                   api=true
                   vps_config=true
                   ;;
-                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/systemd/*)
+                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/run-monitoring.sh|deploy/systemd/*)
                   vps_config=true
                   ;;
                 .github/workflows/deploy-vps.yml)
@@ -184,7 +185,10 @@ jobs:
             deploy/deploy-vps.sh \
             deploy/sync-vps-config.sh \
             deploy/install-systemd-timers.sh \
-            deploy/run-scheduled-update.sh
+            deploy/run-scheduled-update.sh \
+            deploy/run-monitoring.sh \
+            deploy/systemd/rag-ionis-telegram.sh \
+            deploy/systemd/rag-ionis-notify-failure.sh
 
       - name: Validate production Compose rendering
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production.example config --quiet
@@ -278,6 +282,7 @@ jobs:
           scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
           scp deploy/deploy-vps.sh deploy/sync-vps-config.sh \
             deploy/install-systemd-timers.sh deploy/run-scheduled-update.sh \
+            deploy/run-monitoring.sh \
             "${remote}:${deploy_path}/deploy/"
           scp deploy/systemd/* "${remote}:${deploy_path}/deploy/systemd/"
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"

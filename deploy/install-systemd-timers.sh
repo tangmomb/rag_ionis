@@ -21,8 +21,17 @@ unit_source_dir="${deployment_dir}/deploy/systemd"
 units=(
   rag-ionis-update@.service
   rag-ionis-notify-failure@.service
+  rag-ionis-monitor@.service
   rag-ionis-stats.timer
   rag-ionis-videos.timer
+  rag-ionis-quality.timer
+  rag-ionis-recall.timer
+)
+timers=(
+  rag-ionis-stats.timer
+  rag-ionis-videos.timer
+  rag-ionis-quality.timer
+  rag-ionis-recall.timer
 )
 
 for unit in "${units[@]}"; do
@@ -33,11 +42,13 @@ for unit in "${units[@]}"; do
   install -m 0644 "${unit_source_dir}/${unit}" "/etc/systemd/system/${unit}"
 done
 
-install -d -m 0755 /var/lib/rag-ionis-updater
+install -d -m 0755 /var/lib/rag-ionis-updater /var/lib/rag-ionis-monitoring
 
 # Alertes Telegram en cas d'échec. Le token reste dans /etc/rag-ionis/telegram.env,
 # créé à la main sur le VPS ; sans ce fichier, l'alerte est seulement journalisée.
-install -m 0755 "${unit_source_dir}/rag-ionis-notify-failure.sh" /usr/local/bin/rag-ionis-notify-failure.sh
+for script in rag-ionis-telegram.sh rag-ionis-notify-failure.sh; do
+  install -m 0755 "${unit_source_dir}/${script}" "/usr/local/bin/${script}"
+done
 install -d -m 0700 /etc/rag-ionis
 # La sauvegarde nocturne est installée hors de ce dépôt : on lui ajoute seulement l'alerte.
 if [[ -f /etc/systemd/system/rag-ionis-backup.service ]]; then
@@ -50,17 +61,17 @@ fi
 # event missed and can run immediately during deployment. Seed only new timers;
 # existing timer state is kept so genuine downtime is still caught up.
 install -d -m 0755 /var/lib/systemd/timers
-for timer in rag-ionis-stats.timer rag-ionis-videos.timer; do
+for timer in "${timers[@]}"; do
   stamp="/var/lib/systemd/timers/stamp-${timer}"
   [[ -e "${stamp}" ]] || touch "${stamp}"
 done
 
 systemctl daemon-reload
-systemd-analyze verify \
-  /etc/systemd/system/rag-ionis-update@.service \
-  /etc/systemd/system/rag-ionis-notify-failure@.service \
-  /etc/systemd/system/rag-ionis-stats.timer \
-  /etc/systemd/system/rag-ionis-videos.timer
-systemctl enable --now rag-ionis-stats.timer rag-ionis-videos.timer
+installed_units=()
+for unit in "${units[@]}"; do
+  installed_units+=("/etc/systemd/system/${unit}")
+done
+systemd-analyze verify "${installed_units[@]}"
+systemctl enable --now "${timers[@]}"
 
-printf 'RAG IONIS update timers installed and enabled.\n'
+printf 'RAG IONIS update and monitoring timers installed and enabled.\n'

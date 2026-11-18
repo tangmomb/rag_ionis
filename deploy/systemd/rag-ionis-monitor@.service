@@ -1,0 +1,16 @@
+[Unit]
+Description=RAG IONIS monitoring task %i
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/rag_ionis/.env.production
+# Un crash de la tâche envoie une alerte Telegram.
+OnFailure=rag-ionis-notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/rag_ionis
+ExecStart=/usr/bin/bash /srv/rag_ionis/deploy/run-monitoring.sh %i
+# Le recall interroge 75 questions espacées de 10 s.
+TimeoutStartSec=2h
+Nice=10

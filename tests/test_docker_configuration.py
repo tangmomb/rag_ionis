@@ -162,15 +162,42 @@ class VpsConfigurationTests(unittest.TestCase):
         service = (SYSTEMD_DIR / "rag-ionis-update@.service").read_text(encoding="utf-8")
         notify_unit = (SYSTEMD_DIR / "rag-ionis-notify-failure@.service").read_text(encoding="utf-8")
         notify_script = (SYSTEMD_DIR / "rag-ionis-notify-failure.sh").read_text(encoding="utf-8")
+        telegram_script = (SYSTEMD_DIR / "rag-ionis-telegram.sh").read_text(encoding="utf-8")
         installer = SYSTEMD_INSTALL_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertIn("OnFailure=rag-ionis-notify-failure@%n.service", service)
         self.assertIn("rag-ionis-notify-failure.sh %i", notify_unit)
+        self.assertIn("rag-ionis-telegram.sh", notify_script)
         # Le token ne doit jamais apparaître sur la ligne de commande (ps).
-        self.assertIn("--config -", notify_script)
-        self.assertIn("/etc/rag-ionis/telegram.env", notify_script)
+        self.assertIn("--config -", telegram_script)
+        self.assertIn("/etc/rag-ionis/telegram.env", telegram_script)
         self.assertIn("rag-ionis-notify-failure@.service", installer)
+        self.assertIn("rag-ionis-telegram.sh", installer)
         self.assertIn("rag-ionis-backup.service.d/notify-failure.conf", installer)
+
+    def test_quality_monitoring_is_scheduled_and_deployed(self) -> None:
+        monitor_unit = (SYSTEMD_DIR / "rag-ionis-monitor@.service").read_text(encoding="utf-8")
+        quality_timer = (SYSTEMD_DIR / "rag-ionis-quality.timer").read_text(encoding="utf-8")
+        recall_timer = (SYSTEMD_DIR / "rag-ionis-recall.timer").read_text(encoding="utf-8")
+        runner = (ROOT_DIR / "deploy" / "run-monitoring.sh").read_text(encoding="utf-8")
+        installer = SYSTEMD_INSTALL_SCRIPT_PATH.read_text(encoding="utf-8")
+        workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("OnFailure=rag-ionis-notify-failure@%n.service", monitor_unit)
+        self.assertIn("run-monitoring.sh %i", monitor_unit)
+        self.assertIn("Unit=rag-ionis-monitor@quality.service", quality_timer)
+        self.assertIn("Persistent=true", quality_timer)
+        self.assertIn("OnCalendar=*-*-01,15", recall_timer)
+        self.assertIn("Unit=rag-ionis-monitor@recall.service", recall_timer)
+        # The canary must never trace into the production Phoenix project, and
+        # the recall measurement must not trace at all.
+        self.assertIn("PHOENIX_PROJECT_NAME=rag-ionis-canary", runner)
+        self.assertIn("PHOENIX_ENABLED=false", runner)
+        self.assertIn("run --rm --no-deps", runner)
+        for timer in ("rag-ionis-quality.timer", "rag-ionis-recall.timer"):
+            self.assertIn(timer, installer)
+        self.assertIn("rag-ionis-monitor@.service", installer)
+        self.assertGreaterEqual(workflow.count("deploy/run-monitoring.sh"), 4)
 
     def test_vps_workflow_tests_candidate_before_deployment(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")

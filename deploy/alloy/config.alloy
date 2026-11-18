@@ -1,0 +1,113 @@
+// Grafana Alloy : envoie les logs du RAG vers Loki (Grafana Cloud).
+// - conteneurs Docker du projet rag_ionis (API, PostgreSQL, Phoenix, staging…) ;
+// - tâches systemd rag-ionis-* (sauvegarde, rapports qualité, mises à jour).
+// Les lignes JSON de l'API deviennent des champs interrogeables en LogQL :
+//   {app="rag-ionis", service="api"} | json | status >= 500
+// Une question produit deux lignes de même request_id : http_request (route,
+// statut, durée) et rag_answered / rag_failed (trace_id Phoenix, conversation).
+// Identifiants : GCLOUD_HOSTED_LOGS_URL / _ID et GCLOUD_RW_API_KEY dans .env.production.
+
+discovery.docker "rag_ionis" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=rag_ionis"]
+  }
+}
+
+discovery.relabel "rag_ionis" {
+  targets = discovery.docker.rag_ionis.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "rag_ionis" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.relabel.rag_ionis.output
+  labels        = {app = "rag-ionis", source = "docker"}
+  relabel_rules = discovery.relabel.rag_ionis.rules
+  forward_to    = [loki.process.api_json.receiver]
+}
+
+// Les lignes JSON de l'API : le niveau devient un label (peu de valeurs possibles),
+// la route, le statut et l'identifiant de requête des métadonnées interrogeables.
+loki.process "api_json" {
+  stage.match {
+    selector = "{service=\"api\"} |~ \"^\\\\{\""
+
+    stage.json {
+      expressions = {
+        level           = "level",
+        event           = "event",
+        path            = "path",
+        status          = "status",
+        request_id      = "request_id",
+        trace_id        = "trace_id",
+        conversation_id = "conversation_id",
+      }
+    }
+
+    stage.labels {
+      values = {level = ""}
+    }
+
+    stage.structured_metadata {
+      values = {
+        event           = "",
+        path            = "",
+        status          = "",
+        request_id      = "",
+        trace_id        = "",
+        conversation_id = "",
+      }
+    }
+  }
+
+  forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.relabel "journal" {
+  forward_to = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "rag-ionis-.*"
+    action        = "keep"
+  }
+}
+
+loki.source.journal "rag_ionis_jobs" {
+  path          = "/var/log/journal"
+  max_age       = "12h"
+  relabel_rules = loki.relabel.journal.rules
+  labels        = {app = "rag-ionis", source = "systemd"}
+  forward_to    = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GCLOUD_HOSTED_LOGS_URL")
+
+    basic_auth {
+      username = sys.env("GCLOUD_HOSTED_LOGS_ID")
+      password = sys.env("GCLOUD_RW_API_KEY")
+    }
+  }
+
+  external_labels = {host = "contabo"}
+}

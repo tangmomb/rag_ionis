@@ -2315,10 +2315,19 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
               hidden
             >
               <p>
-                Chaque appel à l’API écrit une ligne de log JSON avec un
-                identifiant de requête, renvoyé au navigateur dans l’en-tête
-                <code>X-Request-ID</code> : une erreur signalée par un
-                utilisateur se retrouve directement dans les logs.
+                Chaque appel à l’API reçoit un identifiant unique et écrit une
+                ligne de log au format JSON : route, code de réponse, durée et
+                cet identifiant. En cas d’erreur, l’interface l’affiche comme
+                « référence » : si un utilisateur la transmet, son appel se
+                retrouve en une seule recherche dans les logs, parmi tous les
+                autres. Les logs de tous les conteneurs et des tâches
+                planifiées sont envoyés par l’agent Grafana Alloy vers Loki,
+                sur Grafana Cloud : ils survivent aux redéploiements et à une
+                panne du VPS, et se fouillent par route, code de réponse ou
+                durée. Pour chaque question, une seconde ligne relie cet
+                identifiant à la trace Phoenix de la requête : depuis une
+                erreur dans les logs, on ouvre le détail de chaque étape du
+                pipeline, et inversement.
               </p>
               <p>
                 Une sauvegarde n’est prouvée que restaurée. Le 8 de chaque mois,

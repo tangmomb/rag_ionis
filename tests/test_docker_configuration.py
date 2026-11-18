@@ -48,9 +48,9 @@ class VpsConfigurationTests(unittest.TestCase):
         # job included, is capped, with no extra swap and a lower OOM priority.
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
 
-        self.assertEqual(production_compose.count("    mem_limit:"), 7)
-        self.assertEqual(production_compose.count("    memswap_limit:"), 7)
-        self.assertEqual(production_compose.count("    oom_score_adj:"), 7)
+        self.assertEqual(production_compose.count("    mem_limit:"), 8)
+        self.assertEqual(production_compose.count("    memswap_limit:"), 8)
+        self.assertEqual(production_compose.count("    oom_score_adj:"), 8)
         # Production API and PostgreSQL win over the agent project under memory pressure.
         self.assertEqual(production_compose.count("    mem_reservation:"), 2)
         self.assertEqual(production_compose.count("    oom_score_adj: -500"), 2)
@@ -203,6 +203,28 @@ class VpsConfigurationTests(unittest.TestCase):
             self.assertIn(timer, installer)
         self.assertIn("rag-ionis-monitor@.service", installer)
         self.assertGreaterEqual(workflow.count("deploy/run-monitoring.sh"), 4)
+
+    def test_logs_are_shipped_to_grafana_cloud_by_alloy(self) -> None:
+        compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")
+        config = (ROOT_DIR / "deploy" / "alloy" / "config.alloy").read_text(encoding="utf-8")
+        workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        alloy = compose.split("\n  alloy:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+        # Pinned image, opt-in profile, read-only host access, capped memory.
+        self.assertRegex(alloy, r"grafana/alloy:v[\d.]+@sha256:[0-9a-f]{64}")
+        self.assertIn('profiles: ["observability"]', alloy)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock:ro", alloy)
+        self.assertIn("/var/log/journal:/var/log/journal:ro", alloy)
+        self.assertIn("mem_limit: 192m", alloy)
+        # Credentials come from the environment, never from the config file.
+        self.assertIn('sys.env("GCLOUD_RW_API_KEY")', config)
+        self.assertNotIn("glc_", config)
+        self.assertIn("com.docker.compose.project=rag_ionis", config)
+        self.assertIn('regex         = "rag-ionis-.*"', config)
+        # Started only once credentials exist, and recreated when the config changes.
+        self.assertIn("grep -q '^GCLOUD_HOSTED_LOGS_URL=.' .env.production", workflow)
+        self.assertIn("ALLOY_CONFIG_SHA", workflow)
+        self.assertIn("scp deploy/alloy/config.alloy", workflow)
 
     def test_every_monitoring_report_is_recorded(self) -> None:
         recorder = (ROOT_DIR / "deploy" / "record-report.sh").read_text(encoding="utf-8")

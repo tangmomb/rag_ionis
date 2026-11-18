@@ -22,6 +22,7 @@ on:
       - "deploy/run-scheduled-update.sh"
       - "deploy/run-monitoring.sh"
       - "deploy/record-report.sh"
+      - "deploy/alloy/**"
       - "deploy/systemd/**"
       - "deploy/publish-image.sh"
       - "deploy/publish-images.sh"
@@ -128,7 +129,7 @@ jobs:
                   api=true
                   vps_config=true
                   ;;
-                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/run-monitoring.sh|deploy/record-report.sh|deploy/systemd/*)
+                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/run-monitoring.sh|deploy/record-report.sh|deploy/alloy/*|deploy/systemd/*)
                   vps_config=true
                   ;;
                 .github/workflows/deploy-vps.yml)
@@ -279,7 +280,7 @@ jobs:
           remote="${VPS_USER}@${VPS_HOST}"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
           set -euo pipefail
-          mkdir -p "$1/deploy/systemd" "$1/docker/postgres"
+          mkdir -p "$1/deploy/systemd" "$1/deploy/alloy" "$1/docker/postgres"
           REMOTE
           scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
           scp deploy/deploy-vps.sh deploy/sync-vps-config.sh \
@@ -287,6 +288,7 @@ jobs:
             deploy/run-monitoring.sh deploy/record-report.sh \
             "${remote}:${deploy_path}/deploy/"
           scp deploy/systemd/* "${remote}:${deploy_path}/deploy/systemd/"
+          scp deploy/alloy/config.alloy "${remote}:${deploy_path}/deploy/alloy/"
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'
           set -euo pipefail
@@ -413,4 +415,11 @@ jobs:
           set -euo pipefail
           cd "$1"
           docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production config --quiet
+          # Log shipping to Grafana Cloud, only once its credentials are configured.
+          # The config hash recreates Alloy when config.alloy changes.
+          if grep -q '^GCLOUD_HOSTED_LOGS_URL=.' .env.production; then
+            ALLOY_CONFIG_SHA="$(sha256sum deploy/alloy/config.alloy | cut -c1-12)" \
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production \
+              --profile observability up -d alloy
+          fi
           REMOTE

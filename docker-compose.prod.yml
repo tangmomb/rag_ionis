@@ -216,7 +216,44 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Envoi des logs vers Grafana Cloud (Loki) : conteneurs du projet et tâches
+  # systemd rag-ionis-*. Lancé par le workflow de déploiement seulement si les
+  # identifiants GCLOUD_* sont présents. Accès en lecture seule au socket Docker
+  # et au journal ; root dans le conteneur pour lire ces fichiers de l'hôte.
+  alloy:
+    image: grafana/alloy:v1.21.3@sha256:8ab871206bd2d8f89277f53abffee5f452a293980788d52f85fa183a87a505a4
+    restart: unless-stopped
+    user: "0:0"
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      GCLOUD_HOSTED_LOGS_URL: ${GCLOUD_HOSTED_LOGS_URL:-}
+      GCLOUD_HOSTED_LOGS_ID: ${GCLOUD_HOSTED_LOGS_ID:-}
+      GCLOUD_RW_API_KEY: ${GCLOUD_RW_API_KEY:-}
+      # Changes when config.alloy changes, so `up -d` recreates the container.
+      ALLOY_CONFIG_SHA: ${ALLOY_CONFIG_SHA:-}
+    volumes:
+      - ./deploy/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    profiles: ["observability"]
+    mem_limit: 192m
+    memswap_limit: 192m
+    oom_score_adj: 800
+    cpus: 0.25
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
 volumes:
+  alloy_data:
+    name: rag_ionis_alloy_data
   postgres_data:
     name: rag_ionis_postgres_data
   phoenix_data:

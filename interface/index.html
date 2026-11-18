@@ -463,6 +463,9 @@
         setComposerLocked(true, "Recherche en cours…");
         addMessage("user", text, "envoi frontend");
         const loadingMessage = addLoadingMessage();
+        // Identifier of the API call, shown with any error so a report can be
+        // found in the JSON logs (docker logs rag_ionis-api-1 | grep <ref>).
+        let requestId = null;
 
         try {
           const response = await fetch(`${RAG_CONFIG.apiUrl}/stream`, {
@@ -472,6 +475,7 @@
             },
             body: JSON.stringify(payload),
           });
+          requestId = response.headers.get("X-Request-ID");
           if (!response.ok) {
             // Limits and errors come back as {"detail": "..."}: show the sentence, not the JSON.
             const body = await response.text();
@@ -553,9 +557,12 @@
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Erreur reseau inconnue";
+          const reference = requestId
+            ? `\n\nRéférence à transmettre en cas de problème : ${requestId.slice(0, 8)}`
+            : "";
           addMessage(
             "assistant",
-            `Le backend a renvoye une erreur.\n\n${message}`,
+            `Le backend a renvoye une erreur.\n\n${message}${reference}`,
             "echec requete",
           );
         } finally {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FAQ · RAG YouTube IONIS-STM</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=48" />
+    <link rel="stylesheet" href="/styles.css?v=49" />
   </head>
   <body>
     <main class="faq-page">
@@ -2207,6 +2207,57 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 sauvegardé chaque nuit avec le reste de la base : on peut
                 suivre l’évolution du recall et de la fidélité dans le temps.
               </p>
+              <figure class="faq-quality-charts" data-quality-history>
+                <div class="quality-chart" data-metric="recall">
+                  <p class="quality-chart-title">Recall vidéo du golden dataset</p>
+                  <p class="quality-chart-legend">
+                    <span class="quality-key quality-key-gate"></span>avant un
+                    déploiement
+                    <span class="quality-key quality-key-prod"></span>en prod
+                    <span class="quality-key quality-key-threshold"></span>seuil
+                  </p>
+                  <div class="quality-chart-plot">
+                    <svg role="img" aria-label="Courbe du recall vidéo du golden dataset"></svg>
+                    <div class="quality-tooltip" role="status" hidden></div>
+                  </div>
+                </div>
+                <div class="quality-chart" data-metric="faithfulness">
+                  <p class="quality-chart-title">
+                    Fidélité des réponses du canari, notée par le LLM juge
+                  </p>
+                  <p class="quality-chart-legend">
+                    <span class="quality-key quality-key-prod"></span>canari du
+                    matin
+                    <span class="quality-key quality-key-threshold"></span>seuil
+                  </p>
+                  <div class="quality-chart-plot">
+                    <svg role="img" aria-label="Courbe de la fidélité des réponses du canari"></svg>
+                    <div class="quality-tooltip" role="status" hidden></div>
+                  </div>
+                </div>
+                <figcaption>
+                  Données de la table <code>monitoring.reports</code>, mises à
+                  jour chaque matin. Les premiers points du recall viennent des
+                  contrôles faits avant les déploiements depuis octobre 2026 ;
+                  la fidélité est mesurée depuis le 18 novembre 2026.
+                </figcaption>
+                <details class="quality-table">
+                  <summary>Voir les données</summary>
+                  <div class="faq-benchmark-table" role="region" aria-label="Historique du recall et de la fidélité" tabindex="0">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th scope="col">Date</th>
+                          <th scope="col">Mesure</th>
+                          <th scope="col">Valeur</th>
+                          <th scope="col">Origine</th>
+                        </tr>
+                      </thead>
+                      <tbody></tbody>
+                    </table>
+                  </div>
+                </details>
+              </figure>
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>
                 <span>
@@ -3147,6 +3198,180 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && !lightbox.hidden) closeLightbox();
       });
+    </script>
+    <script>
+      // Courbes du recall et de la fidélité (Maintenance), lues sur /api/monitoring/history.
+      (() => {
+        const figure = document.querySelector("[data-quality-history]");
+        if (!figure) return;
+        const SVG_NS = "http://www.w3.org/2000/svg";
+        const H = 200;
+        const M = { top: 14, right: 64, bottom: 28, left: 44 };
+        const percent = new Intl.NumberFormat("fr-FR", {
+          style: "percent",
+          maximumFractionDigits: 1,
+        });
+        const shortDate = (value) =>
+          new Date(value).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+        const longDate = (value) =>
+          new Date(value).toLocaleDateString("fr-FR", {
+            day: "numeric",
+            month: "long",
+            year: "numeric",
+          });
+
+        function node(name, attributes, parent) {
+          const element = document.createElementNS(SVG_NS, name);
+          Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+          parent?.append(element);
+          return element;
+        }
+
+        function drawChart(chart, points, { min, step, threshold }) {
+          const svg = chart.querySelector("svg");
+          const tooltip = chart.querySelector(".quality-tooltip");
+          // Drawn at the real width so labels stay readable on a phone.
+          const W = Math.max(300, Math.round(svg.parentElement.clientWidth || 640));
+          svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+          svg.replaceChildren();
+          tooltip.hidden = true;
+          const plotW = W - M.left - M.right;
+          const plotH = H - M.top - M.bottom;
+          const y = (value) => M.top + plotH * (1 - (value - min) / (1 - min));
+
+          for (let tick = min; tick <= 1.0001; tick += step) {
+            node("line", { class: "quality-grid", x1: M.left, x2: W - M.right, y1: y(tick), y2: y(tick) }, svg);
+            node("text", { class: "quality-axis", x: M.left - 8, y: y(tick) + 4, "text-anchor": "end" }, svg)
+              .textContent = percent.format(tick);
+          }
+          node("line", {
+            class: "quality-threshold",
+            x1: M.left, x2: W - M.right, y1: y(threshold), y2: y(threshold),
+          }, svg);
+
+          if (!points.length) {
+            node("text", { class: "quality-empty", x: M.left + plotW / 2, y: M.top + plotH / 2, "text-anchor": "middle" }, svg)
+              .textContent = "Pas encore de mesure";
+            return;
+          }
+
+          const times = points.map((point) => new Date(point.at).getTime());
+          const day = 24 * 3600 * 1000;
+          const start = Math.min(...times) - day;
+          const end = Math.max(...times) + day;
+          const x = (time) => M.left + (plotW * (time - start)) / (end - start);
+          const coords = points.map((point, index) => ({
+            ...point,
+            cx: x(times[index]),
+            cy: y(Math.max(min, Math.min(1, point.value))),
+          }));
+
+          const ticks = [coords[0], coords[coords.length - 1]];
+          ticks.forEach((point, index) => {
+            if (index === 1 && Math.abs(point.cx - ticks[0].cx) < 60) return;
+            node("text", { class: "quality-axis", x: point.cx, y: H - 8, "text-anchor": "middle" }, svg)
+              .textContent = shortDate(point.at);
+          });
+
+          if (coords.length > 1) {
+            node("path", {
+              class: "quality-line",
+              d: coords.map((point, index) => `${index ? "L" : "M"}${point.cx},${point.cy}`).join(" "),
+            }, svg);
+          }
+          coords.forEach((point) => {
+            node("circle", {
+              class: point.hollow ? "quality-dot quality-dot-hollow" : "quality-dot",
+              cx: point.cx, cy: point.cy, r: 4,
+            }, svg);
+          });
+          const last = coords[coords.length - 1];
+          node("text", { class: "quality-value", x: last.cx + 10, y: last.cy + 4 }, svg)
+            .textContent = percent.format(last.value);
+
+          function show(point) {
+            tooltip.innerHTML = "";
+            const strong = document.createElement("strong");
+            strong.textContent = percent.format(point.value);
+            tooltip.append(strong, document.createElement("br"), longDate(point.at));
+            point.details.forEach((line) => tooltip.append(document.createElement("br"), line));
+            tooltip.style.left = `${(point.cx / W) * 100}%`;
+            tooltip.style.top = `${(point.cy / H) * 100}%`;
+            tooltip.hidden = false;
+          }
+          const hide = () => { tooltip.hidden = true; };
+          coords.forEach((point) => {
+            const target = node("circle", {
+              class: "quality-hit", cx: point.cx, cy: point.cy, r: 14, tabindex: 0,
+              "aria-label": `${longDate(point.at)} : ${percent.format(point.value)}`,
+            }, svg);
+            target.addEventListener("mouseenter", () => show(point));
+            target.addEventListener("focus", () => show(point));
+            target.addEventListener("mouseleave", hide);
+            target.addEventListener("blur", hide);
+          });
+        }
+
+        function fillTable(recall, faithfulness) {
+          const body = figure.querySelector(".quality-table tbody");
+          const rows = [
+            ...recall.map((point) => [point.at, "Recall vidéo", point.value, point.details.join(" · ")]),
+            ...faithfulness.map((point) => [point.at, "Fidélité (canari)", point.value, point.details.join(" · ")]),
+          ].sort((a, b) => new Date(b[0]) - new Date(a[0]));
+          body.replaceChildren(...rows.map(([at, label, value, origin]) => {
+            const row = document.createElement("tr");
+            [longDate(at), label, percent.format(value), origin].forEach((text) => {
+              const cell = document.createElement("td");
+              cell.textContent = text;
+              row.append(cell);
+            });
+            return row;
+          }));
+        }
+
+        fetch("/api/monitoring/history")
+          .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+          .then((history) => {
+            const recall = (history.recall || []).map((point) => ({
+              at: point.at,
+              value: point.video_recall,
+              hollow: point.kind === "recall_gate",
+              details: [
+                point.kind === "recall_gate" ? "Avant un déploiement" : "Mesure en prod",
+                ...(point.commit ? [`commit ${point.commit}`] : []),
+              ],
+            }));
+            const faithfulness = (history.faithfulness || []).map((point) => ({
+              at: point.at,
+              value: point.canary_faithfulness,
+              hollow: false,
+              details: [
+                "Canari du matin",
+                ...(point.canary_relevance != null
+                  ? [`pertinence ${percent.format(point.canary_relevance)}`]
+                  : []),
+              ],
+            }));
+            const thresholds = history.thresholds || {};
+            const drawAll = () => {
+              drawChart(figure.querySelector('[data-metric="recall"]'), recall, {
+                min: 0.6, step: 0.1, threshold: thresholds.recall ?? 0.8,
+              });
+              drawChart(figure.querySelector('[data-metric="faithfulness"]'), faithfulness, {
+                min: 0, step: 0.25, threshold: thresholds.faithfulness ?? 0.8,
+              });
+            };
+            drawAll();
+            fillTable(recall, faithfulness);
+            // The answer is hidden until opened (zero width): redraw on resize and on open.
+            new ResizeObserver(drawAll).observe(figure);
+          })
+          .catch(() => {
+            figure.querySelectorAll(".quality-chart").forEach((chart) => {
+              drawChart(chart, [], { min: 0.6, step: 0.1, threshold: 0.8 });
+            });
+          });
+      })();
     </script>
   </body>
 </html>

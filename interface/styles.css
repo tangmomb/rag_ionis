@@ -1977,3 +1977,104 @@ button {
     animation: none;
   }
 }
+
+/* Courbes de qualité de la FAQ (Maintenance) */
+.faq-quality-charts {
+  --quality-series: #3987e5;
+  margin: 16px 0 0;
+  display: grid;
+  gap: 18px;
+}
+
+.quality-chart-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.quality-chart-legend {
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.quality-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin: 0 6px 0 10px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.quality-key:first-child { margin-left: 0; }
+.quality-key-prod { background: var(--quality-series); }
+.quality-key-gate { border: 2px solid var(--quality-series); background: #0e0e0e; }
+
+.quality-key-threshold {
+  width: 16px;
+  height: 0;
+  border-radius: 0;
+  border-top: 2px dashed var(--muted);
+  vertical-align: 3px;
+}
+
+.quality-chart-plot {
+  position: relative;
+  height: 200px;
+}
+
+.quality-chart-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.quality-grid { stroke: var(--line); stroke-width: 1; }
+.quality-threshold { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.quality-axis { fill: var(--muted); font-size: 12px; }
+.quality-empty { fill: var(--muted); font-size: 14px; }
+.quality-value { fill: var(--text); font-size: 13px; font-weight: 600; }
+.quality-line { fill: none; stroke: var(--quality-series); stroke-width: 2; stroke-linejoin: round; }
+
+.quality-dot {
+  fill: var(--quality-series);
+  stroke: #0e0e0e;
+  stroke-width: 2;
+}
+
+.quality-dot-hollow {
+  fill: #0e0e0e;
+  stroke: var(--quality-series);
+}
+
+.quality-hit { fill: transparent; cursor: pointer; outline: none; }
+.quality-hit:focus-visible { stroke: var(--text); stroke-width: 1.5; }
+
+.quality-tooltip {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-50%, calc(-100% - 12px));
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #1b1b1b;
+  color: var(--muted-strong);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.quality-tooltip strong { color: var(--text); }
+
+.faq-quality-charts figcaption {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.quality-table summary {
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 0.9rem;
+}

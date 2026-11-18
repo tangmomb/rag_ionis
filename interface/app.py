@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from interface import rate_limit
+from interface.monitoring.history import router as monitoring_history_router
 from interface.request_logging import configure_json_logging, should_log
 from interface.backend.api import execute_rag, router
 from interface.backend.config import INTERFACE_DIR
@@ -97,6 +98,7 @@ if public_origins:
         allow_headers=["*"],
     )
 app.include_router(router, prefix="/api")
+app.include_router(monitoring_history_router)
 app.mount(
     "/pipeline_reponse",
     StaticFiles(directory=INTERFACE_DIR / "pipeline_reponse", html=True),

@@ -2108,6 +2108,22 @@
                 >.
               </p>
               <p>
+                Concrètement, Upptime envoie une simple requête HTTP
+                <code>GET</code> et lit le code de statut de la réponse. La
+                page d’accueil est considérée en ligne si elle répond par un
+                code de succès ou de redirection (2xx ou 3xx). Pour l’API,
+                FastAPI expose un <strong>endpoint de santé</strong>,
+                <code>/health</code>, qui interroge PostgreSQL puis renvoie
+                <code>{"status": "ok"}</code> : s’il répond <code>200</code>,
+                l’API et sa base fonctionnent. Ce même endpoint sert au
+                healthcheck Docker et au retour automatique à la version
+                précédente lors d’un déploiement. Une réponse correcte mais plus lente que le
+                seuil (5&nbsp;s pour la page, 3&nbsp;s pour l’API) marque le
+                site comme dégradé. Le contenu de la page n’est pas analysé :
+                vérifier que le RAG répond bien aux questions est le rôle du
+                canari quotidien.
+              </p>
+              <p>
                 Sur le VPS, Beszel suit le processeur, la mémoire, le disque et
                 chaque conteneur Docker. Il alerte quand le serveur ne répond
                 plus, quand une ressource reste saturée plusieurs minutes, et

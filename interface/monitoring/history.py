@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
 router = APIRouter()
 
@@ -101,7 +101,11 @@ def load_history() -> dict[str, Any]:
 
 
 @router.get("/api/monitoring/history")
-def monitoring_history() -> dict[str, Any]:
+def monitoring_history(response: Response) -> dict[str, Any]:
+    # Public aggregates only: any site (the portfolio) may read them, without
+    # credentials. The rest of the API keeps its strict CORS origins.
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Cache-Control"] = f"public, max-age={CACHE_SECONDS}"
     with _lock:
         if _cache["value"] is not None and time.monotonic() - _cache["at"] < CACHE_SECONDS:
             return _cache["value"]

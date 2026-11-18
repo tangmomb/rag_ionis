@@ -3250,7 +3250,7 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
           }, svg);
 
           if (!points.length) {
-            node("text", { class: "quality-empty", x: M.left + plotW / 2, y: M.top + plotH / 2, "text-anchor": "middle" }, svg)
+            node("text", { class: "quality-empty", x: M.left + plotW / 2, y: M.top + plotH * 0.65, "text-anchor": "middle" }, svg)
               .textContent = "Pas encore de mesure";
             return;
           }

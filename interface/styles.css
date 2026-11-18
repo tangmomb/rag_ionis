@@ -2033,7 +2033,7 @@ button {
 .quality-grid { stroke: var(--line); stroke-width: 1; }
 .quality-threshold { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
 .quality-axis { fill: var(--muted); font-size: 12px; }
-.quality-empty { fill: var(--muted); font-size: 14px; }
+.quality-empty { fill: var(--muted); font-size: 14px; paint-order: stroke; stroke: #0e0e0e; stroke-width: 6px; stroke-linejoin: round; }
 .quality-value { fill: var(--text); font-size: 13px; font-weight: 600; }
 .quality-line { fill: none; stroke: var(--quality-series); stroke-width: 2; stroke-linejoin: round; }
 

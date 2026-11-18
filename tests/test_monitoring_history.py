@@ -64,6 +64,23 @@ class HistoryEndpointTest(unittest.TestCase):
         self.assertEqual(first["recall"][0]["video_recall"], 0.87)
         load.assert_called_once()
 
+    def test_other_sites_can_read_history_without_credentials(self) -> None:
+        payload = history.history_from_rows([])
+        with mock.patch.object(history, "load_history", return_value=payload):
+            response = TestClient(app).get(
+                "/api/monitoring/history",
+                headers={"Origin": "https://portfolio-ia.tanguym.fr"},
+            )
+
+        self.assertEqual(response.headers["access-control-allow-origin"], "*")
+
+    def test_paid_routes_keep_strict_cors(self) -> None:
+        response = TestClient(app).get(
+            "/api/llm-models", headers={"Origin": "https://portfolio-ia.tanguym.fr"}
+        )
+
+        self.assertNotEqual(response.headers.get("access-control-allow-origin"), "*")
+
     def test_unavailable_database_returns_empty_series(self) -> None:
         with mock.patch.object(history, "load_history", side_effect=RuntimeError("db down")):
             response = TestClient(app).get("/api/monitoring/history")

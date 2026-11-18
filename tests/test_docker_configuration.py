@@ -204,6 +204,20 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("rag-ionis-monitor@.service", installer)
         self.assertGreaterEqual(workflow.count("deploy/run-monitoring.sh"), 4)
 
+    def test_every_monitoring_report_is_recorded(self) -> None:
+        recorder = (ROOT_DIR / "deploy" / "record-report.sh").read_text(encoding="utf-8")
+        runner = (ROOT_DIR / "deploy" / "run-monitoring.sh").read_text(encoding="utf-8")
+        workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS monitoring.reports", recorder)
+        # Values reach SQL only as psql variables, never concatenated.
+        self.assertIn(":'metrics'::jsonb", recorder)
+        for kind in ("quality", "recall", "restore"):
+            self.assertIn(f"publish {kind} ", runner)
+        self.assertIn("record_failure quality", runner)
+        self.assertIn("record-report.sh recall_gate", workflow)
+        self.assertGreaterEqual(workflow.count("deploy/record-report.sh"), 4)
+
     def test_vps_workflow_tests_candidate_before_deployment(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")

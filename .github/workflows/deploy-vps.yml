@@ -21,6 +21,7 @@ on:
       - "deploy/install-systemd-timers.sh"
       - "deploy/run-scheduled-update.sh"
       - "deploy/run-monitoring.sh"
+      - "deploy/record-report.sh"
       - "deploy/systemd/**"
       - "deploy/publish-image.sh"
       - "deploy/publish-images.sh"
@@ -127,7 +128,7 @@ jobs:
                   api=true
                   vps_config=true
                   ;;
-                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/run-monitoring.sh|deploy/systemd/*)
+                docker-compose.yml|docker/postgres/init/*|deploy/deploy-vps.sh|deploy/install-systemd-timers.sh|deploy/run-scheduled-update.sh|deploy/run-monitoring.sh|deploy/record-report.sh|deploy/systemd/*)
                   vps_config=true
                   ;;
                 .github/workflows/deploy-vps.yml)
@@ -187,6 +188,7 @@ jobs:
             deploy/install-systemd-timers.sh \
             deploy/run-scheduled-update.sh \
             deploy/run-monitoring.sh \
+            deploy/record-report.sh \
             deploy/systemd/rag-ionis-telegram.sh \
             deploy/systemd/rag-ionis-notify-failure.sh
 
@@ -282,7 +284,7 @@ jobs:
           scp docker-compose.yml docker-compose.prod.yml "${remote}:${deploy_path}/"
           scp deploy/deploy-vps.sh deploy/sync-vps-config.sh \
             deploy/install-systemd-timers.sh deploy/run-scheduled-update.sh \
-            deploy/run-monitoring.sh \
+            deploy/run-monitoring.sh deploy/record-report.sh \
             "${remote}:${deploy_path}/deploy/"
           scp deploy/systemd/* "${remote}:${deploy_path}/deploy/systemd/"
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
@@ -347,8 +349,27 @@ jobs:
             printf 'Baseline recall of the deployed API: %s\n' "${baseline}"
             baseline_args=(--baseline-recall "${baseline}")
           fi
+          set +e
           "${compose[@]}" --profile staging exec -T staging-api \
             python -m interface.backend.golden_recall "${baseline_args[@]}" < /dev/null | tee .golden-recall-result.json
+          gate_status=${PIPESTATUS[0]}
+          set -e
+          # Every gate result, pass or fail, is kept in monitoring.reports.
+          # stdout (the metrics) goes to the report file, stderr (the status) to the variable.
+          gate_report_status="$(python3 - .golden-recall-result.json "$2" "${baseline}" "${gate_status}" 2>&1 >.golden-recall-report.json <<'PY'
+          import json, sys
+          path, image_tag, baseline, exit_code = sys.argv[1:5]
+          rows = [line for line in open(path) if line.startswith("{")]
+          metrics = json.loads(rows[-1]) if rows else {"exit_code": int(exit_code)}
+          metrics.update({"image_tag": image_tag, "baseline_recall": float(baseline) if baseline else None})
+          print(json.dumps(metrics, ensure_ascii=False))
+          print("failed" if not rows else ("ok" if exit_code == "0" else "anomaly"), file=sys.stderr)
+          PY
+          )" || true
+          gate_report_status="${gate_report_status##*$'\n'}"
+          bash deploy/record-report.sh recall_gate "${gate_report_status:-failed}" .golden-recall-report.json ||
+            echo "Warning: recall gate report not recorded." >&2
+          [[ ${gate_status} -eq 0 ]] || exit "${gate_status}"
           # Keyed by image tag so only this candidate's score can be promoted.
           rm -f .golden-recall-candidate-*
           python3 -c 'import json, sys; lines = [l for l in open(sys.argv[1]) if l.startswith("{")]; print(json.loads(lines[-1])["video_recall"] or "")' \

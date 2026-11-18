@@ -204,6 +204,46 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(unpriced, 1)
 
 
+class ReportMetricsTest(unittest.TestCase):
+    def test_metrics_are_json_serializable_numbers(self) -> None:
+        metrics = quality.report_metrics(
+            day=date(2026, 11, 17),
+            requests=2,
+            errors=0,
+            answer_ready_ms=[3000.0, 5000.0],
+            traffic_cost_usd=0.0123456789,
+            feedback=(1, 2),
+            traffic_judge=quality.JudgeSummary(judged=2, faithfulness=[1.0, 0.5], relevance=[1.0, 1.0]),
+            canary=quality.CanarySummary(asked=10, failures=["x"], cost_usd=0.05, answer_ready_ms=[3400.0]),
+            canary_judge=quality.JudgeSummary(judged=9, faithfulness=[1.0] * 9, relevance=[1.0] * 9),
+            judge_model="mistral-large-latest",
+        )
+
+        self.assertEqual(json.loads(json.dumps(metrics)), metrics)
+        self.assertEqual(metrics["day"], "2026-11-17")
+        self.assertEqual(metrics["traffic_faithfulness"], 0.75)
+        self.assertEqual(metrics["traffic_cost_usd"], 0.012346)
+        self.assertEqual((metrics["canary_asked"], metrics["canary_failures"]), (10, 1))
+        self.assertEqual(metrics["feedback_negative"], 2)
+
+    def test_metrics_without_canary_omit_canary_fields(self) -> None:
+        metrics = quality.report_metrics(
+            day=date(2026, 11, 17),
+            requests=0,
+            errors=0,
+            answer_ready_ms=[],
+            traffic_cost_usd=0.0,
+            feedback=(0, 0),
+            traffic_judge=quality.JudgeSummary(),
+            canary=None,
+            canary_judge=None,
+            judge_model="j",
+        )
+
+        self.assertIsNone(metrics["traffic_faithfulness"])
+        self.assertNotIn("canary_asked", metrics)
+
+
 class ReportTest(unittest.TestCase):
     def report(self, **overrides):
         values = dict(

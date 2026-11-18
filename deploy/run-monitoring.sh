@@ -3,9 +3,9 @@
 #   quality : canari, LLM juge et rapport de la veille (chaque matin)
 #   recall  : recall du golden dataset sur la prod (le 1er et le 15 du mois)
 #   restore : restauration de la dernière sauvegarde dans une base jetable (le 8 du mois)
-# Chaque tâche tourne dans un conteneur ponctuel de l'image de l'API et envoie son
-# résultat sur Telegram. Un crash (aucun résultat) fait échouer le service, ce qui
-# déclenche l'alerte OnFailure.
+# Chaque tâche envoie son résultat sur Telegram et l'enregistre dans la table
+# monitoring.reports (deploy/record-report.sh). Un crash fait échouer le service,
+# ce qui déclenche l'alerte OnFailure.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -30,6 +30,9 @@ compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-f
 # Conteneur ponctuel : il partage le réseau de la prod (postgres, phoenix) sans
 # publier de port ni redémarrer les services dont dépend l'API.
 run_api=("${compose[@]}" run --rm --no-deps -T)
+workdir="$(mktemp -d)"
+cleanup() { rm -rf "${workdir}"; }
+trap cleanup EXIT
 
 # Dernière ligne JSON d'une sortie, vide s'il n'y en a pas.
 last_json() {
@@ -47,6 +50,33 @@ for line in reversed(sys.stdin.read().splitlines()):
 '
 }
 
+# Champ d'un objet JSON lu sur stdin ; les objets sont réécrits en JSON.
+json_field() {
+  python3 -c '
+import json, sys
+value = json.load(sys.stdin).get(sys.argv[1])
+print(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else ("" if value is None else value))
+' "$1"
+}
+
+# Envoie le message sur Telegram et enregistre le rapport. Un échec d'enregistrement
+# est signalé sans empêcher l'alerte.
+publish() {
+  local kind="$1" status="$2" metrics="$3" message="$4"
+  printf '%s\n' "${metrics}" >"${workdir}/metrics.json"
+  printf '%s\n' "${message}" >"${workdir}/message.txt"
+  printf '%s\n' "${message}" | /usr/bin/bash "${telegram}"
+  /usr/bin/bash "${script_dir}/record-report.sh" "${kind}" "${status}" \
+    "${workdir}/metrics.json" "${workdir}/message.txt" ||
+    printf 'Warning: %s report not recorded in monitoring.reports.\n' "${kind}" >&2
+}
+
+record_failure() {
+  local kind="$1" exit_code="$2"
+  printf '{"exit_code": %s}\n' "${exit_code}" >"${workdir}/metrics.json"
+  /usr/bin/bash "${script_dir}/record-report.sh" "${kind}" failed "${workdir}/metrics.json" || true
+}
+
 case "${task}" in
   quality)
     set +e
@@ -58,10 +88,13 @@ case "${task}" in
     result="$(printf '%s\n' "${output}" | last_json)"
     if [[ ${status} -ne 0 || -z "${result}" ]]; then
       printf 'Quality run failed (exit %s, no result).\n' "${status}" >&2
+      record_failure quality "${status}"
       exit 1
     fi
-    printf '%s\n' "${result}" | python3 -c 'import json, sys; print(json.load(sys.stdin)["message"])' |
-      /usr/bin/bash "${telegram}"
+    anomaly="$(printf '%s\n' "${result}" | json_field anomaly)"
+    publish quality "$([[ "${anomaly}" == "True" ]] && echo anomaly || echo ok)" \
+      "$(printf '%s\n' "${result}" | json_field metrics)" \
+      "$(printf '%s\n' "${result}" | json_field message)"
     ;;
   recall)
     baseline="$(cat .golden-recall-baseline 2>/dev/null || true)"
@@ -79,9 +112,10 @@ case "${task}" in
     result="$(printf '%s\n' "${output}" | last_json)"
     if [[ -z "${result}" ]]; then
       printf 'Recall run failed (exit %s, no result).\n' "${status}" >&2
+      record_failure recall "${status}"
       exit 1
     fi
-    # Historique local, une ligne par mesure.
+    # Copie locale, une ligne par mesure (la référence est monitoring.reports).
     printf '%s\n' "${result}" | python3 -c '
 import json, sys, datetime
 row = json.load(sys.stdin)
@@ -89,7 +123,7 @@ row["measured_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(time
 print(json.dumps(row, ensure_ascii=False))
 ' >>"${state_dir}/recall-history.jsonl"
     # golden_recall sort en erreur si le plancher ou la baisse maximale est franchi.
-    printf '%s\n' "${result}" | python3 -c '
+    summary="$(printf '%s\n' "${result}" | python3 -c '
 import json, sys
 row = json.load(sys.stdin)
 ok, baseline = sys.argv[1] == "0", sys.argv[2]
@@ -106,8 +140,12 @@ lines = [
 ]
 if not ok:
     lines.append("Plancher ou baisse maximale franchi : voir journalctl -u rag-ionis-monitor@recall")
-print("\n".join(lines))
-' "${status}" "${baseline}" | /usr/bin/bash "${telegram}"
+row["baseline_recall"] = float(baseline) if baseline else None
+print(json.dumps({"status": "ok" if ok else "anomaly", "message": "\n".join(lines), "metrics": row}, ensure_ascii=False))
+' "${status}" "${baseline}")"
+    publish recall "$(printf '%s\n' "${summary}" | json_field status)" \
+      "$(printf '%s\n' "${summary}" | json_field metrics)" \
+      "$(printf '%s\n' "${summary}" | json_field message)"
     ;;
   restore)
     # Restaure la dernière sauvegarde S3 dans un PostgreSQL jetable, compare son
@@ -128,7 +166,6 @@ print("\n".join(lines))
     [[ -n "${latest}" ]] || { printf 'No backup found under %s\n' "${prefix}" >&2; exit 1; }
 
     container="rag-ionis-restore-test"
-    workdir="$(mktemp -d)"
     cleanup() { docker rm -f "${container}" >/dev/null 2>&1 || true; rm -rf "${workdir}"; }
     trap cleanup EXIT
     restore_test_started=$SECONDS
@@ -168,13 +205,14 @@ PY
 )"
     total_seconds=$((SECONDS - restore_test_started))
 
-    python3 - "${latest}" "${restore_status}" "${restored_counts}" "${prod_counts}" \
-      "${phoenix_check}" "${restore_seconds}" "${total_seconds}" <<'PY' | /usr/bin/bash "${telegram}"
-import sys
+    summary="$(python3 - "${latest}" "${restore_status}" "${restored_counts}" "${prod_counts}" \
+      "${phoenix_check}" "${restore_seconds}" "${total_seconds}" <<'PY'
+import json, sys
 from datetime import datetime, timezone
 
 stamp, status, restored, prod, phoenix, restore_s, total_s = sys.argv[1:8]
 names = ("vidéos", "chunks", "transcriptions", "messages")
+keys = ("videos", "chunks", "transcripts", "messages")
 restored_values = [int(v) for v in restored.split()] if len(restored.split()) == 4 else []
 prod_values = [int(v) for v in prod.split()]
 phoenix_ok = phoenix.split()[0] == "ok"
@@ -193,17 +231,33 @@ if not phoenix_ok:
 age_h = (datetime.now(timezone.utc) - datetime.strptime(stamp, "%Y-%m-%dT%H%MZ").replace(tzinfo=timezone.utc)).total_seconds() / 3600
 if age_h > 36:
     problems.append(f"dernière sauvegarde vieille de {age_h:.0f} h")
+phoenix_spans = int(phoenix.split()[1]) if phoenix_ok else None
 lines = [
     ("🔴" if problems else "🟢") + " Test de restauration RAG IONIS",
     f"Sauvegarde {stamp} (il y a {age_h:.0f} h)",
 ]
 if restored_values:
     lines.append(", ".join(f"{v} {n}" for n, v in zip(names, restored_values)))
-lines.append(f"Phoenix : {phoenix.split()[1] if phoenix_ok else '—'} spans, intégrité {phoenix.split()[0]}")
+lines.append(f"Phoenix : {phoenix_spans if phoenix_ok else '—'} spans, intégrité {phoenix.split()[0]}")
 lines.append(f"Restauration Postgres : {restore_s} s · reprise complète : {total_s} s")
 lines += problems
-print("\n".join(lines))
+metrics = {
+    "backup": stamp,
+    "backup_age_hours": round(age_h, 1),
+    "restored": dict(zip(keys, restored_values)),
+    "production": dict(zip(keys, prod_values)),
+    "phoenix_integrity": phoenix.split()[0],
+    "phoenix_spans": phoenix_spans,
+    "restore_seconds": int(restore_s),
+    "total_seconds": int(total_s),
+    "problems": problems,
+}
+print(json.dumps({"status": "anomaly" if problems else "ok", "message": "\n".join(lines), "metrics": metrics}, ensure_ascii=False))
 PY
+)"
+    publish restore "$(printf '%s\n' "${summary}" | json_field status)" \
+      "$(printf '%s\n' "${summary}" | json_field metrics)" \
+      "$(printf '%s\n' "${summary}" | json_field message)"
     ;;
   *)
     printf 'Unknown monitoring task: %s (expected quality, recall or restore)\n' "${task}" >&2

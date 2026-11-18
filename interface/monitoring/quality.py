@@ -546,13 +546,15 @@ def run_daily(args: argparse.Namespace) -> dict[str, Any]:
     if canary is not None:
         canary_judge = judge_traces(client, canary_project, canary.trace_ids, model=model)
 
+    errors = sum(1 for span in root_spans if span.get("status_code") == "ERROR")
+    feedback = feedback_counts(start, end)
     message, anomalies = build_report(
         day=day,
         requests=len(root_spans),
-        errors=sum(1 for span in root_spans if span.get("status_code") == "ERROR"),
+        errors=errors,
         answer_ready_ms=answer_ready_ms,
         traffic_cost_usd=traffic_cost_usd,
-        feedback=feedback_counts(start, end),
+        feedback=feedback,
         traffic_judge=traffic_judge,
         canary=canary,
         canary_judge=canary_judge,
@@ -562,7 +564,69 @@ def run_daily(args: argparse.Namespace) -> dict[str, Any]:
             env_float("QUALITY_MAX_CANARY_FAILURES", DEFAULT_MAX_CANARY_FAILURES)
         ),
     )
-    return {"message": message, "anomaly": bool(anomalies), "anomalies": anomalies}
+    metrics = report_metrics(
+        day=day,
+        requests=len(root_spans),
+        errors=errors,
+        answer_ready_ms=answer_ready_ms,
+        traffic_cost_usd=traffic_cost_usd,
+        feedback=feedback,
+        traffic_judge=traffic_judge,
+        canary=canary,
+        canary_judge=canary_judge,
+        judge_model=model,
+    )
+    metrics["anomalies"] = anomalies
+    return {
+        "message": message,
+        "anomaly": bool(anomalies),
+        "anomalies": anomalies,
+        "metrics": metrics,
+    }
+
+
+def report_metrics(
+    *,
+    day: date,
+    requests: int,
+    errors: int,
+    answer_ready_ms: Sequence[float],
+    traffic_cost_usd: float,
+    feedback: tuple[int, int],
+    traffic_judge: JudgeSummary,
+    canary: CanarySummary | None,
+    canary_judge: JudgeSummary | None,
+    judge_model: str,
+) -> dict[str, Any]:
+    """Numbers stored in monitoring.reports, to chart quality over time."""
+    metrics: dict[str, Any] = {
+        "day": day.isoformat(),
+        "requests": requests,
+        "errors": errors,
+        "answer_ready_p50_ms": percentile(answer_ready_ms, 50),
+        "answer_ready_p95_ms": percentile(answer_ready_ms, 95),
+        "traffic_cost_usd": round(traffic_cost_usd, 6),
+        "feedback_positive": feedback[0],
+        "feedback_negative": feedback[1],
+        "judge_model": judge_model,
+        "traffic_judged": traffic_judge.judged,
+        "traffic_judge_errors": traffic_judge.errors,
+        "traffic_faithfulness": mean(traffic_judge.faithfulness),
+        "traffic_relevance": mean(traffic_judge.relevance),
+    }
+    if canary is not None and canary_judge is not None:
+        metrics.update(
+            {
+                "canary_asked": canary.asked,
+                "canary_failures": len(canary.failures),
+                "canary_faithfulness": mean(canary_judge.faithfulness),
+                "canary_relevance": mean(canary_judge.relevance),
+                "canary_judge_errors": canary_judge.errors,
+                "canary_answer_ready_p50_ms": percentile(canary.answer_ready_ms, 50),
+                "canary_cost_usd": round(canary.cost_usd, 6),
+            }
+        )
+    return metrics
 
 
 def build_parser() -> argparse.ArgumentParser:

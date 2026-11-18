@@ -2164,9 +2164,11 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                     <strong>Canari.</strong> Chaque matin, 10 questions du
                     golden dataset passent par tout le pipeline, génération
                     comprise ; la sélection tourne pour couvrir les 75 questions
-                    en une semaine. Leurs traces vont dans un projet Phoenix
-                    séparé et leurs conversations sont supprimées : ni les
-                    métriques ni l’historique de prod ne sont faussés.
+                    en une semaine. Leurs traces sont conservées dans un projet
+                    Phoenix séparé, et les conversations qu’elles créent sont
+                    supprimées de la base PostgreSQL à la fin du passage : ni
+                    les métriques, ni les votes, ni l’historique des
+                    conversations de prod ne sont faussés.
                   </p>
                 </li>
                 <li>
@@ -2181,11 +2183,12 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 </li>
                 <li>
                   <p>
-                    <strong>Rapport.</strong> Volume, erreurs, latence p50 et
-                    p95, coût estimé face au budget, votes des utilisateurs et
-                    notes du juge partent sur Telegram, en rouge si un seuil est
-                    franchi. Le message arrive chaque matin : son absence est
-                    elle-même une alerte.
+                    <strong>Rapport quotidien.</strong> Il réunit le vrai
+                    trafic de la veille (volume, erreurs, latence p50 et p95,
+                    coût estimé face au budget, votes des utilisateurs, notes du
+                    juge) et le résultat du canari du matin. Il part sur
+                    Telegram, en rouge si un seuil est franchi. Le message
+                    arrive chaque matin : son absence est elle-même une alerte.
                   </p>
                 </li>
               </ol>
@@ -2194,6 +2197,15 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 déploiement qui touche la recherche, est aussi remesuré
                 <strong>sur la prod</strong> le 1er et le 15 du mois, pour
                 repérer une dérive sans déploiement.
+              </p>
+              <p>
+                Chaque rapport, qu’il s’agisse du rapport quotidien, d’une
+                mesure du recall avant un déploiement ou en prod, ou du test de
+                restauration, est enregistré dans une table
+                <code>monitoring.reports</code> de PostgreSQL, avec son statut,
+                ses chiffres et le message envoyé. Cet historique est
+                sauvegardé chaque nuit avec le reste de la base : on peut
+                suivre l’évolution du recall et de la fidélité dans le temps.
               </p>
               <aside class="faq-exception" aria-label="À noter">
                 <strong>À noter</strong>

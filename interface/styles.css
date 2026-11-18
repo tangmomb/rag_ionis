@@ -252,6 +252,7 @@ button {
 
 .faq-page {
   --faq-accent: #ff827d;
+  --faq-body-text: #bcbcbc;
   display: grid;
   grid-template-columns: clamp(270px, 25vw, 320px) minmax(0, 1fr);
   min-height: 100vh;
@@ -418,7 +419,7 @@ button {
 
 .faq-answer {
   margin: 0 0 38px;
-  color: var(--text);
+  color: var(--faq-body-text);
   line-height: 1.7;
   scroll-margin-top: 24px;
 }
@@ -427,6 +428,7 @@ button {
   margin: 0 0 24px;
   padding-bottom: 22px;
   border-bottom: 1px solid var(--line-strong);
+  color: var(--text);
   font-size: clamp(27px, 3.5vw, 42px);
   line-height: 1.15;
   letter-spacing: -0.025em;
@@ -575,6 +577,7 @@ button {
 
 .faq-llm-calls-table thead th {
   background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
   font-weight: 700;
 }
 
@@ -601,11 +604,11 @@ button {
 }
 
 .faq-answer .llm-role { font-weight: 600; }
-.faq-answer .llm-reformulation { color: #93c5fd; }
-.faq-answer .llm-planification { color: #c4b5fd; }
-.faq-answer .llm-sql { color: #fcd34d; }
-.faq-answer .llm-reponse { color: #6ee7b7; }
-.faq-answer .llm-resume { color: #f9a8d4; }
+.faq-llm-calls-table .llm-reformulation { color: #93c5fd; }
+.faq-llm-calls-table .llm-planification { color: #c4b5fd; }
+.faq-llm-calls-table .llm-sql { color: #fcd34d; }
+.faq-llm-calls-table .llm-reponse { color: #6ee7b7; }
+.faq-llm-calls-table .llm-resume { color: #f9a8d4; }
 
 .faq-steps {
   display: grid;
@@ -687,7 +690,6 @@ button {
 
 .faq-case summary p {
   margin: 0;
-  color: var(--muted-strong);
 }
 
 .faq-case summary .faq-case-target {
@@ -783,7 +785,6 @@ button {
   border: 1px solid rgba(255, 90, 90, 0.42);
   border-left: 3px solid #ff5a5a;
   border-radius: 8px;
-  color: var(--muted-strong);
   background: rgba(255, 90, 90, 0.07);
   font-size: 12px;
   line-height: 1.5;
@@ -796,7 +797,6 @@ button {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #0b0b0b;
-  color: var(--muted-strong);
   font-family: Consolas, "SFMono-Regular", Monaco, monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -806,7 +806,6 @@ button {
   padding: 1px 6px;
   border: 1px solid rgba(255, 90, 90, 0.3);
   border-radius: 5px;
-  color: #ff8b8b;
   background: rgba(255, 90, 90, 0.1);
 }
 
@@ -909,7 +908,12 @@ button {
 }
 
 .faq-answer a {
-  color: #ff5a5a;
+  color: inherit;
+  text-underline-offset: 0.18em;
+}
+
+.faq-answer a:hover {
+  color: var(--muted-strong);
 }
 
 .faq-provider-logos {
@@ -1283,7 +1287,6 @@ button {
 
 .faq-metrics dd {
   margin: 4px 0 0;
-  color: var(--text);
   font-size: 17px;
   font-weight: 650;
 }
@@ -2055,6 +2058,7 @@ button {
 
 .quality-chart-title {
   margin: 0;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -2101,7 +2105,7 @@ button {
 .quality-threshold { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
 .quality-axis { fill: var(--muted); font-size: 12px; }
 .quality-empty { fill: var(--muted); font-size: 14px; paint-order: stroke; stroke: #0e0e0e; stroke-width: 6px; stroke-linejoin: round; }
-.quality-value { fill: var(--text); font-size: 13px; font-weight: 600; }
+.quality-value { fill: var(--faq-body-text); font-size: 13px; font-weight: 600; }
 .quality-line { fill: none; stroke: var(--quality-series); stroke-width: 2; stroke-linejoin: round; }
 
 .quality-dot {
@@ -2133,8 +2137,6 @@ button {
   pointer-events: none;
 }
 
-.quality-tooltip strong { color: var(--text); }
-
 .faq-quality-charts figcaption {
   color: var(--muted);
   font-size: 0.85rem;
@@ -2144,4 +2146,8 @@ button {
   color: var(--muted-strong);
   cursor: pointer;
   font-size: 0.9rem;
+}
+
+.quality-table th {
+  color: var(--text);
 }

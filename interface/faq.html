@@ -67,6 +67,7 @@
               <li><a href="#maintenance-disponibilite">Comment la disponibilité est-elle surveillée ?</a></li>
               <li><a href="#maintenance-qualite">Comment la qualité des réponses est-elle suivie en production ?</a></li>
               <li><a href="#maintenance-protection">Comment le RAG est-il protégé contre les abus ?</a></li>
+              <li><a href="#maintenance-sauvegarde">Comment les données sont-elles sauvegardées ?</a></li>
               <li><a href="#maintenance-incidents">Que se passe-t-il en cas d’incident ?</a></li>
             </ul>
           </details>
@@ -2187,6 +2188,59 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 rendre le site indisponible.
               </p>
             </article>
+            <article class="faq-answer" id="maintenance-sauvegarde" aria-labelledby="maintenance-sauvegarde-question">
+              <h3 class="faq-article-title" id="maintenance-sauvegarde-question" tabindex="-1">Comment les données sont-elles sauvegardées ?</h3>
+              <p>
+                Chaque nuit vers 3 h 30, un timer systemd sauvegarde les deux
+                bases du RAG : PostgreSQL, qui contient les vidéos, les chunks
+                et leurs embeddings, les conversations et l’historique des
+                rapports de qualité, et la base de Phoenix, qui contient les
+                traces et les notes du LLM juge.
+              </p>
+              <ol class="faq-flow">
+                <li>
+                  <p>
+                    <strong>Export.</strong> PostgreSQL est exporté avec
+                    <code>pg_dump</code> au format compressé, un instantané
+                    cohérent pris sans arrêter la base. Phoenix stocke ses
+                    traces dans SQLite : la copie passe par l’API de sauvegarde
+                    de SQLite, qui reste cohérente même pendant une écriture.
+                  </p>
+                </li>
+                <li>
+                  <p>
+                    <strong>Envoi hors du VPS.</strong> Les deux fichiers
+                    partent avec <code>rclone</code> sur le stockage objet
+                    Scaleway, dans un dossier daté. Le serveur étant chez
+                    Contabo, une panne ou une perte du VPS n’emporte pas les
+                    sauvegardes.
+                  </p>
+                </li>
+                <li>
+                  <p>
+                    <strong>Contrôle et rotation.</strong> Un fichier vide ou
+                    presque fait échouer la sauvegarde, ce qui déclenche une
+                    alerte Telegram. Les sauvegardes de plus de 30 jours sont
+                    supprimées.
+                  </p>
+                </li>
+              </ol>
+              <pre class="faq-code"><code>backups/rag_ionis/2026-11-18T0238Z/postgres.dump
+backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
+              <p>
+                Une sauvegarde n’est prouvée que restaurée. Le 8 de chaque mois,
+                la dernière sauvegarde est donc téléchargée depuis Scaleway et
+                restaurée dans une base PostgreSQL jetable, de la même version
+                que la prod. Le nombre de vidéos, de chunks et de transcriptions
+                restaurés est comparé à la prod, l’intégrité de la base Phoenix
+                est vérifiée, et le résultat part sur Telegram. La reprise
+                complète prend 12 secondes.
+              </p>
+              <p>
+                On perd donc au plus une journée de données (RPO de 24 h), et la
+                base se restaure en quelques secondes (RTO mesuré chaque mois).
+              </p>
+            </article>
             <article class="faq-answer" id="maintenance-incidents" aria-labelledby="maintenance-incidents-question">
               <h3 class="faq-article-title" id="maintenance-incidents-question" tabindex="-1">Que se passe-t-il en cas d’incident ?</h3>
               <p>
@@ -2203,12 +2257,6 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 vraie durée, et pour une question elle donne aussi l’identifiant
                 de la trace Phoenix : depuis une erreur dans les logs, on ouvre
                 le détail de chaque étape du pipeline, et inversement.
-              </p>
-              <p>
-                Une sauvegarde n’est prouvée que restaurée. Le 8 de chaque mois,
-                la dernière sauvegarde est donc restaurée dans une base
-                PostgreSQL jetable, son contenu comparé à la prod et la base
-                Phoenix vérifiée. La reprise complète prend 12 secondes.
               </p>
               <p>
                 Les objectifs de service sont chiffrés, chacun avec sa mesure

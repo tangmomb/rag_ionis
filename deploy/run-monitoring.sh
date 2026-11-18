@@ -2,7 +2,7 @@
 # Tâches de surveillance de la qualité, lancées par rag-ionis-monitor@.service :
 #   quality : canari, LLM juge et rapport de la veille (chaque matin)
 #   recall  : recall du golden dataset sur la prod (le 1er et le 15 du mois)
-#   restore : restauration de la dernière sauvegarde dans une base jetable (le 8 du mois)
+#   restore : restauration de la dernière sauvegarde dans une base jetable (chaque lundi)
 # Chaque tâche envoie son résultat sur Telegram et l'enregistre dans la table
 # monitoring.reports (deploy/record-report.sh). Un crash fait échouer le service,
 # ce qui déclenche l'alerte OnFailure.

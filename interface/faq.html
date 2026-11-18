@@ -2228,17 +2228,24 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
               <pre class="faq-code"><code>backups/rag_ionis/2026-11-18T0238Z/postgres.dump
 backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
               <p>
-                Une sauvegarde n’est prouvée que restaurée. Le 8 de chaque mois,
-                la dernière sauvegarde est donc téléchargée depuis Scaleway et
+                Une sauvegarde peut « réussir » tout en étant inutilisable :
+                export tronqué, fichier corrompu pendant l’envoi, tables vides,
+                identifiants qui ne permettent plus de la récupérer. On ne s’en
+                apercevrait qu’au moment d’en avoir besoin. Chaque lundi, la
+                sauvegarde de la nuit est donc téléchargée depuis Scaleway et
                 restaurée dans une base PostgreSQL jetable, de la même version
-                que la prod. Le nombre de vidéos, de chunks et de transcriptions
-                restaurés est comparé à la prod, l’intégrité de la base Phoenix
-                est vérifiée, et le résultat part sur Telegram. La reprise
-                complète prend 12 secondes.
+                que la prod. Le test tourne à 4 h, une demi-heure après la
+                sauvegarde, un jour sans mise à jour des vidéos : la
+                sauvegarde doit donc contenir autant de vidéos, de chunks et de
+                transcriptions que la prod, et un écart montre qu’il manque des
+                données, pas que le contenu a évolué. L’intégrité de la base Phoenix est aussi
+                vérifiée, une sauvegarde de plus de 36 heures est signalée, et le
+                résultat part sur Telegram. La reprise complète prend 12
+                secondes.
               </p>
               <p>
                 On perd donc au plus une journée de données (RPO de 24 h), et la
-                base se restaure en quelques secondes (RTO mesuré chaque mois).
+                base se restaure en quelques secondes (RTO mesuré chaque semaine).
               </p>
             </article>
             <article class="faq-answer" id="maintenance-incidents" aria-labelledby="maintenance-incidents-question">
@@ -2250,16 +2257,19 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                 « référence » : si un utilisateur la transmet, son appel se
                 retrouve en une seule recherche dans les logs, parmi tous les
                 autres. Les logs de tous les conteneurs et des tâches
-                planifiées sont envoyés par l’agent Grafana Alloy vers Loki,
-                sur Grafana Cloud : ils survivent aux redéploiements et à une
-                panne du VPS, et se fouillent par route, code de réponse ou
-                durée. La ligne est écrite à la fin de la réponse, donc avec sa
+                planifiées sont envoyés en quelques secondes par l’agent Grafana
+                Alloy vers Loki, une base de données de logs hébergée chez
+                Grafana Cloud, en Europe. Stockés hors du VPS, ils survivent aux
+                redéploiements et à une panne du serveur, et se fouillent par
+                route, code de réponse ou durée ; l’offre gratuite les conserve
+                quelques semaines. Sur le VPS ne reste qu’une copie de courte
+                durée, effacée à chaque redéploiement. La ligne est écrite à la fin de la réponse, donc avec sa
                 vraie durée, et pour une question elle donne aussi l’identifiant
                 de la trace Phoenix : depuis une erreur dans les logs, on ouvre
                 le détail de chaque étape du pipeline, et inversement.
               </p>
               <p>
-                Les objectifs de service sont chiffrés, chacun avec sa mesure
+                Par ailleurs, les objectifs de service sont chiffrés, chacun avec sa mesure
                 et son alerte :
               </p>
               <div
@@ -2310,7 +2320,7 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                     <tr>
                       <td>Restauration (RTO)</td>
                       <td>&lt; 5&nbsp;min</td>
-                      <td>Test mensuel</td>
+                      <td>Test hebdomadaire</td>
                     </tr>
                   </tbody>
                 </table>

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FAQ · RAG YouTube IONIS-STM</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=50" />
+    <link rel="stylesheet" href="/styles.css?v=51" />
   </head>
   <body>
     <main class="faq-page">
@@ -1979,7 +1979,7 @@
               <h3 class="faq-article-title" id="maintenance-disponibilite-question" tabindex="-1">Comment la disponibilité est-elle surveillée ?</h3>
               <p>
                 Le site et l’API sont testés toutes les 5 minutes
-                <strong>depuis l’extérieur du serveur</strong>, par GitHub
+                depuis l’extérieur du serveur, par GitHub
                 Actions avec Upptime : une panne du VPS lui-même est donc
                 détectée. Chaque panne ouvre une
                 <a
@@ -2002,7 +2002,7 @@
                 <code>GET</code> et lit le code de statut de la réponse. La
                 page d’accueil est considérée en ligne si elle répond par un
                 code de succès ou de redirection (2xx ou 3xx). Pour l’API,
-                FastAPI expose un <strong>endpoint de santé</strong>,
+                FastAPI expose un endpoint de santé,
                 <code>/health</code>, qui interroge PostgreSQL puis renvoie
                 <code>{"status": "ok"}</code> : s’il répond <code>200</code>,
                 l’API et sa base fonctionnent. Ce même endpoint sert au
@@ -2017,7 +2017,7 @@
                 Sur le VPS, Beszel suit le processeur, la mémoire, le disque et
                 chaque conteneur Docker. Il alerte quand le serveur ne répond
                 plus, quand une ressource reste saturée plusieurs minutes, et
-                quand le <strong>temps CPU volé</strong> augmente : sur un VPS
+                quand le temps CPU volé augmente : sur un VPS
                 mutualisé, c’est le signe qu’un voisin monopolise la machine
                 physique, ce qui ralentit le RAG sans que sa propre charge
                 change.
@@ -2073,6 +2073,12 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                     Phoenix, et la courbe de fidélité montre la moyenne des 10
                     questions du canari.
                   </p>
+                  <p>Exemple de réponse du juge au format JSON</p>
+                  <pre class="faq-code"><code>{
+  "fidelite": "partiellement_fidele",
+  "pertinence": "pertinente",
+  "explication": "La réponse traite la question, mais un détail n’est pas appuyé par les sources."
+}</code></pre>
                 </li>
                 <li>
                   <p>
@@ -2098,8 +2104,9 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 <code>monitoring.reports</code> de PostgreSQL, avec son statut,
                 ses chiffres et le message envoyé. Cet historique est
                 sauvegardé chaque nuit avec le reste de la base, sur le
-                stockage objet Scaleway, hors du VPS : on peut
-                suivre l’évolution du recall et de la fidélité dans le temps.
+                stockage objet Scaleway, hors du VPS. Les graphiques ci-dessous
+                utilisent les données de cette table, récupérées via l’API, pour
+                montrer l’évolution du recall et de la fidélité dans le temps.
               </p>
               <figure class="faq-quality-charts" data-quality-history>
                 <div class="quality-chart" data-metric="recall">
@@ -2131,10 +2138,10 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                   </div>
                 </div>
                 <figcaption>
-                  Données de la table <code>monitoring.reports</code>, mises à
-                  jour chaque matin. Les premiers points du recall viennent des
-                  contrôles faits avant les déploiements depuis octobre 2026 ;
-                  la fidélité est mesurée depuis le 18 novembre 2026.
+                  L’historique est mis à jour chaque matin. Les premiers points
+                  du recall viennent des contrôles faits avant les déploiements
+                  depuis octobre 2026 ; la fidélité est mesurée depuis le
+                  18 novembre 2026.
                 </figcaption>
                 <details class="quality-table">
                   <summary>Voir les données</summary>
@@ -2153,16 +2160,6 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                   </div>
                 </details>
               </figure>
-              <aside class="faq-exception" aria-label="À noter">
-                <strong>À noter</strong>
-                <span>
-                  Les premiers essais du juge ont noté « non fidèles » des
-                  réponses pourtant exactes : les demandes de description ou de
-                  transcription renvoient un texte tiré de la base, sans appel
-                  au modèle de réponse, et le juge ne voyait donc aucune source.
-                  Il reçoit désormais les sources renvoyées avec la réponse.
-                </span>
-              </aside>
             </article>
             <article class="faq-answer" id="maintenance-protection" aria-labelledby="maintenance-protection-question">
               <h3 class="faq-article-title" id="maintenance-protection-question" tabindex="-1">Comment le RAG est-il protégé contre les abus ?</h3>
@@ -2202,10 +2199,10 @@ OnFailure=rag-ionis-notify-failure@%n.service</code></pre>
                 planifiées sont envoyés par l’agent Grafana Alloy vers Loki,
                 sur Grafana Cloud : ils survivent aux redéploiements et à une
                 panne du VPS, et se fouillent par route, code de réponse ou
-                durée. Pour chaque question, une seconde ligne relie cet
-                identifiant à la trace Phoenix de la requête : depuis une
-                erreur dans les logs, on ouvre le détail de chaque étape du
-                pipeline, et inversement.
+                durée. La ligne est écrite à la fin de la réponse, donc avec sa
+                vraie durée, et pour une question elle donne aussi l’identifiant
+                de la trace Phoenix : depuis une erreur dans les logs, on ouvre
+                le détail de chaque étape du pipeline, et inversement.
               </p>
               <p>
                 Une sauvegarde n’est prouvée que restaurée. Le 8 de chaque mois,

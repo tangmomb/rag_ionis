@@ -297,7 +297,11 @@ jobs:
           REMOTE
 
       - name: Refresh staging corpus and verify candidate API recall
-        if: needs.changes.outputs.recall_gate == 'true'
+        # Paid gate (~300 LLM calls). Switch it off with the repository variable
+        # RECALL_GATE=off; a manual run (workflow_dispatch) still runs it.
+        if: >-
+          needs.changes.outputs.recall_gate == 'true'
+          && (vars.RECALL_GATE != 'off' || github.event_name == 'workflow_dispatch')
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}

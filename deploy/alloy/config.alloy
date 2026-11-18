@@ -3,8 +3,8 @@
 // - tâches systemd rag-ionis-* (sauvegarde, rapports qualité, mises à jour).
 // Les lignes JSON de l'API deviennent des champs interrogeables en LogQL :
 //   {app="rag-ionis", service="api"} | json | status >= 500
-// Une question produit deux lignes de même request_id : http_request (route,
-// statut, durée) et rag_answered / rag_failed (trace_id Phoenix, conversation).
+// Une ligne par appel, écrite à la fin de la réponse (vraie durée, streaming compris) ;
+// pour une question, elle porte aussi le trace_id Phoenix et la conversation.
 // Identifiants : GCLOUD_HOSTED_LOGS_URL / _ID et GCLOUD_RW_API_KEY dans .env.production.
 
 discovery.docker "rag_ionis" {
@@ -54,6 +54,7 @@ loki.process "api_json" {
         request_id      = "request_id",
         trace_id        = "trace_id",
         conversation_id = "conversation_id",
+        rag_event       = "rag_event",
       }
     }
 
@@ -69,6 +70,7 @@ loki.process "api_json" {
         request_id      = "",
         trace_id        = "",
         conversation_id = "",
+        rag_event       = "",
       }
     }
   }

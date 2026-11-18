@@ -1,9 +1,12 @@
-"""Identifiant de la requête HTTP en cours, partagé entre le middleware et le RAG.
+"""Contexte de la requête HTTP en cours, partagé entre le middleware et le RAG.
 
-Le middleware (interface/app.py) le fixe pour chaque appel ; run_rag le lit pour
-le joindre à la trace Phoenix et écrire une ligne de log qui relie request_id,
-trace_id, conversation et message. Dans Grafana, une erreur mène ainsi à sa
-trace complète, et inversement.
+Le middleware (interface/app.py) fixe pour chaque appel un identifiant et un
+dictionnaire de détails. run_rag y dépose le trace_id Phoenix, la conversation et
+le message ; le middleware écrit ensuite une seule ligne de log, à la fin de la
+réponse (streaming compris), avec la vraie durée et ces détails. Dans Grafana,
+une erreur mène ainsi à sa trace complète, et inversement.
+
+Hors requête HTTP (canari, expériences), les détails sont écrits sur une ligne à part.
 """
 
 from __future__ import annotations
@@ -14,10 +17,19 @@ from typing import Any
 
 REQUEST_LOGGER_NAME = "rag_ionis.http"
 current_request_id: ContextVar[str | None] = ContextVar("current_request_id", default=None)
+# Mutable on purpose: the streaming worker thread runs in a copy of the request
+# context, so it shares this same dict object with the middleware.
+current_request_details: ContextVar[dict[str, Any] | None] = ContextVar(
+    "current_request_details", default=None
+)
 
 
-def log_request_event(event: str, **fields: Any) -> None:
-    """Write one JSON log line (formatted by interface.request_logging)."""
+def record_request_details(event: str, **fields: Any) -> None:
+    """Attach RAG details to the request's log line, or log them on their own."""
+    details = current_request_details.get()
+    if details is not None:
+        details.update({"rag_event": event, **fields})
+        return
     logging.getLogger(REQUEST_LOGGER_NAME).info(
         event,
         extra={"request_id": current_request_id.get(), **fields},

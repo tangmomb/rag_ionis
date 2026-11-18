@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from interface import rate_limit
-from interface.backend.request_context import current_request_id
+from interface.backend.request_context import current_request_details, current_request_id
 from interface.monitoring.history import router as monitoring_history_router
 from interface.request_logging import configure_json_logging, should_log
 from interface.backend.api import execute_rag, router
@@ -42,8 +42,10 @@ request_logger = configure_json_logging()
 async def protect_and_log(request: Request, call_next):
     """Rate-limit paid routes and write one JSON log line per API call."""
     request_id = request.headers.get("x-request-id", "")[:64] or uuid4().hex
-    # Read by run_rag to tie this call to its Phoenix trace.
+    # Read and filled by run_rag (trace_id, conversation, message) for this log line.
     current_request_id.set(request_id)
+    details: dict[str, Any] = {}
+    current_request_details.set(details)
     started_at = perf_counter()
     path = request.url.path
     client_ip = request.client.host if request.client else None
@@ -70,20 +72,39 @@ async def protect_and_log(request: Request, call_next):
             )
             raise
     response.headers["X-Request-ID"] = request_id
-    if should_log(path):
+    if not should_log(path):
+        return response
+
+    def write_log_line() -> None:
         request_logger.info(
             "http_request",
             extra={
+                **details,
                 "method": request.method,
                 "path": path,
                 "status": response.status_code,
-                # Streaming answers: time until the response starts, not until it ends.
+                # Measured once the whole body is sent: for a streamed answer,
+                # the real duration, not the time until the first byte.
                 "duration_ms": round((perf_counter() - started_at) * 1_000),
                 "client": rate_limit.hashed_client(client_ip)[:12],
                 "request_id": request_id,
                 "rate_limited": rejection is not None,
             },
         )
+
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        write_log_line()
+        return response
+
+    async def body_then_log():
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        finally:
+            write_log_line()
+
+    response.body_iterator = body_then_log()
     return response
 
 

@@ -41,7 +41,7 @@ from interface.backend.llm_providers import (
     LLMProviderError,
     provider_for_model,
 )
-from interface.backend.request_context import current_request_id, log_request_event
+from interface.backend.request_context import current_request_id, record_request_details
 from interface.backend.schemas import ChunkSource, RagRequest, RagResponse
 from interface.backend.telemetry import (
     current_trace_id,
@@ -491,12 +491,12 @@ def run_rag(
                 response_ready_callback=instrumented_response_ready_callback,
             )
         except Exception as exc:
-            log_request_event(
+            record_request_details(
                 "rag_failed",
                 trace_id=request_trace_id,
                 conversation_id=payload.conversationId,
                 error=f"{type(exc).__name__}: {exc}"[:500],
-                duration_ms=round((time.perf_counter() - request_started_at) * 1_000),
+                rag_failed_after_ms=round((time.perf_counter() - request_started_at) * 1_000),
             )
             raise
         latency_metrics["rag_completed_ms"] = round(
@@ -512,7 +512,7 @@ def run_rag(
         request_span.set_output(response.model_dump())
     record_trace_score_annotations(request_trace_id, latency_metrics)
     # Ties the HTTP request_id to the Phoenix trace and the stored message.
-    log_request_event(
+    record_request_details(
         "rag_answered",
         trace_id=request_trace_id,
         conversation_id=response.conversation_id,

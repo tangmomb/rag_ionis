@@ -158,6 +158,20 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("systemctl enable --now", installer)
         self.assertIn("install-systemd-timers.sh", workflow)
 
+    def test_scheduled_jobs_send_telegram_alert_on_failure(self) -> None:
+        service = (SYSTEMD_DIR / "rag-ionis-update@.service").read_text(encoding="utf-8")
+        notify_unit = (SYSTEMD_DIR / "rag-ionis-notify-failure@.service").read_text(encoding="utf-8")
+        notify_script = (SYSTEMD_DIR / "rag-ionis-notify-failure.sh").read_text(encoding="utf-8")
+        installer = SYSTEMD_INSTALL_SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("OnFailure=rag-ionis-notify-failure@%n.service", service)
+        self.assertIn("rag-ionis-notify-failure.sh %i", notify_unit)
+        # Le token ne doit jamais apparaître sur la ligne de commande (ps).
+        self.assertIn("--config -", notify_script)
+        self.assertIn("/etc/rag-ionis/telegram.env", notify_script)
+        self.assertIn("rag-ionis-notify-failure@.service", installer)
+        self.assertIn("rag-ionis-backup.service.d/notify-failure.conf", installer)
+
     def test_vps_workflow_tests_candidate_before_deployment(self) -> None:
         vps_workflow = VPS_WORKFLOW_PATH.read_text(encoding="utf-8")
         production_compose = PRODUCTION_COMPOSE_PATH.read_text(encoding="utf-8")

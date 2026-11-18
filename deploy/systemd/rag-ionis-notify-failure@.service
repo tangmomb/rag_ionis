@@ -1,0 +1,9 @@
+[Unit]
+Description=Alerte Telegram : échec de %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /usr/local/bin/rag-ionis-notify-failure.sh %i
+TimeoutStartSec=60

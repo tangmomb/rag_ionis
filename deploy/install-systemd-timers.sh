@@ -20,6 +20,7 @@ deployment_dir="$1"
 unit_source_dir="${deployment_dir}/deploy/systemd"
 units=(
   rag-ionis-update@.service
+  rag-ionis-notify-failure@.service
   rag-ionis-stats.timer
   rag-ionis-videos.timer
 )
@@ -34,6 +35,17 @@ done
 
 install -d -m 0755 /var/lib/rag-ionis-updater
 
+# Alertes Telegram en cas d'échec. Le token reste dans /etc/rag-ionis/telegram.env,
+# créé à la main sur le VPS ; sans ce fichier, l'alerte est seulement journalisée.
+install -m 0755 "${unit_source_dir}/rag-ionis-notify-failure.sh" /usr/local/bin/rag-ionis-notify-failure.sh
+install -d -m 0700 /etc/rag-ionis
+# La sauvegarde nocturne est installée hors de ce dépôt : on lui ajoute seulement l'alerte.
+if [[ -f /etc/systemd/system/rag-ionis-backup.service ]]; then
+  install -d -m 0755 /etc/systemd/system/rag-ionis-backup.service.d
+  printf '[Unit]\nOnFailure=rag-ionis-notify-failure@%%n.service\n' \
+    > /etc/systemd/system/rag-ionis-backup.service.d/notify-failure.conf
+fi
+
 # A persistent timer otherwise considers its first, already elapsed calendar
 # event missed and can run immediately during deployment. Seed only new timers;
 # existing timer state is kept so genuine downtime is still caught up.
@@ -46,6 +58,7 @@ done
 systemctl daemon-reload
 systemd-analyze verify \
   /etc/systemd/system/rag-ionis-update@.service \
+  /etc/systemd/system/rag-ionis-notify-failure@.service \
   /etc/systemd/system/rag-ionis-stats.timer \
   /etc/systemd/system/rag-ionis-videos.timer
 systemctl enable --now rag-ionis-stats.timer rag-ionis-videos.timer

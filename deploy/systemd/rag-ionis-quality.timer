@@ -2,7 +2,7 @@
 Description=Evaluate yesterday's RAG IONIS answer quality every morning
 
 [Timer]
-OnCalendar=*-*-* 06:15:00 Europe/Paris
+OnCalendar=*-*-* 05:00:00 Europe/Paris
 Persistent=true
 AccuracySec=1min
 Unit=rag-ionis-monitor@quality.service

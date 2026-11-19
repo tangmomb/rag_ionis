@@ -2037,28 +2037,83 @@
                 le token du bot reste sur le serveur, hors du dépôt.
               </p>
               <p>
-                Une tâche qui ne se lance plus du tout n’échoue pas : elle
-                reste silencieuse. C’est le cas d’un timer désactivé, d’un
-                serveur éteint à l’heure prévue ou d’un bot Telegram cassé. Chaque tâche planifiée signale
-                donc son début et sa fin à
+                Chacune des six tâches planifiées surveillées a son propre
+                contrôle dans
                 <a
                   href="https://healthchecks.io"
                   target="_blank"
                   rel="noopener noreferrer"
                   >healthchecks.io</a
-                >, qui connaît son horaire. Si le signal de fin n’arrive pas
-                dans le délai prévu, c’est healthchecks qui alerte, par son propre
-                canal, indépendamment du serveur.
+                >, avec son horaire, son délai de grâce et une URL de ping
+                dédiée. Au démarrage, systemd envoie un ping à cette URL avec
+                le suffixe <code>/start</code>. Si la tâche réussit, systemd
+                appelle l’URL de base. En cas d’échec, le script de notification
+                appelle cette même URL avec le suffixe <code>/fail</code>.
+              </p>
+              <div
+                class="faq-benchmark-table"
+                role="region"
+                aria-label="Horaires des tâches surveillées par Healthchecks"
+                tabindex="0"
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Tâche</th>
+                      <th scope="col">Horaire prévu (heure de Paris)</th>
+                      <th scope="col">Délai de grâce</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Statistiques</td>
+                      <td>Tous les jours à 1&nbsp;h&nbsp;30</td>
+                      <td>2&nbsp;h</td>
+                    </tr>
+                    <tr>
+                      <td>Sauvegarde nocturne</td>
+                      <td>Tous les jours à 3&nbsp;h&nbsp;30</td>
+                      <td>1&nbsp;h</td>
+                    </tr>
+                    <tr>
+                      <td>Rapport qualité</td>
+                      <td>Tous les jours à 5&nbsp;h</td>
+                      <td>3&nbsp;h</td>
+                    </tr>
+                    <tr>
+                      <td>Test de restauration</td>
+                      <td>Chaque lundi à 4&nbsp;h</td>
+                      <td>1&nbsp;h</td>
+                    </tr>
+                    <tr>
+                      <td>Mise à jour des vidéos</td>
+                      <td>Chaque dimanche à 4&nbsp;h&nbsp;30</td>
+                      <td>6&nbsp;h</td>
+                    </tr>
+                    <tr>
+                      <td>Recall de prod</td>
+                      <td>Les 1<sup>er</sup> et 15 du mois à 2&nbsp;h&nbsp;30</td>
+                      <td>3&nbsp;h</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>
+                Si le timer est désactivé ou que le serveur est éteint, aucun
+                ping ne part. Healthchecks connaît l’horaire prévu et alerte
+                via sa propre intégration si le signal de réussite manque à la
+                fin du délai de grâce. L’alerte peut donc partir même si le
+                serveur ou son bot Telegram est indisponible.
               </p>
               <pre
                 class="faq-code"
               ><code>[Unit]
 Description=RAG IONIS scheduled %i update
-# Un échec envoie une alerte Telegram
+# Un échec déclenche le ping /fail et l’alerte Telegram
 OnFailure=rag-ionis-notify-failure@%n.service
 
 [Service]
-# Début et fin signalés à healthchecks : une tâche absente déclenche une alerte
+# Pings de démarrage et de réussite vers le contrôle dédié
 ExecStartPre=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n start
 ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success</code></pre>
             </article>
@@ -2112,8 +2167,10 @@ ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success<
                     trafic de la veille (volume, erreurs, latence p50 et p95,
                     coût estimé face au budget, votes des utilisateurs, notes du
                     juge) et le résultat du canari du matin. Il part sur
-                    Telegram, en rouge si un seuil est franchi. S’il n’est pas
-                    arrivé à 7 h 15, healthchecks envoie une alerte.
+                    Telegram, en rouge si un seuil est franchi. La tâche
+                    démarre à 5&nbsp;h (heure de Paris). Si Healthchecks n’a
+                    toujours pas reçu de signal de réussite à l’issue des
+                    trois heures de grâce, il envoie une alerte.
                   </p>
                 </li>
               </ol>
@@ -2294,6 +2351,20 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                 de la trace Phoenix : depuis une erreur dans les logs, on ouvre
                 le détail de chaque étape du pipeline, et inversement.
               </p>
+              <p>Exemple d’une requête RAG réussie (extrait mis en forme pour la lecture).</p>
+              <pre class="faq-code"><code>{
+  "ts": "2026-11-19T08:42:13.527+00:00",
+  "level": "info",
+  "logger": "rag_ionis.http",
+  "event": "http_request",
+  "method": "POST",
+  "path": "/api/rag",
+  "status": 200,
+  "duration_ms": 1842,
+  "request_id": "2f6c8d10a4b74385b9c7e012fd563a41",
+  "rag_event": "rag_answered",
+  "trace_id": "9a51d3e4bc024dd8a36c8f2057b184ce"
+}</code></pre>
               <p>
                 Ces logs ne servent pas qu’à enquêter : Grafana les interroge
                 toutes les 5 minutes et alerte sur Telegram dès qu’un problème

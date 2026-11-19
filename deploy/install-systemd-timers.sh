@@ -44,6 +44,9 @@ for unit in "${units[@]}"; do
   install -m 0644 "${unit_source_dir}/${unit}" "/etc/systemd/system/${unit}"
 done
 
+quality_drop_in=rag-ionis-monitor@quality.service.d/timeout.conf
+install -D -m 0644 "${unit_source_dir}/${quality_drop_in}" "/etc/systemd/system/${quality_drop_in}"
+
 install -d -m 0755 /var/lib/rag-ionis-updater /var/lib/rag-ionis-monitoring
 
 # Alertes Telegram en cas d'échec. Le token reste dans /etc/rag-ionis/telegram.env,
@@ -60,7 +63,8 @@ if [[ -f /etc/systemd/system/rag-ionis-backup.service ]]; then
   install -d -m 0755 /etc/systemd/system/rag-ionis-backup.service.d
   printf '[Unit]\nOnFailure=rag-ionis-notify-failure@%%n.service\n' \
     > /etc/systemd/system/rag-ionis-backup.service.d/notify-failure.conf
-  printf '[Service]\nExecStartPre=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n start\nExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n success\n' \
+  # Seuls les pings tournent en root pour lire la clé, pas la sauvegarde.
+  printf '[Service]\nExecStartPre=-+/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n start\nExecStartPost=-+/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n success\n' \
     > /etc/systemd/system/rag-ionis-backup.service.d/healthcheck.conf
 fi
 

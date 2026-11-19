@@ -73,8 +73,8 @@ CHECKS: tuple[Check, ...] = (
     Check(
         "rag-ionis-monitor-quality",
         "Rapport qualité",
-        "15 6 * * *",
-        60,
+        "0 5 * * *",
+        180,
         "Canari, LLM juge et rapport du matin (rag-ionis-quality.timer).",
     ),
     Check(

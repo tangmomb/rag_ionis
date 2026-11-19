@@ -69,8 +69,9 @@ class HealthchecksTests(unittest.TestCase):
         # Le ping d'échec part avant Telegram, qui peut être cassé.
         self.assertLess(notify.index("rag-ionis-healthcheck.sh"), notify.index("rag-ionis-telegram.sh"))
         installer = INSTALLER.read_text(encoding="utf-8")
-        self.assertIn("rag-ionis-healthcheck.sh", installer)
         self.assertIn("rag-ionis-backup.service.d/healthcheck.conf", installer)
+        self.assertIn("ExecStartPre=-+/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n start", installer)
+        self.assertIn("ExecStartPost=-+/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n success", installer)
         script = (SYSTEMD_DIR / "rag-ionis-healthcheck.sh").read_text(encoding="utf-8")
         # La clé de ping ne doit jamais apparaître sur la ligne de commande (ps).
         self.assertIn("--config -", script)

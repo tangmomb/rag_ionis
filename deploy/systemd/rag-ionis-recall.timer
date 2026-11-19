@@ -2,7 +2,7 @@
 Description=Measure RAG IONIS golden recall on production twice a month
 
 [Timer]
-OnCalendar=*-*-01,15 02:30:00 Europe/Paris
+OnCalendar=*-*-01,15 02:00:00 Europe/Paris
 Persistent=true
 AccuracySec=1min
 Unit=rag-ionis-monitor@recall.service

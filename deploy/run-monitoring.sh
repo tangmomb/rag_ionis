@@ -161,6 +161,8 @@ print(json.dumps({"status": "ok" if ok else "anomaly", "message": "\n".join(line
       "$(printf '%s\n' "${summary}" | json_field message)"
     ;;
   restore)
+    exec 9>"${state_dir}/backup.lock"
+    flock -w 2700 9 || { printf 'Backup is still running. Restore test stopped.\n' >&2; exit 1; }
     # Restaure la dernière sauvegarde S3 dans un PostgreSQL jetable, compare son
     # contenu à la prod et vérifie la base Phoenix : une sauvegarde n'est prouvée
     # que restaurée. Mesure aussi la durée de reprise (RTO).

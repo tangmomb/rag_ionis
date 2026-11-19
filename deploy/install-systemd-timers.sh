@@ -35,6 +35,11 @@ timers=(
   rag-ionis-recall.timer
   rag-ionis-restore.timer
 )
+backup_service=/etc/systemd/system/rag-ionis-backup.service
+if [[ -f "${backup_service}" ]]; then
+  units+=(rag-ionis-backup.timer)
+  timers+=(rag-ionis-backup.timer)
+fi
 
 for unit in "${units[@]}"; do
   [[ -f "${unit_source_dir}/${unit}" ]] || {
@@ -56,10 +61,16 @@ for script in rag-ionis-email.py rag-ionis-notify-failure.sh rag-ionis-healthche
   install -m 0755 "${unit_source_dir}/${script}" "/usr/local/bin/${script}"
 done
 install -d -m 0700 /etc/rag-ionis
-# La sauvegarde nocturne est installée hors de ce dépôt : on lui ajoute seulement
-# l'alerte et les pings healthchecks (service oneshot, comme les autres tâches).
-if [[ -f /etc/systemd/system/rag-ionis-backup.service ]]; then
+# Le verrou sérialise la sauvegarde avec le test de restauration.
+if [[ -f "${backup_service}" ]]; then
   install -d -m 0755 /etc/systemd/system/rag-ionis-backup.service.d
+  backup_lock=/var/lib/rag-ionis-monitoring/backup.lock
+  backup_user="$(systemctl show -p User --value rag-ionis-backup.service)"
+  [[ -e "${backup_lock}" ]] || touch "${backup_lock}"
+  chown "${backup_user:-root}" "${backup_lock}"
+  chmod 0600 "${backup_lock}"
+  printf '[Service]\nExecStart=\nExecStart=/usr/bin/flock %s /usr/local/bin/rag-ionis-backup.sh\n' \
+    "${backup_lock}" > /etc/systemd/system/rag-ionis-backup.service.d/restore-lock.conf
   printf '[Unit]\nOnFailure=rag-ionis-notify-failure@%%n.service\n' \
     > /etc/systemd/system/rag-ionis-backup.service.d/notify-failure.conf
   # Seuls les pings tournent en root pour lire la clé, pas la sauvegarde.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Sauvegarde nocturne de rag_ionis
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 Europe/Paris
+RandomizedDelaySec=15min
+Persistent=true
+Unit=rag-ionis-backup.service
+
+[Install]
+WantedBy=timers.target

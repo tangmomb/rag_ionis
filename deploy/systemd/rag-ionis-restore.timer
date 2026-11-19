@@ -2,11 +2,8 @@
 Description=Restore the latest RAG IONIS backup into a throwaway database weekly
 
 [Timer]
-# Chaque lundi, entre la sauvegarde nocturne (03:30, au plus tard ~03:45) et toute
-# autre tâche : le lundi n'a pas de mise à jour des vidéos, la sauvegarde testée
-# et la prod ont donc le même contenu. Hebdomadaire car les sauvegardes ne sont
-# gardées que 30 jours : une sauvegarde cassée est repérée en 7 jours au plus.
-OnCalendar=Mon *-*-* 04:00:00 Europe/Paris
+# Après la sauvegarde nocturne, décalée de 15 minutes au plus.
+OnCalendar=Mon *-*-* 01:15:00 Europe/Paris
 Persistent=true
 AccuracySec=1min
 Unit=rag-ionis-monitor@restore.service

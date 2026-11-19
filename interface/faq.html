@@ -2614,7 +2614,7 @@
                         <th scope="row">Rafraîchissement des statistiques</th>
                         <td>systemd et Healthchecks.io (grâce de 2 h)</td>
                         <td>
-                          Timer systemd, tous les jours à 1 h 30. Mise à jour si
+                          Timer systemd, tous les jours à 21 h. Mise à jour si
                           nécessaire
                         </td>
                         <td>
@@ -2629,7 +2629,7 @@
                       <tr>
                         <th scope="row">Sauvegarde de PostgreSQL et Phoenix</th>
                         <td>systemd et Healthchecks.io (grâce de 1 h)</td>
-                        <td>Timer systemd, tous les jours à 3 h 30</td>
+                        <td>Timer systemd, chaque nuit entre 0 h 30 et 0 h 45</td>
                         <td>
                           Export ou transfert S3 en échec, sauvegarde absente ou
                           en retard
@@ -2647,7 +2647,7 @@
                         </th>
                         <td>systemd et Healthchecks.io (grâce de 3 h)</td>
                         <td>
-                          Timer systemd, tous les jours à 5 h. Canari complet le
+                          Timer systemd, tous les jours à 4 h. Canari complet le
                           samedi
                         </td>
                         <td>
@@ -2669,7 +2669,7 @@
                           Script de restauration, systemd et Healthchecks.io
                           (grâce de 1 h)
                         </td>
-                        <td>Timer systemd, le lundi à 4 h</td>
+                        <td>Timer systemd, le lundi à 1 h 15</td>
                         <td>
                           Sauvegarde absente, ancienne, illisible ou restauration
                           en échec
@@ -2682,7 +2682,7 @@
                       <tr>
                         <th scope="row">Mise à jour des vidéos</th>
                         <td>systemd et Healthchecks.io (grâce de 6 h)</td>
-                        <td>Timer systemd, le dimanche à 4 h 30</td>
+                        <td>Timer systemd, le dimanche à 21 h 30</td>
                         <td>
                           Échec de récupération, transcription ou indexation,
                           tâche non lancée ou arrivée hors délai
@@ -2699,7 +2699,7 @@
                           (grâce de 3 h)
                         </td>
                         <td>
-                          Timer systemd, les 1<sup>er</sup> et 15 du mois à 2 h 30
+                          Timer systemd, les 1<sup>er</sup> et 15 du mois à 2 h
                         </td>
                         <td>
                           Recall sous 80 % ou en baisse de plus de 5 points par
@@ -2721,7 +2721,7 @@
                           requêtes reçues
                         </td>
                         <td>
-                          Quatre timers systemd. Questions préparées à 2 h 15
+                          Quatre timers systemd. Questions préparées la veille à 22 h 30
                           et envoyées entre 8 h et 12 h. Lot de relances soumis
                           à 12 h 30, puis relances envoyées entre 16 h et 20 h.
                         </td>
@@ -2806,7 +2806,7 @@ ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success<
               <ol class="faq-flow">
                 <li>
                   <p>
-                    <strong>Canari.</strong> Chaque samedi à 05 h, les 84
+                    <strong>Canari.</strong> Chaque samedi à 4 h, les 84
                     questions actuelles du golden dataset passent par le RAG,
                     génération comprise. Le rapport indique combien de réponses
                     ont été notées. Les traces du canari sont conservées dans un
@@ -2849,7 +2849,7 @@ ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success<
                     coût estimé face au budget, votes des utilisateurs, notes du
                     juge) et, le samedi, le résultat du canari. Il est envoyé par
                     e-mail, en rouge si un seuil est franchi. La tâche démarre
-                    à 5&nbsp;h. Si Healthchecks n’a toujours pas reçu de signal
+                    à 4&nbsp;h. Si Healthchecks n’a toujours pas reçu de signal
                     de réussite à l’issue des trois heures de grâce, il envoie
                     une alerte.
                   </p>
@@ -2962,7 +2962,7 @@ ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success<
               <ol class="faq-flow">
                 <li>
                   <p>
-                    <strong>À 02 h 15, préparer les questions en batch.</strong>
+                    <strong>La veille à 22 h 30, préparer les questions en batch.</strong>
                     Sur le VPS, un timer systemd soumet un lot de 30 demandes à
                     <code>mistral-large-4</code>. Chaque demande contient le
                     titre et les passages d’une vidéo. Le modèle renvoie
@@ -3110,7 +3110,7 @@ Renvoie {<span class="json-key">"question"</span>: <span class="json-string">"..
                 Comment les données sont-elles sauvegardées ?
               </h3>
               <p>
-                Chaque nuit vers 3 h 30, un timer systemd sauvegarde les deux
+                Chaque nuit entre 0 h 30 et 0 h 45, un timer systemd sauvegarde les deux
                 bases du RAG : PostgreSQL, qui contient les vidéos, les chunks
                 et leurs embeddings, les conversations et l’historique des
                 rapports de qualité, et la base de Phoenix, qui contient les
@@ -3156,11 +3156,10 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                 apercevrait qu’au moment d’en avoir besoin. Chaque lundi, la
                 sauvegarde de la nuit est donc téléchargée depuis Scaleway et
                 restaurée dans une base PostgreSQL jetable, de la même version
-                que la prod. Le test tourne à 4 h, une demi-heure après la
-                sauvegarde, un jour sans mise à jour des vidéos : la sauvegarde
-                doit donc contenir autant de vidéos, de chunks et de
-                transcriptions que la prod, et un écart montre qu’il manque des
-                données, pas que le contenu a évolué. L’intégrité de la base
+                que la prod. Le test démarre à 1 h 15 et attend la fin de la
+                sauvegarde si elle est encore en cours. Il compare le nombre
+                de vidéos, de chunks et de transcriptions restaurés aux volumes
+                en production. L’intégrité de la base
                 Phoenix est aussi vérifiée, une sauvegarde de plus de 36 heures
                 est signalée, et le résultat est envoyé par e-mail. La reprise
                 complète prend 12 secondes.

@@ -31,6 +31,7 @@ PARIS = ZoneInfo("Europe/Paris")
 API_URL = "https://ionis.tanguym.fr/api/rag/stream"
 OPENING_HOURS = (8, 12)
 FOLLOWUP_HOURS = (16, 20)
+NIGHT_PHASE_START = local_time(22, 30)
 DAYTIME_PHASE_STARTS = {
     "openings": local_time(OPENING_HOURS[0]),
     "followup-batch": local_time(12, 30),
@@ -218,6 +219,8 @@ def main() -> int:
         parser.error("--count doit être compris entre 1 et 30")
     now = datetime.now(PARIS)
     day = args.date or now.date()
+    if args.date is None and args.phase == "night" and now.time() >= NIGHT_PHASE_START:
+        day += timedelta(days=1)
     phase_start = DAYTIME_PHASE_STARTS.get(args.phase)
     # A persistent timer can catch up yesterday's missed activation before today's slot.
     if phase_start is not None and now < datetime.combine(day, phase_start, tzinfo=PARIS):

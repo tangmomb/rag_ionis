@@ -143,7 +143,7 @@ class SyntheticConversationTests(unittest.TestCase):
     def test_scheduled_phases_use_the_four_paris_times(self):
         units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
         expected = {
-            "night": ("02:15", "night"),
+            "night": ("22:30", "night"),
             "day": ("08:00", "openings"),
             "followup-batch": ("12:30", "followup-batch"),
             "followup-send": ("16:00", "followup-send"),
@@ -167,6 +167,20 @@ class SyntheticConversationTests(unittest.TestCase):
             clock.now.return_value = datetime(2026, 11, 19, 8, tzinfo=PARIS)
             self.assertEqual(schedule.main(), 0)
         load_env.assert_not_called()
+
+    def test_night_preparation_targets_the_next_calendar_day(self):
+        for now in (datetime(2026, 11, 30, 22, 30, tzinfo=PARIS), datetime(2026, 12, 1, 0, 30, tzinfo=PARIS)):
+            with (
+                self.subTest(now=now),
+                patch("sys.argv", ["schedule", "night"]),
+                patch.object(schedule, "datetime", wraps=datetime) as clock,
+                patch.object(schedule, "dotenv_values", return_value={"MISTRAL_API_KEY": "test"}),
+                patch.object(schedule, "prepare_day", return_value=0) as prepare,
+            ):
+                clock.now.return_value = now
+                self.assertEqual(schedule.main(), 0)
+                self.assertEqual(prepare.call_args.args[1], date(2026, 12, 1))
+                self.assertEqual(prepare.call_args.args[2].name, "2026-12-01")
 
     def test_batch_service_persists_the_job_and_dispatch_resumes_it_once(self):
         day = datetime.now(PARIS).date() + timedelta(days=1)

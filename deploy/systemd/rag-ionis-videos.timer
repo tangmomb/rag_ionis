@@ -2,7 +2,7 @@
 Description=Refresh RAG IONIS videos weekly
 
 [Timer]
-OnCalendar=Sun *-*-* 04:30:00 Europe/Paris
+OnCalendar=Sun *-*-* 21:30:00 Europe/Paris
 Persistent=true
 AccuracySec=1min
 Unit=rag-ionis-update@videos.service

@@ -1,0 +1,11 @@
+[Unit]
+Description=Send the RAG IONIS synthetic follow-up questions
+
+[Timer]
+OnCalendar=*-*-* 16:00:00 Europe/Paris
+AccuracySec=1min
+Persistent=true
+Unit=rag-ionis-synthetic@followup-send.service
+
+[Install]
+WantedBy=timers.target

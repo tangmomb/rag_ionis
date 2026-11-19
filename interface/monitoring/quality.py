@@ -3,17 +3,17 @@
 Lancée chaque matin par systemd (deploy/run-monitoring.sh quality), dans un
 conteneur ponctuel construit sur l'image de l'API :
 
-1. Canari : quelques questions du golden dataset passent par le pipeline
-   complet. Leurs traces vont dans un projet Phoenix séparé
+1. Canari : le samedi, toutes les questions du golden dataset passent par le
+   pipeline complet. Leurs traces vont dans un projet Phoenix séparé
    (PHOENIX_PROJECT_NAME=rag-ionis-canary) et leurs conversations sont
    supprimées ensuite : ni les métriques ni l'historique de prod ne sont
    pollués, et la courbe de qualité existe même sans trafic.
-2. Juge : un LLM d'un autre modèle que celui qui répond note chaque réponse
-   de la veille (vrai trafic) et du canari : fidélité aux sources et
-   pertinence. Les notes sont publiées comme annotations Phoenix.
+2. Juge : un seul lot Mistral Batch regroupe les réponses de la veille et
+   celles du canari, à raison d'une évaluation par ligne JSONL. Les notes de
+   fidélité et de pertinence sont publiées comme annotations Phoenix.
 3. Rapport : volume, erreurs, latence, coût estimé, votes et notes. La
-   dernière ligne imprimée est un JSON {"message", "anomaly"} que le script
-   hôte envoie sur Telegram ; le conteneur ne connaît pas le token.
+   dernière ligne imprimée est un JSON {"message", "anomaly"}. Le script hôte
+   envoie le rapport par e-mail avec la configuration SMTP du VPS.
 """
 
 from __future__ import annotations
@@ -24,15 +24,16 @@ import os
 import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as day_time, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 PARIS = ZoneInfo("Europe/Paris")
 TRAFFIC_PROJECT = "rag-ionis"
 DEFAULT_JUDGE_MODEL = "mistral-large-latest"
-DEFAULT_CANARY_COUNT = 10
+WEEKLY_CANARY_WEEKDAY = 5  # samedi, heure de Paris
 DEFAULT_CANARY_DELAY_SECONDS = 5.0
 DEFAULT_DAILY_BUDGET_USD = 1.0
 DEFAULT_MIN_FAITHFULNESS = 0.8
@@ -40,6 +41,10 @@ DEFAULT_MAX_CANARY_FAILURES = 2
 ANNOTATION_IDENTIFIER = "quality-judge"
 MAX_JUDGE_CONTEXT_CHARS = 30_000
 JUDGE_MAX_OUTPUT_TOKENS = 4_000
+JUDGE_BATCH_TIMEOUT_HOURS = 2
+JUDGE_BATCH_POLL_SECONDS = 10
+JUDGE_BATCH_ACTIVE_STATUSES = {"QUEUED", "RUNNING", "CANCELLATION_REQUESTED"}
+DAILY_JUDGE_DEADLINE_SECONDS = 165 * 60
 SPAN_LIMIT = 5_000
 
 FAITHFULNESS_SCORES = {"fidele": 1.0, "partiellement_fidele": 0.5, "non_fidele": 0.0}
@@ -113,6 +118,7 @@ class CanarySummary:
     trace_ids: list[str] = field(default_factory=list)
     cost_usd: float = 0.0
     answer_ready_ms: list[float] = field(default_factory=list)
+    full_dataset: bool = False
 
 
 def env_float(name: str, default: float) -> float:
@@ -236,27 +242,90 @@ def judge_user_prompt(item: JudgeInput) -> str:
     )
 
 
-def judge_answer(item: JudgeInput, *, model: str) -> JudgeResult:
-    from interface.backend.llm_providers import create_llm_response
+def judge_batch(items: Mapping[str, JudgeInput], *, model: str, deadline: float) -> dict[str, JudgeResult]:
+    from mistralai.client import Mistral
 
-    last_error: Exception | None = None
-    # mistral-large sometimes needs ~3000 output tokens before closing the JSON
-    # object; a truncated answer is retried once.
-    for _attempt in range(2):
+    from interface.backend.llm_providers import extract_mistral_text
+
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "quality_judgment",
+            "schema": JUDGE_RESPONSE_SCHEMA,
+            "strict": True,
+        },
+    }
+    jsonl = "".join(
+        json.dumps(
+            {
+                "custom_id": custom_id,
+                "body": {
+                    "messages": [
+                        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                        {"role": "user", "content": judge_user_prompt(item)},
+                    ],
+                    "response_format": response_format,
+                    "max_tokens": JUDGE_MAX_OUTPUT_TOKENS,
+                },
+            },
+            ensure_ascii=False,
+        ) + "\n"
+        for custom_id, item in items.items()
+    )
+    if time.monotonic() >= deadline:
+        raise TimeoutError("délai du rapport qualité dépassé avant l'envoi du lot")
+
+    results: dict[str, JudgeResult] = {}
+    with Mistral(api_key=os.environ["MISTRAL_API_KEY"], timeout_ms=30_000) as mistral:
+        uploaded = mistral.files.upload(
+            file={"file_name": "quality-judge.jsonl", "content": jsonl.encode("utf-8")},
+            purpose="batch",
+        )
+        job = None
         try:
-            response = create_llm_response(
+            job = mistral.batch.jobs.create(
+                input_files=[uploaded.id],
+                endpoint="/v1/chat/completions",
                 model=model,
-                input=[
-                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                    {"role": "user", "content": judge_user_prompt(item)},
-                ],
-                response_schema=JUDGE_RESPONSE_SCHEMA,
-                max_output_tokens=JUDGE_MAX_OUTPUT_TOKENS,
+                timeout_hours=JUDGE_BATCH_TIMEOUT_HOURS,
+                metadata={"purpose": "rag-ionis-quality"},
             )
-            return parse_judge_payload(str(response.output_text or ""))
-        except Exception as exc:
-            last_error = exc
-    raise last_error  # type: ignore[misc]
+            print(f"[quality] Batch {job.id} : {len(items)} évaluation(s)", file=sys.stderr)
+            while job.status in JUDGE_BATCH_ACTIVE_STATUSES:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("délai d'attente du lot dépassé")
+                time.sleep(min(JUDGE_BATCH_POLL_SECONDS, remaining))
+                job = mistral.batch.jobs.get(job_id=job.id)
+            if job.status != "SUCCESS":
+                print(f"[quality] Batch {job.id} terminé avec le statut {job.status}", file=sys.stderr)
+            if job.output_file:
+                output = mistral.files.download(file_id=job.output_file).read()
+                for line in output.splitlines():
+                    try:
+                        row = json.loads(line)
+                        custom_id = row["custom_id"]
+                        if custom_id not in items or custom_id in results:
+                            continue
+                        response = row["response"]
+                        if row.get("error") or response.get("status_code", 200) != 200:
+                            continue
+                        body = response["body"]
+                        if body["choices"][0].get("finish_reason") == "length":
+                            continue
+                        results[custom_id] = parse_judge_payload(extract_mistral_text(body))
+                    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                        # Missing and invalid results are counted per trace below.
+                        continue
+        finally:
+            if job is not None and job.status in JUDGE_BATCH_ACTIVE_STATUSES:
+                with suppress(Exception):
+                    mistral.batch.jobs.cancel(job_id=job.id)
+            for file_id in (uploaded.id, getattr(job, "output_file", None), getattr(job, "error_file", None)):
+                if file_id:
+                    with suppress(Exception):
+                        mistral.files.delete(file_id=file_id)
+    return results
 
 
 def parse_judge_payload(raw: str) -> JudgeResult:
@@ -293,33 +362,55 @@ def annotate(client: Any, item: JudgeInput, result: JudgeResult, *, model: str) 
 
 def judge_traces(
     client: Any,
-    project: str,
-    trace_ids: Iterable[str],
+    traces_by_project: Mapping[str, Iterable[str]],
     *,
     model: str,
-    judge: Callable[..., JudgeResult] = judge_answer,
-) -> JudgeSummary:
-    summary = JudgeSummary()
-    for trace_id in trace_ids:
-        try:
-            spans = client.spans.get_spans(
-                project_identifier=project, trace_ids=[trace_id], limit=SPAN_LIMIT
-            )
-            item = judge_input_from_trace(spans)
-            if item is None:
+    deadline: float,
+) -> dict[str, JudgeSummary]:
+    summaries = {project: JudgeSummary() for project in traces_by_project}
+    items: dict[str, JudgeInput] = {}
+    projects: dict[str, str] = {}
+    for project, trace_ids in traces_by_project.items():
+        for trace_id in dict.fromkeys(trace_ids):
+            try:
+                spans = client.spans.get_spans(
+                    project_identifier=project, trace_ids=[trace_id], limit=SPAN_LIMIT
+                )
+                item = judge_input_from_trace(spans)
+            except Exception as exc:
+                summaries[project].errors += 1
+                print(f"[quality] trace {trace_id}: {type(exc).__name__}", file=sys.stderr)
                 continue
-            result = judge(item, model=model)
+            if item is not None:
+                custom_id = str(len(items))
+                items[custom_id] = item
+                projects[custom_id] = project
+    if not items:
+        return summaries
+    try:
+        results = judge_batch(items, model=model, deadline=deadline)
+    except Exception as exc:
+        print(f"[quality] batch judge failed: {type(exc).__name__}", file=sys.stderr)
+        results = {}
+
+    for custom_id, item in items.items():
+        summary = summaries[projects[custom_id]]
+        result = results.get(custom_id)
+        if result is None:
+            summary.errors += 1
+            continue
+        try:
             annotate(client, item, result, model=model)
         except Exception as exc:  # one bad trace must not stop the report
             summary.errors += 1
-            print(f"[quality] judge failed for {trace_id}: {exc}", file=sys.stderr)
+            print(f"[quality] annotation {item.trace_id}: {type(exc).__name__}", file=sys.stderr)
             continue
         summary.judged += 1
         summary.faithfulness.append(result.faithfulness_score)
         summary.relevance.append(result.relevance_score)
         if result.faithfulness == "non_fidele" or result.relevance == "hors_sujet":
             summary.flagged.append(f"{item.question[:80]} → {result.explanation[:160]}")
-    return summary
+    return summaries
 
 
 def select_canary_questions(questions: Sequence[str], count: int, day: date) -> list[str]:
@@ -458,6 +549,8 @@ def build_report(
     ]
     if canary is not None and canary_judge is not None:
         canary_faithfulness = mean(canary_judge.faithfulness)
+        if canary.full_dataset and canary_judge.judged < canary.asked:
+            anomalies.append(f"canari incomplet ({canary_judge.judged}/{canary.asked} réponses notées)")
         if len(canary.failures) > max_canary_failures:
             anomalies.append(f"{len(canary.failures)} question(s) canari en échec")
         if canary_faithfulness is not None and canary_faithfulness < min_faithfulness:
@@ -468,6 +561,7 @@ def build_report(
             f"Canari : {canary.asked - len(canary.failures)}/{canary.asked} réponses, "
             f"fidélité {_format_score(canary_faithfulness)}, "
             f"pertinence {_format_score(mean(canary_judge.relevance))}, "
+            f"{canary_judge.judged}/{canary.asked} notées, "
             f"p50 {_format_ms(percentile(canary.answer_ready_ms, 50))}, "
             f"{canary.cost_usd:.3f} $"
         )
@@ -499,6 +593,7 @@ def run_daily(args: argparse.Namespace) -> dict[str, Any]:
     from interface.backend.golden_recall import load_golden_cases
     from interface.backend.telemetry import configure_telemetry, shutdown_telemetry
 
+    deadline = time.monotonic() + DAILY_JUDGE_DEADLINE_SECONDS
     model = os.getenv("QUALITY_JUDGE_MODEL", DEFAULT_JUDGE_MODEL).strip() or DEFAULT_JUDGE_MODEL
     day = args.date or (datetime.now(PARIS).date() - timedelta(days=1))
     start, end = paris_day_window(day)
@@ -506,15 +601,19 @@ def run_daily(args: argparse.Namespace) -> dict[str, Any]:
 
     canary = canary_judge = None
     canary_project = os.getenv("PHOENIX_PROJECT_NAME", "rag-ionis-canary")
-    if args.canary_count > 0:
+    canary_day = datetime.now(PARIS).date()
+    weekly_canary = args.canary_count is None and canary_day.weekday() == WEEKLY_CANARY_WEEKDAY
+    if weekly_canary or (args.canary_count or 0) > 0:
         if canary_project == TRAFFIC_PROJECT:
             raise SystemExit("Le canari doit tracer dans un projet Phoenix distinct de la prod.")
         configure_telemetry()
         questions = [case.question for case in load_golden_cases(os.environ["GOLDEN_DATASET_URL"])]
+        selected = questions if weekly_canary else select_canary_questions(questions, args.canary_count, canary_day)
         canary = run_canary(
-            select_canary_questions(questions, args.canary_count, datetime.now(PARIS).date()),
+            selected,
             delay_seconds=args.canary_delay_seconds,
         )
+        canary.full_dataset = len(selected) == len(questions)
         # Flush the canary spans so the judge can read them back from Phoenix.
         shutdown_telemetry()
         time.sleep(5)
@@ -540,11 +639,12 @@ def run_daily(args: argparse.Namespace) -> dict[str, Any]:
         for span in root_spans
         if isinstance(value := (span.get("attributes") or {}).get("rag.answer_ready_ms"), (int, float))
     ]
-    traffic_judge = judge_traces(
-        client, TRAFFIC_PROJECT, [_trace_id(span) for span in root_spans], model=model
-    )
+    traces_by_project = {TRAFFIC_PROJECT: [_trace_id(span) for span in root_spans]}
     if canary is not None:
-        canary_judge = judge_traces(client, canary_project, canary.trace_ids, model=model)
+        traces_by_project[canary_project] = canary.trace_ids
+    summaries = judge_traces(client, traces_by_project, model=model, deadline=deadline)
+    traffic_judge = summaries[TRAFFIC_PROJECT]
+    canary_judge = summaries.get(canary_project) if canary is not None else None
 
     errors = sum(1 for span in root_spans if span.get("status_code") == "ERROR")
     feedback = feedback_counts(start, end)
@@ -618,6 +718,8 @@ def report_metrics(
         metrics.update(
             {
                 "canary_asked": canary.asked,
+                "canary_judged": canary_judge.judged,
+                "canary_full_dataset": canary.full_dataset,
                 "canary_failures": len(canary.failures),
                 "canary_faithfulness": mean(canary_judge.faithfulness),
                 "canary_relevance": mean(canary_judge.relevance),
@@ -639,7 +741,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Jour du trafic à évaluer (AAAA-MM-JJ, heure de Paris). Défaut : la veille.",
     )
-    daily.add_argument("--canary-count", type=int, default=DEFAULT_CANARY_COUNT)
+    daily.add_argument(
+        "--canary-count", type=int, default=None,
+        help="Nombre de questions pour un essai manuel. Par défaut : jeu complet le samedi, 0 les autres jours.",
+    )
     daily.add_argument(
         "--canary-delay-seconds", type=float, default=DEFAULT_CANARY_DELAY_SECONDS
     )

@@ -1,5 +1,5 @@
 [Unit]
-Description=Alerte Telegram : échec de %i
+Description=Notification par e-mail de l'échec de %i
 After=network-online.target
 Wants=network-online.target
 

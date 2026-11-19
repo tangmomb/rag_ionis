@@ -49,11 +49,10 @@ install -D -m 0644 "${unit_source_dir}/${quality_drop_in}" "/etc/systemd/system/
 
 install -d -m 0755 /var/lib/rag-ionis-updater /var/lib/rag-ionis-monitoring
 
-# Alertes Telegram en cas d'échec. Le token reste dans /etc/rag-ionis/telegram.env,
-# créé à la main sur le VPS ; sans ce fichier, l'alerte est seulement journalisée.
+# Les réglages SMTP restent dans /etc/rag-ionis/smtp.ini, créé à la main sur le VPS.
 # Pings healthchecks.io : la clé reste dans /etc/rag-ionis/healthchecks.env, créé à
 # la main ; sans ce fichier, les pings sont seulement journalisés.
-for script in rag-ionis-telegram.sh rag-ionis-notify-failure.sh rag-ionis-healthcheck.sh; do
+for script in rag-ionis-email.py rag-ionis-notify-failure.sh rag-ionis-healthcheck.sh; do
   install -m 0755 "${unit_source_dir}/${script}" "/usr/local/bin/${script}"
 done
 install -d -m 0700 /etc/rag-ionis

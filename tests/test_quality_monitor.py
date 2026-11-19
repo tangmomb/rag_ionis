@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from unittest import mock
 
 from interface.monitoring import quality
@@ -127,40 +128,96 @@ class JudgePayloadTest(unittest.TestCase):
 
 
 class JudgeTracesTest(unittest.TestCase):
-    def test_scores_are_published_as_idempotent_llm_annotations(self) -> None:
+    def test_traffic_and_canary_share_one_batch_and_keep_their_own_annotations(self) -> None:
         client = mock.Mock()
         client.spans.get_spans.side_effect = lambda **kwargs: rag_trace(kwargs["trace_ids"][0])
-        judge = mock.Mock(
-            return_value=quality.JudgeResult("non_fidele", "pertinente", "Vidéo 3 absente.")
-        )
+        results = {
+            "2": quality.JudgeResult("non_fidele", "pertinente", "Vidéo 3 absente."),
+            "0": quality.JudgeResult("fidele", "pertinente", "Réponse correcte."),
+        }
+        with mock.patch.object(quality, "judge_batch", return_value=results) as batch:
+            summaries = quality.judge_traces(
+                client, {"rag-ionis": ["t1", "t2", "t1"], "canary": ["t3"]},
+                model="judge", deadline=123,
+            )
 
-        summary = quality.judge_traces(client, "rag-ionis", ["t1"], model="judge", judge=judge)
+        batch.assert_called_once()
+        self.assertEqual([item.trace_id for item in batch.call_args.args[0].values()], ["t1", "t2", "t3"])
+        self.assertEqual(batch.call_args.kwargs, {"model": "judge", "deadline": 123})
+        self.assertEqual(summaries["rag-ionis"].faithfulness, [1.0])
+        self.assertEqual(summaries["rag-ionis"].errors, 1)
+        self.assertEqual(summaries["canary"].faithfulness, [0.0])
+        self.assertEqual(len(summaries["canary"].flagged), 1)
 
-        self.assertEqual(summary.judged, 1)
-        self.assertEqual(summary.faithfulness, [0.0])
-        self.assertEqual(len(summary.flagged), 1)
         calls = client.spans.add_span_annotation.call_args_list
         self.assertEqual(
-            [call.kwargs["annotation_name"] for call in calls], ["fidelite", "pertinence"]
+            [(call.kwargs["span_id"], call.kwargs["annotation_name"]) for call in calls],
+            [("t1-root", "fidelite"), ("t1-root", "pertinence"),
+             ("t3-root", "fidelite"), ("t3-root", "pertinence")],
         )
         for call in calls:
-            self.assertEqual(call.kwargs["span_id"], "t1-root")
             self.assertEqual(call.kwargs["annotator_kind"], "LLM")
             self.assertEqual(call.kwargs["identifier"], quality.ANNOTATION_IDENTIFIER)
 
     def test_a_failing_trace_does_not_stop_the_others(self) -> None:
         client = mock.Mock()
-        client.spans.get_spans.side_effect = lambda **kwargs: rag_trace(kwargs["trace_ids"][0])
-        judge = mock.Mock(
-            side_effect=[
-                RuntimeError("quota"),
-                quality.JudgeResult("fidele", "pertinente", "ok"),
-            ]
-        )
-
-        summary = quality.judge_traces(client, "rag-ionis", ["t1", "t2"], model="j", judge=judge)
+        client.spans.get_spans.side_effect = [RuntimeError("quota"), rag_trace("t2")]
+        with mock.patch.object(quality, "judge_batch", return_value={
+            "0": quality.JudgeResult("fidele", "pertinente", "ok"),
+        }):
+            summary = quality.judge_traces(
+                client, {"rag-ionis": ["t1", "t2"]}, model="j", deadline=123,
+            )["rag-ionis"]
 
         self.assertEqual((summary.judged, summary.errors), (1, 1))
+
+
+class JudgeBatchTest(unittest.TestCase):
+    def test_submits_jsonl_and_reads_partial_results(self) -> None:
+        items = {
+            "0": quality.judge_input_from_trace(rag_trace("t1")),
+            "1": quality.judge_input_from_trace(rag_trace("t2")),
+        }
+        content = json.dumps({"fidelite": "fidele", "pertinence": "pertinente", "explication": "OK"})
+        rows = [
+            {"custom_id": "1", "error": {"message": "failed"}},
+            {"custom_id": "0", "response": {"status_code": 200, "body": {"choices": [
+                {"finish_reason": "stop", "message": {"content": content}},
+            ]}}},
+        ]
+        with (
+            mock.patch("mistralai.client.Mistral") as factory,
+            mock.patch.dict("os.environ", {"MISTRAL_API_KEY": "test"}),
+            mock.patch.object(quality.time, "sleep"),
+        ):
+            mistral = factory.return_value.__enter__.return_value
+            mistral.files.upload.return_value = SimpleNamespace(id="input")
+            mistral.batch.jobs.create.return_value = SimpleNamespace(id="job", status="QUEUED")
+            mistral.batch.jobs.get.return_value = SimpleNamespace(
+                id="job", status="SUCCESS", output_file="output", error_file="errors"
+            )
+            mistral.files.download.return_value.read.return_value = "\n".join(
+                json.dumps(row) for row in rows
+            ).encode()
+            results = quality.judge_batch(items, model="mistral-large-latest", deadline=float("inf"))
+
+        upload = mistral.files.upload.call_args.kwargs
+        self.assertEqual(upload["purpose"], "batch")
+        self.assertEqual(upload["file"]["file_name"], "quality-judge.jsonl")
+        requests = [json.loads(line) for line in upload["file"]["content"].splitlines()]
+        self.assertEqual([row["custom_id"] for row in requests], ["0", "1"])
+        for row, item in zip(requests, items.values()):
+            self.assertEqual(row["body"]["messages"][1]["content"], quality.judge_user_prompt(item))
+        mistral.batch.jobs.create.assert_called_once_with(
+            input_files=["input"], endpoint="/v1/chat/completions", model="mistral-large-latest",
+            timeout_hours=2, metadata={"purpose": "rag-ionis-quality"},
+        )
+        mistral.batch.jobs.get.assert_called_once_with(job_id="job")
+        self.assertEqual(results, {"0": quality.JudgeResult("fidele", "pertinente", "OK")})
+        self.assertEqual(
+            mistral.files.delete.call_args_list,
+            [mock.call(file_id=file_id) for file_id in ("input", "output", "errors")],
+        )
 
 
 class HelpersTest(unittest.TestCase):
@@ -295,6 +352,59 @@ class ReportTest(unittest.TestCase):
 
         self.assertNotIn("Canari", message)
         self.assertEqual(anomalies, [])
+
+    def test_full_canary_reports_how_many_answers_were_judged(self) -> None:
+        message, anomalies = self.report(
+            canary=quality.CanarySummary(asked=84, full_dataset=True),
+            canary_judge=quality.JudgeSummary(judged=83, faithfulness=[1.0] * 83),
+        )
+
+        self.assertIn("83/84 notées", message)
+        self.assertIn("canari incomplet (83/84 réponses notées)", anomalies)
+
+
+class DailyScheduleTest(unittest.TestCase):
+    def test_saturday_runs_the_entire_dataset_and_friday_only_judges_traffic(self) -> None:
+        questions = [f"Question {index} ?" for index in range(84)]
+        args = quality.build_parser().parse_args(["daily"])
+        for day, expected in ((20, False), (21, True)):
+            with (
+                self.subTest(day=day),
+                mock.patch.object(quality, "datetime") as clock,
+                mock.patch.object(quality, "phoenix_client") as client,
+                mock.patch.object(quality, "feedback_counts", return_value=(0, 0)),
+                mock.patch.object(quality, "run_canary", return_value=quality.CanarySummary(asked=84)) as run_canary,
+                mock.patch.object(quality, "judge_traces", return_value={
+                    quality.TRAFFIC_PROJECT: quality.JudgeSummary(judged=12),
+                    "rag-ionis-canary": quality.JudgeSummary(judged=84),
+                }) as judge,
+                mock.patch.object(quality.time, "sleep"),
+                mock.patch("interface.backend.telemetry.configure_telemetry"),
+                mock.patch("interface.backend.telemetry.shutdown_telemetry"),
+                mock.patch("interface.backend.golden_recall.load_golden_cases", return_value=[
+                    SimpleNamespace(question=question) for question in questions
+                ]) as load,
+                mock.patch.dict("os.environ", {
+                    "GOLDEN_DATASET_URL": "https://example.test/dataset",
+                    "PHOENIX_PROJECT_NAME": "rag-ionis-canary",
+                }),
+            ):
+                clock.now.return_value = datetime(2026, 11, day, 5, tzinfo=quality.PARIS)
+                clock.combine.side_effect = datetime.combine
+                client.return_value.spans.get_spans.return_value = []
+                result = quality.run_daily(args)
+
+            judge.assert_called_once()
+            self.assertEqual(result["metrics"]["traffic_judged"], 12)
+            self.assertEqual("rag-ionis-canary" in judge.call_args.args[1], expected)
+            if expected:
+                run_canary.assert_called_once_with(questions, delay_seconds=quality.DEFAULT_CANARY_DELAY_SECONDS)
+                self.assertTrue(result["metrics"]["canary_full_dataset"])
+                self.assertEqual(result["metrics"]["canary_judged"], 84)
+            else:
+                load.assert_not_called()
+                run_canary.assert_not_called()
+                self.assertNotIn("canary_asked", result["metrics"])
 
 
 if __name__ == "__main__":

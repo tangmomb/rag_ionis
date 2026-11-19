@@ -202,6 +202,7 @@ def _finalize_response(
     retrieval["retrieved_sources"] = [
         {
             "chunk_id": source.get("chunk_id"),
+            "chunk_index": source.get("chunk_index"),
             "video_url": source.get("video_url"),
         }
         for source in sources

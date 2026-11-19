@@ -41,6 +41,24 @@ class HistoryShapeTest(unittest.TestCase):
 
         self.assertEqual((result["recall"], result["faithfulness"]), ([], []))
 
+    def test_public_traffic_series_includes_days_without_a_canary_score(self) -> None:
+        rows = [
+            (AT, "quality", "ok", {"canary_faithfulness": 1, "traffic_faithfulness": None}),
+            (AT, "quality", "anomaly", {
+                "day": "2026-11-17", "traffic_faithfulness": 0, "traffic_judged": 2,
+                "traffic_relevance": 0.5,
+            }),
+            (AT, "quality", "failed", {"traffic_faithfulness": 0.8}),
+        ]
+
+        result = history.history_from_rows(rows)
+
+        self.assertEqual(len(result["faithfulness"]), 1)
+        self.assertEqual(result["traffic_faithfulness"], [{
+            "at": AT.isoformat(), "day": "2026-11-17", "status": "anomaly",
+            "traffic_faithfulness": 0, "traffic_judged": 2, "traffic_relevance": 0.5,
+        }])
+
     def test_no_message_or_user_data_is_exposed(self) -> None:
         rows = [(AT, "quality", "ok", {"canary_faithfulness": 1.0, "anomalies": ["x"], "flagged": ["question"]})]
 

@@ -103,7 +103,7 @@ def payload(check: Check) -> dict:
         "schedule": check.schedule,
         "tz": TIMEZONE,
         "grace": check.grace_minutes * 60,
-        # Toutes les intégrations du projet (mail, Telegram…) reçoivent les alertes.
+        # Les alertes utilisent les intégrations configurées dans le projet.
         "channels": "*",
         "unique": ["slug"],
     }

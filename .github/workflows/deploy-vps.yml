@@ -190,7 +190,6 @@ jobs:
             deploy/run-scheduled-update.sh \
             deploy/run-monitoring.sh \
             deploy/record-report.sh \
-            deploy/systemd/rag-ionis-telegram.sh \
             deploy/systemd/rag-ionis-notify-failure.sh
 
       - name: Validate production Compose rendering

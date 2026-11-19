@@ -1,0 +1,11 @@
+[Unit]
+Description=Generate the 30 RAG IONIS opening questions overnight
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 Europe/Paris
+AccuracySec=1min
+Persistent=true
+Unit=rag-ionis-synthetic@night.service
+
+[Install]
+WantedBy=timers.target

@@ -25,7 +25,7 @@ Ce projet transforme les vidéos de la chaîne YouTube IONIS-STM en une base int
 [![Disponibilité de l'API](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftangmomb%2Fstatus%2FHEAD%2Fapi%2Frag-ionis-api%2Fuptime.json&label=API)](https://tangmomb.github.io/status/)
 [![Temps de réponse de l'API](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftangmomb%2Fstatus%2FHEAD%2Fapi%2Frag-ionis-api%2Fresponse-time.json&label=temps%20de%20r%C3%A9ponse)](https://tangmomb.github.io/status/)
 
-Le RAG tourne sur un VPS Contabo et se surveille sur trois niveaux, avec toutes les alertes sur Telegram :
+Le RAG tourne sur un VPS Contabo et se surveille sur trois niveaux, avec des alertes par e-mail :
 
 - **Disponibilité et serveur** : [page de statut publique](https://tangmomb.github.io/status/) alimentée toutes les 5 minutes depuis l'extérieur (Upptime), ressources du serveur dans Beszel, alerte à chaque échec de sauvegarde ou de mise à jour.
 - **Qualité des réponses** : chaque matin, 10 questions de référence passent par tout le pipeline, puis un LLM juge (mistral-large, distinct du modèle qui répond) note la fidélité aux sources et la pertinence de ces réponses et du trafic de la veille ; les notes sont des annotations Phoenix. Le recall du golden dataset est remesuré en production deux fois par mois.

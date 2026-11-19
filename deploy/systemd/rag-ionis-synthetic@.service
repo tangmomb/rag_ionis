@@ -1,0 +1,23 @@
+[Unit]
+Description=RAG IONIS synthetic conversations (%i)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/srv/rag_ionis/.env.production
+OnFailure=rag-ionis-notify-failure@%n.service
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/srv/rag_ionis_synthetic
+StateDirectory=rag-ionis-synthetic
+StateDirectoryMode=0750
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/flock -w 120 /var/lib/rag-ionis-synthetic/schedule.lock /srv/rag_ionis_synthetic/.venv/bin/python -m utils.model_embedding.schedule_synthetic_users %i
+TimeoutStartSec=14h
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=2min
+Nice=10

@@ -4,7 +4,7 @@ Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
 ConditionPathExists=/srv/rag_ionis/.env.production
-# Un crash de la tâche envoie une alerte Telegram.
+# Un crash de la tâche déclenche une alerte par e-mail.
 OnFailure=rag-ionis-notify-failure@%n.service
 
 [Service]

@@ -24,6 +24,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, time as day_time, timedelta, timezone
+from ipaddress import ip_address
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,8 @@ PARIS = ZoneInfo("Europe/Paris")
 PAID_PATH_PATTERN = re.compile(r"^/api/rag(?:/stream|/messages/\d+/expand)?/?$")
 
 DEFAULT_PER_MINUTE = 10
-DEFAULT_PER_DAY = 50
+DEFAULT_PER_DAY = 30
+DEFAULT_VPS_PER_DAY = 100
 DEFAULT_DAILY_BUDGET_USD = 2.0
 # Coût moyen d'une question mesuré sur le golden dataset (0,0063 $), arrondi au-dessus.
 DEFAULT_COST_PER_QUESTION_USD = 0.0065
@@ -88,12 +90,21 @@ def enabled() -> bool:
     return os.getenv("RAG_IONIS_ENV", "").strip().lower() == "production"
 
 
-def limits_from_env() -> Limits:
+def limits_from_env(client_ip: str | None = None) -> Limits:
     budget = _env_number("RAG_DAILY_BUDGET_USD", DEFAULT_DAILY_BUDGET_USD)
     cost = _env_number("RAG_COST_PER_QUESTION_USD", DEFAULT_COST_PER_QUESTION_USD)
+    per_day = int(_env_number("RAG_RATE_LIMIT_PER_DAY", DEFAULT_PER_DAY))
+    vps_ip = os.getenv("RAG_RATE_LIMIT_VPS_IP", "").strip()
+    if vps_ip and client_ip:
+        try:
+            is_vps = ip_address(client_ip) == ip_address(vps_ip)
+        except ValueError:
+            is_vps = False
+        if is_vps:
+            per_day = int(_env_number("RAG_RATE_LIMIT_VPS_PER_DAY", DEFAULT_VPS_PER_DAY))
     return Limits(
         per_minute=int(_env_number("RAG_RATE_LIMIT_PER_MINUTE", DEFAULT_PER_MINUTE)),
-        per_day=int(_env_number("RAG_RATE_LIMIT_PER_DAY", DEFAULT_PER_DAY)),
+        per_day=per_day,
         global_per_day=max(1, math.floor(budget / cost)),
     )
 
@@ -199,4 +210,4 @@ def check_request(client_ip: str | None, *, now: datetime | None = None) -> Reje
         # Fail open: an unavailable counter must not take the site down.
         print(f"[rate_limit] counter unavailable, request allowed: {exc}", file=sys.stderr, flush=True)
         return None
-    return evaluate(counts, limits_from_env(), windows)
+    return evaluate(counts, limits_from_env(client_ip), windows)

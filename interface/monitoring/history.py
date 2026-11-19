@@ -36,9 +36,10 @@ def _threshold(name: str, default: float) -> float:
 
 
 def history_from_rows(rows: list[tuple[Any, str, str, dict[str, Any]]]) -> dict[str, Any]:
-    """Shape (created_at, kind, status, metrics) rows into the two chart series."""
+    """Shape (created_at, kind, status, metrics) rows into chart series."""
     recall: list[dict[str, Any]] = []
     faithfulness: list[dict[str, Any]] = []
+    traffic_faithfulness: list[dict[str, Any]] = []
     for created_at, kind, status, metrics in rows:
         metrics = metrics or {}
         if kind in {"recall", "recall_gate"} and status != "failed":
@@ -57,21 +58,33 @@ def history_from_rows(rows: list[tuple[Any, str, str, dict[str, Any]]]) -> dict[
                 )
         elif kind == "quality" and status != "failed":
             canary = _number(metrics.get("canary_faithfulness"))
+            traffic = _number(metrics.get("traffic_faithfulness"))
+            report = {
+                "at": created_at.isoformat(),
+                "day": metrics.get("day"),
+                "status": status,
+                "traffic_faithfulness": traffic,
+                "traffic_judged": metrics.get("traffic_judged"),
+            }
             if canary is not None:
                 faithfulness.append(
                     {
-                        "at": created_at.isoformat(),
-                        "day": metrics.get("day"),
-                        "status": status,
+                        **report,
                         "canary_faithfulness": canary,
                         "canary_relevance": _number(metrics.get("canary_relevance")),
-                        "traffic_faithfulness": _number(metrics.get("traffic_faithfulness")),
-                        "traffic_judged": metrics.get("traffic_judged"),
+                        "canary_full_dataset": metrics.get("canary_full_dataset") is True,
+                        "canary_asked": metrics.get("canary_asked"),
+                        "canary_judged": metrics.get("canary_judged"),
                     }
+                )
+            if traffic is not None:
+                traffic_faithfulness.append(
+                    {**report, "traffic_relevance": _number(metrics.get("traffic_relevance"))}
                 )
     return {
         "recall": recall,
         "faithfulness": faithfulness,
+        "traffic_faithfulness": traffic_faithfulness,
         "thresholds": {
             "recall": _threshold("GOLDEN_DATASET_MIN_RECALL", 0.80),
             "faithfulness": _threshold("QUALITY_MIN_FAITHFULNESS", 0.80),

@@ -3,7 +3,7 @@
 #   quality : canari, LLM juge et rapport de la veille (chaque matin)
 #   recall  : recall du golden dataset sur la prod (le 1er et le 15 du mois)
 #   restore : restauration de la dernière sauvegarde dans une base jetable (chaque lundi)
-# Chaque tâche envoie son résultat sur Telegram et l'enregistre dans la table
+# Chaque tâche envoie son résultat par e-mail et l'enregistre dans la table
 # monitoring.reports (deploy/record-report.sh). Un crash fait échouer le service,
 # ce qui déclenche l'alerte OnFailure.
 set -euo pipefail
@@ -18,7 +18,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 env_file="${RAG_IONIS_PRODUCTION_ENV_FILE:-${repo_root}/.env.production}"
 state_dir="${RAG_IONIS_MONITORING_STATE_DIR:-/var/lib/rag-ionis-monitoring}"
-telegram="${RAG_IONIS_TELEGRAM_SCRIPT:-/usr/local/bin/rag-ionis-telegram.sh}"
+email_script="${RAG_IONIS_EMAIL_SCRIPT:-/usr/local/bin/rag-ionis-email.py}"
 
 [[ -f "${env_file}" ]] || {
   printf 'Production environment file not found: %s\n' "${env_file}" >&2
@@ -59,16 +59,15 @@ print(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) e
 ' "$1"
 }
 
-# Envoie le message sur Telegram et enregistre le rapport. Un échec d'enregistrement
-# est signalé sans empêcher l'alerte.
+# Enregistre le rapport avant l'envoi pour conserver les résultats si SMTP échoue.
 publish() {
   local kind="$1" status="$2" metrics="$3" message="$4"
   printf '%s\n' "${metrics}" >"${workdir}/metrics.json"
   printf '%s\n' "${message}" >"${workdir}/message.txt"
-  printf '%s\n' "${message}" | /usr/bin/bash "${telegram}"
   /usr/bin/bash "${script_dir}/record-report.sh" "${kind}" "${status}" \
     "${workdir}/metrics.json" "${workdir}/message.txt" ||
     printf 'Warning: %s report not recorded in monitoring.reports.\n' "${kind}" >&2
+  printf '%s\n' "${message}" | /usr/bin/python3 "${email_script}" "[RAG IONIS] ${message%%$'\n'*}"
 }
 
 record_failure() {
@@ -79,9 +78,23 @@ record_failure() {
 
 case "${task}" in
   quality)
+    quality_mount=()
+    quality_command=(python -m interface.monitoring.quality)
+    # Use the host module while the running image predates the batch judge.
+    quality_override="${state_dir}/quality.py"
+    if [[ -f "${quality_override}" ]]; then
+      quality_mount=(-v "${quality_override}:/tmp/rag-ionis-quality.py:ro")
+      quality_command=(python -c '
+import runpy
+from interface.monitoring import quality
+if hasattr(quality, "judge_batch"):
+    raise SystemExit(quality.main())
+runpy.run_path("/tmp/rag-ionis-quality.py", run_name="__main__")
+')
+    fi
     set +e
-    output="$("${run_api[@]}" -e PHOENIX_PROJECT_NAME=rag-ionis-canary \
-      api python -m interface.monitoring.quality daily)"
+    output="$("${run_api[@]}" "${quality_mount[@]}" -e PHOENIX_PROJECT_NAME=rag-ionis-canary \
+      api "${quality_command[@]}" daily)"
     status=$?
     set -e
     printf '%s\n' "${output}"

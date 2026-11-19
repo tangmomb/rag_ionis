@@ -55,7 +55,23 @@ class ConfigurationTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RAG_RATE_LIMIT_PER_MINUTE": "abc", "RAG_RATE_LIMIT_PER_DAY": "-3"}):
             limits = rate_limit.limits_from_env()
 
-        self.assertEqual((limits.per_minute, limits.per_day), (10, 50))
+        self.assertEqual((limits.per_minute, limits.per_day), (10, 30))
+
+    def test_vps_override_changes_only_the_daily_limit_for_that_address(self) -> None:
+        with mock.patch.dict(os.environ, {
+            "RAG_RATE_LIMIT_PER_DAY": "30",
+            "RAG_RATE_LIMIT_VPS_IP": "2001:db8::7",
+            "RAG_RATE_LIMIT_VPS_PER_DAY": "100",
+        }):
+            public = rate_limit.limits_from_env("2001:db8::8")
+            vps = rate_limit.limits_from_env("2001:0db8:0:0:0:0:0:7")
+            self.assertEqual(rate_limit.limits_from_env(None), public)
+        self.assertEqual((public.per_day, vps.per_day), (30, 100))
+        self.assertEqual((public.per_minute, public.global_per_day), (vps.per_minute, vps.global_per_day))
+        windows = rate_limit.windows_at(NOW)
+        self.assertEqual(rate_limit.evaluate({"day": 31}, public, windows).status_code, 429)
+        self.assertIsNone(rate_limit.evaluate({"day": 100}, vps, windows))
+        self.assertEqual(rate_limit.evaluate({"day": 101}, vps, windows).status_code, 429)
 
     def test_enabled_only_in_production_unless_overridden(self) -> None:
         with mock.patch.dict(os.environ, {"RAG_IONIS_ENV": "production", "RAG_RATE_LIMIT_ENABLED": ""}):

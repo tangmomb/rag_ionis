@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SYSTEMD_DIR = ROOT_DIR / "deploy" / "systemd"
@@ -30,6 +31,7 @@ def load(path: Path):
 
 healthchecks = load(ROOT_DIR / "deploy" / "healthchecks" / "setup_checks.py")
 grafana = load(ROOT_DIR / "deploy" / "grafana" / "apply_grafana.py")
+email_sender = load(SYSTEMD_DIR / "rag-ionis-email.py")
 
 
 def slug_of(unit: str) -> str:
@@ -38,9 +40,11 @@ def slug_of(unit: str) -> str:
 
 
 class HealthchecksTests(unittest.TestCase):
-    def test_every_timer_has_a_check_on_the_same_schedule(self) -> None:
+    def test_monitored_timers_have_a_check_on_the_same_schedule(self) -> None:
         checks = {check.unit: check for check in healthchecks.CHECKS}
-        timers = sorted(SYSTEMD_DIR.glob("*.timer"))
+        # Synthetic jobs are installed separately and report failures via systemd.
+        timers = sorted(timer for timer in SYSTEMD_DIR.glob("*.timer")
+                        if not timer.name.startswith("rag-ionis-synthetic-"))
         self.assertTrue(timers)
         for timer in timers:
             text = timer.read_text(encoding="utf-8")
@@ -66,8 +70,7 @@ class HealthchecksTests(unittest.TestCase):
             self.assertIn("ExecStartPre=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n start", unit)
             self.assertIn("ExecStartPost=-/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %n success", unit)
         notify = (SYSTEMD_DIR / "rag-ionis-notify-failure.sh").read_text(encoding="utf-8")
-        # Le ping d'échec part avant Telegram, qui peut être cassé.
-        self.assertLess(notify.index("rag-ionis-healthcheck.sh"), notify.index("rag-ionis-telegram.sh"))
+        self.assertLess(notify.index("rag-ionis-healthcheck.sh"), notify.index("rag-ionis-email.py"))
         installer = INSTALLER.read_text(encoding="utf-8")
         self.assertIn("rag-ionis-backup.service.d/healthcheck.conf", installer)
         self.assertIn("ExecStartPre=-+/usr/bin/bash /usr/local/bin/rag-ionis-healthcheck.sh %%n start", installer)
@@ -89,8 +92,33 @@ class HealthchecksTests(unittest.TestCase):
         self.assertIn("rag-ionis-monitor-quality", result.stderr)
 
 
+class EmailTests(unittest.TestCase):
+    def test_starttls_precedes_login_and_preserves_utf8(self) -> None:
+        config = email_sender.configparser.ConfigParser(interpolation=None)
+        config.read_dict({"smtp": {
+            "host": "smtp.example.com", "security": "starttls",
+            "username": "alerts@example.com", "password": "test-secret",
+            "from": "alerts@example.com", "to": "alerts@example.com",
+        }})
+        with patch.object(email_sender.smtplib, "SMTP") as connect:
+            smtp = connect.return_value.__enter__.return_value
+            smtp.send_message.return_value = {}
+            email_sender.send(config["smtp"], "Échec", "🔴 Échec de la sauvegarde")
+
+        connect.assert_called_once_with("smtp.example.com", 587, timeout=20)
+        self.assertEqual([call[0] for call in smtp.method_calls], ["starttls", "login", "send_message"])
+        message = smtp.send_message.call_args.args[0]
+        self.assertEqual(message["From"], "alerts@example.com")
+        self.assertEqual(message["To"], "alerts@example.com")
+        self.assertEqual(message["Subject"], "Échec")
+        self.assertEqual(message.get_content(), "🔴 Échec de la sauvegarde\n")
+
+
 class GrafanaTests(unittest.TestCase):
-    def test_rules_target_loki_and_the_telegram_contact_point(self) -> None:
+    def test_rules_target_loki_and_the_email_contact_point(self) -> None:
+        contact = grafana.contact_point("alerts@example.com")
+        self.assertEqual(contact["type"], "email")
+        self.assertEqual(contact["settings"], {"addresses": "alerts@example.com"})
         group = grafana.rule_group("loki-uid")
         self.assertEqual(group["interval"], 300)
         uids = [rule["uid"] for rule in group["rules"]]

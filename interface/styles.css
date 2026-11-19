@@ -552,6 +552,55 @@ button {
   font-size: 0.88em;
 }
 
+.faq-monitoring-table table {
+  min-width: 780px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.faq-monitoring-table th,
+.faq-monitoring-table td {
+  vertical-align: top;
+}
+
+.faq-monitoring-table th[scope="row"] {
+  width: 19%;
+  background: transparent;
+  font-size: inherit;
+}
+
+.faq-monitoring-section + .faq-monitoring-section {
+  margin-top: 32px;
+}
+
+.faq-monitoring-section h4 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 1.2rem;
+  line-height: 1.3;
+}
+
+.faq-monitoring-section > p {
+  margin: 0 0 12px;
+}
+
+.faq-monitoring-details > summary {
+  cursor: pointer;
+}
+
+.faq-monitoring-table:focus-visible {
+  outline: 2px solid var(--faq-accent);
+  outline-offset: 3px;
+}
+
+@media (min-width: 1100px) {
+  .faq-content:has(#maintenance-disponibilite:not([hidden])),
+  .faq-content:has(#deploiement-controles:not([hidden])) {
+    width: 100%;
+    padding-inline: clamp(24px, 3vw, 48px);
+  }
+}
+
 .faq-llm-calls-table {
   overflow-x: auto;
   margin: 16px 0;
@@ -802,6 +851,27 @@ button {
   line-height: 1.6;
 }
 
+.faq-prompt .prompt-role {
+  color: #eac579;
+  font-weight: 700;
+}
+
+#maintenance .json-key {
+  color: #90caff;
+}
+
+#maintenance .json-string {
+  color: #abd998;
+}
+
+#maintenance .json-number {
+  color: #eac579;
+}
+
+#maintenance .json-literal {
+  color: #d7b5ff;
+}
+
 .faq-tool {
   padding: 1px 6px;
   border: 1px solid rgba(255, 90, 90, 0.3);
@@ -842,7 +912,8 @@ button {
   line-height: 1;
 }
 
-.faq-info:hover .faq-info-trigger {
+.faq-info:hover .faq-info-trigger,
+.faq-info:focus-within .faq-info-trigger {
   border-color: rgba(255, 255, 255, 0.52);
   color: var(--text);
 }
@@ -877,10 +948,28 @@ button {
   object-fit: contain;
 }
 
-.faq-info:hover .faq-tooltip {
+.faq-info:hover .faq-tooltip,
+.faq-info:focus-within .faq-tooltip {
   opacity: 1;
   transform: translateY(0);
   visibility: visible;
+}
+
+.faq-info-term {
+  white-space: nowrap;
+}
+
+.faq-info-inline {
+  position: relative;
+}
+
+.faq-info-inline .faq-tooltip {
+  top: 100%;
+  width: min(260px, 75vw);
+  padding: 10px 12px;
+  white-space: normal;
+  display: block;
+  pointer-events: auto;
 }
 
 .faq-pipeline-preview {
@@ -2051,9 +2140,17 @@ button {
 /* Courbes de qualité de la FAQ (Maintenance) */
 .faq-quality-charts {
   --quality-series: #3987e5;
+  --quality-traffic: #66d39d;
   margin: 16px 0 0;
   display: grid;
   gap: 18px;
+}
+
+.quality-chart {
+  min-width: 0;
+  padding: clamp(10px, 2vw, 16px);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
 }
 
 .quality-chart-title {
@@ -2080,6 +2177,7 @@ button {
 .quality-key:first-child { margin-left: 0; }
 .quality-key-prod { background: var(--quality-series); }
 .quality-key-gate { border: 2px solid var(--quality-series); background: #0e0e0e; }
+.quality-key-traffic { border: 2px solid var(--quality-traffic); }
 
 .quality-key-threshold {
   width: 16px;
@@ -2106,7 +2204,9 @@ button {
 .quality-axis { fill: var(--muted); font-size: 12px; }
 .quality-empty { fill: var(--muted); font-size: 14px; paint-order: stroke; stroke: #0e0e0e; stroke-width: 6px; stroke-linejoin: round; }
 .quality-value { fill: var(--faq-body-text); font-size: 13px; font-weight: 600; }
+.quality-value-traffic { fill: var(--quality-traffic); }
 .quality-line { fill: none; stroke: var(--quality-series); stroke-width: 2; stroke-linejoin: round; }
+.quality-line-traffic { stroke: var(--quality-traffic); stroke-dasharray: 5 3; }
 
 .quality-dot {
   fill: var(--quality-series);
@@ -2117,6 +2217,11 @@ button {
 .quality-dot-hollow {
   fill: #0e0e0e;
   stroke: var(--quality-series);
+}
+
+.quality-dot-traffic {
+  fill: none;
+  stroke: var(--quality-traffic);
 }
 
 .quality-hit { fill: transparent; cursor: pointer; outline: none; }

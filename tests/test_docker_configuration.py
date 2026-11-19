@@ -158,21 +158,18 @@ class VpsConfigurationTests(unittest.TestCase):
         self.assertIn("systemctl enable --now", installer)
         self.assertIn("install-systemd-timers.sh", workflow)
 
-    def test_scheduled_jobs_send_telegram_alert_on_failure(self) -> None:
+    def test_scheduled_jobs_send_email_alert_on_failure(self) -> None:
         service = (SYSTEMD_DIR / "rag-ionis-update@.service").read_text(encoding="utf-8")
         notify_unit = (SYSTEMD_DIR / "rag-ionis-notify-failure@.service").read_text(encoding="utf-8")
         notify_script = (SYSTEMD_DIR / "rag-ionis-notify-failure.sh").read_text(encoding="utf-8")
-        telegram_script = (SYSTEMD_DIR / "rag-ionis-telegram.sh").read_text(encoding="utf-8")
         installer = SYSTEMD_INSTALL_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertIn("OnFailure=rag-ionis-notify-failure@%n.service", service)
         self.assertIn("rag-ionis-notify-failure.sh %i", notify_unit)
-        self.assertIn("rag-ionis-telegram.sh", notify_script)
-        # Le token ne doit jamais apparaître sur la ligne de commande (ps).
-        self.assertIn("--config -", telegram_script)
-        self.assertIn("/etc/rag-ionis/telegram.env", telegram_script)
+        self.assertIn("/usr/bin/python3 /usr/local/bin/rag-ionis-email.py", notify_script)
+        self.assertTrue((SYSTEMD_DIR / "rag-ionis-email.py").is_file())
         self.assertIn("rag-ionis-notify-failure@.service", installer)
-        self.assertIn("rag-ionis-telegram.sh", installer)
+        self.assertIn("rag-ionis-email.py", installer)
         self.assertIn("rag-ionis-backup.service.d/notify-failure.conf", installer)
 
     def test_quality_monitoring_is_scheduled_and_deployed(self) -> None:

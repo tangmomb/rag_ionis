@@ -78,6 +78,72 @@ Options du générateur :
 --force          remplace un brouillon existant
 ```
 
+### Générer les premières questions des utilisateurs simulés
+
+Depuis la racine du dépôt et avec l'environnement Python local, lancer le lot
+quotidien avec le SDK Mistral et `MISTRAL_API_KEY`.
+
+```powershell
+python -m utils.model_embedding.generate_synthetic_questions
+```
+
+Par défaut, la date de Paris sert de graine et le script prépare 30 requêtes
+pour un seul batch `mistral-large-4`. Chaque requête porte sur une vidéo
+distincte tirée au sort. Le champ `video` contient son titre et le champ
+`chunks` contient tous ses passages. Pour une vidéo de plus de 10 minutes,
+`chunks` contient uniquement son résumé global. Le modèle formule une
+question à laquelle les passages permettent de répondre et la renvoie en
+texte brut.
+
+- `--dry-run` écrit `requests.jsonl` localement sans envoyer de requête.
+- `--date 2026-11-19` permet de rejouer la sélection d'une journée donnée.
+- `--video-dir`, `--output-dir` et `--count` permettent d'adapter le lot.
+
+Les résultats sont dans `reports/synthetic_questions/<date>/questions.jsonl`.
+Chaque ligne contient la question et les données de suivi de la session.
+Les rejets sont dans `errors.jsonl`.
+Le script soumet automatiquement un second lot pour les seules questions
+rejetées, avec un plafond de tokens plus élevé.
+Relancer avec la même date et le même dossier reprend le batch enregistré dans
+`batch.json`.
+
+### Simuler les conversations complètes
+
+Les [timers sur Contabo](../../docs/exploitation.md#conversations-synthétiques-quotidiennes)
+assurent la préparation nocturne et les envois aléatoires de la journée.
+Pour un essai ponctuel depuis le PC, lancer depuis la racine du dépôt avec le
+Python local.
+
+```powershell
+python -m utils.model_embedding.simulate_rag_users --api-url https://ionis.tanguym.fr/api/rag/stream --count 2 --max-turns 2 --run-name essai
+```
+
+Les conversations envoyées à l’API publique sont soumises aux quotas de
+production et comptent dans ses statistiques. Un essai depuis le PC conserve
+ses lots et rapports sur le PC.
+
+Le simulateur reprend les questions du jour ou génère le lot s'il manque.
+Par défaut, il joue 30 conversations de deux tours maximum, avec au plus
+deux requêtes au RAG à la fois.
+
+Le simulateur attend la fin des flux SSE d'un tour avant de regrouper les
+relances dans un batch Mistral Large 4. Chaque relance utilise la question,
+les passages utilisés par le RAG et la réponse du dernier échange. Le prochain POST conserve le
+`conversationId`. Le modèle peut terminer une session en renvoyant
+`{"question": null}`.
+
+Le rapport `reports/synthetic_questions/<date>/simulation/conversations.jsonl`
+contient les échanges, les temps jusqu'au premier fragment et jusqu'à la
+réponse complète, les sources renvoyées par le RAG et les erreurs.
+Sur Contabo, le juge quotidien évalue les réponses simulées de la veille
+avec le reste du trafic dans le projet Phoenix `rag-ionis`.
+
+Relancer avec la même date, la même URL et les mêmes paramètres de volume
+reprend le journal `simulation.json`. Un POST interrompu dont le résultat est
+inconnu est signalé dans le rapport. Utiliser un autre `--run-name` pour
+démarrer une nouvelle série de conversations le même jour. Pour un essai
+court, utiliser `--count 2 --max-turns 2 --run-name essai`.
+
 ## 2. Cas particuliers
 
 Une question sans réponse dans le corpus s'écrit ainsi :

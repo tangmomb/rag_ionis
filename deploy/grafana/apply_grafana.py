@@ -2,7 +2,7 @@
 
 Ce que le script crée ou met à jour (idempotent, on le relance après une modification) :
   - le dossier « RAG IONIS » ;
-  - le point de contact Telegram « rag-ionis-telegram » (même bot que les tâches systemd) ;
+  - le point de contact e-mail « rag-ionis-email » ;
   - le groupe d'alertes « rag-ionis », évalué toutes les 5 min sur les logs Loki ;
   - le dashboard « RAG IONIS — santé » : trafic, erreurs et latence (Loki),
     recall et fidélité dans le temps (/api/monitoring/history, via Infinity).
@@ -15,10 +15,10 @@ Prérequis côté Grafana Cloud :
   - le plugin Infinity installé (catalogue des plugins) pour les courbes de qualité ;
     sans lui, le dashboard est créé sans ces deux panneaux.
 
-Lancement depuis le poste de dev, avec le bot et le chat de /etc/rag-ionis/telegram.env :
+Lancement depuis le poste de dev :
 
     export GRAFANA_URL=https://<stack>.grafana.net GRAFANA_TOKEN=glsa_...
-    export TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
+    export RAG_IONIS_ALERT_EMAIL=...
     python deploy/grafana/apply_grafana.py
 
     python deploy/grafana/apply_grafana.py --dry-run   # affiche le JSON, n'envoie rien
@@ -37,7 +37,7 @@ from typing import Any
 FOLDER_UID = "rag-ionis"
 FOLDER_TITLE = "RAG IONIS"
 RULE_GROUP = "rag-ionis"
-CONTACT_POINT = "rag-ionis-telegram"
+CONTACT_POINT = "rag-ionis-email"
 DASHBOARD_UID = "rag-ionis-health"
 INFINITY_TYPE = "yesoreyeram-infinity-datasource"
 HISTORY_URL = os.getenv("RAG_IONIS_HISTORY_URL", "https://ionis.tanguym.fr/api/monitoring/history")
@@ -177,12 +177,12 @@ def rule_group(loki_uid: str) -> dict[str, Any]:
     return {"title": RULE_GROUP, "folderUid": FOLDER_UID, "interval": 300, "rules": rules}
 
 
-def contact_point(bot_token: str, chat_id: str) -> dict[str, Any]:
+def contact_point(addresses: str) -> dict[str, Any]:
     return {
         "uid": CONTACT_POINT,
         "name": CONTACT_POINT,
-        "type": "telegram",
-        "settings": {"bottoken": bot_token, "chatid": chat_id},
+        "type": "email",
+        "settings": {"addresses": addresses},
         "disableResolveMessage": False,
     }
 
@@ -263,7 +263,7 @@ def _quality_panel(infinity_uid: str, title: str, root: str, columns: list[tuple
 
 
 LINKS_MARKDOWN = f"""\
-**Alertes** : Telegram. **Runbook** : [docs/exploitation.md]({RUNBOOK_URL})
+**Alertes** : e-mail. **Runbook** : [docs/exploitation.md]({RUNBOOK_URL})
 
 - [Page de statut (Upptime)](https://tangmomb.github.io/status/) — disponibilité vue de l'extérieur
 - [Beszel](https://monitor.tanguym.fr) — CPU, RAM, disque du VPS
@@ -416,7 +416,7 @@ def ensure_infinity(grafana: Grafana, infinity_uid: str | None) -> str | None:
     return created["datasource"]["uid"]
 
 
-def apply(grafana: Grafana, bot_token: str, chat_id: str) -> None:
+def apply(grafana: Grafana, addresses: str) -> None:
     loki_uid, infinity_uid = pick_datasources(grafana.call("GET", "/api/datasources"))
     print(f"Loki : {loki_uid}")
 
@@ -428,7 +428,7 @@ def apply(grafana: Grafana, bot_token: str, chat_id: str) -> None:
     print(f"Dossier : {FOLDER_TITLE}")
 
     existing = grafana.call("GET", f"/api/v1/provisioning/contact-points?name={CONTACT_POINT}") or []
-    point = contact_point(bot_token, chat_id)
+    point = contact_point(addresses)
     if existing:
         grafana.call("PUT", f"/api/v1/provisioning/contact-points/{existing[0]['uid']}", point)
     else:
@@ -461,12 +461,16 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
 
     if args.dry_run:
-        print(json.dumps({"rule_group": rule_group("<loki>"), "dashboard": dashboard("<loki>", "<infinity>")},
-                         ensure_ascii=False, indent=2))
+        payload = {
+            "contact_point": contact_point("<email>"),
+            "rule_group": rule_group("<loki>"),
+            "dashboard": dashboard("<loki>", "<infinity>"),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     missing = [
         name
-        for name in ("GRAFANA_URL", "GRAFANA_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+        for name in ("GRAFANA_URL", "GRAFANA_TOKEN", "RAG_IONIS_ALERT_EMAIL")
         if not os.getenv(name)
     ]
     if missing:
@@ -474,8 +478,7 @@ def main() -> int:
         return 2
     apply(
         Grafana(os.environ["GRAFANA_URL"], os.environ["GRAFANA_TOKEN"]),
-        os.environ["TELEGRAM_BOT_TOKEN"],
-        os.environ["TELEGRAM_CHAT_ID"],
+        os.environ["RAG_IONIS_ALERT_EMAIL"],
     )
     return 0
 

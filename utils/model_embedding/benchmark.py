@@ -206,12 +206,13 @@ def load_video_speakers(video_base: Path) -> tuple[str, ...]:
     return ()
 
 
-def discover_chunks(video_dir: Path) -> list[Chunk]:
+def discover_chunks(video_dir: Path, *, exclude_ambiguous_keys: bool = False) -> list[Chunk]:
     if not video_dir.is_dir():
         raise NotADirectoryError(f"Dossier de videos introuvable: {video_dir}")
 
     chunks: list[Chunk] = []
     seen_keys: dict[str, str] = {}
+    ambiguous_keys: set[str] = set()
     for video_base, source in discover_chunk_sources(video_dir):
         payload = json.loads(source.read_text(encoding="utf-8"))
         raw_chunks = payload.get("chunks", []) if isinstance(payload, dict) else []
@@ -228,6 +229,9 @@ def discover_chunks(video_dir: Path) -> list[Chunk]:
                 continue
             key = chunk_key(video_key, index)
             if key in seen_keys:
+                if exclude_ambiguous_keys:
+                    ambiguous_keys.add(key)
+                    continue
                 raise ValueError(f"Cle de chunk dupliquee {key}: {seen_keys[key]} et {source}")
             seen_keys[key] = str(source)
             chunks.append(
@@ -240,6 +244,8 @@ def discover_chunks(video_dir: Path) -> list[Chunk]:
                     speakers=speakers,
                 )
             )
+    if ambiguous_keys:
+        chunks = [chunk for chunk in chunks if chunk.key not in ambiguous_keys]
     if not chunks:
         raise ValueError(f"Aucun transcript_chunks*.json exploitable dans {video_dir}")
     return chunks

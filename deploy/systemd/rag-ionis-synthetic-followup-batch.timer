@@ -1,0 +1,11 @@
+[Unit]
+Description=Submit the RAG IONIS synthetic follow-up batch
+
+[Timer]
+OnCalendar=*-*-* 12:30:00 Europe/Paris
+AccuracySec=1min
+Persistent=true
+Unit=rag-ionis-synthetic@followup-batch.service
+
+[Install]
+WantedBy=timers.target

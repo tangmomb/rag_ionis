@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Signale à healthchecks.io le début, la réussite ou l'échec d'une tâche systemd.
 # Healthchecks alerte quand un ping attendu n'arrive pas : une tâche qui ne tourne
-# plus (timer désactivé, VPS éteint à l'heure prévue, Telegram cassé) ne reste pas
+# plus (timer désactivé, VPS éteint à l'heure prévue) ne reste pas
 # silencieuse, contrairement à OnFailure= qui ne voit que les échecs.
 #
 #   rag-ionis-healthcheck.sh <unit> [start|success|fail]

@@ -287,7 +287,7 @@ jobs:
             deploy/install-systemd-timers.sh deploy/run-scheduled-update.sh \
             deploy/run-monitoring.sh deploy/record-report.sh \
             "${remote}:${deploy_path}/deploy/"
-          scp deploy/systemd/* "${remote}:${deploy_path}/deploy/systemd/"
+          scp -r deploy/systemd/* "${remote}:${deploy_path}/deploy/systemd/"
           scp deploy/alloy/config.alloy "${remote}:${deploy_path}/deploy/alloy/"
           scp -r docker/postgres/init "${remote}:${deploy_path}/docker/postgres/"
           ssh "${remote}" bash -s -- "${deploy_path}" <<'REMOTE'

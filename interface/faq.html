@@ -2100,10 +2100,11 @@
               </div>
               <p>
                 Si le timer est désactivé ou que le serveur est éteint, aucun
-                ping ne part. Healthchecks connaît l’horaire prévu et alerte
-                via sa propre intégration si le signal de réussite manque à la
-                fin du délai de grâce. L’alerte peut donc partir même si le
-                serveur ou son bot Telegram est indisponible.
+                ping ne part. Une fois le contrôle activé par un premier ping,
+                Healthchecks utilise l’horaire prévu et alerte via sa propre
+                intégration si le signal de réussite manque à la fin du délai
+                de grâce. L’alerte peut donc partir même si le serveur ou son
+                bot Telegram est indisponible.
               </p>
               <pre
                 class="faq-code"

@@ -2338,8 +2338,9 @@
               <section class="faq-monitoring-section">
                 <h4 id="surveillance-infrastructure-titre">Disponibilité et infrastructure</h4>
                 <p>
-                  Upptime teste les accès publics depuis l’extérieur. Beszel
-                  suit les ressources du VPS, et Docker vérifie l’état de ses
+                  Upptime teste les accès publics depuis l’extérieur.
+                  <a href="https://monitor.tanguym.fr/">Beszel</a> suit les
+                  ressources du VPS, et Docker vérifie l’état de ses
                   conteneurs.
                 </p>
                 <p>
@@ -2387,7 +2388,9 @@
                         <td>E-mail via Upptime et issue GitHub en cas de panne</td>
                       </tr>
                       <tr>
-                        <th scope="row">Interface Beszel</th>
+                        <th scope="row">
+                          <a href="https://monitor.tanguym.fr/">Interface Beszel</a>
+                        </th>
                         <td>
                           <a href="https://tangmomb.github.io/status/">Upptime</a>
                         </td>
@@ -2400,7 +2403,7 @@
                       </tr>
                       <tr>
                         <th scope="row">VPS et conteneurs Docker</th>
-                        <td>Beszel</td>
+                        <td><a href="https://monitor.tanguym.fr/">Beszel</a></td>
                         <td>Agent Beszel sur le VPS, en continu</td>
                         <td>
                           VPS injoignable, CPU, RAM ou disque saturés, temps CPU
@@ -2461,8 +2464,10 @@
                 <p>
                   Grafana analyse les journaux envoyés par Alloy et transmet
                   ses alertes par e-mail.
-                  Phoenix permet de retrouver les étapes et les temps de
-                  traitement d’une question.
+                  <a href="http://contabo.tail7620c9.ts.net:6006/">Phoenix</a> permet
+                  de retrouver les étapes et les temps de traitement d’une
+                  question. L’interface est accessible sur le réseau privé
+                  Tailscale.
                 </p>
                 <div
                   class="faq-benchmark-table faq-monitoring-table"
@@ -2483,13 +2488,16 @@
                     <tbody>
                       <tr>
                         <th scope="row">Traces du pipeline RAG</th>
-                        <td>Phoenix (OpenTelemetry)</td>
+                        <td>
+                          <a href="http://contabo.tail7620c9.ts.net:6006/">Phoenix</a>
+                          (OpenTelemetry)
+                        </td>
                         <td>API, à chaque question</td>
                         <td>
                           Étape en erreur ou lente, consommation de tokens
                           inhabituelle
                         </td>
-                        <td>Diagnostic dans Phoenix via VPS</td>
+                        <td>Diagnostic dans Phoenix via Tailscale</td>
                       </tr>
                       <tr>
                         <th scope="row">Erreurs serveur de l’API</th>

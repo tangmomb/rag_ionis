@@ -44,7 +44,7 @@ class RagRequest(BaseModel):
     finalK: int = Field(default=DEFAULT_FINAL_K, ge=1, le=MAX_FINAL_K)
 
     @model_validator(mode="after")
-    def _force_mistral_medium_for_rag_inference(self) -> "RagRequest":
+    def _force_configured_model_for_rag_inference(self) -> "RagRequest":
         """Keep every RAG inference stage on the configured Mistral model."""
         self.reformulationModel = DEFAULT_REFORMULATION_MODEL
         self.plannerModel = DEFAULT_PLANNER_MODEL

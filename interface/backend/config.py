@@ -14,13 +14,15 @@ PERSON_SCOPED_KNOWLEDGE_FILE = INTERFACE_DIR / "connaissances_personnes.txt"
 QUESTION_SCOPED_KNOWLEDGE_FILE = INTERFACE_DIR / "connaissances_annexes.txt"
 load_project_env(PROJECT_DIR)
 
-DEFAULT_RAG_LLM_MODEL = "mistral-medium-latest"
-# Toutes les étapes d'inférence du RAG utilisent Mistral Medium via Mistral.
+DEFAULT_RAG_LLM_MODEL = "deepseek-v4-1-flash-1017"
+# Toutes les étapes d'inférence du RAG utilisent DeepSeek V4.1 Flash, hébergé
+# et facturé par Mistral. Mistral Medium 3.5 est déprécié (retrait le
+# 30/04/2027) ; Mistral Large 4 raisonne toujours et était trop lent ici.
 DEFAULT_REFORMULATION_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_PLANNER_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_ANALYTICS_SQL_MODEL = DEFAULT_RAG_LLM_MODEL
 DEFAULT_GENERATION_MODEL = DEFAULT_RAG_LLM_MODEL
-# The research agent needs reliable tool use; Large is also cheaper per token.
+# The research agent needs reliable tool use.
 DEFAULT_RESEARCH_AGENT_MODEL = "mistral-large-4"
 RAG_LLM_MODEL_CHOICES = (
     DEFAULT_RAG_LLM_MODEL,

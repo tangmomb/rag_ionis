@@ -536,9 +536,7 @@ def validate_step_models(payload: RagRequest) -> None:
         if model != default:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Le RAG utilise uniquement mistral-medium-latest."
-                ),
+                detail=f"Le RAG utilise uniquement {default}.",
             )
         try:
             provider_for_model(model)

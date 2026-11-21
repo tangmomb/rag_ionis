@@ -37,9 +37,9 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         )
 
         self.assertEqual(request.question, "Ma question ?")
-        self.assertEqual(request.reformulationModel, "mistral-medium-latest")
-        self.assertEqual(request.plannerModel, "mistral-medium-latest")
-        self.assertEqual(request.answerModel, "mistral-medium-latest")
+        self.assertEqual(request.reformulationModel, "deepseek-v4-1-flash-1017")
+        self.assertEqual(request.plannerModel, "deepseek-v4-1-flash-1017")
+        self.assertEqual(request.answerModel, "deepseek-v4-1-flash-1017")
         self.assertEqual(request.reformulationPrompt, "Prompt reformulation")
         self.assertEqual(request.plannerPrompt, "Prompt planner")
         self.assertEqual(request.answerPrompt, "Prompt reponse")
@@ -424,6 +424,8 @@ class RunPhoenixExperimentTests(unittest.TestCase):
                 ("Mistral - Medium", "mistral-medium-latest"),
                 ("Mistral - Small", "mistral-small-latest"),
                 ("Mistral - Large", "mistral-large-latest"),
+                ("Mistral - Large 4", "mistral-large-4"),
+                ("Mistral - DeepSeek V4.1 Flash", "deepseek-v4-1-flash-1017"),
                 ("Google - Gemini 3.8 Flash", "gemini-3.8-flash"),
                 (
                     "Google - Gemini 3.1 Flash-Lite",
@@ -473,13 +475,13 @@ class RunPhoenixExperimentTests(unittest.TestCase):
         settings = run_phoenix_experiment.RagExperimentSettings()
 
         name = run_phoenix_experiment.experiment_name_with_models(
-            "rag-v1_mistral-medium_mistral-medium_mistral-medium",
+            "rag-v1_deepseek-v4-1-flash_deepseek-v4-1-flash_deepseek-v4-1-flash",
             settings,
         )
 
         self.assertEqual(
             name,
-            "rag-v1_mistral-medium_mistral-medium_mistral-medium",
+            "rag-v1_deepseek-v4-1-flash_deepseek-v4-1-flash_deepseek-v4-1-flash",
         )
 
     def test_experiment_name_distinguishes_external_providers(self) -> None:

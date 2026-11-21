@@ -15,6 +15,11 @@ from interface.backend.config import (
     DEFAULT_VECTOR_LIMIT,
 )
 from interface.backend.database import connect_database
+from interface.backend.llm_providers import (
+    add_embedding_cost_attributes,
+    add_rerank_cost_attributes,
+    rerank_search_units,
+)
 from interface.backend.schemas import ExecutionPlan, RagRequest
 from interface.backend.telemetry import trace_operation
 from interface.backend.utilities import (
@@ -826,6 +831,7 @@ def rerank_chunks(question: str, chunks: list[dict[str, Any]], limit: int, reran
             "relevance_scores": relevance_scores[:limit],
             "requested_model": rerank_model,
             "resolved_model": resolved_model,
+            "search_units": rerank_search_units(response),
         }
 
     raise RuntimeError(f"Le rerank Cohere ({resolved_model}) n'a renvoye aucun resultat exploitable.")
@@ -967,6 +973,9 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
                 input=query_terms(execution_plan),
             )
             question_embedding = embedding_response.data[0].embedding
+            add_embedding_cost_attributes(
+                embedding_span, embedding_response, model=embedding_model
+            )
             embedding_span.set_output(
                 {"model": embedding_model, "dimensions": len(question_embedding)}
             )
@@ -1039,6 +1048,7 @@ def retrieve_chunks(payload: RagRequest, execution_plan: ExecutionPlan) -> tuple
                     rerank_model,
                 )
                 rerank_applied = True
+                add_rerank_cost_attributes(rerank_span, rerank_debug.get("search_units", 1))
             except RuntimeError as exc:
                 # A Cohere outage or quota error must not fail the visitor's
                 # request: keep the RRF order, which is already a ranking.

@@ -31,10 +31,23 @@ DEFAULT_WEB_SEARCH_COST_USD_PER_CALL = 0.03
 DEFAULT_LLM_COST_RATES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
     "mistral-small-latest": (0.15, 0.6),
     "mistral-medium-latest": (1.5, 7.5),
-    "mistral-large-latest": (0.5, 1.5),
-    # List price; a launch promotion halved it in October 2026.
-    "mistral-large-4": (1.36, 4.18),
+    # Alias of mistral-large-4 since November 2026.
+    "mistral-large-latest": (0.70, 2.10),
+    # Price on docs.mistral.ai/models/mistral-large-4-0 (Nov. 2026); cached
+    # input tokens ($0.07) are not distinguished and are priced as input.
+    "mistral-large-4": (0.70, 2.10),
+    # Hosted by Mistral (docs.mistral.ai/models/deepseek-v4-flash-1017, public preview).
+    "deepseek-v4-1-flash-1017": (0.30, 1.20),
 }
+EMBEDDING_COST_ENV = "RAG_EMBEDDING_COST_USD_PER_MILLION"
+RERANK_COST_ENV = "RAG_RERANK_COST_USD_PER_SEARCH"
+# OpenAI list price, input tokens only.
+DEFAULT_EMBEDDING_COST_RATES_USD_PER_MILLION: dict[str, float] = {
+    "text-embedding-3-large": 0.13,
+}
+# Cohere bills rerank per search unit: one query with up to 100 documents
+# (longer documents are split and count as several). About $2 per 1,000.
+DEFAULT_RERANK_COST_USD_PER_SEARCH = 0.002
 GEMINI_THINKING_LEVELS = {
     "gemini-3.5-flash-lite": "low",
     "gemini-3.8-flash": "low",
@@ -68,6 +81,8 @@ LLM_MODEL_CATALOG: dict[LLMProvider, dict[str, Any]] = {
             ("Medium", "mistral-medium-latest"),
             ("Small", "mistral-small-latest"),
             ("Large", "mistral-large-latest"),
+            ("Large 4", "mistral-large-4"),
+            ("DeepSeek V4.1 Flash", "deepseek-v4-1-flash-1017"),
         ),
     },
     "google": {
@@ -106,11 +121,13 @@ class LLMCostTotals:
     completion_usd: float = 0.0
     # Connector tokens and per-call tool fees (Mistral web search).
     tools_usd: float = 0.0
+    # Question embedding and rerank, billed outside the LLM calls.
+    retrieval_usd: float = 0.0
     priced_calls: int = 0
 
     @property
     def total_usd(self) -> float:
-        return self.prompt_usd + self.completion_usd + self.tools_usd
+        return self.prompt_usd + self.completion_usd + self.tools_usd + self.retrieval_usd
 
 
 _ACTIVE_LLM_COST_TOTALS: ContextVar[LLMCostTotals | None] = ContextVar(
@@ -216,7 +233,8 @@ def provider_for_model(model: str) -> LLMProvider:
     normalized = str(model or "").strip().casefold()
     if normalized.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-")):
         return "openai"
-    if normalized.startswith(("mistral-", "ministral-", "codestral-", "pixtral-")):
+    # DeepSeek models used here are hosted and billed by Mistral.
+    if normalized.startswith(("mistral-", "ministral-", "codestral-", "pixtral-", "deepseek-")):
         return "mistral"
     if normalized.startswith("gemini-"):
         return "google"
@@ -441,12 +459,54 @@ def connector_call_count(usage: Any, connector: str) -> int:
     return count if isinstance(count, int) else 0
 
 
-def configured_web_search_cost_usd() -> float:
-    raw_value = os.getenv(WEB_SEARCH_COST_ENV, "").strip()
+def _env_non_negative_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name, "").strip()
     try:
-        return float(raw_value) if raw_value else DEFAULT_WEB_SEARCH_COST_USD_PER_CALL
+        value = float(raw_value) if raw_value else default
     except ValueError:
-        return DEFAULT_WEB_SEARCH_COST_USD_PER_CALL
+        return default
+    return value if value >= 0 else default
+
+
+def configured_web_search_cost_usd() -> float:
+    return _env_non_negative_float(WEB_SEARCH_COST_ENV, DEFAULT_WEB_SEARCH_COST_USD_PER_CALL)
+
+
+def _record_retrieval_cost(operation: Any, cost: float) -> None:
+    operation.set_attribute("llm.cost.total", cost)
+    totals = _ACTIVE_LLM_COST_TOTALS.get()
+    if totals is not None:
+        totals.retrieval_usd += cost
+        totals.priced_calls += 1
+
+
+def add_embedding_cost_attributes(operation: Any, response: Any, *, model: str) -> None:
+    """Price a question embedding from the tokens the provider reports."""
+    tokens = usage_value(usage_from_response(response), "prompt_tokens", "total_tokens")
+    if tokens is None:
+        return
+    operation.set_attribute("embedding.token_count", tokens)
+    default_rate = DEFAULT_EMBEDDING_COST_RATES_USD_PER_MILLION.get(model)
+    rate = _env_non_negative_float(EMBEDDING_COST_ENV, default_rate if default_rate is not None else -1.0)
+    if rate < 0:
+        return
+    _record_retrieval_cost(operation, tokens * rate / 1_000_000)
+
+
+def rerank_search_units(response: Any) -> float:
+    """Billed Cohere search units of a rerank response, one if unreported."""
+    billed_units = getattr(getattr(response, "meta", None), "billed_units", None)
+    search_units = getattr(billed_units, "search_units", None)
+    if isinstance(search_units, bool) or not isinstance(search_units, (int, float)) or search_units <= 0:
+        return 1
+    return search_units
+
+
+def add_rerank_cost_attributes(operation: Any, search_units: float) -> None:
+    """Price a Cohere rerank from its billed search units."""
+    operation.set_attribute("reranker.search_units", search_units)
+    rate = _env_non_negative_float(RERANK_COST_ENV, DEFAULT_RERANK_COST_USD_PER_SEARCH)
+    _record_retrieval_cost(operation, search_units * rate)
 
 
 def configured_llm_cost_rates() -> dict[str, tuple[float, float]]:

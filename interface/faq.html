@@ -886,7 +886,7 @@
                 Ces rôles peuvent être assurés par un même modèle ou par des
                 modèles différents, selon les besoins. Actuellement, c'est
                 toujours le même modèle qui est utilisé pour tous les rôles
-                (Mistral Medium 3.5).
+                (DeepSeek V4.1 Flash, hébergé par Mistral).
               </p>
               <p>
                 Selon la route choisie et l’historique de la conversation, le
@@ -3775,6 +3775,10 @@ backups/rag_ionis/2026-11-18T0238Z/phoenix.db</code></pre>
                 choix a donc été fait de basculer vers Mistral Medium Latest.
                 Ces réponses incomplètes bloquaient toute la suite du pipeline,
                 qui dépend des champs attendus pour continuer son exécution.
+                Mistral Medium étant ensuite déprécié, le pipeline est passé
+                à DeepSeek V4.1 Flash, hébergé par Mistral. Mistral Large 4,
+                le remplaçant proposé, raisonne avant chaque réponse et
+                rendait le pipeline plus de dix fois plus lent.
               </p>
             </article>
             <article

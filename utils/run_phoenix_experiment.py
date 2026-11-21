@@ -80,6 +80,8 @@ LLM_MODEL_SHORT_NAMES = {
     "mistral-medium-latest": "mistral-medium",
     "mistral-small-latest": "mistral-small",
     "mistral-large-latest": "mistral-large",
+    "mistral-large-4": "mistral-large-4",
+    "deepseek-v4-1-flash-1017": "deepseek-v4-1-flash",
     "gemini-3.1-flash-lite": "gemini-3-1-flash-lite",
     "gemini-3.6-flash": "gemini-3-6-flash",
     "gemini-3.5-flash-lite": "gemini-3-5-flash-lite",

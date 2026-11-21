@@ -137,6 +137,10 @@ while (( SECONDS < deadline )); do
       healthy)
         # The host Caddy (systemd) proxies to 127.0.0.1:8006: nothing to reload.
         printf 'API %s is healthy.\n' "${image_tag}"
+        # Phoenix prices spans from its own model table, which has no
+        # Mistral-hosted model: copy our tariffs there. Never fail the deploy.
+        "${compose[@]}" exec -T api python -m interface.monitoring.phoenix_prices \
+          || printf 'Warning: Phoenix model prices were not synced.\n' >&2
         exit 0
         ;;
       unhealthy|exited|dead)

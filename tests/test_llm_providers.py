@@ -28,8 +28,9 @@ class LlmProviderTests(unittest.TestCase):
             llm_providers.provider_for_model("mistral-medium-latest"),
             "mistral",
         )
+        # DeepSeek is hosted and billed by Mistral.
         self.assertEqual(
-            llm_providers.provider_for_model("mistral-medium-latest"),
+            llm_providers.provider_for_model("deepseek-v4-1-flash-1017"),
             "mistral",
         )
         self.assertEqual(
@@ -241,13 +242,67 @@ class LlmProviderTests(unittest.TestCase):
         }
         self.assertEqual(attributes["llm.token_count.connector"], 14986)
         self.assertEqual(attributes["llm.web_search.calls"], 3)
-        self.assertAlmostEqual(attributes["llm.cost.connector"], 0.007493)
+        self.assertAlmostEqual(attributes["llm.cost.connector"], 0.0104902)
         self.assertAlmostEqual(attributes["llm.cost.web_search"], 0.09)
         self.assertAlmostEqual(
-            attributes["llm.cost.total"], 0.002822 + 0.0003405 + 0.007493 + 0.09
+            attributes["llm.cost.total"], 0.0039508 + 0.0004767 + 0.0104902 + 0.09
         )
-        self.assertAlmostEqual(totals.tools_usd, 0.097493)
+        self.assertAlmostEqual(totals.tools_usd, 0.1004902)
         self.assertAlmostEqual(totals.total_usd, attributes["llm.cost.total"])
+
+    def span_attributes(self, operation: MagicMock) -> dict:
+        return {item.args[0]: item.args[1] for item in operation.set_attribute.call_args_list}
+
+    def test_question_embedding_is_priced_from_reported_tokens(self) -> None:
+        operation = MagicMock()
+        response = SimpleNamespace(
+            data=[SimpleNamespace(embedding=[0.1])],
+            usage=SimpleNamespace(prompt_tokens=20_000, total_tokens=20_000),
+        )
+
+        with patch.dict(os.environ, {}, clear=False), llm_providers.track_llm_costs() as totals:
+            os.environ.pop(llm_providers.EMBEDDING_COST_ENV, None)
+            llm_providers.add_embedding_cost_attributes(
+                operation, response, model="text-embedding-3-large"
+            )
+
+        attributes = self.span_attributes(operation)
+        self.assertEqual(attributes["embedding.token_count"], 20_000)
+        self.assertAlmostEqual(attributes["llm.cost.total"], 0.0026)
+        self.assertAlmostEqual(totals.retrieval_usd, 0.0026)
+        self.assertAlmostEqual(totals.total_usd, 0.0026)
+
+    def test_unknown_embedding_model_is_left_unpriced(self) -> None:
+        operation = MagicMock()
+        response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10))
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(llm_providers.EMBEDDING_COST_ENV, None)
+            llm_providers.add_embedding_cost_attributes(operation, response, model="other-embedding")
+
+        self.assertNotIn("llm.cost.total", self.span_attributes(operation))
+
+    def test_rerank_is_priced_per_billed_search_unit(self) -> None:
+        operation = MagicMock()
+        response = SimpleNamespace(
+            meta=SimpleNamespace(billed_units=SimpleNamespace(search_units=2.0))
+        )
+
+        with (
+            patch.dict(os.environ, {llm_providers.RERANK_COST_ENV: "0.002"}),
+            llm_providers.track_llm_costs() as totals,
+        ):
+            llm_providers.add_rerank_cost_attributes(
+                operation, llm_providers.rerank_search_units(response)
+            )
+
+        attributes = self.span_attributes(operation)
+        self.assertEqual(attributes["reranker.search_units"], 2.0)
+        self.assertAlmostEqual(attributes["llm.cost.total"], 0.004)
+        self.assertAlmostEqual(totals.retrieval_usd, 0.004)
+
+    def test_rerank_without_billed_units_counts_one_search(self) -> None:
+        self.assertEqual(llm_providers.rerank_search_units(SimpleNamespace()), 1)
 
     def test_usage_from_stream_event_reads_nested_mistral_data(self) -> None:
         usage = {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}

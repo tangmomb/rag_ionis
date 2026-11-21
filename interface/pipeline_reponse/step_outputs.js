@@ -3,10 +3,10 @@
 const recordedStepOutputs = {
  "aymerich": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -112,10 +112,10 @@ const recordedStepOutputs = {
  },
  "salim": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -223,10 +223,10 @@ const recordedStepOutputs = {
  },
  "views": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -371,10 +371,10 @@ const recordedStepOutputs = {
  },
  "views_growth": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -524,10 +524,10 @@ const recordedStepOutputs = {
  },
  "gaelle": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -628,10 +628,10 @@ const recordedStepOutputs = {
  },
  "comparison": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -770,10 +770,10 @@ const recordedStepOutputs = {
  },
  "ionis": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -909,10 +909,10 @@ const recordedStepOutputs = {
  },
  "ocean": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -1033,10 +1033,10 @@ const recordedStepOutputs = {
  },
  "fadila": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
@@ -1155,10 +1155,10 @@ const recordedStepOutputs = {
  },
  "laura": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "annex_direct": {
    "route": "annex_direct",
@@ -1175,10 +1175,10 @@ const recordedStepOutputs = {
  },
  "australie": {
   "initialize": {
-   "reformulation_model": "mistral-medium-latest",
-   "planner_model": "mistral-medium-latest",
-   "analytics_sql_model": "mistral-medium-latest",
-   "answer_model": "mistral-medium-latest"
+   "reformulation_model": "deepseek-v4-1-flash-1017",
+   "planner_model": "deepseek-v4-1-flash-1017",
+   "analytics_sql_model": "deepseek-v4-1-flash-1017",
+   "answer_model": "deepseek-v4-1-flash-1017"
   },
   "resolve_entities": {
    "person_resolution": {
